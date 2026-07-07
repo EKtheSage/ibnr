@@ -1,0 +1,23 @@
+# python / uv
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# tooling caches
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.coverage
+
+# cmdstan compiled artifacts (model.stan is the source of truth)
+src/**/model.exe
+src/**/model
+src/**/model.hpp
+src/**/model.o
+
+# OS noise
+Thumbs.db
+.DS_Store

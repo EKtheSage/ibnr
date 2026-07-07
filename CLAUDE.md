@@ -1,0 +1,99 @@
+# CLAUDE.md
+
+## What this project is
+
+A gallery-centric actuarial reserving package: Bayesian MCMC and neural network loss reserving methods with mandatory evaluation, model stacking, and a long-format triangle data layer backed by duckdb and polars. Designed as a companion/extension to `chainladder-python`, not a fork of it.
+
+Name: **ibnr** (PyPI availability verified 2026-06-11; import `ibnr`, repo dir name predates it). License: MPL-2.0 (deliberately matches chainladder).
+
+## Dev commands
+
+```sh
+uv sync                                   # core + dev deps (chainladder, bermuda-ledger for interop tests)
+uv sync --extra bayesian                  # + cmdstanpy/numpyro/pymc/arviz/bayesblend (works on py3.12)
+uv run pytest                             # fast suite (slow excluded via addopts); transforms run on BOTH backends
+uv run pytest -m slow                     # cmdstan tests (compile + sample); needs cmdstan installed
+uv run pytest "tests/test_transforms.py::test_as_of[polars]"   # single test, one backend
+uv run ruff check . && uv run ruff format .
+uv run python scripts/meyers_validation.py --per-line 50       # Meyers retrospective validation
+```
+
+Markers: `tieout` (chainladder comparisons), `mart` (needs the local Schedule P gold mart; auto-skips when absent), `parity`, `slow` (cmdstan; excluded by default via addopts).
+
+cmdstan on this machine: installed at `~/.cmdstan` (2.39.0), built with the RTools toolchain at `C:\rtools45` (plain `make`, not `mingw32-make` — set `MAKE=make` and prepend `C:\rtools45\x86_64-w64-mingw32.static.posix\bin` and `C:\rtools45\usr\bin` to PATH; `gallery/bayesian/meyers_ccl/model.py:_ensure_windows_toolchain` does this automatically).
+
+## Core design decisions — do not relitigate without asking
+
+1. **Long-format 2D triangles only.** No 4D arrays. A triangle is a tidy table: `origin_period, dev_lag, eval_date, field, value` + arbitrary segment columns (lob, company, ...). `eval_date` is a first-class stored column, not derived — all backtesting slices on it. Each triangle carries metadata: grain, cumulative/incremental flag, units. Reference design: Ledger Investing's `bermuda`.
+2. **ibis is the dataframe frontend.** Both duckdb and polars backends are supported — no debate, both. Transformations (incr↔cum via window functions, grain changes, pivots, `as_of()` slicing) are written once in ibis. The transformation test suite runs against BOTH backends; ibis's polars backend has weaker window-function coverage, so expect and document gaps.
+3. **The Stan `data` block is the data contract.** `kernels/contract.py` maps Triangle → standardized dict. NumPyro and PyMC implementations consume the identical dict. Never let a backend grow its own data prep.
+4. **`PredictiveDistribution` is the unifying output type** (`kernels/predictive.py`). Every gallery entry — Bayesian, NN, deterministic — must produce one. NN models require distributional heads (mixture/quantile heads or deep ensembles); point estimators cannot enter the gallery. Deterministic baselines (Mack, basic CL) are wrapped with bootstrap.
+5. **Evaluation is a contract, not a feature.** `GalleryEntry` ABC requires `.fit()`, `.predict()`, `.evaluate()`, `.card()`. An entry that fails the eval harness does not register. Eval algorithms (ELPD/LOO/WAIC, PIT calibration, stacking via `bayesblend`, ArviZ-based diagnostics) are implemented ONCE in `kernels/` — gallery entries call them, never reimplement.
+6. **Eject-pattern codegen, not a formula DSL.** Every gallery model is literal, readable source: `model.stan`, `model_numpyro.py`, `model_pymc.py` side by side. `gallery.scaffold()` copies source into the user's project for them to extend (copulas, priors, hyperparameters). Precedent: brms/bambi, but simpler.
+7. **Cross-backend parity is a feature.** `kernels/parity.py` validates that NumPyro/PyMC ports match the Stan reference posterior before any convergence/speed comparisons. Parameterization (centered vs non-centered, truncation handling, init strategy) is an explicit documented attribute of each model card. Stan implementations from the literature are ground truth.
+8. **Small public API:** `Triangle`, `gallery.list/fit/evaluate/stack/scaffold/leaderboard`.
+
+## Repository layout
+
+```
+src/<pkg>/
+  triangle/    core.py (Triangle over ibis expr), transforms.py, io.py, validate.py
+  kernels/     contract.py, predictive.py, scores.py, calibration.py,
+               multiline.py (multi-LOB contract), nn_contract.py (NN grids/masks),
+               stacking.py, parity.py, tuning.py
+  gallery/     registry.py, entry.py (GalleryEntry ABC), scaffold.py
+    bayesian/  meyers_ccl/ meyers_csr/ england_verrall_odp/ compartmental/
+    nn/        transformer/ deeptriangle/ mdn/ resnet/
+    statistical/    sur/ copula_glm/   (frequentist stochastic dependence models)
+    deterministic/  mack/ ...
+  data/        schedule_p.py (gold mart adapter)
+  viz/         tidy.py, altair_.py, site.py (quarto gallery site)
+```
+
+Each gallery model dir contains: `card.md`, `model.stan`, `model_numpyro.py`, `model_pymc.py` (bayesian) or pytorch module + config (nn) or plain-numpy `model.py` (statistical).
+
+## Tooling & conventions
+
+* `src/` layout, `uv` for env + packaging, `ruff` for lint/format, `pytest`.
+* Optional extras keep the core light: `[bayesian]` (cmdstanpy, numpyro, pymc, arviz, bayesblend), `[nn]` (torch), `[viz]` (altair, quarto tooling). Core deps ≈ ibis-framework[duckdb,polars] + scipy (scipy added 2026-07-06 for the statistical family; deliberate exception to "ibis only"). Torch must never be imported at module level — `ibnr.gallery` imports (and nn entries register) without the `[nn]` extra; `tests/test_gallery.py` enforces this in a subprocess.
+* Test markers: `-m tieout` (results match chainladder-python on raa/clrd samples), `-m parity` (cross-backend posterior matching), `-m slow` (cmdstan compilation; separate CI job).
+* CI matrix runs core and each extra in isolation to catch hidden imports.
+* Interop is sacred: `Triangle.from_chainladder/to_chainladder`, `from_bermuda/to_bermuda` must round-trip losslessly.
+
+## Related local project (data source)
+
+`C:\Users\EthanKang\Projects\cas-schedule-p-data-model` — Ethan's CAS Schedule P database, medallion architecture, gold mart ready.
+
+Before writing `triangle/core.py` or `data/schedule_p.py`: inspect that repo. Determine storage format (duckdb file / parquet / warehouse), gold table names, column names, grains, and how realized ultimates are represented. Write the Triangle schema and the adapter against the real schema, not assumptions. The data pipeline stays in that repo; this package only consumes its gold mart via config (path/connection string). In-repo test fixtures use public samples (raa, clrd-style) so the package works without the mart.
+
+## Milestones (in order; do not skip ahead)
+
+1. **DONE (2026-06-11).** Triangle layer + transforms tie out to chainladder-python on raa/clrd, on both duckdb and polars backends. Also done: bermuda round-trip interop, `data/schedule_p.py` gold-mart adapter (ties to the published wide paid mart), `as_of()` backtest slicing. `dev_lag` is always months; eval_date convention: last day of the month `origin + dev_lag` lands in.
+2. **DONE (2026-06-13).** `meyers_ccl` (Stan) reproduces Meyers monograph validation tables from the Schedule P gold mart (train on early diagonal, score realized ultimates, PIT uniformity). Built: `kernels/contract.py` (+ predictive, calibration), gallery registry/entry ABC, meyers_ccl entry + card, `scripts/meyers_validation.py`. Final 200-company run on **net-of-bulk incurred** (`reported_loss` = IncurLoss − BulkLoss; mart rebuilt to carry bulk_loss + direct premium): all four lines AND the combined test pass KS at 5% (combined D=6.8 vs crit 9.6; Meyers' own Fig 8.5 combined was 10.8*). Critical lesson: gross-of-bulk incurred fails WC at D=36.7 — the incurred definition is load-bearing; results in `analysis/results/meyers_ccl_validation_netbulk.csv` (gross run kept alongside as `meyers_ccl_validation.csv`). Explored in `analysis/01_triangle_and_meyers_ccl.ipynb`.
+3. **DONE (2026-07-06; reordered ahead of the parity ports at Ethan's request.)** NN family opens + statistical dependence baselines, compared on the Schedule P backtest. Built: `nn_transformer` (masked-cell triangle transformer, MDN head + 5-seed deep ensemble, calendar-cutoff augmentation, eval_date validation split, autoregressive diagonal rollout; global fit → per-segment predict), `sur` (Zhang 2010 multivariate chain ladder via hand-rolled FGLS; collapses to volume-weighted CL per line at zero correlation), `copula_glm` (Shi & Frees 2011 lognormal marginals + Gaussian copula, parametric bootstrap), kernels `nn_contract.py` / `multiline.py` / `scores.py` (sample CRPS; now in `evaluate()`), new family string `"statistical"`, `scripts/compare_gallery.py` (headline field: paid_loss — lognormal marginals cannot take negative reported increments).
+4. NumPyro + PyMC ports pass parity; first cross-backend convergence comparison (R-hat/ESS/divergences/runtime) published in model cards.
+5. Full Bayesian gallery with held-out-diagonal ELPD, PIT calibration, and bayesblend stacking. Leaderboard works.
+6. Rest of the NN family joins the same leaderboard via PredictiveDistribution (deeptriangle, mdn, resnet; HPO in kernels/tuning.py).
+7. (Secondary) viz/site.py renders the gallery as a quarto static site with interactive altair charts.
+
+## Key references
+
+* Meyers, Stochastic Loss Reserving Using Bayesian MCMC Models (CAS monograph; published Stan code = ground truth for CCL/CSR).
+* England & Verrall, Stochastic Claims Reserving in General Insurance (ODP).
+* Gesmann & Morris, Hierarchical Compartmental Reserving Models (CAS; Stan/brms code; hardest parity case — ODEs).
+* Kuo, DeepTriangle (original in Keras; reimplement in pytorch).
+* Ledger Investing: `bermuda` (triangle design reference), `bayesblend` (stacking).
+* chainladder-python: backends are numpy/cupy/sparse/dask 4D duck arrays; polars is input-only via dataframe interchange. We intentionally diverge.
+
+## Gotchas
+
+* ibis polars backend (ibis 10.x): **no window-function support at all** (`OperationNotDefinedError` for any `WindowFunction`), no `ScalarSubquery` either. Transforms use equi-join + group-by formulations instead (see `triangle/transforms.py`). Also: after `cross_join`, mutate derived expressions into real columns *before* filtering on them, or polars loses the joined column (`ColumnNotFoundError: 1__anchor`).
+* chainladder semantics worth remembering (all encoded in the tieout tests):
+  * valuation timestamps are end-of-day, so `tri[tri.valuation <= "1985-12-31"]` *excludes* the 1985 diagonal; use `< "1986"`.
+  * triangle arithmetic treats missing cells as zero inside the observed region, so `cum_to_incr` fabricates increments at cells absent from the source and stores zero increments as NaN. Our long format means absent = unobserved, zero = explicit; we deliberately do NOT densify (it would fabricate data on `as_of` slices).
+  * `grain('OYDY')` anchors dev buckets to the latest diagonal (ages 3, 15, 27... when the latest valuation is Q1). `change_dev_grain` matches this.
+* bermuda's `Cell.dev_lag` measures from period *end* (first diagonal = 0); ours is months from origin *start* (first diagonal = 12). `from_bermuda` recomputes; never copy bermuda's dev_lag.
+* "Same model" across PPLs is only same if parameterization is held constant — otherwise convergence comparisons measure implementation accidents.
+* Schedule P triangles are small; NN overfitting is the central risk. All NN training validates across many company×LOB triangles, never one.
+* Windows dev machine: cmdstanpy needs a working toolchain (RTools/MSVC); keep cmdstan-dependent tests behind `-m slow` and runnable on CI Linux.
+* Never name modules shadowing deps (`altair_.py` not `altair.py`).
