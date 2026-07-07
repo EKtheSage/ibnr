@@ -16,7 +16,9 @@ derives ``reported_loss`` = incurred_loss - bulk_loss (paid + true case),
 which is what Meyers' monograph calls "incurred".
 
 Two ways to point this adapter at data (either directly or via the
-IBNR_SCHEDULE_P_WAREHOUSE environment variable):
+IBNR_SCHEDULE_P_WAREHOUSE environment variable; when neither is given the
+default is ``DEFAULT_SOURCE`` — the newest GitHub release, ``@latest``
+resolved to its concrete publish_id up front):
 
 1. a local warehouse directory — parquet under ``warehouse/`` with the active
    publish chosen by ``warehouse/_active_manifest.json`` (the sibling checkout
@@ -47,6 +49,13 @@ ENV_VAR = "IBNR_SCHEDULE_P_WAREHOUSE"
 CACHE_ENV_VAR = "IBNR_CACHE_DIR"
 GITHUB_SCHEME = "github://"
 TRAINING_MART = "mart_reserving_model_training"
+
+#: where the data comes from when nothing else is specified: the newest gold
+#: publish on GitHub. ``@latest`` resolves to a concrete publish_id through gh
+#: before anything is cached or read, so results artifacts always stamp the
+#: exact publish even in default-configured dev.
+DEFAULT_SOURCE = "github://EKtheSage/cas-schedule-p-data-model@latest"
+LATEST = "latest"
 
 #: mart column -> triangle field name. Loss fields are cumulative; premiums,
 #: reserves and bulk are eval-date snapshots carried along as fields.
@@ -97,14 +106,9 @@ def active_publish_id(warehouse: str | Path | None = None) -> str:
 
 
 def _resolve_source(warehouse: str | Path | None) -> str | Path:
+    """Explicit argument > env var > the GitHub data repo's newest publish."""
     if warehouse is None:
-        warehouse = os.environ.get(ENV_VAR)
-        if warehouse is None:
-            raise ValueError(
-                f"no warehouse given and {ENV_VAR} is not set; point at the "
-                "cas-schedule-p-data-model warehouse directory or a "
-                f"{GITHUB_SCHEME}owner/repo@publish_id release spec"
-            )
+        warehouse = os.environ.get(ENV_VAR) or DEFAULT_SOURCE
     return warehouse
 
 
@@ -121,14 +125,44 @@ def _is_github_spec(source: str | Path) -> bool:
 
 
 def _parse_github_spec(spec: str) -> tuple[str, str]:
-    """``github://owner/repo@publish_id`` -> (``owner/repo``, ``publish_id``)."""
+    """``github://owner/repo@publish_id`` -> (``owner/repo``, ``publish_id``).
+
+    ``@latest`` is resolved to the repo's newest release tag (one gh call,
+    cached per process) so caching and provenance always see a concrete id.
+    """
     body = spec[len(GITHUB_SCHEME) :]
     repo, _, tag = body.partition("@")
     if not tag or repo.count("/") != 1 or not all(repo.split("/")):
         raise ValueError(
             f"bad GitHub release spec {spec!r}; expected {GITHUB_SCHEME}owner/repo@publish_id"
         )
+    if tag == LATEST:
+        tag = _latest_tag(repo)
     return repo, tag
+
+
+_LATEST_TAGS: dict[str, str] = {}
+
+
+def _latest_tag(repo: str) -> str:
+    if repo not in _LATEST_TAGS:
+        if shutil.which("gh") is None:
+            raise RuntimeError(
+                f"resolving @{LATEST} for {repo} needs the GitHub CLI (gh); "
+                "install it and run `gh auth login`, or pin a publish_id"
+            )
+        result = subprocess.run(
+            ["gh", "release", "view", "--repo", repo, "--json", "tagName", "--jq", ".tagName"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            raise RuntimeError(
+                f"could not resolve the latest release of {repo}: "
+                f"{result.stderr.strip() or result.stdout.strip()}"
+            )
+        _LATEST_TAGS[repo] = result.stdout.strip()
+    return _LATEST_TAGS[repo]
 
 
 def _cache_dir(repo: str, tag: str) -> Path:

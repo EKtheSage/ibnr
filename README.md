@@ -61,17 +61,22 @@ publishes). This package never touches raw Schedule P — it consumes only the
 published mart, from either source:
 
 ```python
-# GitHub release (recommended for consumers; needs `gh auth login` once —
-# the repo is private). Downloads ~5 MB to ~/.cache/ibnr, sha256-verified,
+# default — no argument needed: the newest GitHub release of the data repo
+# (needs `gh auth login` once; the repo is private). @latest resolves to a
+# concrete publish_id, downloads ~5 MB to ~/.cache/ibnr, sha256-verified,
 # then reads locally forever after:
+tri = load_schedule_p()
+
+# pin an exact publish (what experiment runs should do):
 tri = load_schedule_p("github://EKtheSage/cas-schedule-p-data-model@20260613_041006")
 
-# local warehouse checkout (producer-side dev):
+# local warehouse checkout (producer-side dev override):
 tri = load_schedule_p("../cas-schedule-p-data-model/warehouse")
 ```
 
-Both forms also work through the `IBNR_SCHEDULE_P_WAREHOUSE` environment
-variable; `IBNR_CACHE_DIR` relocates the release cache. Each data-repo gold
+Resolution order: explicit argument > `IBNR_SCHEDULE_P_WAREHOUSE` environment
+variable (either form) > the `@latest` GitHub release. `IBNR_CACHE_DIR`
+relocates the release cache. Each data-repo gold
 promote is published as an **immutable release tagged with its `publish_id`**
 carrying every gold table plus a `manifest.json` (asset, sha256, bytes) — the
 same `publish_id` the harness scripts stamp into every results CSV, so any

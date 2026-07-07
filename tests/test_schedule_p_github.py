@@ -111,6 +111,30 @@ def test_unknown_table_lists_available(tmp_path, monkeypatch):
         sp.active_mart_path(SPEC, mart="nope")
 
 
+def test_default_source_is_latest_github_release(tmp_path, monkeypatch):
+    make_cache(tmp_path, monkeypatch)
+    forbid_download(monkeypatch)
+    monkeypatch.delenv(sp.ENV_VAR, raising=False)
+    monkeypatch.setattr(sp, "DEFAULT_SOURCE", SPEC)  # concrete tag: no gh needed
+    assert sp.active_publish_id() == TAG
+
+
+def test_latest_resolves_once_then_uses_cache(tmp_path, monkeypatch):
+    make_cache(tmp_path, monkeypatch)
+    forbid_download(monkeypatch)
+    calls = []
+
+    def fake_latest(repo):
+        calls.append(repo)
+        return TAG
+
+    monkeypatch.setattr(sp, "_latest_tag", fake_latest)
+    spec = f"github://{REPO}@latest"
+    assert sp.active_mart_path(spec).name == "mart.parquet"
+    assert sp.active_publish_id(spec) == TAG  # concrete id, never "latest"
+    assert calls == [REPO, REPO]
+
+
 def _gh_authed() -> bool:
     if shutil.which("gh") is None:
         return False

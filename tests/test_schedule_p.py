@@ -1,24 +1,34 @@
-"""Adapter tests against the local CAS Schedule P gold mart. Skipped when the
-sibling cas-schedule-p-data-model repo (or IBNR_SCHEDULE_P_WAREHOUSE) is absent,
-so the package works without the mart."""
+"""Adapter tests against the CAS Schedule P gold mart — resolved exactly like
+production code: env var, else the GitHub release default (with local cache).
+Skipped when no data source is reachable, so the package works without the
+mart."""
 
 import datetime as dt
-import json
 import os
-from pathlib import Path
 
 import pytest
 
-from ibnr.data.schedule_p import active_mart_path, load_schedule_p
+from ibnr.data.schedule_p import DEFAULT_SOURCE, active_mart_path, load_schedule_p
 
-_default = Path(__file__).parents[2] / "cas-schedule-p-data-model" / "warehouse"
-WAREHOUSE = Path(os.environ.get("IBNR_SCHEDULE_P_WAREHOUSE", _default))
+WAREHOUSE = os.environ.get("IBNR_SCHEDULE_P_WAREHOUSE") or DEFAULT_SOURCE
+
+
+def mart_available() -> bool:
+    """True when the configured data source (local warehouse or GitHub
+    release) is reachable; the release path downloads once into the cache."""
+    try:
+        return active_mart_path(WAREHOUSE).exists()
+    except Exception:
+        return False
+
+
+MART_AVAILABLE = mart_available()
 
 pytestmark = [
     pytest.mark.mart,
     pytest.mark.skipif(
-        not (WAREHOUSE / "_active_manifest.json").exists(),
-        reason="CAS Schedule P gold mart not available",
+        not MART_AVAILABLE,
+        reason="CAS Schedule P gold mart not reachable (no local warehouse, no gh release access)",
     ),
 ]
 
@@ -58,8 +68,7 @@ def test_paid_triangle_ties_to_wide_mart():
     """Our pivot of the training mart must equal the published wide paid mart."""
     import duckdb
 
-    manifest = json.loads((WAREHOUSE / "_active_manifest.json").read_text())
-    wide_path = WAREHOUSE.parent / manifest["tables"]["mart_paid_loss_triangle"]
+    wide_path = active_mart_path(WAREHOUSE, mart="mart_paid_loss_triangle")
     ref = (
         duckdb.sql(
             f"select * from read_parquet('{wide_path.as_posix()}') "

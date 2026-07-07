@@ -60,9 +60,9 @@ Each gallery model dir contains: `card.md`, `model.stan`, `model_numpyro.py`, `m
 * CI matrix runs core and each extra in isolation to catch hidden imports.
 * Interop is sacred: `Triangle.from_chainladder/to_chainladder`, `from_bermuda/to_bermuda` must round-trip losslessly.
 
-## Related local project (data source)
+## Related project (data source)
 
-`C:\Users\EthanKang\Projects\cas-schedule-p-data-model` — Ethan's CAS Schedule P database, medallion architecture, gold mart ready.
+`https://github.com/EKtheSage/cas-schedule-p-data-model` (local checkout at `C:\Users\EthanKang\Projects\cas-schedule-p-data-model`) — Ethan's CAS Schedule P database (Data Vault warehouse, versioned gold publishes). **Default consumption is via GitHub releases**: each gold promote is an immutable release tagged with its publish_id; `load_schedule_p()` with no source resolves `github://EKtheSage/cas-schedule-p-data-model@latest` through the gh CLI, caches to `~/.cache/ibnr` (or `IBNR_CACHE_DIR`), sha256-verifies against the release manifest. Local dev works the same way — the warehouse checkout is only an override (`IBNR_SCHEDULE_P_WAREHOUSE` or explicit path), mainly for producer-side pipeline work. Experiment runs should pin a concrete `@publish_id`; the harness scripts stamp it into every results CSV.
 
 Before writing `triangle/core.py` or `data/schedule_p.py`: inspect that repo. Determine storage format (duckdb file / parquet / warehouse), gold table names, column names, grains, and how realized ultimates are represented. Write the Triangle schema and the adapter against the real schema, not assumptions. The data pipeline stays in that repo; this package only consumes its gold mart via config (path/connection string). In-repo test fixtures use public samples (raa, clrd-style) so the package works without the mart.
 

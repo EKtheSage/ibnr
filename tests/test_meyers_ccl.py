@@ -7,7 +7,7 @@ runs only when cmdstan and the local warehouse are both available.
 import numpy as np
 import pytest
 
-from .test_schedule_p import WAREHOUSE
+from .test_schedule_p import MART_AVAILABLE, WAREHOUSE
 
 pytestmark = [pytest.mark.slow, pytest.mark.mart]
 
@@ -24,7 +24,7 @@ def _cmdstan_ready() -> bool:
 
 pytestmark.append(
     pytest.mark.skipif(
-        not (WAREHOUSE / "_active_manifest.json").exists() or not _cmdstan_ready(),
+        not MART_AVAILABLE or not _cmdstan_ready(),
         reason="needs the Schedule P gold mart and a cmdstan installation",
     )
 )

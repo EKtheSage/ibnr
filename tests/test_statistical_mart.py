@@ -11,13 +11,13 @@ import pytest
 
 from ibnr.data.schedule_p import active_mart_path, load_schedule_p
 
-from .test_schedule_p import WAREHOUSE
+from .test_schedule_p import MART_AVAILABLE, WAREHOUSE
 
 pytestmark = [
     pytest.mark.mart,
     pytest.mark.skipif(
-        not (WAREHOUSE / "_active_manifest.json").exists(),
-        reason="CAS Schedule P gold mart not available",
+        not MART_AVAILABLE,
+        reason="CAS Schedule P gold mart not reachable",
     ),
 ]
 

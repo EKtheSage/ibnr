@@ -239,7 +239,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--warehouse", type=Path, default=DEFAULT_WAREHOUSE)
+    ap.add_argument(
+        "--warehouse",
+        default=DEFAULT_WAREHOUSE,
+        help="local warehouse path or github://owner/repo@publish_id "
+        "(default: the latest GitHub release)",
+    )
     ap.add_argument("--lines", nargs="+", default=MEYERS_LINES, choices=MEYERS_LINES)
     ap.add_argument("--per-line", type=int, default=0, help="cap companies (0 = all passing)")
     ap.add_argument(

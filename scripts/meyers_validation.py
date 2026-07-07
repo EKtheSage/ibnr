@@ -30,7 +30,9 @@ from ibnr import gallery
 from ibnr.data.schedule_p import active_mart_path, load_schedule_p
 from ibnr.kernels.calibration import ks_uniformity
 
-DEFAULT_WAREHOUSE = Path(__file__).parents[1].parent / "cas-schedule-p-data-model" / "warehouse"
+# None falls through to ibnr's resolution: IBNR_SCHEDULE_P_WAREHOUSE env var,
+# else the GitHub release default (github://...@latest, cached locally).
+DEFAULT_WAREHOUSE = None
 
 MEYERS_LINES = [
     "commercial_auto",
@@ -157,7 +159,12 @@ def run_line(
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--warehouse", type=Path, default=DEFAULT_WAREHOUSE)
+    ap.add_argument(
+        "--warehouse",
+        default=DEFAULT_WAREHOUSE,
+        help="local warehouse path or github://owner/repo@publish_id "
+        "(default: the latest GitHub release)",
+    )
     ap.add_argument("--lines", nargs="+", default=MEYERS_LINES, choices=MEYERS_LINES)
     ap.add_argument("--per-line", type=int, default=50)
     ap.add_argument("--chains", type=int, default=4)
