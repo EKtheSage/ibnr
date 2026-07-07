@@ -31,17 +31,23 @@ _active_manifest.json              kernels: CRPS, PIT/KS, contracts       R/ggpl
   figures, and paper-specific experiment configuration. It runs experiments
   *through* ibnr and typesets *from* the artifacts.
 
-## Contract 1 — data → modeling (already in place)
+## Contract 1 — data → modeling (in place, both transports)
 
-`ibnr.data.schedule_p.load_schedule_p()` resolves the warehouse via the
-`IBNR_SCHEDULE_P_WAREHOUSE` env var or an explicit path (default: the sibling
-checkout), reads `_active_manifest.json`, and adapts the mart to the
-`Triangle` schema. Mart-dependent tests auto-skip without it.
+`ibnr.data.schedule_p.load_schedule_p()` accepts (directly or via
+`IBNR_SCHEDULE_P_WAREHOUSE`):
 
-**Proposed hardening for reproducibility:** the harness scripts should stamp
-the mart publish version (from the manifest) into every results CSV, so any
-figure in the paper traces to an exact data publish. (Small change to
-`scripts/compare_gallery.py` / `meyers_validation.py`.)
+- a **local warehouse path** (producer-side dev: the sibling checkout, active
+  publish resolved through `_active_manifest.json`);
+- a **GitHub release spec** `github://EKtheSage/cas-schedule-p-data-model@<publish_id>`
+  (consumer side: the data repo publishes each gold promote as an immutable
+  release tagged with its publish_id via `pipeline/release.py`; ibnr fetches
+  through the authenticated `gh` CLI into `~/.cache/ibnr`, verifies sha256
+  against the release `manifest.json`, and reads locally thereafter).
+
+The harness scripts stamp `mart_publish_id` into every results CSV, so any
+figure in the paper traces to an exact data publish. Marco needs neither the
+vault pipeline nor a warehouse clone — `gh auth login` plus the ~5 MB release
+download is the entire data dependency.
 
 ## Contract 2 — modeling → manuscript (the proposal)
 
@@ -120,10 +126,14 @@ parallel implementation maintained by hand.
 
 ## Concrete next actions
 
-1. `git init` + GitHub push of this repo; tag `v0.1.0`.
-2. Add mart-version stamping to the harness CSVs (one small PR here).
-3. Scaffold `experiments/` + `results/` in `transformers_reserving`; port the
+1. ~~`git init` + GitHub push of this repo; tag `v0.1.0`.~~ **Done 2026-07-07**
+   (https://github.com/EKtheSage/probabilistic-ml-reserving).
+2. ~~Add mart-version stamping to the harness CSVs.~~ **Done.**
+3. ~~Data releases + `github://` consumption.~~ **Done**: data repo publishes
+   gold promotes as releases (`pipeline/release.py`); ibnr consumes them via
+   `load_schedule_p("github://EKtheSage/cas-schedule-p-data-model@<publish_id>")`.
+4. Scaffold `experiments/` + `results/` in `transformers_reserving`; port the
    first experiment (the four-way paid-loss backtest) as `run_backtest.py`
-   with a config file; commit its CSV.
-4. Re-point one existing ggplot figure (model comparison) at the CSV as the
+   with a config file pinning the ibnr commit + mart publish_id; commit its CSV.
+5. Re-point one existing ggplot figure (model comparison) at the CSV as the
    proof of the pipeline; then migrate the rest.

@@ -15,15 +15,27 @@ Note: the mart's ``incurred_loss`` is gross of bulk+IBNR and its
 derives ``reported_loss`` = incurred_loss - bulk_loss (paid + true case),
 which is what Meyers' monograph calls "incurred".
 
-Physical storage is parquet under ``warehouse/`` with the active publish chosen
-by ``warehouse/_active_manifest.json``. Point this adapter at the warehouse
-directory (or set the IBNR_SCHEDULE_P_WAREHOUSE environment variable).
+Two ways to point this adapter at data (either directly or via the
+IBNR_SCHEDULE_P_WAREHOUSE environment variable):
+
+1. a local warehouse directory — parquet under ``warehouse/`` with the active
+   publish chosen by ``warehouse/_active_manifest.json`` (the sibling checkout
+   of cas-schedule-p-data-model);
+2. a GitHub release spec ``github://<owner>/<repo>@<publish_id>`` — the data
+   repo publishes each gold promote as a release tagged with its publish_id,
+   carrying every gold table plus a ``manifest.json`` (asset name, sha256,
+   bytes per table). Assets are downloaded once via the ``gh`` CLI (which
+   supplies auth for the private repo) into a local cache
+   (``~/.cache/ibnr`` or IBNR_CACHE_DIR), sha256-verified, then read locally.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import ibis
@@ -32,6 +44,8 @@ from ibnr.triangle.core import Triangle
 from ibnr.triangle.io import from_long, resolve_backend
 
 ENV_VAR = "IBNR_SCHEDULE_P_WAREHOUSE"
+CACHE_ENV_VAR = "IBNR_CACHE_DIR"
+GITHUB_SCHEME = "github://"
 TRAINING_MART = "mart_reserving_model_training"
 
 #: mart column -> triangle field name. Loss fields are cumulative; premiums,
@@ -55,8 +69,14 @@ SEGMENTS = ["company_code", "company_name", "line_of_business"]
 
 
 def active_mart_path(warehouse: str | Path | None = None, mart: str = TRAINING_MART) -> Path:
-    """Resolve a mart's parquet path from the warehouse's active-publish manifest."""
-    warehouse = _resolve_warehouse(warehouse)
+    """Resolve a mart's parquet path — from a local warehouse's active-publish
+    manifest, or from a cached (downloading if needed) GitHub release when
+    ``warehouse`` is a ``github://owner/repo@publish_id`` spec."""
+    source = _resolve_source(warehouse)
+    if _is_github_spec(source):
+        repo, tag = _parse_github_spec(str(source))
+        return _release_asset(repo, tag, mart)
+    warehouse = Path(source)
     manifest = json.loads((warehouse / "_active_manifest.json").read_text())
     rel = Path(manifest["tables"][mart])
     # manifest paths are relative to the data-model repo root ("warehouse\...")
@@ -64,22 +84,123 @@ def active_mart_path(warehouse: str | Path | None = None, mart: str = TRAINING_M
 
 
 def active_publish_id(warehouse: str | Path | None = None) -> str:
-    """The active gold publish's version stamp — stamp this into every
-    results artifact so figures trace back to an exact data publish."""
-    warehouse = _resolve_warehouse(warehouse)
+    """The gold publish's version stamp — stamp this into every results
+    artifact so figures trace back to an exact data publish."""
+    source = _resolve_source(warehouse)
+    if _is_github_spec(source):
+        repo, tag = _parse_github_spec(str(source))
+        manifest, _ = _release_manifest(repo, tag)
+        return str(manifest["publish_id"])
+    warehouse = Path(source)
     manifest = json.loads((warehouse / "_active_manifest.json").read_text())
     return str(manifest["publish_id"])
 
 
-def _resolve_warehouse(warehouse: str | Path | None) -> Path:
+def _resolve_source(warehouse: str | Path | None) -> str | Path:
     if warehouse is None:
         warehouse = os.environ.get(ENV_VAR)
         if warehouse is None:
             raise ValueError(
-                f"no warehouse path given and {ENV_VAR} is not set; "
-                "point at the cas-schedule-p-data-model warehouse directory"
+                f"no warehouse given and {ENV_VAR} is not set; point at the "
+                "cas-schedule-p-data-model warehouse directory or a "
+                f"{GITHUB_SCHEME}owner/repo@publish_id release spec"
             )
-    return Path(warehouse)
+    return warehouse
+
+
+# -- GitHub release consumption ---------------------------------------------------
+#
+# The data repo publishes each gold promote as an immutable release tagged with
+# its publish_id; assets are the gold tables plus manifest.json. We download
+# through the gh CLI (it carries auth for the private repo), cache per
+# (repo, publish_id), and verify sha256 against the manifest.
+
+
+def _is_github_spec(source: str | Path) -> bool:
+    return isinstance(source, str) and source.startswith(GITHUB_SCHEME)
+
+
+def _parse_github_spec(spec: str) -> tuple[str, str]:
+    """``github://owner/repo@publish_id`` -> (``owner/repo``, ``publish_id``)."""
+    body = spec[len(GITHUB_SCHEME) :]
+    repo, _, tag = body.partition("@")
+    if not tag or repo.count("/") != 1 or not all(repo.split("/")):
+        raise ValueError(
+            f"bad GitHub release spec {spec!r}; expected {GITHUB_SCHEME}owner/repo@publish_id"
+        )
+    return repo, tag
+
+
+def _cache_dir(repo: str, tag: str) -> Path:
+    root = os.environ.get(CACHE_ENV_VAR)
+    root = Path(root) if root else Path.home() / ".cache" / "ibnr"
+    return root / repo.replace("/", "__") / tag
+
+
+def _gh_download(repo: str, tag: str, pattern: str, dest: Path) -> None:
+    if shutil.which("gh") is None:
+        raise RuntimeError(
+            "the GitHub CLI (gh) is required to fetch data releases from the "
+            f"private {repo} repo; install it and run `gh auth login`"
+        )
+    dest.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        [
+            "gh",
+            "release",
+            "download",
+            tag,
+            "--repo",
+            repo,
+            "--pattern",
+            pattern,
+            "--dir",
+            str(dest),
+            "--clobber",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"gh release download failed for {repo}@{tag} ({pattern}): "
+            f"{result.stderr.strip() or result.stdout.strip()}"
+        )
+
+
+def _release_manifest(repo: str, tag: str) -> tuple[dict, Path]:
+    cache = _cache_dir(repo, tag)
+    path = cache / "manifest.json"
+    if not path.exists():
+        _gh_download(repo, tag, "manifest.json", cache)
+    manifest = json.loads(path.read_text())
+    if str(manifest["publish_id"]) != tag:
+        raise ValueError(
+            f"release {repo}@{tag} carries manifest for publish "
+            f"{manifest['publish_id']!r} — publishes are immutable, refusing to mix"
+        )
+    return manifest, cache
+
+
+def _release_asset(repo: str, tag: str, table: str) -> Path:
+    manifest, cache = _release_manifest(repo, tag)
+    try:
+        entry = manifest["tables"][table]
+    except KeyError:
+        raise KeyError(
+            f"release {repo}@{tag} has no table {table!r}; available: {sorted(manifest['tables'])}"
+        ) from None
+    path = cache / entry["asset"]
+    if not path.exists() or path.stat().st_size != int(entry["bytes"]):
+        _gh_download(repo, tag, entry["asset"], cache)
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest != entry["sha256"]:
+            path.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"sha256 mismatch for {entry['asset']} from {repo}@{tag}: "
+                f"got {digest}, manifest says {entry['sha256']}"
+            )
+    return path
 
 
 def load_schedule_p(

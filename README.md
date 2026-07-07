@@ -55,24 +55,35 @@ calibration + CRPS on the Meyers retrospective protocol). See
 ## Data: the CAS Schedule P gold mart
 
 Real-data fitting and the `-m mart` tests read the **gold mart published by
-the sibling [`cas-schedule-p-data-model`](../cas-schedule-p-data-model)
-repository** (Ethan's CAS Schedule P database; Data Vault warehouse with
-versioned gold publishes). This package never touches raw Schedule P — it
-consumes only the published mart, resolved as:
+[`cas-schedule-p-data-model`](https://github.com/EKtheSage/cas-schedule-p-data-model)**
+(Ethan's CAS Schedule P database; Data Vault warehouse with versioned gold
+publishes). This package never touches raw Schedule P — it consumes only the
+published mart, from either source:
 
-1. `IBNR_SCHEDULE_P_WAREHOUSE` environment variable, or an explicit
-   `load_schedule_p(warehouse=...)` path — pointing at the warehouse
-   directory;
-2. default: `../cas-schedule-p-data-model/warehouse` next to this repo.
+```python
+# GitHub release (recommended for consumers; needs `gh auth login` once —
+# the repo is private). Downloads ~5 MB to ~/.cache/ibnr, sha256-verified,
+# then reads locally forever after:
+tri = load_schedule_p("github://EKtheSage/cas-schedule-p-data-model@20260613_041006")
 
-Inside the warehouse, `_active_manifest.json` names the active versioned
-parquet publish (`mart_reserving_model_training`: 150+ companies × 4 Schedule
-P lines, accident years 1988–1997, dev ages 1–10, USD thousands; fields
-`cum_paid_loss`, `incurred_loss`, `bulk_loss`, `earned_prem_net/direct`, with
-`reported_loss = incurred − bulk` derived by the adapter). See
-`src/ibnr/data/schedule_p.py`. Everything mart-dependent auto-skips when the
-warehouse is absent — the package and its test suite work standalone on the
-public raa/clrd samples.
+# local warehouse checkout (producer-side dev):
+tri = load_schedule_p("../cas-schedule-p-data-model/warehouse")
+```
+
+Both forms also work through the `IBNR_SCHEDULE_P_WAREHOUSE` environment
+variable; `IBNR_CACHE_DIR` relocates the release cache. Each data-repo gold
+promote is published as an **immutable release tagged with its `publish_id`**
+carrying every gold table plus a `manifest.json` (asset, sha256, bytes) — the
+same `publish_id` the harness scripts stamp into every results CSV, so any
+figure traces to an exact publish.
+
+The mart of record is `mart_reserving_model_training`: 150+ companies × 4
+Schedule P lines, accident years 1988–1997, dev ages 1–10, USD thousands;
+fields `cum_paid_loss`, `incurred_loss`, `bulk_loss`,
+`earned_prem_net/direct`, with `reported_loss = incurred − bulk` derived by
+the adapter (`src/ibnr/data/schedule_p.py`). Everything mart-dependent
+auto-skips when no data source is available — the package and its test suite
+work standalone on the public raa/clrd samples.
 
 ## Related repositories
 
