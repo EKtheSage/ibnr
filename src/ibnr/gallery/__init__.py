@@ -11,6 +11,7 @@ from ibnr.gallery import statistical as _statistical  # noqa: F401
 from ibnr.gallery.bayesian import meyers_ccl as _meyers_ccl  # noqa: F401
 from ibnr.gallery.entry import GalleryEntry
 from ibnr.gallery.nn import transformer as _nn_transformer  # noqa: F401
+from ibnr.gallery.nn import transformer_ml as _nn_transformer_ml  # noqa: F401
 
 get = _registry.get
 fit = _registry.fit

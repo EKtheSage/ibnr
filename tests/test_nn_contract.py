@@ -154,6 +154,38 @@ def test_nn_data_origin_missing_from_one_cohort(backend_name):
     assert data["latest_cum"][k, 2] == 0.0
 
 
+def test_nn_company_data_regroups_lines(two_cohorts):
+    from ibnr.kernels.nn_contract import nn_company_data
+
+    flat = nn_data(two_cohorts, loss_field="paid_loss", premium_field="earned_premium")
+    data = nn_company_data(two_cohorts, loss_field="paid_loss", premium_field="earned_premium")
+    assert data["x"].shape == (1, 2, 1, 3, 3)
+    assert data["obs_mask"].shape == (1, 2, 3, 3)
+    np.testing.assert_array_equal(data["line_mask"], [[True, True]])
+    assert data["companies"].columns.tolist() == ["company_code"]
+    # regrouping is a pure reshape of the flat contract
+    for li, lob in enumerate(data["lob_levels"]):
+        k = flat["cohorts"]["line_of_business"].tolist().index(lob)
+        np.testing.assert_allclose(data["x"][0, li], flat["x"][k])
+        np.testing.assert_array_equal(data["obs_mask"][0, li], flat["obs_mask"][k])
+        np.testing.assert_allclose(data["latest_cum"][0, li], flat["latest_cum"][k])
+        np.testing.assert_allclose(data["premium"][0, li], flat["premium"][k])
+
+
+def test_nn_company_data_masks_dropped_lines(backend_name):
+    from ibnr.kernels.nn_contract import nn_company_data
+
+    bad_premium = {"lob_a": PREMIUM["lob_a"], "lob_b": np.array([400.0, -1.0, 440.0])}
+    t = make_multiline_triangle(
+        backend_name, {"lob_a": CUM, "lob_b": CUM * 2.0}, premium_by_lob=bad_premium
+    )
+    data = nn_company_data(t, loss_field="paid_loss", premium_field="earned_premium")
+    # lob_b dropped -> absent from the levels entirely (single-company case)
+    assert data["lob_levels"] == ["lob_a"]
+    np.testing.assert_array_equal(data["line_mask"], [[True]])
+    assert data["dropped"]["line_of_business"].tolist() == ["lob_b"]
+
+
 def test_cutoff_masks_partition():
     obs = upper_mask(3, 3)
     cal = np.array([[1, 2, 3], [2, 3, 4], [3, 4, 5]])

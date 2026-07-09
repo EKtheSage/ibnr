@@ -18,11 +18,19 @@ class TriangleTransformer(nn.Module):
     """Encoder over the full origin x dev grid of one cohort.
 
     Every cell is a token: [channel values * context flag, context flag]
-    projected to d_model, plus learned origin / dev / calendar position
-    embeddings and broadcast cohort conditioning (LOB embedding + normalized
+    projected to d_model, plus learned origin / dev embeddings, a *relative*
+    calendar embedding (distance past the conditioning cutoff, clamped to
+    [0, n_d]) and broadcast cohort conditioning (LOB embedding + normalized
     log premium). The MDN head reads a distribution over the *normalized
     incremental loss ratio* of every cell; the loss is evaluated only where
     the target mask says so.
+
+    Why relative, not absolute, calendar position: forecasting happens on
+    calendar diagonals beyond the training window, where an absolute learned
+    embedding never received a gradient. Distance-past-cutoff is supervised
+    directly by the cutoff augmentation, and the autoregressive rollout
+    re-encodes after every sampled diagonal, so inference only ever consumes
+    distance-1 predictions — the most supervised case.
     """
 
     def __init__(
@@ -35,7 +43,7 @@ class TriangleTransformer(nn.Module):
         self.value_proj = nn.Linear(n_features + 1, d)
         self.origin_emb = nn.Embedding(n_w, d)
         self.dev_emb = nn.Embedding(n_d, d)
-        self.cal_emb = nn.Embedding(n_w + n_d - 1, d)
+        self.dist_emb = nn.Embedding(n_d + 1, d)  # distance past cutoff, clamped
         self.lob_emb = nn.Embedding(n_lob, cfg.lob_embedding_dim)
         self.cond_proj = nn.Linear(cfg.lob_embedding_dim + 1, d)
         self.drop = nn.Dropout(cfg.dropout)
@@ -55,6 +63,8 @@ class TriangleTransformer(nn.Module):
         w_idx, d_idx = torch.meshgrid(torch.arange(n_w), torch.arange(n_d), indexing="ij")
         self.register_buffer("w_idx", w_idx.reshape(-1), persistent=False)
         self.register_buffer("d_idx", d_idx.reshape(-1), persistent=False)
+        # 1-based calendar diagonal, matching nn_contract's cal_idx convention
+        self.register_buffer("cal_idx", (w_idx + d_idx + 1).reshape(-1), persistent=False)
 
     def forward(
         self,
@@ -62,6 +72,7 @@ class TriangleTransformer(nn.Module):
         context_mask: torch.Tensor,  # (B, W, D) bool
         lob_idx: torch.Tensor,  # (B,) long
         log_premium: torch.Tensor,  # (B,) normalized
+        cutoff: torch.Tensor,  # (B,) long — 1-based conditioning diagonal
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Returns MDN parameters over every cell:
         log_pi, mu, sigma each (B, W, D, K)."""
@@ -69,12 +80,8 @@ class TriangleTransformer(nn.Module):
         flag = context_mask.unsqueeze(1).to(x.dtype)  # (B, 1, W, D)
         vals = (x * flag).flatten(2).transpose(1, 2)  # (B, T, F)
         tok = self.value_proj(torch.cat([vals, flag.flatten(2).transpose(1, 2)], dim=-1))
-        tok = (
-            tok
-            + self.origin_emb(self.w_idx)
-            + self.dev_emb(self.d_idx)
-            + self.cal_emb(self.w_idx + self.d_idx)
-        )
+        dist = (self.cal_idx[None, :] - cutoff[:, None]).clamp(0, self.n_d)
+        tok = tok + self.origin_emb(self.w_idx) + self.dev_emb(self.d_idx) + self.dist_emb(dist)
         cond = self.cond_proj(torch.cat([self.lob_emb(lob_idx), log_premium.unsqueeze(-1)], -1))
         tok = tok + cond.unsqueeze(1)
         h = self.encoder(self.drop(tok))

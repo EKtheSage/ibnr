@@ -193,6 +193,90 @@ def nn_data(
     }
 
 
+def nn_company_data(
+    triangle: Triangle,
+    *,
+    loss_field: str = "reported_loss",
+    feature_fields: tuple[str, ...] = (),
+    premium_field: str = "earned_premium",
+    segment_columns: tuple[str, ...] | None = None,
+    lob_column: str = "line_of_business",
+) -> dict[str, Any]:
+    """Company-cohort variant of ``nn_data`` for the multi-line transformer.
+
+    A cohort here is one COMPANY; its lines of business become an explicit
+    axis so a model can attend across them (the learned analogue of SUR's
+    contemporaneous correlation / the copula's cell dependence). Built by
+    regrouping ``nn_data``'s (company, line) cohorts — screening, increment
+    and premium rules are identical by construction. Lines a company does
+    not write (or that were dropped) are all-zero and ``line_mask``-ed out.
+
+    Adds over the flat contract:
+    - arrays gain a line axis: ``x`` (n_c, L, F, W, D), ``obs_mask``
+      (n_c, L, W, D), ``premium``/``latest_cum`` (n_c, L, W),
+      ``latest_dev`` (n_c, L, W), ``log_premium`` (n_c, L);
+    - ``line_mask`` (n_c, L) — lines actually present per company;
+    - ``companies`` — one row per company (segment columns minus the LOB).
+    """
+    flat = nn_data(
+        triangle,
+        loss_field=loss_field,
+        feature_fields=feature_fields,
+        premium_field=premium_field,
+        segment_columns=segment_columns,
+    )
+    cohorts = flat["cohorts"]
+    if lob_column not in cohorts.columns:
+        raise ValueError(f"no {lob_column!r} segment column; cannot form a line axis")
+    company_cols = [c for c in cohorts.columns if c != lob_column]
+    if not company_cols:
+        raise ValueError("need at least one company-identifying segment column")
+
+    companies = (
+        cohorts[company_cols].drop_duplicates().sort_values(company_cols).reset_index(drop=True)
+    )
+    row_of = {tuple(r): i for i, r in enumerate(companies.itertuples(index=False))}
+    n_c, n_l = len(companies), len(flat["lob_levels"])
+    _, n_f, n_w, n_d = flat["x"].shape
+
+    x = np.zeros((n_c, n_l, n_f, n_w, n_d))
+    obs = np.zeros((n_c, n_l, n_w, n_d), dtype=bool)
+    premium = np.full((n_c, n_l, n_w), np.nan)
+    log_premium = np.zeros((n_c, n_l))
+    latest_cum = np.zeros((n_c, n_l, n_w))
+    latest_dev = np.zeros((n_c, n_l, n_w), dtype=int)
+    line_mask = np.zeros((n_c, n_l), dtype=bool)
+    for k in range(len(cohorts)):
+        ci = row_of[tuple(cohorts.iloc[k][company_cols])]
+        li = int(flat["lob_idx"][k])
+        x[ci, li] = flat["x"][k]
+        obs[ci, li] = flat["obs_mask"][k]
+        premium[ci, li] = flat["premium"][k]
+        log_premium[ci, li] = flat["log_premium"][k]
+        latest_cum[ci, li] = flat["latest_cum"][k]
+        latest_dev[ci, li] = flat["latest_dev"][k]
+        line_mask[ci, li] = True
+
+    return {
+        "x": x,
+        "obs_mask": obs,
+        "line_mask": line_mask,
+        "cal_idx": flat["cal_idx"],
+        "premium": premium,
+        "log_premium": log_premium,
+        "lob_levels": flat["lob_levels"],
+        "latest_cum": latest_cum,
+        "latest_dev": latest_dev,
+        "companies": companies,
+        "dropped": flat["dropped"],
+        "origin_periods": flat["origin_periods"],
+        "n_w": n_w,
+        "n_d": n_d,
+        "fields": flat["fields"],
+        "dev_grain_months": flat["dev_grain_months"],
+    }
+
+
 def cutoff_masks(
     obs_mask: np.ndarray, cal_idx: np.ndarray, cutoff: int
 ) -> tuple[np.ndarray, np.ndarray]:

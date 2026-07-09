@@ -16,17 +16,35 @@ the cross-cohort normalizer. Inputs may carry extra channels
 (`feature_fields`, e.g. paid alongside reported). Increments require an
 immediate-predecessor observation; the anchor for ultimates is each origin's
 latest observed *cumulative* value. Cohorts with unusable premium are dropped
-and reported. Per-(channel, dev) normalization statistics are computed from
-training-context cells only (never the validation diagonals).
+and reported. Per-(channel, dev) standardization statistics are computed from
+training-context cells only (never the validation diagonals). Devs with
+fewer than two context values — in practice the deepest dev, observed only
+on the held-out diagonal — are **pinned**: their standardized value is 0 by
+definition (mean from all observed cells at that dev, std 1), and rollout
+draws there are forced to 0, i.e. the pooled dev mean. Pinning replaced the
+original inherit-earlier-dev-stats scheme, which denormalized tail cells at
+mid-development magnitudes and systematically overstated fast-decaying
+tails (worst for PPA in the first backtest).
 
 ## Network
 
 Token = `Linear([channel values * flag, flag])` + origin embedding + dev
-embedding + calendar embedding + broadcast conditioning (LOB embedding +
+embedding + **relative calendar embedding** (distance past the conditioning
+cutoff, clamped to [0, n_d]) + broadcast conditioning (LOB embedding +
 normalized log premium). Encoder: 2 pre-LN transformer layers, d_model 64,
 4 heads, FFN 128, dropout 0.15, GELU (~120k parameters). Head: mixture
 density network, K=3 Gaussians per cell on the normalized incremental
 loss-ratio scale.
+
+**Why the calendar embedding is relative (v3):** forecasts live on calendar
+diagonals beyond the training window, where v1/v2's absolute learned
+calendar embedding never received a gradient — untrained parameters injected
+exactly at prediction cells. Distance-past-cutoff is supervised directly by
+the cutoff augmentation, and because the rollout re-encodes after each
+sampled diagonal, inference only ever consumes distance-1 predictions — the
+most supervised case. The trade-off, disclosed: absolute calendar-year
+(inflation) effects are no longer explicitly encoded and must be inferred
+from context values.
 
 **Why an MDN head:**
 - lognormal heads fail outright — net-of-bulk incremental losses go negative

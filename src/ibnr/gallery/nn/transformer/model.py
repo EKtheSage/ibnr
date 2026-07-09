@@ -46,32 +46,33 @@ def _splits(
     return context_eligible, val_target, val_cutoff
 
 
-def _norm_stats(x: np.ndarray, cells: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Per-(channel, dev) mean/std over the given cells ONLY — validation
-    diagonals must not leak through the normalizer.
+def _norm_stats(
+    x: np.ndarray, cells: np.ndarray, obs: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per-(channel, dev) mean/std over training-context ``cells`` — the
+    validation diagonals must not leak through the normalizer.
 
-    Devs with fewer than two cells (or zero spread) inherit the nearest
-    EARLIER dev's stats, not the channel's global stats: the deepest dev may
-    appear only on the held-out diagonal, and development is smooth in dev,
-    so the previous lag's scale is the sane prior — global stats would
-    denormalize a tail cell at first-diagonal magnitudes."""
+    Devs with fewer than two context values (or zero spread) — in practice
+    the deepest dev, whose only observations sit on the held-out validation
+    diagonal — are *pinned*: their standardized values are defined as 0, so
+    unstandardizing a prediction there returns the pooled dev mean rather
+    than a value denormalized at an earlier dev's magnitude (the old
+    inherit-earlier-stats scheme, which overstated fast-decaying tails).
+    A pinned dev's mean falls back to all ``obs`` cells at that dev — the
+    only data that exists there; std is fixed at 1."""
     _, n_f, _, n_d = x.shape
     mean, std = np.zeros((n_f, n_d)), np.ones((n_f, n_d))
+    pinned = np.zeros((n_f, n_d), dtype=bool)
     for f in range(n_f):
-        pooled = x[:, f][cells]
-        g_mean = float(pooled.mean()) if pooled.size else 0.0
-        g_std = float(pooled.std()) if pooled.size else 1.0
-        if not np.isfinite(g_std) or g_std < 1e-8:
-            g_std = 1.0
-        prev: tuple[float, float] | None = None
         for d in range(n_d):
             vals = x[:, f, :, d][cells[:, :, d]]
             if vals.size >= 2 and float(vals.std()) > 1e-8:
-                prev = (float(vals.mean()), float(vals.std()))
-                mean[f, d], std[f, d] = prev
+                mean[f, d], std[f, d] = float(vals.mean()), float(vals.std())
             else:
-                mean[f, d], std[f, d] = prev if prev is not None else (g_mean, g_std)
-    return mean, std
+                fallback = x[:, f, :, d][obs[:, :, d]]
+                mean[f, d] = float(fallback.mean()) if fallback.size else 0.0
+                pinned[f, d] = True
+    return mean, std, pinned
 
 
 @register
@@ -127,14 +128,21 @@ class NNTransformer(GalleryEntry):
         context_elig, val_target, val_cutoff = _splits(
             c["obs_mask"], c["cal_idx"], cfg.val_diagonals
         )
-        mean, std = _norm_stats(c["x"], context_elig)
+        mean, std, pinned = _norm_stats(c["x"], context_elig, c["obs_mask"])
         prem_mean = float(np.mean(c["log_premium"]))
         prem_std = float(np.std(c["log_premium"]))
         if prem_std < 1e-8:
             prem_std = 1.0
-        self.norm_ = {"mean": mean, "std": std, "prem_mean": prem_mean, "prem_std": prem_std}
+        self.norm_ = {
+            "mean": mean,
+            "std": std,
+            "pinned": pinned,
+            "prem_mean": prem_mean,
+            "prem_std": prem_std,
+        }
 
         x_norm = (c["x"] - mean[None, :, None, :]) / std[None, :, None, :]
+        x_norm = np.where(pinned[None, :, None, :], 0.0, x_norm)
         dev = torch.device(self._device)
         xt = torch.tensor(x_norm, dtype=torch.float32, device=dev)
         yt = xt[:, 0]  # target channel, normalized
@@ -174,7 +182,7 @@ class NNTransformer(GalleryEntry):
                     tgt = ctx_elig_t[idx] & (cal_t[None] > cutoffs[:, None, None])
                     if not bool(tgt.any()):
                         continue
-                    log_pi, mu, sigma = model(xt[idx], ctx, lob_t[idx], prem_t[idx])
+                    log_pi, mu, sigma = model(xt[idx], ctx, lob_t[idx], prem_t[idx], cutoffs)
                     loss = net.mdn_nll(log_pi, mu, sigma, yt[idx], tgt)
                     opt.zero_grad()
                     loss.backward()
@@ -185,7 +193,8 @@ class NNTransformer(GalleryEntry):
 
                 model.eval()
                 with torch.no_grad():
-                    log_pi, mu, sigma = model(xt, ctx_elig_t, lob_t, prem_t)
+                    val_cut = torch.full((n_c,), val_cutoff, dtype=torch.long, device=dev)
+                    log_pi, mu, sigma = model(xt, ctx_elig_t, lob_t, prem_t, val_cut)
                     val_loss = float(net.mdn_nll(log_pi, mu, sigma, yt, val_tgt_t))
                 history.append(
                     {"epoch": epoch, "train": epoch_loss / max(n_batches, 1), "val": val_loss}
@@ -309,7 +318,11 @@ class NNTransformer(GalleryEntry):
         x_norm = (c["x"] - self.norm_["mean"][None, :, None, :]) / self.norm_["std"][
             None, :, None, :
         ]
+        x_norm = np.where(self.norm_["pinned"][None, :, None, :], 0.0, x_norm)
         prem_norm = (c["log_premium"] - self.norm_["prem_mean"]) / self.norm_["prem_std"]
+        # pinned devs have no trained head: their standardized value is 0 by
+        # definition, so sampled draws are forced to 0 -> pooled dev mean
+        pin_t = torch.tensor(self.norm_["pinned"][0], device=dev)
         xt = torch.tensor(x_norm, dtype=torch.float32, device=dev)
         obs_t = torch.tensor(c["obs_mask"], device=dev)
         fut_t = torch.tensor(future, device=dev)
@@ -342,8 +355,14 @@ class NNTransformer(GalleryEntry):
                         cells = futb & (cal_t[None] == lv)
                         if not bool(cells.any()):
                             continue
-                        log_pi, mu, sigma = model(xb, ctx, lobb, premb)
+                        # context boundary advances with each sampled diagonal,
+                        # so the predicted diagonal always sits at distance 1
+                        cut_b = torch.full(
+                            (xb.shape[0],), int(lv) - 1, dtype=torch.long, device=dev
+                        )
+                        log_pi, mu, sigma = model(xb, ctx, lobb, premb, cut_b)
                         sample = net.mdn_sample(log_pi, mu, sigma, generator=gen)
+                        sample = sample.masked_fill(pin_t[None, None, :], 0.0)
                         xb[:, 0][cells] = sample[cells]
                         ctx = ctx | cells
                 ratios = xb[:, 0].cpu().numpy() * std0[None, None, :] + mean0[None, None, :]

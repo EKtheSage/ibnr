@@ -5,17 +5,24 @@ baselines (sur, copula_glm) — and optionally meyers_ccl — on the Meyers
 retrospective protocol: train as of 1997-12-31, score realized ultimates,
 report outcome percentiles (KS uniformity) and CRPS per model.
 
-Company set: companies passing the monograph's Table A.1 screens on EVERY
-requested line (the multiline models need all lines at once), so every model
-is scored on the identical (company, line) pairs. The headline field is
-paid_loss — the copula's lognormal marginals cannot take the negative late
-increments of reported losses.
+Company set: companies passing the monograph's Table A.1 screens on AT
+LEAST TWO requested lines, each scored on exactly its passing lines — the
+same (company, line) pairs for every model, including the transformer's
+training pool (no monoline data anywhere; Ethan's comparability rule). The
+headline field is paid_loss — the copula's lognormal marginals cannot take
+the negative late increments of reported losses.
 
 Fit shapes per model:
-  sur, copula_glm   one fit per company (all lines jointly)
-  nn_transformer    ONE pooled fit on every company x line in the mart,
+  sur, copula_glm   one fit per company (its screened lines jointly)
+  nn_transformer    ONE pooled fit on the screened (company, line) pairs,
                     then per-(company, line) segment predicts
   meyers_ccl        one cmdstan fit per company x line (slow; opt-in)
+  chain_ladder      volume-weighted CL point estimate per (company, line) —
+                    the distribution-free skill benchmark (always included)
+
+Every row carries `anchor` (loss-to-date at the as_of date) and `premium`
+(line premium), so downstream analysis can score on the RESERVE basis:
+ultimate errors flatter models for data they merely copied forward.
 
 Usage:
     uv run python scripts/compare_gallery.py --per-line 5           # wiring check
@@ -43,18 +50,44 @@ from ibnr.kernels.calibration import ks_uniformity  # noqa: E402
 from ibnr.kernels.scores import crps  # noqa: E402
 
 FAST_MODELS = ["sur", "copula_glm", "nn_transformer"]
+ML_MODELS = ["nn_ml_ar", "nn_ml_joint"]
 
 
-def multiline_company_set(mart: Path, lines: list[str], per_line: int) -> list[str]:
-    """Companies passing the Table A.1 screens on every requested line."""
-    sets = []
+def screened_company_lines(
+    mart: Path, lines: list[str], per_line: int
+) -> tuple[dict[str, list[str]], dict[str, list[tuple[str, str]]]]:
+    """(scored, pools).
+
+    scored: company -> its screen-passing lines, for companies passing the
+    Table A.1 screens on >=2 requested lines; every model scores exactly
+    these (company, line) pairs. ``per_line`` caps the number of companies
+    (wiring checks), 0 = all.
+
+    pools: (company, line) training-pair pools for the transformer —
+    "multiline" (the scored pairs; the default and the comparability rule),
+    "screened" (>=1 passing line, i.e. + monoline companies; for comparison runs only).
+    """
+    sets: dict[str, set[str]] = {}
     for line in lines:
         selected = select_companies(mart, line, per_line=10_000)  # screen, don't cap yet
-        sets.append(set(selected["company_code"]))
+        sets[line] = set(selected["company_code"])
         print(f"  {line}: {len(selected)} companies pass the screens", flush=True)
-    common = sorted(set.intersection(*sets))
-    print(f"  intersection across {len(lines)} lines: {len(common)} companies", flush=True)
-    return common[:per_line] if per_line else common
+    by_company: dict[str, list[str]] = {}
+    for line in lines:  # keep the requested line order within each company
+        for code in sets[line]:
+            by_company.setdefault(code, []).append(line)
+    scored = {c: ls for c, ls in sorted(by_company.items()) if len(ls) >= 2}
+    if per_line:
+        scored = dict(list(scored.items())[:per_line])
+    multiline_pairs = [(c, ln) for c, ls in scored.items() for ln in ls]
+    screened_pairs = [(c, ln) for c, ls in sorted(by_company.items()) for ln in ls]
+    print(
+        f"  scored: {len(scored)} companies with >=2 passing lines "
+        f"({len(multiline_pairs)} pairs); screened pool adds "
+        f"{len(screened_pairs) - len(multiline_pairs)} monoline pairs",
+        flush=True,
+    )
+    return scored, {"multiline": multiline_pairs, "screened": screened_pairs}
 
 
 def line_total_rows(pred, realized, label_map: dict[str, str]) -> dict[str, dict]:
@@ -77,10 +110,90 @@ def line_total_rows(pred, realized, label_map: dict[str, str]) -> dict[str, dict
     return out
 
 
-def run_multiline_model(model: str, tri_all, companies, lines, args) -> list[dict]:
+def point_context(tri_all, scored, args) -> tuple[list[dict], dict, dict]:
+    """(chain_ladder rows, anchors, premiums) for the scored pairs.
+
+    anchor = loss-to-date at the as_of date (sum of each origin's latest
+    observed cumulative in the training slice); premium = line premium.
+    chain_ladder = volume-weighted CL point ultimate — the distribution-free
+    skill benchmark every model is measured against. Keys are
+    (company, line) plus (company, "ALL") sums.
+    """
+    train = tri_all.as_of(args.as_of)
+    cum = train.select_fields(args.loss_field).execute()
+    prem = train.select_fields("earned_premium").latest_diagonal().execute()
+    full = tri_all.select_fields(args.loss_field).execute()
+    n_d_months = int(full["dev_lag"].max())
+
+    anchors: dict[tuple[str, str], float] = {}
+    premiums: dict[tuple[str, str], float] = {}
+    rows: list[dict] = []
+    for code, lines_c in scored.items():
+        cl_total, anchor_total, outcome_total, prem_total = 0.0, 0.0, 0.0, 0.0
+        for line in lines_c:
+            sub = cum[(cum["company_code"] == code) & (cum["line_of_business"] == line)]
+            grid = sub.pivot_table(
+                index="origin_period", columns="dev_lag", values="value"
+            ).sort_index()
+            devs = sorted(grid.columns)
+            # volume-weighted development factors over overlapping origins
+            factors = {}
+            for a, b in zip(devs[:-1], devs[1:], strict=True):
+                both = grid[[a, b]].dropna()
+                factors[a] = float(both[b].sum() / both[a].sum()) if len(both) else 1.0
+            est = 0.0
+            anchor = 0.0
+            for _, r in grid.iterrows():
+                obs = r.dropna()
+                latest_dev, latest = obs.index[-1], float(obs.iloc[-1])
+                anchor += latest
+                for d in devs[devs.index(latest_dev) : -1]:
+                    latest *= factors[d]
+                est += latest
+            f_sub = full[
+                (full["company_code"] == code)
+                & (full["line_of_business"] == line)
+                & (full["dev_lag"] == n_d_months)
+                # the mart carries origins beyond the study window; outcomes
+                # are only the training slice's origins (same as the models)
+                & full["origin_period"].isin(grid.index)
+            ]
+            outcome = float(f_sub["value"].sum())
+            p_sub = prem[(prem["company_code"] == code) & (prem["line_of_business"] == line)]
+            line_prem = float(p_sub["value"].sum())
+            anchors[(code, line)] = anchor
+            premiums[(code, line)] = line_prem
+            rows.append(
+                {
+                    "model": "chain_ladder",
+                    "line": line,
+                    "company_code": code,
+                    "estimate": est,
+                    "outcome": outcome,
+                }
+            )
+            cl_total += est
+            anchor_total += anchor
+            outcome_total += outcome
+            prem_total += line_prem
+        anchors[(code, "ALL")] = anchor_total
+        premiums[(code, "ALL")] = prem_total
+        rows.append(
+            {
+                "model": "chain_ladder",
+                "line": "ALL",
+                "company_code": code,
+                "estimate": cl_total,
+                "outcome": outcome_total,
+            }
+        )
+    return rows, anchors, premiums
+
+
+def run_multiline_model(model: str, tri_all, scored, args) -> list[dict]:
     rows = []
-    for i, code in enumerate(companies, 1):
-        tri = tri_all.filter(ibis._.company_code == code)
+    for i, (code, lines_c) in enumerate(scored.items(), 1):
+        tri = tri_all.filter((ibis._.company_code == code) & ibis._.line_of_business.isin(lines_c))
         t0 = time.perf_counter()
         try:
             extra = {"nonpositive": args.copula_nonpositive} if model == "copula_glm" else {}
@@ -104,7 +217,7 @@ def run_multiline_model(model: str, tri_all, companies, lines, args) -> list[dic
                 print(f"  {model} {code}: factor marginal unidentified, using hoerl", flush=True)
             pred = entry.predict(n_draws=args.draws, seed=args.seed)
             realized = entry.realized_ultimates(tri)
-            labels = {line: f"{line}/total" for line in lines} | {"ALL": "total"}
+            labels = {line: f"{line}/total" for line in lines_c} | {"ALL": "total"}
             per_label = line_total_rows(pred, realized, labels)
             secs = time.perf_counter() - t0
             for key, vals in per_label.items():
@@ -112,21 +225,35 @@ def run_multiline_model(model: str, tri_all, companies, lines, args) -> list[dic
                     {"model": model, "line": key, "company_code": code, **vals, "seconds": secs}
                 )
             print(
-                f"  [{i}/{len(companies)}] {model} {code}: "
+                f"  [{i}/{len(scored)}] {model} {code} ({len(lines_c)} lines): "
                 f"total pct={per_label['ALL']['percentile']:.1f} ({secs:.1f}s)",
                 flush=True,
             )
         except Exception as e:  # keep the study going; record the failure
             rows.append({"model": model, "line": "ALL", "company_code": code, "error": str(e)})
-            print(f"  [{i}/{len(companies)}] {model} {code}: FAILED {e}", flush=True)
+            print(f"  [{i}/{len(scored)}] {model} {code}: FAILED {e}", flush=True)
     return rows
 
 
-def run_transformer(tri_market, companies, lines, args) -> list[dict]:
+def pair_filter(tri, pairs: list[tuple[str, str]]):
+    """Filter a triangle to exact (company, line) pairs via a concat key."""
+    keys = [f"{c}|{ln}" for c, ln in pairs]
+    return tri.filter((ibis._.company_code + "|" + ibis._.line_of_business).isin(keys))
+
+
+def run_transformer(tri_market, scored, pools, args) -> list[dict]:
+    # default pool: exactly the scored (company, line) pairs — the models see
+    # identical cohort data; "screened" (+monoline pairs) and "market" (every
+    # cohort) are alternate pools, run only to measure how much the pool
+    # choice matters. The pinned-dev mean is a pooled statistic, so pool
+    # hygiene is load-bearing.
+    tri_pool = (
+        tri_market if args.nn_pool == "market" else pair_filter(tri_market, pools[args.nn_pool])
+    )
     t0 = time.perf_counter()
     entry = gallery.fit(
         "nn_transformer",
-        tri_market,
+        tri_pool,
         loss_field=args.loss_field,
         feature_fields=tuple(args.nn_features),
         as_of=args.as_of,
@@ -137,8 +264,8 @@ def run_transformer(tri_market, companies, lines, args) -> list[dict]:
     print(f"  nn_transformer: pooled fit on {n_cohorts} cohorts ({fit_secs:.0f}s)", flush=True)
 
     rows = []
-    for line in lines:
-        for code in companies:
+    for code, lines_c in scored.items():
+        for line in lines_c:
             seg = {"company_code": code, "line_of_business": line}
             t1 = time.perf_counter()
             try:
@@ -167,10 +294,60 @@ def run_transformer(tri_market, companies, lines, args) -> list[dict]:
     return rows
 
 
-def run_meyers(tri_by_line, companies, lines, args) -> list[dict]:
+def run_transformer_ml(tri_market, scored, pools, args, dependence: str) -> list[dict]:
+    """The multi-line transformer: one pooled company-level fit (attention
+    across each company's screened lines), then per-company predicts in the
+    SUR layout — per-line totals AND the diversified grand total."""
+    from ibnr.gallery.nn.transformer_ml import TransformerMLConfig
+
+    name = f"nn_ml_{dependence}"
+    tri_pool = (
+        tri_market if args.nn_pool == "market" else pair_filter(tri_market, pools[args.nn_pool])
+    )
+    t0 = time.perf_counter()
+    entry = gallery.fit(
+        "nn_transformer_ml",
+        tri_pool,
+        loss_field=args.loss_field,
+        feature_fields=tuple(args.nn_features),
+        as_of=args.as_of,
+        seed=args.seed,
+        config=TransformerMLConfig(dependence=dependence),
+    )
+    n_companies = len(entry.contract_["companies"])
+    print(
+        f"  {name}: pooled fit on {n_companies} companies ({time.perf_counter() - t0:.0f}s)",
+        flush=True,
+    )
+
+    rows = []
+    for i, (code, lines_c) in enumerate(scored.items(), 1):
+        t1 = time.perf_counter()
+        try:
+            pred = entry.predict(
+                segment={"company_code": code}, n_draws=args.nn_draws, seed=args.seed
+            )
+            realized = entry.realized_ultimates(tri_market, segment={"company_code": code})
+            labels = {line: f"{line}/total" for line in lines_c} | {"ALL": "total"}
+            per_label = line_total_rows(pred, realized, labels)
+            secs = time.perf_counter() - t1
+            for key, vals in per_label.items():
+                rows.append(
+                    {"model": name, "line": key, "company_code": code, **vals, "seconds": secs}
+                )
+            if i % 10 == 0 or i == len(scored):
+                print(f"  [{i}/{len(scored)}] {name} {code}", flush=True)
+        except Exception as e:
+            rows.append({"model": name, "line": "ALL", "company_code": code, "error": str(e)})
+            print(f"  {name} {code}: FAILED {e}", flush=True)
+    return rows
+
+
+def run_meyers(tri_by_line, scored, lines, args) -> list[dict]:
     rows = []
     for line in lines:
-        for i, code in enumerate(companies, 1):
+        codes = [c for c, ls in scored.items() if line in ls]
+        for i, code in enumerate(codes, 1):
             tri = tri_by_line[line].filter(ibis._.company_code == code)
             t0 = time.perf_counter()
             try:
@@ -196,7 +373,7 @@ def run_meyers(tri_by_line, companies, lines, args) -> list[dict]:
                     }
                 )
                 print(
-                    f"  [{i}/{len(companies)}] meyers_ccl {line} {code}: "
+                    f"  [{i}/{len(codes)}] meyers_ccl {line} {code}: "
                     f"pct={per_label[line]['percentile']:.1f}",
                     flush=True,
                 )
@@ -206,6 +383,56 @@ def run_meyers(tri_by_line, companies, lines, args) -> list[dict]:
                 )
                 print(f"  meyers_ccl {line} {code}: FAILED {e}", flush=True)
     return rows
+
+
+def point_summary(df: pd.DataFrame) -> None:
+    """Distribution-free comparison on the RESERVE basis: est/actual reserve
+    = (estimate|outcome) - anchor. Reports error levels, the chain-ladder
+    skill ratio, and paired Wilcoxon tests (all models score identical
+    cells). Premium-normalized MAE is the robust headline — actual reserves
+    can sit near zero (late favorable development), which blows up APEs."""
+    from scipy import stats
+
+    ok = df[df["estimate"].notna() & (df["line"] != "ALL")].copy()
+    ok["res_est"] = ok["estimate"] - ok["anchor"]
+    ok["res_act"] = ok["outcome"] - ok["anchor"]
+    ok["abs_err"] = (ok["res_est"] - ok["res_act"]).abs()
+    ok["err_premium_pct"] = (ok["res_est"] - ok["res_act"]) / ok["premium"] * 100
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ok["res_ape"] = ok["abs_err"] / ok["res_act"].abs()
+
+    print("\n== Point prediction: reserve-basis errors ==")
+    agg = ok.groupby("model").agg(
+        n=("abs_err", "size"),
+        mae_prem_pct=("err_premium_pct", lambda s: s.abs().mean()),
+        bias_prem_pct=("err_premium_pct", "mean"),
+        mdape_reserve=("res_ape", "median"),
+    )
+    # CL skill on the common cells: MAE_model / MAE_chain_ladder
+    cells = ok.pivot_table(index=["line", "company_code"], columns="model", values="abs_err")
+    if "chain_ladder" in cells.columns:
+        agg["cl_skill"] = cells.mean() / cells["chain_ladder"].mean()
+    print(agg.round(3).to_string())
+
+    models = [m for m in cells.columns if m != "chain_ladder"]
+    print("\n== Paired Wilcoxon on |reserve error| (p-values; < means row beats col) ==")
+    order = [*models, *(["chain_ladder"] if "chain_ladder" in cells.columns else [])]
+    for a in order:
+        parts = []
+        for b in order:
+            if a == b:
+                parts.append("      -")
+                continue
+            pair = cells[[a, b]].dropna()
+            diff = pair[a] - pair[b]
+            if len(diff) < 6 or (diff == 0).all():
+                parts.append("     na")
+                continue
+            p = stats.wilcoxon(diff).pvalue
+            marker = "<" if diff.median() < 0 else ">"
+            parts.append(f"{marker}{p:6.3f}")
+        print(f"  {a:<16}" + " ".join(parts))
+    print(f"  {'':16}" + " ".join(f"{m[:7]:>7}" for m in order))
 
 
 def summarize(df: pd.DataFrame) -> None:
@@ -251,7 +478,7 @@ def main() -> int:
         "--models",
         nargs="+",
         default=FAST_MODELS,
-        choices=[*FAST_MODELS, "meyers_ccl"],
+        choices=[*FAST_MODELS, *ML_MODELS, "meyers_ccl"],
     )
     ap.add_argument("--loss-field", default="paid_loss")
     ap.add_argument(
@@ -265,6 +492,13 @@ def main() -> int:
     ap.add_argument("--draws", type=int, default=10_000, help="statistical model draws")
     ap.add_argument("--nn-draws", type=int, default=1000)
     ap.add_argument("--nn-features", nargs="*", default=["reported_loss"])
+    ap.add_argument(
+        "--nn-pool",
+        default="multiline",
+        choices=["multiline", "screened", "market"],
+        help="transformer training pool: companies passing screens on >=2 "
+        "lines (default), >=1 line, or every company in the mart",
+    )
     ap.add_argument("--chains", type=int, default=4, help="meyers_ccl chains")
     ap.add_argument("--seed", type=int, default=20260706)
     ap.add_argument(
@@ -275,30 +509,39 @@ def main() -> int:
     args = ap.parse_args()
 
     mart = active_mart_path(args.warehouse)
-    print("selecting companies (screens on every line):", flush=True)
-    companies = multiline_company_set(mart, args.lines, args.per_line)
-    if not companies:
-        print("no companies pass the screens on every line")
+    print("selecting companies (screens per line):", flush=True)
+    scored, pools = screened_company_lines(mart, args.lines, args.per_line)
+    if not scored:
+        print("no companies pass the screens on >=2 lines")
         return 1
 
-    all_rows: list[dict] = []
     tri_market = load_schedule_p(args.warehouse, lines=args.lines)
+    print("\nchain_ladder point benchmark + anchors/premiums", flush=True)
+    all_rows, anchors, premiums = point_context(tri_market, scored, args)
 
     for model in ("sur", "copula_glm"):
         if model in args.models:
-            print(f"\n{model}: one fit per company, {len(args.lines)} lines jointly", flush=True)
-            all_rows += run_multiline_model(model, tri_market, companies, args.lines, args)
+            print(f"\n{model}: one fit per company, its screened lines jointly", flush=True)
+            all_rows += run_multiline_model(model, tri_market, scored, args)
 
     if "nn_transformer" in args.models:
-        print("\nnn_transformer: pooled market fit", flush=True)
-        all_rows += run_transformer(tri_market, companies, args.lines, args)
+        print(f"\nnn_transformer: pooled fit, --nn-pool {args.nn_pool}", flush=True)
+        all_rows += run_transformer(tri_market, scored, pools, args)
+
+    for dep in ("ar", "joint"):
+        if f"nn_ml_{dep}" in args.models:
+            print(f"\nnn_ml_{dep}: pooled company fit ({dep} dependence head)", flush=True)
+            all_rows += run_transformer_ml(tri_market, scored, pools, args, dep)
 
     if "meyers_ccl" in args.models:
         print("\nmeyers_ccl: one cmdstan fit per company x line", flush=True)
         tri_by_line = {line: load_schedule_p(args.warehouse, lines=[line]) for line in args.lines}
-        all_rows += run_meyers(tri_by_line, companies, args.lines, args)
+        all_rows += run_meyers(tri_by_line, scored, args.lines, args)
 
     df = pd.DataFrame(all_rows)
+    keys = list(zip(df["company_code"], df["line"], strict=True))
+    df["anchor"] = [anchors.get(k, np.nan) for k in keys]
+    df["premium"] = [premiums.get(k, np.nan) for k in keys]
     # provenance: every row traces to an exact gold publish and loss field
     df["mart_publish_id"] = active_publish_id(args.warehouse)
     df["loss_field"] = args.loss_field
@@ -308,6 +551,7 @@ def main() -> int:
     df.to_csv(out, index=False)
     print(f"\nwrote {out}")
     summarize(df)
+    point_summary(df)
     return 0
 
 
