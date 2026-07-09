@@ -12,6 +12,9 @@ from torch import nn
 from ibnr.gallery.nn.transformer.config import TransformerConfig
 
 LOG_2PI = math.log(2.0 * math.pi)
+#: raw_p init so softplus(raw_p) == 1.0 -> exposure factor is 1 everywhere,
+#: i.e. the exposure-aware head starts identical to the flat-sigma baseline.
+RAW_P_INIT = math.log(math.expm1(1.0))
 
 
 class TriangleTransformer(nn.Module):
@@ -59,6 +62,13 @@ class TriangleTransformer(nn.Module):
         self.encoder = nn.TransformerEncoder(layer, num_layers=cfg.n_layers)
         self.out_norm = nn.LayerNorm(d)
         self.head = nn.Linear(d, 3 * cfg.n_components)
+        if cfg.exposure_sigma:
+            # p = softplus(raw_p); a single trained log-dollar exposure power.
+            # prem_log_std is filled from the training premiums by the entry
+            # after construction, so the factor is expressed in true log-dollar
+            # units rather than normalized-premium units.
+            self.raw_p = nn.Parameter(torch.tensor(RAW_P_INIT))
+            self.register_buffer("prem_log_std", torch.ones(()), persistent=True)
 
         w_idx, d_idx = torch.meshgrid(torch.arange(n_w), torch.arange(n_d), indexing="ij")
         self.register_buffer("w_idx", w_idx.reshape(-1), persistent=False)
@@ -89,6 +99,16 @@ class TriangleTransformer(nn.Module):
         log_pi = out[..., 0, :].log_softmax(dim=-1)
         mu = out[..., 1, :]
         sigma = nn.functional.softplus(out[..., 2, :]) + 1e-3
+        if self.cfg.exposure_sigma:
+            # log_premium arrives normalized ((log_prem - mean) / std); rescale
+            # to the centered log premium so the scale carries a factor of
+            # premium**(p - 1) about the pooled mean premium. Combined with the
+            # premium**1 the ratio normalization already contributes, the
+            # predictive dollar sd scales as premium**p. p = 1 -> factor == 1.
+            p = nn.functional.softplus(self.raw_p)
+            centered_log_prem = log_premium * self.prem_log_std  # (B,)
+            factor = torch.exp((p - 1.0) * centered_log_prem)  # (B,)
+            sigma = sigma * factor[:, None, None, None]
         return log_pi, mu, sigma
 
 

@@ -3,6 +3,8 @@ Skips cleanly when torch is not installed."""
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -114,6 +116,39 @@ def test_overfit_one_batch():
     )
 
 
+def test_exposure_sigma_head_matches_baseline_at_init():
+    # p = softplus(raw_p) starts at 1.0, so the exposure factor is premium**0
+    # everywhere and the head is identical to the flat-sigma baseline. Only
+    # sigma is touched; mu is never scaled.
+    torch.manual_seed(0)
+    kw = dict(n_lob=2, n_features=2, n_w=5, n_d=4)
+    base = TriangleTransformer(TINY, **kw)
+    exp = TriangleTransformer(replace(TINY, exposure_sigma=True), **kw)
+    exp.prem_log_std.fill_(1.7)
+    exp.load_state_dict({**exp.state_dict(), **base.state_dict()})  # share the encoder weights
+    base.eval()
+    exp.eval()
+    b = 6
+    x = torch.randn(b, 2, 5, 4)
+    ctx = torch.ones(b, 5, 4, dtype=torch.bool)
+    lob = torch.zeros(b, dtype=torch.long)
+    prem = torch.randn(b)  # varied premium: still no effect while p == 1
+    cutoff = torch.full((b,), 2, dtype=torch.long)
+    with torch.no_grad():
+        _, mu0, s0 = base(x, ctx, lob, prem, cutoff)
+        _, mu1, s1 = exp(x, ctx, lob, prem, cutoff)
+    assert torch.nn.functional.softplus(exp.raw_p).item() == pytest.approx(1.0)
+    torch.testing.assert_close(s1, s0)
+    torch.testing.assert_close(mu1, mu0)
+
+    # a non-unit power rescales sigma by premium**(p-1); gradient reaches raw_p
+    exp.raw_p.data.fill_(2.0)
+    s2 = exp(x, ctx, lob, prem, cutoff)[2]
+    assert not torch.allclose(s2, s0)
+    mdn_nll(*exp(x, ctx, lob, prem, cutoff), x[:, 0], ctx).backward()
+    assert exp.raw_p.grad is not None and bool(torch.isfinite(exp.raw_p.grad))
+
+
 # -- training scheme helpers -----------------------------------------------------
 
 
@@ -216,6 +251,31 @@ def test_training_targets_never_touch_validation_diagonal(backend_name):
     context, val_target, val_cutoff = _splits(c["obs_mask"], c["cal_idx"], TINY.val_diagonals)
     assert (c["cal_idx"][context.any(axis=0)] <= val_cutoff).all()
     assert (c["cal_idx"][val_target.any(axis=0)] > val_cutoff).all()
+
+
+def test_fit_predict_exposure_sigma(backend_name):
+    # distinct per-line premium so the pooled premium spread is non-trivial and
+    # the learnable exposure power is wired end to end.
+    rng = np.random.default_rng(0)
+    n_w = n_d = 6
+    dev_level = np.exp(np.linspace(-0.8, -3.0, n_d))
+    incr = 1000.0 * dev_level[None, None, :] * rng.lognormal(0.0, 0.1, size=(2, n_w, n_d))
+    cum = np.cumsum(incr, axis=2)
+    lobs = {"lob_0": cum[0], "lob_1": cum[1]}
+    prem = {"lob_0": np.full(n_w, 800.0), "lob_1": np.full(n_w, 6000.0)}
+    t = make_multiline_triangle(backend_name, lobs, premium_by_lob=prem, start_year=START)
+
+    entry = NNTransformer().fit(
+        t, loss_field="paid_loss", config=replace(TINY, exposure_sigma=True), seed=0
+    )
+    assert entry.norm_["prem_std"] > 0
+    # the entry hands each ensemble member the pooled log-premium spread
+    for m in entry.models_:
+        assert float(m.prem_log_std) == pytest.approx(entry.norm_["prem_std"])
+    pred = entry.predict(segment={"company_code": "0001", "line_of_business": "lob_0"}, seed=0)
+    assert pred.n_targets == 6 + 1
+    assert np.isfinite(pred.samples).all()
+    assert (pred.samples > 0).mean() > 0.95
 
 
 def test_predict_before_fit_raises():

@@ -20,6 +20,14 @@ class TransformerConfig:
     dropout: float = 0.15
     n_components: int = 3  # MDN mixture components
     lob_embedding_dim: int = 8
+    # exposure-aware sigma: when True the MDN scale carries a learnable
+    # premium power p, so the predictive dollar sd scales as premium**p
+    # instead of the flat premium**1 (constant coefficient of variation) the
+    # ratio normalization otherwise bakes in. p = softplus(raw_p) is a single
+    # trained scalar initialized at p = 1.0, which reproduces the baseline
+    # exactly. Off by default so the baseline stays a clean on/off comparison.
+    # See card.md "Exposure-aware sigma".
+    exposure_sigma: bool = False
     # optimization
     lr: float = 3e-4
     weight_decay: float = 1e-2

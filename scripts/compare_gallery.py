@@ -247,6 +247,8 @@ def run_transformer(tri_market, scored, pools, args) -> list[dict]:
     # cohort) are alternate pools, run only to measure how much the pool
     # choice matters. The pinned-dev mean is a pooled statistic, so pool
     # hygiene is load-bearing.
+    from ibnr.gallery.nn.transformer import TransformerConfig
+
     tri_pool = (
         tri_market if args.nn_pool == "market" else pair_filter(tri_market, pools[args.nn_pool])
     )
@@ -258,10 +260,21 @@ def run_transformer(tri_market, scored, pools, args) -> list[dict]:
         feature_fields=tuple(args.nn_features),
         as_of=args.as_of,
         seed=args.seed,
+        config=TransformerConfig(exposure_sigma=args.nn_exposure_sigma),
     )
     fit_secs = time.perf_counter() - t0
     n_cohorts = len(entry.contract_["cohorts"])
     print(f"  nn_transformer: pooled fit on {n_cohorts} cohorts ({fit_secs:.0f}s)", flush=True)
+    if args.nn_exposure_sigma:
+        import torch
+
+        ps = [float(torch.nn.functional.softplus(m.raw_p)) for m in entry.models_]
+        print(
+            f"  exposure power p per member: {[round(p, 3) for p in ps]} "
+            f"(mean {sum(ps) / len(ps):.3f}; 1.0 = flat constant-CV baseline, "
+            "<1 tightens large books & widens small)",
+            flush=True,
+        )
 
     rows = []
     for code, lines_c in scored.items():
@@ -498,6 +511,13 @@ def main() -> int:
         choices=["multiline", "screened", "market"],
         help="transformer training pool: companies passing screens on >=2 "
         "lines (default), >=1 line, or every company in the mart",
+    )
+    ap.add_argument(
+        "--nn-exposure-sigma",
+        action="store_true",
+        help="single-line transformer only: learn a premium power p so the "
+        "predictive dollar sd scales as premium**p (p=1 is the flat-sigma "
+        "baseline). Off = baseline; on/off arms are directly comparable.",
     )
     ap.add_argument("--chains", type=int, default=4, help="meyers_ccl chains")
     ap.add_argument("--seed", type=int, default=20260706)

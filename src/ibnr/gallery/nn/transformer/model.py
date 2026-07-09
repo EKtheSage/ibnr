@@ -165,6 +165,10 @@ class NNTransformer(GalleryEntry):
             model = net.TriangleTransformer(
                 cfg, n_lob=len(c["lob_levels"]), n_features=n_f, n_w=n_w, n_d=n_d
             ).to(dev)
+            if cfg.exposure_sigma:
+                # the exposure factor un-normalizes log_premium; hand it the
+                # pooled spread so p is a true log-dollar power.
+                model.prem_log_std.fill_(prem_std)
             opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
 
             best_val, best_state, patience_left = math.inf, None, cfg.patience
