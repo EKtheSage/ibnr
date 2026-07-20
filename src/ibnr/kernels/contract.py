@@ -117,6 +117,40 @@ def _premium_by_origin(triangle: Triangle, premium_field: str, origins: list) ->
     return premium
 
 
+def ccl_mu_index(data: dict[str, Any]) -> dict[str, np.ndarray]:
+    """Static arrays that turn the CCL ``mu`` recurrence into one matmul.
+
+    ``model.stan`` builds mu with a forward recurrence over ``prev_idx``:
+
+        mu[w, d] = base[w, d] + rho * (logloss[w-1, d] - mu[w-1, d])   (w > 1)
+
+    where base[w, d] = logprem + logelr + alpha[w] + beta[d]. Within a fixed
+    dev column this linear recurrence has the exact closed form
+
+        mu[w, d] = sum_{k=1..w} (-rho)^(w-k) * B[k, d],
+        B[k, d]  = base[k, d] + rho * logloss[k-1, d]   (B[1, d] = base[1, d])
+
+    so mu = P(rho) @ B with P[i, j] = (-rho)^(w_i - w_j) for cells j in the same
+    column as i with w_j <= w_i (else 0). ``P`` is the only rho-dependent piece;
+    everything here is data, precomputed once. This form keeps the NumPyro/PyMC
+    autodiff graphs tiny (an N x N matmul) instead of an N-deep scalar chain —
+    the PyTensor C-compile of the unrolled chain is the dominant cost otherwise.
+    Returns ``expo`` (N x N, the exponents w_i - w_j), ``colmask`` (N x N, 1.0
+    where j contributes to i), and ``logloss_prev`` (N, the observed previous-
+    origin loss, 0 where absent).
+    """
+    w = np.asarray(data["w"], dtype=int)
+    d = np.asarray(data["d"], dtype=int)
+    prev0 = np.asarray(data["prev_idx"], dtype=int) - 1  # -1 = no previous cell
+    logloss = np.asarray(data["logloss"], dtype=float)
+
+    same_col = (d[:, None] == d[None, :]) & (w[None, :] <= w[:, None])
+    expo = np.where(same_col, w[:, None] - w[None, :], 0).astype(int)
+    colmask = same_col.astype(float)
+    logloss_prev = np.where(prev0 >= 0, logloss[np.where(prev0 >= 0, prev0, 0)], 0.0)
+    return {"expo": expo, "colmask": colmask, "logloss_prev": logloss_prev}
+
+
 def realized_values(
     triangle: Triangle,
     *,
