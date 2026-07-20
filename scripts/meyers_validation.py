@@ -1,16 +1,20 @@
-"""Meyers retrospective validation of meyers_ccl on the Schedule P gold mart.
+"""Meyers retrospective validation of the Meyers-family entries on the
+Schedule P gold mart.
 
 Reproduces the monograph's protocol: per line of business, mechanically select
-up to 50 stable insurers (appendix criteria), fit the CCL model to the incurred
-upper triangle as of 1997-12-31, record the predictive percentile of the
-realized total ultimate, and test the percentiles for uniformity (KS / p-p).
+up to 50 stable insurers (appendix criteria), fit the model to the upper
+triangle as of 1997-12-31, record the predictive percentile of the realized
+total ultimate, and test the percentiles for uniformity (KS / p-p).
 
-Fits Meyers' "incurred" = reported_loss (incurred net of bulk+IBNR); company
-selection applies both Table A.1 screens (CV1 net premium, CV2 net/direct
-premium ratio).
+Models: ``meyers_ccl`` fits Meyers' "incurred" = reported_loss (incurred net
+of bulk+IBNR); ``meyers_csr`` fits paid_loss with Meyers' floor-of-1 clamp
+(his ``pmax(cum_pdloss, 1)``) so the paid study keeps the identical company
+cohort as the incurred one. Company selection applies both Table A.1 screens
+(CV1 net premium, CV2 net/direct premium ratio) for every model.
 
 Usage:
     uv run python scripts/meyers_validation.py --per-line 50
+    uv run python scripts/meyers_validation.py --model meyers_csr --per-line 50
     uv run python scripts/meyers_validation.py --lines workers_compensation --per-line 5 --chains 2
 """
 
@@ -33,6 +37,25 @@ from ibnr.kernels.calibration import ks_uniformity
 # None falls through to ibnr's resolution: IBNR_SCHEDULE_P_WAREHOUSE env var,
 # else the GitHub release default (github://...@latest, cached locally).
 DEFAULT_WAREHOUSE = None
+
+#: literature pairing: CCL scores incurred (net of bulk); CSR, the ODP
+#: (whose chain-ladder equivalence is a paid result) and Clark score paid
+MODEL_LOSS_FIELDS = {
+    "meyers_ccl": "reported_loss",
+    "meyers_csr": "paid_loss",
+    "england_verrall_odp": "paid_loss",
+    "clark": "paid_loss",
+}
+
+#: models fit by MCMC — they take the chains/warmup/draws arguments and
+#: report R-hat; the likelihood-based entries (clark) take neither
+MCMC_MODELS = {"meyers_ccl", "meyers_csr", "england_verrall_odp"}
+
+#: models needing Meyers' pmax(cum_pdloss, 1) floor — the lognormal cannot
+#: take non-positive cells. The ODP takes zeros natively and must see the
+#: unclamped data (a clamp would silently alter increments); its negative-
+#: increment failures are recorded, exactly like the bootstrap ODP's.
+MODELS_WITH_PAID_CLAMP = {"meyers_csr"}
 
 MEYERS_LINES = [
     "commercial_auto",
@@ -113,26 +136,43 @@ def run_line(
     warehouse: Path, line: str, companies: pd.DataFrame, args: argparse.Namespace
 ) -> list[dict]:
     tri_line = load_schedule_p(warehouse, lines=[line])
+    loss_field = args.loss_field or MODEL_LOSS_FIELDS[args.model]
+    if loss_field == "paid_loss" and args.model in MODELS_WITH_PAID_CLAMP:
+        # Meyers' pmax(cum_pdloss, 1): floor paid cells at 1 (in $000s) so the
+        # lognormal accepts every cohort the incurred screens admit
+        e = tri_line.expr
+        tri_line = tri_line.with_expr(
+            e.mutate(value=ibis.ifelse(e.field == "paid_loss", ibis.greatest(e.value, 1), e.value))
+        )
     rows = []
     for i, code in enumerate(companies["company_code"], 1):
         tri = tri_line.filter(ibis._.company_code == code)
         t0 = time.perf_counter()
         try:
+            fit_kwargs = (
+                {
+                    "chains": args.chains,
+                    "iter_warmup": args.warmup,
+                    "iter_sampling": args.draws,
+                    "seed": args.seed,
+                }
+                if args.model in MCMC_MODELS
+                else {}
+            )
             entry = gallery.fit(
-                "meyers_ccl",
+                args.model,
                 tri,
-                loss_field="reported_loss",
+                loss_field=loss_field,
                 as_of="1997-12-31",
-                chains=args.chains,
-                iter_warmup=args.warmup,
-                iter_sampling=args.draws,
-                seed=args.seed,
+                **fit_kwargs,
             )
             pred = entry.predict(seed=args.seed)
             realized = entry.realized_ultimates(tri)
             table = pred.summary(observed=realized)
             total = table.iloc[-1]
-            rhat = entry.fit_.summary()["R_hat"].max()
+            rhat = (
+                entry.fit_.summary()["R_hat"].max() if args.model in MCMC_MODELS else float("nan")
+            )
             rows.append(
                 {
                     "line": line,
@@ -165,18 +205,24 @@ def main() -> int:
         help="local warehouse path or github://owner/repo@publish_id "
         "(default: the latest GitHub release)",
     )
+    ap.add_argument("--model", default="meyers_ccl", choices=sorted(MODEL_LOSS_FIELDS))
+    ap.add_argument(
+        "--loss-field",
+        default=None,
+        help=f"override the model's monograph loss field (defaults: {MODEL_LOSS_FIELDS})",
+    )
     ap.add_argument("--lines", nargs="+", default=MEYERS_LINES, choices=MEYERS_LINES)
     ap.add_argument("--per-line", type=int, default=50)
     ap.add_argument("--chains", type=int, default=4)
     ap.add_argument("--warmup", type=int, default=1000)
     ap.add_argument("--draws", type=int, default=2500)
     ap.add_argument("--seed", type=int, default=20260612)
-    ap.add_argument(
-        "--out",
-        type=Path,
-        default=Path(__file__).parents[1] / "analysis" / "results" / "meyers_ccl_validation.csv",
-    )
+    ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args()
+    if args.out is None:
+        args.out = (
+            Path(__file__).parents[1] / "analysis" / "results" / f"{args.model}_validation.csv"
+        )
 
     mart = active_mart_path(args.warehouse)
     all_rows: list[dict] = []

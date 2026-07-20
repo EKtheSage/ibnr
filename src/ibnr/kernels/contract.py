@@ -117,6 +117,95 @@ def _premium_by_origin(triangle: Triangle, premium_field: str, origins: list) ->
     return premium
 
 
+def odp_stan_data(
+    triangle: Triangle,
+    *,
+    loss_field: str,
+    premium_field: str | None = None,
+) -> dict[str, Any]:
+    """Map a single-cohort cumulative Triangle to the incremental ODP dict.
+
+    Same conventions as ``stan_data`` (1-based ``w``/``d`` sorted by (w, d)),
+    but the observations are *incremental* losses ``inc_loss`` differenced
+    within each origin — the over-dispersed Poisson family models increments,
+    not cumulatives. Zero increments are legitimate; negative increments are
+    rejected (the ODP quasi-likelihood is undefined there, exactly the
+    limitation of the bootstrap ODP baselines). Also carries ``paid_to_date``
+    (the latest observed cumulative per origin) and ``latest_d`` (its dev
+    index) — the anchors the predictive simulation completes from.
+    """
+    if triangle.meta.measure != "cumulative":
+        raise ValueError("odp_stan_data requires a cumulative triangle")
+    df = triangle.select_fields(loss_field).execute()
+    if df.empty:
+        raise ValueError(f"no rows for loss field {loss_field!r}")
+    segs = triangle.segments
+    if segs and len(df.drop_duplicates(segs)) > 1:
+        raise ValueError(
+            f"triangle has multiple segment combinations on {segs}; filter to one cohort first"
+        )
+
+    df = df.copy()
+    df["origin_period"] = _as_date(df["origin_period"])
+    df["eval_date"] = _as_date(df["eval_date"])
+    step = GRAIN_MONTHS[triangle.meta.dev_grain]
+    if (df["dev_lag"] % step != 0).any():
+        raise ValueError(f"dev_lag values are not multiples of the {step}-month dev grain")
+
+    origins = sorted(df["origin_period"].unique())
+    dev_steps = sorted((df["dev_lag"] // step).unique())
+    if dev_steps[0] < 1:
+        raise ValueError("dev_lag must be positive")
+    n_w, n_d = len(origins), int(dev_steps[-1])
+    w_of = {o: i + 1 for i, o in enumerate(origins)}
+
+    df["w"] = df["origin_period"].map(w_of)
+    df["d"] = (df["dev_lag"] // step).astype(int)
+    if df.duplicated(["w", "d"]).any():
+        raise ValueError(
+            "multiple rows per (origin, dev) cell; slice with as_of()/latest_diagonal() first"
+        )
+    df = df.sort_values(["w", "d"]).reset_index(drop=True)
+
+    # incremental differencing needs contiguous dev cells within each origin
+    for w_idx, grp in df.groupby("w"):
+        devs = grp["d"].tolist()
+        if devs != list(range(1, len(devs) + 1)):
+            raise ValueError(
+                f"origin index {w_idx} has non-contiguous dev lags {devs}; "
+                "incremental differencing would fabricate increments"
+            )
+    inc = df.groupby("w")["value"].diff()
+    inc = inc.fillna(df["value"]).to_numpy(dtype=float)  # first dev = cumulative
+    if (inc < 0).any():
+        raise ValueError(
+            f"{int((inc < 0).sum())} negative incremental {loss_field!r} cells; "
+            "the over-dispersed Poisson likelihood requires non-negative increments"
+        )
+
+    latest = df.loc[df.groupby("w")["d"].idxmax()].sort_values("w")
+    data: dict[str, Any] = {
+        "len_data": len(df),
+        "n_w": n_w,
+        "n_d": n_d,
+        "w": df["w"].to_numpy(dtype=int),
+        "d": df["d"].to_numpy(dtype=int),
+        "inc_loss": inc,
+        # metadata (not part of the Stan data block proper)
+        "origin_periods": origins,
+        "dev_grain_months": step,
+        "loss": df["value"].to_numpy(dtype=float),
+        "paid_to_date": latest["value"].to_numpy(dtype=float),
+        "latest_d": latest["d"].to_numpy(dtype=int),
+    }
+
+    if premium_field is not None:
+        premium = _premium_by_origin(triangle, premium_field, origins)
+        data["premium"] = premium
+        data["logprem"] = np.log(premium)[data["w"] - 1]
+    return data
+
+
 def ccl_mu_index(data: dict[str, Any]) -> dict[str, np.ndarray]:
     """Static arrays that turn the CCL ``mu`` recurrence into one matmul.
 

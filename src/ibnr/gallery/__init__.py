@@ -8,7 +8,9 @@ from ibnr.gallery import registry as _registry
 
 # importing the subpackages self-registers their entries
 from ibnr.gallery import statistical as _statistical  # noqa: F401
+from ibnr.gallery.bayesian import england_verrall_odp as _england_verrall_odp  # noqa: F401
 from ibnr.gallery.bayesian import meyers_ccl as _meyers_ccl  # noqa: F401
+from ibnr.gallery.bayesian import meyers_csr as _meyers_csr  # noqa: F401
 from ibnr.gallery.entry import GalleryEntry
 from ibnr.gallery.nn import transformer as _nn_transformer  # noqa: F401
 from ibnr.gallery.nn import transformer_ml as _nn_transformer_ml  # noqa: F401
