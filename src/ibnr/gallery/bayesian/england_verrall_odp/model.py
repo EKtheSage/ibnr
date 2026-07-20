@@ -45,35 +45,59 @@ def odp_mle_fitted(w: np.ndarray, d: np.ndarray, inc: np.ndarray, n_w: int, n_d:
     on the triangle's support. These are exactly the chain-ladder fitted
     incrementals (Hachemeister-Stanard / Renshaw-Verrall). Returns the full
     (n_w, n_d) rectangle — future cells hold the ODP/chain-ladder point
-    forecasts of the unobserved increments."""
+    forecasts of the unobserved increments.
+
+    The multiplicative Poisson MLE m = a[w] * b[d] is the same fit as the
+    log-link linear predictor (a = exp(alpha), b = exp(c + beta)); IPF is only
+    used here to get the *frequentist* fitted means for the plug-in dispersion
+    below, not to fit the Bayesian model. w, d, inc are 1-based-lag ragged
+    vectors over the observed cells (len_data,)."""
+    # Scatter the ragged observed increments back onto a dense (n_w, n_d) grid;
+    # `mask` marks which cells are in-support (the upper-left triangle).
     obs = np.zeros((n_w, n_d))
     mask = np.zeros((n_w, n_d))
-    obs[w - 1, d - 1] = inc
+    obs[w - 1, d - 1] = inc  # w, d are 1-based lags -> 0-based indices
     mask[w - 1, d - 1] = 1.0
-    row_tot, col_tot = obs.sum(axis=1), obs.sum(axis=0)
-    a, b = np.maximum(row_tot, 1e-12), np.ones(n_d)
+    # Margins the fit must reproduce: origin-row totals and dev-column totals.
+    row_tot, col_tot = obs.sum(axis=1), obs.sum(axis=0)  # (n_w,), (n_d,)
+    # Seed row effects at the row totals, column effects at 1; alternate scaling
+    # a and b until both sets of margins are matched (Poisson MLE fixed point).
+    a, b = np.maximum(row_tot, 1e-12), np.ones(n_d)  # a: (n_w,), b: (n_d,)
     for _ in range(500):
-        fit_col = (a[:, None] * b[None, :] * mask).sum(axis=0)
+        # Rescale column effects so fitted column margins hit col_tot ...
+        fit_col = (a[:, None] * b[None, :] * mask).sum(axis=0)  # (n_d,)
         b *= np.divide(col_tot, fit_col, out=np.ones(n_d), where=fit_col > 0)
-        fit_row = (a[:, None] * b[None, :] * mask).sum(axis=1)
+        # ... then rescale row effects so fitted row margins hit row_tot.
+        fit_row = (a[:, None] * b[None, :] * mask).sum(axis=1)  # (n_w,)
         a_new = a * np.divide(row_tot, fit_row, out=np.ones(n_w), where=fit_row > 0)
         done = np.allclose(a_new, a, rtol=1e-12)
         a = a_new
         if done:
             break
-    return a[:, None] * b[None, :]
+    return a[:, None] * b[None, :]  # (n_w, n_d) outer product
 
 
 def pearson_phi(w: np.ndarray, d: np.ndarray, inc: np.ndarray, n_w: int, n_d: int) -> float:
     """Plug-in ODP dispersion: Pearson chi-square over residual dof,
-    phi = sum((x - m)^2 / m) / (n - p) with p = n_w + n_d - 1."""
+    phi = sum((x - m)^2 / m) / (n - p) with p = n_w + n_d - 1.
+
+    England & Verrall's quasi-likelihood scale estimate (2002, sec. 3.2): the
+    ODP scale is estimated *outside* the model from the GLM Pearson residuals,
+    not sampled. p = n_w + n_d - 1 counts the free row/column effects (one
+    corner constraint), matching a chain-ladder GLM's parameter count."""
+    # Fitted means only at the observed cells (index the dense grid back to the
+    # ragged support): m aligned to inc, both (len_data,).
     m = odp_mle_fitted(w, d, inc, n_w, n_d)[w - 1, d - 1]
-    if (m <= 0).any():
+    # An all-zero dev column (books fully paid before the last lag) fits m = 0
+    # exactly at cells where x = 0 — those cells carry no Pearson information
+    # and are excluded. m = 0 against x > 0 cannot happen (margins are matched).
+    live = m > 0
+    if not live.any() or (inc[~live] != 0).any():
         raise ValueError("ODP MLE produced non-positive fitted means; degenerate triangle")
-    n, p = len(inc), n_w + n_d - 1
+    n, p = int(live.sum()), n_w + n_d - 1  # informative cells vs free parameters
     if n <= p:
-        raise ValueError(f"triangle has {n} cells but the ODP model has {p} parameters")
-    return float(((inc - m) ** 2 / m).sum() / (n - p))
+        raise ValueError(f"triangle has {n} informative cells but the ODP model has {p} parameters")
+    return float(((inc[live] - m[live]) ** 2 / m[live]).sum() / (n - p))
 
 
 @register
@@ -106,9 +130,14 @@ class EnglandVerrallODP(GalleryEntry):
     ) -> EnglandVerrallODP:
         if backend not in BACKENDS:
             raise ValueError(f"backend must be one of {BACKENDS}, got {backend!r}")
+        # Backtest slice: keep only cells reported on/before the cutoff diagonal.
         train = triangle.as_of(as_of) if as_of is not None else triangle
+        # Standardized incremental ODP contract (w/d lags, inc_loss, logprem,
+        # paid_to_date/latest_d anchors) — the Stan `data` block is the contract.
         self.contract_ = odp_stan_data(train, loss_field=loss_field, premium_field=premium_field)
         c = self.contract_
+        # Estimate the dispersion once, up front, and inject it into the data
+        # dict; Stan consumes phi as data (quasi-likelihood), never samples it.
         c["phi"] = pearson_phi(c["w"], c["d"], c["inc_loss"], c["n_w"], c["n_d"])
         self._loss_field = loss_field
         self.backend_ = backend
@@ -161,17 +190,30 @@ class EnglandVerrallODP(GalleryEntry):
         c = self.contract_
         n_w, n_d, phi = c["n_w"], c["n_d"], c["phi"]
 
-        alpha = pooled(self.idata_, "alpha")  # (draws, n_w)
-        beta = pooled(self.idata_, "beta")  # (draws, n_d)
-        const = pooled(self.idata_, "c")  # (draws,)
+        # Posterior draws of the log-link effects (see card.md "Model"):
+        #   log m[w,d] = logprem[w] + c + alpha[w] + beta[d]
+        # alpha = origin (row) effect, beta = dev-lag (column) effect,
+        # c = intercept; corner constraints alpha[1] = beta[1] = 0.
+        alpha = pooled(self.idata_, "alpha")  # (draws, n_w) origin effects
+        beta = pooled(self.idata_, "beta")  # (draws, n_d) dev-lag effects
+        const = pooled(self.idata_, "c")  # (draws,) intercept
         n_draws = const.shape[0]
-        logprem_origin = np.log(c["premium"])  # per origin
+        logprem_origin = np.log(c["premium"])  # (n_w,) premium offset per origin
 
+        # Ultimate = observed paid-to-date + simulated future increments.
+        # Start every draw at the origin's latest cumulative paid (constant),
+        # then add process draws for each still-unobserved dev lag.
         rng = np.random.default_rng(seed)
-        ults = np.tile(c["paid_to_date"], (n_draws, 1)).astype(float)
-        for j in range(n_w):
+        ults = np.tile(c["paid_to_date"], (n_draws, 1)).astype(float)  # (draws, n_w)
+        for j in range(n_w):  # per origin
+            # Only lags strictly beyond this origin's latest observed lag are
+            # unobserved; earlier lags are already in paid_to_date.
             for dev in range(int(c["latest_d"][j]) + 1, n_d + 1):
+                # Posterior mean of the future increment for this (origin, lag),
+                # one value per draw: mu (draws,).
                 mu = np.exp(logprem_origin[j] + const + alpha[:, j] + beta[:, dev - 1])
+                # Process draw: X ~ phi * Poisson(mu/phi) reproduces mean mu and
+                # variance phi*mu (od-Poisson), the BootChainLadder od.pois twin.
                 ults[:, j] += phi * rng.poisson(mu / phi)
 
         targets = pd.DataFrame(

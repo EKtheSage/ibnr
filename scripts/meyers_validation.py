@@ -160,6 +160,10 @@ def run_line(
                 if args.model in MCMC_MODELS
                 else {}
             )
+            if args.growth_curve is not None:
+                if args.model not in ("clark", "clark_growth_curve"):
+                    raise SystemExit(f"--growth-curve does not apply to {args.model}")
+                fit_kwargs["growth_curve"] = args.growth_curve
             entry = gallery.fit(
                 args.model,
                 tri,
@@ -211,6 +215,13 @@ def main() -> int:
         "--loss-field",
         default=None,
         help=f"override the model's monograph loss field (defaults: {MODEL_LOSS_FIELDS})",
+    )
+    ap.add_argument(
+        "--growth-curve",
+        default=None,
+        choices=["loglogistic", "weibull"],
+        help="clark / clark_growth_curve only: override the growth curve "
+        "(entry default: loglogistic)",
     )
     ap.add_argument("--lines", nargs="+", default=MEYERS_LINES, choices=MEYERS_LINES)
     ap.add_argument("--per-line", type=int, default=50)

@@ -58,6 +58,13 @@ Retrospective Meyers protocol on paid: `scripts/meyers_validation.py
 --model clark_growth_curve`. Results in
 `analysis/results/clark_growth_curve_validation.csv`. No monograph bar
 exists; compare against the paid panel (england_verrall_odp, meyers_csr,
-clark MLE) on identical cohorts. Expect close agreement with the MLE twin
-when the data are informative (the posterior concentrates near the MLE) and
-regularization from the priors on thin books.
+clark MLE) on identical cohorts.
+
+**Result (2026-07-20, loglogistic, 96/200 completed — the rest rejected for
+negative paid increments): combined KS D = 63.4* vs crit 13.9, percentiles
+piled at ~0 — within noise of the MLE twin's 61.3*, confirming the
+posterior tracks the MLE.** The failure is the model, not the inference:
+the post-1997 settlement speedup plus the loglogistic tail mass (see the
+MLE twin's card for the weibull ablation, D = 49.6*). In the gallery this
+entry is the growth-curve baseline for ELPD/stacking; meyers_csr (D = 4.1,
+passes) is what calibrated paid reserving looks like in this window.

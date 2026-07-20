@@ -1,0 +1,201 @@
+line,company_code,estimate,se,cv,outcome,percentile,max_rhat,seconds,error
+commercial_auto,353,40055.86896796249,1395.6876476188154,0.03484352439676481,40000.0,48.57,1.00131,15.87686940000276,
+commercial_auto,14044,6312.241429930423,325.961083024998,0.05163951452797821,5403.0,0.01,1.00273,7.515210300014587,
+commercial_auto,14974,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,21270,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,15199,,,,,,,,3 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,4839,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,7080,372732.74509332585,11973.291771178076,0.032122994099110264,333099.0,0.04,1.00207,9.533778700017137,
+commercial_auto,833,,,,,,,,3 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,14320,,,,,,,,4 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,37036,12526.553561728193,443.65769277580307,0.03541737881768934,12041.0,12.94,1.00149,8.180477199988673,
+commercial_auto,1767,2361787.517667354,28216.421907826967,0.011947062001451863,2226624.0,0.0,1.00123,7.716339500009781,
+commercial_auto,2712,357835.53763696604,8123.932017146036,0.02270297710169857,342916.0,2.9499999999999997,1.00067,7.55830179998884,
+commercial_auto,11118,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,13641,,,,,,,,3 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,38733,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,1538,96530.91660626174,2517.857869008436,0.02608343479507692,90687.0,0.64,1.00176,8.354490899975644,
+commercial_auto,34606,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,6947,,,,,,,,5 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,11037,21829.39875225254,893.287089299187,0.04092128690475317,20924.0,16.1,1.00437,8.725104199984344,
+commercial_auto,27065,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,388,722481.1806040618,18920.42673931149,0.0261881239916758,745997.0,88.96,1.00237,6.819182900013402,
+commercial_auto,3492,76861.65460199717,1970.7500786543264,0.025640224489821464,69017.0,0.0,1.00138,7.657381199998781,
+commercial_auto,27022,2102.873545221048,137.54399891512958,0.06540764147597442,1970.0,15.989999999999998,1.00203,7.68230760001461,
+commercial_auto,1090,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,3240,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,13889,1865.5365998186444,109.99148191763656,0.0589597019583155,2100.0,96.72,1.00106,6.577249499998288,
+commercial_auto,18767,87242.57847211185,2366.422130237425,0.027124623912782225,79612.0,0.0,1.00167,7.031198500015307,
+commercial_auto,2623,,,,,,,,3 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,14257,,,,,,,,4 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,35483,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,10308,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,44598,,,,,,,,8 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,5185,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,32301,7910.468117191009,549.195175397912,0.0694263812535193,8264.0,75.92,1.00282,6.213133500015829,
+commercial_auto,6459,,,,,,,,3 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,25275,1110.9764563917217,116.95749632194378,0.1052745048277652,1061.0,32.190000000000005,1.00337,7.232494600000791,
+commercial_auto,14176,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,2135,548853.0037894379,13595.260847345096,0.024770313277834924,525310.0,3.55,1.00139,7.903359399992041,
+commercial_auto,620,414872.1329433054,12740.465028774588,0.030709377702444147,388485.0,1.46,1.00163,7.673652600002242,
+commercial_auto,2208,,,,,,,,3 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,31550,,,,,,,,5 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,10022,6750.574430942944,429.18271057181676,0.0635772133115888,5829.0,0.65,1.00205,8.147462699998869,
+commercial_auto,1066,,,,,,,,4 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,13439,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,18163,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,8427,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,19020,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,6408,18269.975873682735,818.180250753435,0.0447827767485996,16182.0,0.19,1.00272,8.154029400000582,
+commercial_auto,32875,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+commercial_auto,671,,,,,,,,3 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,8559,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,23574,23855.716113719634,576.9339385972976,0.024184306010646132,21936.0,0.0,1.00087,7.086776899988763,
+private_passenger_auto,353,132522.12233936586,1883.5079983466667,0.01421278172351733,125467.0,0.0,1.00064,7.211815299990121,
+private_passenger_auto,620,524587.09911301,7048.855318504875,0.01343695895385785,503945.0,0.06,1.00115,7.322443099983502,
+private_passenger_auto,13420,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,10022,66782.80868128876,896.5114433052505,0.013424284797360365,63561.0,0.0,1.00121,6.9190454999916255,
+private_passenger_auto,14044,37621.957658395186,489.92806826873385,0.013022396992661769,36628.0,2.09,1.00207,6.661446599988267,
+private_passenger_auto,2143,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,14257,,,,,,,,3 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,1066,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,15660,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,14443,,,,,,,,3 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,1538,,,,,,,,3 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,13501,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,27766,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,13439,,,,,,,,3 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,34509,20812.41871514361,488.06212649920286,0.023450524092333263,18981.0,0.0,1.00121,7.710093500005314,
+private_passenger_auto,15199,114343.95617370601,1545.277605011403,0.013514291937423342,106435.0,0.0,1.00294,7.688330999983009,
+private_passenger_auto,16373,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,1767,95734634.0578617,817991.2823470664,0.008544361091438185,91360195.0,0.0,1.00147,7.217911800020374,
+private_passenger_auto,18791,95181.68481302376,1045.1588973366206,0.010980672378196976,93053.0,1.6500000000000001,1.00088,7.367301299993414,
+private_passenger_auto,13889,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,13528,,,,,,,,4 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,2003,13172539.002615398,184055.80257209568,0.013972689891869103,12393224.0,0.0,1.002,7.762812500004657,
+private_passenger_auto,27065,,,,,,,,3 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,4839,3074032.141303786,17503.66814293891,0.0056940420068331155,3027062.0,0.32,1.00078,6.749231499998132,
+private_passenger_auto,16799,37625.23102887914,916.029102228308,0.024346138938660934,32834.0,0.0,1.00325,7.816759400011506,
+private_passenger_auto,34592,82790.50766972953,1668.9458845055872,0.02015866228485273,76514.0,0.0,1.00247,7.980581699986942,
+private_passenger_auto,27499,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,3240,1151703.0299171787,10575.285078782215,0.009182302038002545,1085241.0,0.0,1.00147,7.026009099994553,
+private_passenger_auto,27022,67352.06044209613,1575.9303483689648,0.023398398475482758,60252.0,0.0,1.00219,8.966141599987168,
+private_passenger_auto,14311,139239.8722872595,3500.9623368897437,0.02514338945720279,128523.0,0.06999999999999999,1.00124,9.790893500001403,
+private_passenger_auto,5185,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,388,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,29440,,,,,,,,3 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,13641,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,31550,,,,,,,,12 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,1090,1118308.7948593637,8794.595022907015,0.007864191950679424,1083616.0,0.0,1.00119,7.361512200004654,
+private_passenger_auto,8427,,,,,,,,8 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,6947,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,25275,100872.05553159925,1721.3198516589941,0.017064387580758403,101929.0,73.61,1.00197,8.517679000011412,
+private_passenger_auto,18163,134927.32378447353,1507.4811549131298,0.011172541725656016,130229.0,0.04,1.00058,7.335086300008697,
+private_passenger_auto,715,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,13587,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,34606,,,,,,,,3 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,692,,,,,,,,3 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,14176,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+private_passenger_auto,13595,18109.876872680266,423.1629077070353,0.0233664155025482,16740.0,0.01,1.00147,7.441411099978723,
+private_passenger_auto,15393,21717.084094981685,516.2405198688349,0.023771171010390207,19351.0,0.0,1.00062,8.332144899992272,
+private_passenger_auto,7080,1692856.0363041072,65164.96605576279,0.03849409793760895,1459916.0,0.0,1.00533,11.517843899986474,
+workers_compensation,11347,368779.7928731787,6297.860605520068,0.017077564246276006,350602.0,0.09,1.00131,8.386307799984934,
+workers_compensation,38687,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+workers_compensation,1538,139690.7917698212,2289.2481761621057,0.016387967647389874,132241.0,0.0,1.00143,7.827251899987459,
+workers_compensation,15199,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+workers_compensation,37370,51895.18818925618,2065.166689276606,0.039794955203653275,45100.0,0.0,1.00229,8.347806400008267,
+workers_compensation,7080,1963437.9547741981,34003.79316992504,0.01731849640944503,1836596.0,0.0,1.00454,10.54317920000176,
+workers_compensation,388,,,,,,,,3 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+workers_compensation,8559,76076.95674067765,1103.7310077425204,0.014508085694131949,74205.0,4.130000000000001,1.00281,7.40729360000114,
+workers_compensation,23108,407167.98319496744,14916.178826664776,0.03663396790096422,375422.0,0.66,1.00048,7.661967399995774,
+workers_compensation,38733,193625.7649028019,1701.4894305435678,0.008787515604639175,196739.0,96.32,1.00082,6.852689799998188,
+workers_compensation,11703,58654.48745077958,1441.4443470816134,0.024575175911156225,56968.0,12.19,1.00308,17.861686200019903,
+workers_compensation,14320,11160.857992763551,343.24493257211884,0.03075434996078896,11391.0,75.64,1.00195,7.725643599987961,
+workers_compensation,337,562705.0297754215,11235.216434404707,0.01996644039042754,589435.0,98.83,1.00138,8.48186299999361,
+workers_compensation,15148,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+workers_compensation,41300,40358.91142330394,619.9954862315867,0.015362046803710132,37653.0,0.0,1.00074,7.725188899989007,
+workers_compensation,1767,1857633.3258080387,34671.02049939166,0.018664081881880734,1742600.0,0.0,1.001,8.360481800016714,
+workers_compensation,10385,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+workers_compensation,10699,316205.14970329095,9339.452936402853,0.02953605577001661,261085.0,0.0,1.00282,10.367775599996094,
+workers_compensation,2712,599091.7343960486,9546.941330950025,0.015935691953043566,541325.0,0.0,1.00072,9.13785260001896,
+workers_compensation,14508,62063.06982896927,2089.9117199411867,0.03367399849379793,52431.0,0.0,1.00397,8.622726900008274,
+workers_compensation,18767,189268.953899488,3934.057701682663,0.02078554153034448,172944.0,0.0,1.0023,8.442708899994614,
+workers_compensation,3240,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+workers_compensation,15334,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+workers_compensation,1252,26102.109769699888,1021.9078466324385,0.039150392655949204,22796.0,0.0,1.00104,7.985487700003432,
+workers_compensation,34576,34036.76549101816,1012.6814470631924,0.029752575853026497,31293.0,0.11,1.00161,7.94008759999997,
+workers_compensation,18309,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+workers_compensation,27529,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+workers_compensation,1066,134542.24804956937,2349.489337081506,0.017462836924026157,122593.0,0.0,1.00143,7.832424099993659,
+workers_compensation,21172,174786.47799592675,4120.695431981554,0.02357559623163517,154457.0,0.0,1.00147,8.273160300013842,
+workers_compensation,18791,,,,,,,,6 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+workers_compensation,23140,,,,,,,,3 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+workers_compensation,671,107374.38680415497,3695.54602918574,0.03441738890603598,96581.0,0.04,1.0014,7.9164344999881,
+workers_compensation,715,237778.76449356208,2341.4852381425017,0.009847326960124305,237347.0,43.11,1.00128,7.760380300023826,
+workers_compensation,5185,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+workers_compensation,14176,121731.3250541318,2946.35516394389,0.024203754971316525,106986.0,0.0,1.00199,7.948820199992042,
+workers_compensation,11126,153998.23569874064,4665.254104989926,0.030294204890219258,143876.0,0.83,1.00182,7.598530399991432,
+workers_compensation,3034,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+workers_compensation,26433,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+workers_compensation,2135,671320.309153644,15190.774990557704,0.022628207106841772,600316.0,0.0,1.0017,9.16822819999652,
+workers_compensation,13439,,,,,,,,4 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+workers_compensation,14974,31792.221404170807,771.2340741023777,0.02425857772873964,30426.0,3.29,1.00095,7.795726199983619,
+workers_compensation,86,1774785.5355170108,41326.914242306826,0.023285582069085282,1611800.0,0.0,1.00142,8.060980300011579,
+workers_compensation,6408,,,,,,,,6 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+workers_compensation,13528,28273.93738842159,615.4704200723373,0.02176811851908456,26482.0,0.08,1.0009,7.02105019998271,
+workers_compensation,13501,,,,,,,,6 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+workers_compensation,9466,164797.82267530874,3274.724497031274,0.019871163610476014,157815.0,1.49,1.002,8.04624589998275,
+workers_compensation,353,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+workers_compensation,18538,2250.800388821947,162.43234584209318,0.0721664820429097,1738.0,0.0,1.00068,7.795147299999371,
+workers_compensation,965,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+workers_compensation,8672,74294.99917570018,976.0255218557661,0.013137163102291233,72813.0,6.529999999999999,1.00055,7.522850699984701,
+other_liability,27065,24115.866673981804,921.1419818447328,0.03819651162852617,20131.0,0.0,1.00072,9.23011500001303,
+other_liability,33049,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+other_liability,5320,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+other_liability,34606,547.9357263198647,82.510221544559,0.1505837593374822,499.0,35.199999999999996,1.00125,7.603720600018278,
+other_liability,14257,,,,,,,,7 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+other_liability,671,,,,,,,,3 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+other_liability,2143,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+other_liability,38733,26759.676314928336,1664.654677396657,0.0622075789634272,24111.0,4.34,1.00089,7.801884099986637,
+other_liability,41580,,,,,,,,3 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+other_liability,15113,1825.1904488113396,147.7615116988754,0.08095676360519283,2154.0,98.05,1.0008,7.437428099976387,
+other_liability,14176,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+other_liability,14044,4973.967574071583,261.78167850431004,0.052630354863777526,4787.0,23.52,1.00236,7.91540990001522,
+other_liability,1252,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+other_liability,15148,457.58000325095753,52.929234430577864,0.11567208806008308,349.0,0.26,1.00243,7.3362175000074785,
+other_liability,13994,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+other_liability,16373,216.4559672271642,10.433022038088216,0.048199281229050456,204.0,13.350000000000001,1.00171,6.9790558999811765,
+other_liability,17043,,,,,,,,5 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+other_liability,15210,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+other_liability,13919,4884.531226583252,256.4461963527256,0.05250170066618874,4658.0,17.77,1.00213,7.746452000021236,
+other_liability,15571,17075.54032659773,458.0324572022216,0.026823892447418896,16536.0,11.39,1.00094,6.847929000010481,
+other_liability,5185,148742.96352364612,2873.8496133088265,0.019320911357611627,141013.0,0.15,1.00205,8.172171700018225,
+other_liability,11126,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+other_liability,28550,5438.636206064775,688.0257181041775,0.12650703081352285,6246.0,88.69,1.00081,7.485559299995657,
+other_liability,13668,800.7849975641601,55.37927038297858,0.06915622863993716,959.0,99.47,1.00137,7.259672799991677,
+other_liability,620,439805.2922954258,15584.226327005083,0.03543437652982324,439839.0,50.68,1.00097,9.266119900014019,
+other_liability,3240,14027.415825454224,616.9163561988873,0.04397933046794176,14144.0,58.91,1.00129,8.872099800006254,
+other_liability,30651,,,,,,,,3 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+other_liability,2135,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+other_liability,715,66181.44017029501,3105.3174130864545,0.04692127286888886,63524.0,20.59,1.00248,11.794635300000664,
+other_liability,6459,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+other_liability,14885,525.1109657666454,32.12089846492236,0.06116973470174416,505.0,28.43,1.00143,7.481629399990197,
+other_liability,18163,7447.27456278085,485.7710114506761,0.06522802501178186,7059.0,21.52,1.00261,7.94476549999672,
+other_liability,42439,30652.66657931311,3625.3855362675627,0.11827308814673451,31327.0,60.86,1.00267,8.858638999983668,
+other_liability,1538,20391.674230718367,1217.0151992176557,0.05968196556339269,15945.0,0.0,1.00237,9.024996599997394,
+other_liability,833,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+other_liability,26797,,,,,,,,3 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+other_liability,36315,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+other_liability,2003,309358.6097277971,24974.581843096832,0.08073019808652433,272941.0,5.99,1.00083,7.692383899993729,
+other_liability,14370,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+other_liability,13501,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+other_liability,683,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+other_liability,41068,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+other_liability,10657,74710.25787502892,2351.827579843494,0.031479312837836775,72172.0,14.16,1.00088,7.4929792000039015,
+other_liability,7625,11217.141880258318,820.2477173455411,0.0731244844811263,9076.0,0.12,1.00355,7.774260600010166,
+other_liability,18686,,,,,,,,4 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+other_liability,2208,,,,,,,,10 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+other_liability,6947,,,,,,,,2 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments
+other_liability,29440,678.5736193653385,117.77542136742018,0.17356321850173614,497.0,2.9899999999999998,1.00082,7.378256200026954,
+other_liability,1767,2381084.862038652,54712.3582581546,0.022977911930157177,2190615.0,0.0,1.00109,7.673469700006535,
+other_liability,43354,,,,,,,,1 negative incremental 'paid_loss' cells; the over-dispersed Poisson likelihood requires non-negative increments

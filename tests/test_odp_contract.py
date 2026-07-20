@@ -68,6 +68,22 @@ def test_pearson_phi_positive(genins_contract):
     assert 40_000 < phi < 70_000
 
 
+def test_pearson_phi_tolerates_zero_dev_column():
+    """A fully-paid-early book has an all-zero last dev column; the fitted
+    means there are exactly 0 and must be excluded, not fatal."""
+    rng = np.random.default_rng(7)
+    n = 4
+    w, d, inc = [], [], []
+    for wi in range(1, n + 1):
+        for di in range(1, n + 2 - wi):
+            w.append(wi)
+            d.append(di)
+            # zero out the last dev column entirely
+            inc.append(0.0 if di == n else float(rng.gamma(5, 100)))
+    phi = pearson_phi(np.array(w), np.array(d), np.array(inc), n, n)
+    assert phi > 0 and np.isfinite(phi)
+
+
 def test_negative_increment_rejected():
     tri_cl = cl.load_sample("raa")  # raa has a famous negative increment
     t = Triangle.from_chainladder(tri_cl)

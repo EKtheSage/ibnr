@@ -78,4 +78,19 @@ paid-to-date per origin; `cape_cod` does not.
 - Retrospective Meyers protocol on paid: `scripts/meyers_validation.py
   --model clark`. Results in `analysis/results/clark_validation.csv`.
   No published Meyers-monograph bar exists for Clark; the comparison set is
-  the paid panel (odp, meyers_csr, mack) on identical cohorts.
+  the paid panel (england_verrall_odp, meyers_csr) on identical cohorts.
+
+**Result (2026-07-20, cape_cod, 95/200 companies completed — 105 rejected
+for negative paid increments, PPA worst): fails uniformity catastrophically.
+Combined KS D = 61.3* vs crit 14.0 with outcome percentiles piled at ~0 —
+systematic paid over-prediction.** Two stacked causes: (1) the post-1997
+settlement speedup that sinks every no-speedup paid model in this window
+(Meyers' bootstrap ODP: D = 24.1*; our Bayesian ODP panel: same story);
+(2) the loglogistic tail — G still holds several percent of ultimate beyond
+the ages where short-tail books have finished paying, so even books the ODP
+scores mid-range get dragged to percentile ~0. The **weibull arm** isolates
+cause 2: D = 49.6* (`clark_validation_weibull.csv`,
+`--growth-curve weibull`), OL passes (25.8 < 27.8), CA improves 54→39 —
+materially better, still failing on the regime. Use weibull for short-tail
+lines; treat this entry's role in the paid panel as the curve-fit baseline,
+not a calibrated reserve.
