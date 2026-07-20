@@ -84,7 +84,16 @@ D = 24.1* vs critical 9.6, failing three of four lines individually
 (CA 23.1*, PA 44.9*, WC 28.4*, OL 6.8 vs critical 19.2) — the outcome
 percentiles skew low because the ODP, like the plain cross-classified
 model, over-predicts paid losses when settlement speeds up; meyers_csr's
-settlement-rate term is the monograph's fix (combined D = 3.1). Expect this
-entry to land near the bootstrap ODP's numbers; its role in the gallery is
-the calibrated Bayesian baseline the fancier models must beat, feeding the
-same ELPD/stacking harness.
+settlement-rate term is the monograph's fix (combined D = 3.1).
+
+**Result (2026-07-20, 96/200 companies completed — 104 rejected for
+negative paid increments, the honest ODP-family coverage limit; Meyers'
+bootstrap tolerated them in fitting, which is one reason his n = 200):
+combined KS D = 47.9* vs crit 13.9, all four lines fail (CA 56.7*,
+PA 63.6*, WC 49.7*, OL 29.8* marginal), percentiles piled low.** The
+monograph's failure mode, amplified: the completed subset is
+selection-biased toward longer-tailed books (a book must still be paying
+at late lags to avoid both rejection modes), where the no-speedup
+over-prediction is worst. Same window, same cohorts: meyers_csr passes at
+D = 4.1. This entry's role is the calibrated Bayesian ODP baseline for the
+ELPD/stacking harness, not a model expected to survive this backtest.
