@@ -99,3 +99,11 @@ own paid CSR result (2nd ed. Figure 7.4) **passes uniformity outright**:
 combined KS D = 3.1 vs critical 9.6, and every line individually (CA 5.9,
 PA 18.5, WC 12.0, OL 10.4 vs critical 19.2) — versus the plain CRC's
 combined D = 25.5*. That is the bar to compare against.
+
+**Our result (2026-07-20, 200 companies, 4x2500 draws, adapt_delta 0.9,
+zero failures): combined KS D = 4.1 (crit 9.6, p = 0.885) — passes, in line
+with Meyers' 3.1.** Per line (crit 19.2): CA 7.4, WC 11.9, OL 13.3 all
+pass; PA fails at 25.3* (Meyers' PA was 18.5, just under — private
+passenger auto's post-1997 settlement regime is the shared weak spot).
+Occasional divergences (typically <0.2%, worst ~1.3% on one chain) —
+the centered-parameterization property already documented for CCL.
