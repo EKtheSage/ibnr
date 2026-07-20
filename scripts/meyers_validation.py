@@ -45,11 +45,12 @@ MODEL_LOSS_FIELDS = {
     "meyers_csr": "paid_loss",
     "england_verrall_odp": "paid_loss",
     "clark": "paid_loss",
+    "clark_growth_curve": "paid_loss",
 }
 
 #: models fit by MCMC — they take the chains/warmup/draws arguments and
 #: report R-hat; the likelihood-based entries (clark) take neither
-MCMC_MODELS = {"meyers_ccl", "meyers_csr", "england_verrall_odp"}
+MCMC_MODELS = {"meyers_ccl", "meyers_csr", "england_verrall_odp", "clark_growth_curve"}
 
 #: models needing Meyers' pmax(cum_pdloss, 1) floor — the lognormal cannot
 #: take non-positive cells. The ODP takes zeros natively and must see the
