@@ -37,16 +37,24 @@ def build_model(data: dict[str, Any]):
     colmask = idx["colmask"]  # (N, N) contribution mask
     logloss_prev = idx["logloss_prev"]  # (N,)
     max_expo = int(expo.max())
-    root10 = np.sqrt(10.0)
+    root10 = np.sqrt(10.0)  # prior SD shared by all three normals: Stan sqrt(10.0)
 
     model = pm.Model()
     with model:
-        logelr = pm.Normal("logelr", -0.4, root10)
+        # Priors — identical to model_numpyro.py and to Stan's `model` block
+        # (model.stan lines 64-68), held constant for parity. r_alpha/r_beta are
+        # the free (n-1) accident-year / dev-lag effects; a_ig is the per-dev
+        # variance seed (reparam note in module docstring); r_rho is raw on (0, 1).
+        logelr = pm.Normal("logelr", -0.4, root10)  # log expected loss ratio
         r_alpha = pm.Normal("r_alpha", 0.0, root10, shape=n_w - 1)
         r_beta = pm.Normal("r_beta", 0.0, root10, shape=n_d - 1)
         a_ig = pm.InverseGamma("a_ig", alpha=1.0, beta=1.0, shape=n_d)
         r_rho = pm.Beta("r_rho", 2.0, 2.0)
 
+        # Identifiability pinning, as in Stan's transformed parameters: alpha[1]=0
+        # (model.stan 42-43), beta[n_d]=0 (44-45). rho = 2*r_rho-1 maps Beta(2,2)
+        # onto (-1, 1) (model.stan 46) — the CCL correlation between successive
+        # accident years' log-losses.
         alpha = pm.Deterministic("alpha", pt.concatenate([pt.zeros(1), r_alpha]))
         beta = pm.Deterministic("beta", pt.concatenate([r_beta, pt.zeros(1)]))
         rho = pm.Deterministic("rho", 2.0 * r_rho - 1.0)
@@ -67,6 +75,7 @@ def build_model(data: dict[str, Any]):
         p_mat = colmask * pow_table[expo]
         mu = pm.Deterministic("mu", p_mat @ big_b)
 
+        # Likelihood: log(C[w,d]) ~ Normal(mu, sig[d]) — Stan model block line 69.
         pm.Normal("obs", mu, sig[d0], observed=logloss)
     return model
 
@@ -105,6 +114,11 @@ def sample(
     model = build_model(data)
     t0 = time.perf_counter()
     with model:
+        # `init` left at pm.sample's default (jitter+adapt_diag): no custom init,
+        # so the card's convergence comparison measures the centered
+        # parameterization, not an init trick. compute_convergence_checks=False
+        # keeps sampling clean — R-hat/ESS are computed once via arviz in
+        # model.py::convergence() so every backend reports identical diagnostics.
         idata = pm.sample(
             draws=iter_sampling,
             tune=iter_warmup,
@@ -118,6 +132,8 @@ def sample(
             compute_convergence_checks=False,
         )
     runtime_s = time.perf_counter() - t0
+    # Stamp runtime + backend onto idata attrs for model.py::convergence() and the
+    # card's cross-backend table; the label records which NUTS ran the same graph.
     idata.attrs["runtime_s"] = runtime_s
     idata.attrs["backend"] = f"pymc:{nuts_sampler}" if nuts_sampler != "pymc" else "pymc"
     return idata

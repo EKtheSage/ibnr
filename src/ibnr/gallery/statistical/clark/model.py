@@ -18,7 +18,15 @@ Predictive distribution = Clark's own variance decomposition, simulated:
 parameter risk from the MVN with covariance phi * inverse observed Fisher
 information (log-parameter space), process risk as scaled-Poisson ODP draws,
 truncated at the triangle's final age (no tail extrapolation — the backtest
-scores C[w, n_d], and chainladder's ClarkLDF truncates identically)."""
+scores C[w, n_d], and chainladder's ClarkLDF truncates identically).
+
+Relation to ``bayesian/clark_growth_curve``: identical model and growth-curve
+parameterization, different inference. This statistical-family entry is
+frequentist — a single MLE point estimate whose uncertainty is *simulated*
+(parameter risk from an asymptotic MVN via the delta method, process risk from
+scaled-Poisson draws), so no MCMC and no priors. The Bayesian twin instead
+samples the joint posterior of the same parameters. Both emit the same
+``PredictiveDistribution`` and feed the shared evaluation harness."""
 
 from __future__ import annotations
 
@@ -40,9 +48,17 @@ METHODS = ("ldf", "cape_cod")
 
 def growth(x: np.ndarray, omega: float, theta: float, curve: str) -> np.ndarray:
     """Clark's growth functions: expected fraction of ultimate paid by age x
-    (months). G(0) = 0, G -> 1 as x -> inf."""
+    (months). G(0) = 0, G -> 1 as x -> inf.
+
+    Clark (2003), the two curves he fits:
+      loglogistic  G = x^omega / (x^omega + theta^omega)
+      weibull      G = 1 - exp(-(x/theta)^omega)
+    omega = shape (steepness), theta = scale (age at which half of ultimate is
+    reported). x is a scalar age or a vector of ages, returned elementwise."""
     x = np.maximum(np.asarray(x, dtype=float), 0.0)
     if curve == "loglogistic":
+        # Computed as 1/(1 + (theta/x)^omega), algebraically identical to the
+        # x^omega/(x^omega + theta^omega) card form but numerically stable.
         # overflow in (theta/x)^omega during optimizer exploration is benign:
         # 1/(1+inf) -> 0 is the correct limit
         with np.errstate(divide="ignore", over="ignore"):
@@ -53,7 +69,11 @@ def growth(x: np.ndarray, omega: float, theta: float, curve: str) -> np.ndarray:
 
 
 def _hessian(f, x0: np.ndarray, rel_step: float = 1e-4) -> np.ndarray:
-    """Central-difference Hessian of a scalar function; dims here are <= n_w + 2."""
+    """Central-difference Hessian of a scalar function; dims here are <= n_w + 2.
+
+    Numerical observed information for Clark's parameter risk: the Hessian of
+    the negative quasi-log-likelihood at the MLE. Returns a (k, k) matrix for
+    k = len(x0) parameters (log-levels + log-omega + log-theta)."""
     k = len(x0)
     h = rel_step * np.maximum(np.abs(x0), 1.0)
     hess = np.empty((k, k))
@@ -92,15 +112,20 @@ class Clark(GalleryEntry):
             raise ValueError(f"growth_curve must be one of {GROWTH_CURVES}")
         if method not in METHODS:
             raise ValueError(f"method must be one of {METHODS}")
+        # Backtest slice, then the same incremental ODP contract the E&V entry
+        # uses (Clark shares the od-Poisson likelihood, only the mean differs).
         train = triangle.as_of(as_of) if as_of is not None else triangle
         self.contract_ = odp_stan_data(train, loss_field=loss_field, premium_field=premium_field)
         self._loss_field = loss_field
         c = self.contract_
-        w, d, inc = c["w"], c["d"], c["inc_loss"]
-        step = c["dev_grain_months"]
-        # ages from the average accident date: [max(step(d-1) - step/2, 0), step*d - step/2]
-        age_lo = np.maximum(step * (d - 1) - step / 2, 0.0)
-        age_hi = step * d - step / 2
+        w, d, inc = c["w"], c["d"], c["inc_loss"]  # ragged (len_data,) per observed cell
+        step = c["dev_grain_months"]  # 12 for annual grain
+        # Each cell spans an age interval measured from the origin's average
+        # accident date (uniform-writing => shift back half a period): a dev at
+        # index d covers [max(step(d-1) - step/2, 0), step*d - step/2] months.
+        # The cell's expected increment is U * (G(age_hi) - G(age_lo)).
+        age_lo = np.maximum(step * (d - 1) - step / 2, 0.0)  # (len_data,)
+        age_hi = step * d - step / 2  # (len_data,)
 
         if method == "ldf":
             row_tot = np.array([inc[w == wi].sum() for wi in range(1, c["n_w"] + 1)])
@@ -112,23 +137,34 @@ class Clark(GalleryEntry):
 
         def profiled_level(om: float, th: float) -> np.ndarray:
             """MLE of per-origin ultimates given the curve: U_w (ldf) or
-            ELR * premium (cape_cod), both closed-form Poisson MLEs."""
+            ELR * premium (cape_cod), both closed-form Poisson MLEs.
+
+            Given (omega, theta), the level parameters maximize the Poisson
+            likelihood in closed form, so the optimizer only searches the 2-D
+            curve. ldf: U_w = (row paid) / (row sum of G-increments). cape_cod:
+            a single ELR = total paid / sum(premium * G-increment)."""
+            # Per-cell share of ultimate falling in this cell's age interval.
             ginc = growth(age_hi, om, th, growth_curve) - growth(age_lo, om, th, growth_curve)
             if method == "ldf":
-                gsum = np.array([ginc[w == wi].sum() for wi in range(1, c["n_w"] + 1)])
+                gsum = np.array([ginc[w == wi].sum() for wi in range(1, c["n_w"] + 1)])  # (n_w,)
                 return np.array([inc[w == wi].sum() for wi in range(1, c["n_w"] + 1)]) / gsum
-            elr = inc.sum() / (premium[w - 1] * ginc).sum()
-            return elr * premium
+            elr = inc.sum() / (premium[w - 1] * ginc).sum()  # scalar Cape Cod ELR
+            return elr * premium  # (n_w,)
 
         def negll_curve(logparams: np.ndarray) -> float:
+            # logparams = (log omega, log theta); optimize in log space to keep
+            # both curve parameters positive. Returns the concentrated Poisson
+            # deviance (up to a data-only constant) with levels profiled out.
             om, th = np.exp(logparams)
             ginc = growth(age_hi, om, th, growth_curve) - growth(age_lo, om, th, growth_curve)
             if (ginc <= 0).any() or not np.isfinite(ginc).all():
-                return 1e12
-            u = profiled_level(om, th)
-            mu = u[w - 1] * ginc
+                return 1e12  # reject curves that give non-positive increments
+            u = profiled_level(om, th)  # (n_w,)
+            mu = u[w - 1] * ginc  # (len_data,) fitted cell means
+            # -loglik for Poisson dropping the x-only terms: sum(mu - x*log mu).
             return float((mu - inc * np.log(mu)).sum())
 
+        # 2-D Nelder-Mead over the curve; init omega=1.5, theta=4 periods.
         res = minimize(
             negll_curve,
             [np.log(1.5), np.log(4 * step)],
@@ -138,36 +174,45 @@ class Clark(GalleryEntry):
         if not res.success:
             raise RuntimeError(f"Clark MLE did not converge: {res.message}")
         omega, theta = np.exp(res.x)
-        level = profiled_level(omega, theta)  # per-origin ultimates at the MLE
+        level = profiled_level(omega, theta)  # (n_w,) per-origin ultimates at the MLE
 
-        # full-parameter quasi-Poisson information for Clark's parameter risk;
-        # everything in log space (levels are positive by construction)
+        # For parameter risk Clark needs the FULL joint information over levels
+        # and curve together (profiling hides the level<->curve correlation).
+        # Assemble the full log-parameter vector at the MLE, everything in log
+        # space so simulated draws stay positive by construction.
         if method == "ldf":
-            full0 = np.concatenate([np.log(level), res.x])
+            full0 = np.concatenate([np.log(level), res.x])  # (n_w + 2,): log U_w, log om, log th
         else:
-            elr = level[0] / premium[0]
-            full0 = np.concatenate([[np.log(elr)], res.x])
+            elr = level[0] / premium[0]  # recover the scalar ELR from U = ELR*prem
+            full0 = np.concatenate([[np.log(elr)], res.x])  # (3,): log ELR, log om, log th
 
         def negll_full(fp: np.ndarray) -> float:
+            # Same Poisson deviance as negll_curve but with the levels held as
+            # free parameters (not profiled) so the Hessian sees all dimensions.
             om, th = np.exp(fp[-2:])
             ginc = growth(age_hi, om, th, growth_curve) - growth(age_lo, om, th, growth_curve)
             if (ginc <= 0).any() or not np.isfinite(ginc).all():
                 return 1e12
             u = np.exp(fp[: c["n_w"]]) if method == "ldf" else np.exp(fp[0]) * premium
-            mu = u[w - 1] * ginc
+            mu = u[w - 1] * ginc  # (len_data,)
             return float((mu - inc * np.log(mu)).sum())
 
+        # Fitted means at the MLE, aligned to the observed cells.
         ginc = growth(age_hi, omega, theta, growth_curve) - growth(
             age_lo, omega, theta, growth_curve
         )
-        mu = level[w - 1] * ginc
+        mu = level[w - 1] * ginc  # (len_data,)
+        # Scale (dispersion) phi = Pearson chi-square / residual dof, Clark's
+        # sigma^2 estimate; p = level params (n_w or 1) + the two curve params.
         n, p = len(inc), (c["n_w"] if method == "ldf" else 1) + 2
         if n <= p:
             raise ValueError(f"triangle has {n} cells but the Clark model has {p} parameters")
         phi = float(((inc - mu) ** 2 / mu).sum() / (n - p))
-        hess = _hessian(negll_full, full0)
-        # quasi-likelihood covariance: phi * inverse Poisson information
-        cov = phi * np.linalg.pinv(hess)
+        # Observed information at the MLE (numerical Hessian of -loglik) ...
+        hess = _hessian(negll_full, full0)  # (p, p)
+        # ... inverted and scaled by phi = the quasi-likelihood delta-method
+        # covariance of the log-parameters (Clark's parameter-risk covariance).
+        cov = phi * np.linalg.pinv(hess)  # (p, p)
 
         self.params_ = {
             "growth_curve": growth_curve,
@@ -194,22 +239,32 @@ class Clark(GalleryEntry):
         curve, method, phi = prm["growth_curve"], prm["method"], prm["phi"]
         premium = c.get("premium")
 
+        # PARAMETER RISK: draw the whole log-parameter vector from its
+        # asymptotic MVN (mean = MLE, cov = the delta-method covariance above),
+        # then exponentiate back to the natural scale.
         rng = np.random.default_rng(seed)
-        draws = rng.multivariate_normal(prm["log_params"], prm["log_cov"], size=n_draws)
-        om = np.exp(draws[:, -2])
-        th = np.exp(draws[:, -1])
+        draws = rng.multivariate_normal(prm["log_params"], prm["log_cov"], size=n_draws)  # (N, p)
+        om = np.exp(draws[:, -2])  # (n_draws,) curve shape per draw
+        th = np.exp(draws[:, -1])  # (n_draws,) curve scale per draw
         if method == "ldf":
-            levels = np.exp(draws[:, :n_w])  # (n_draws, n_w)
+            levels = np.exp(draws[:, :n_w])  # (n_draws, n_w) free ultimate per origin
         else:
-            levels = np.exp(draws[:, [0]]) * premium[None, :]
+            # cape_cod: single ELR draw scaled by each origin's premium.
+            levels = np.exp(draws[:, [0]]) * premium[None, :]  # (n_draws, n_w)
 
-        ults = np.tile(c["paid_to_date"], (n_draws, 1)).astype(float)
-        for j in range(n_w):
-            for dev in range(int(c["latest_d"][j]) + 1, n_d + 1):
+        # Ultimate = observed paid-to-date + simulated future increments; start
+        # every draw at the origin's latest cumulative paid (constant).
+        ults = np.tile(c["paid_to_date"], (n_draws, 1)).astype(float)  # (n_draws, n_w)
+        for j in range(n_w):  # per origin
+            for dev in range(int(c["latest_d"][j]) + 1, n_d + 1):  # unobserved lags only
+                # Age interval for this future cell (same convention as fit()).
                 lo = max(step * (dev - 1) - step / 2, 0.0)
                 hi = step * dev - step / 2
-                ginc = growth(hi, om, th, curve) - growth(lo, om, th, curve)
-                mu = np.maximum(levels[:, j] * ginc, 1e-12)
+                # Per-draw share of ultimate in the interval, then the cell mean.
+                ginc = growth(hi, om, th, curve) - growth(lo, om, th, curve)  # (n_draws,)
+                mu = np.maximum(levels[:, j] * ginc, 1e-12)  # (n_draws,)
+                # PROCESS RISK: od-Poisson draw X ~ phi * Poisson(mu/phi),
+                # mean mu, variance phi*mu — same process law as the ODP entries.
                 ults[:, j] += phi * rng.poisson(mu / phi)
 
         targets = pd.DataFrame(

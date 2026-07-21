@@ -48,14 +48,23 @@ def ccl_model(data: dict[str, Any]) -> None:
     colmask = jnp.asarray(idx["colmask"])  # (N, N) contribution mask
     logloss_prev = jnp.asarray(idx["logloss_prev"])  # (N,)
     max_expo = int(idx["expo"].max())
-    root10 = np.sqrt(10.0)
+    root10 = np.sqrt(10.0)  # prior SD shared by all three normals: Stan sqrt(10.0)
 
-    logelr = numpyro.sample("logelr", dist.Normal(-0.4, root10))
+    # Priors — the monograph values, byte-for-byte the Stan `model` block
+    # (model.stan lines 64-68), held constant for parity. r_alpha/r_beta are the
+    # *free* accident-year / dev-lag effects (n-1 of each; the last is pinned to 0
+    # below). a_ig is the per-dev variance seed (see reparam note in the module
+    # docstring); r_rho is the raw correlation on (0, 1).
+    logelr = numpyro.sample("logelr", dist.Normal(-0.4, root10))  # log expected loss ratio
     r_alpha = numpyro.sample("r_alpha", dist.Normal(0.0, root10).expand([n_w - 1]))
     r_beta = numpyro.sample("r_beta", dist.Normal(0.0, root10).expand([n_d - 1]))
     a_ig = numpyro.sample("a_ig", dist.InverseGamma(1.0, 1.0).expand([n_d]))
     r_rho = numpyro.sample("r_rho", dist.Beta(2.0, 2.0))
 
+    # Identifiability pinning, exactly as Stan's transformed-parameters block:
+    # alpha[1] = 0 (model.stan 42-43) and beta[n_d] = 0 (44-45) anchor the AY/dev
+    # effects. rho = 2*r_rho - 1 maps Beta(2,2) on (0,1) onto (-1, 1) (model.stan
+    # 46): rho is the CCL correlation between successive accident years' log-losses.
     alpha = numpyro.deterministic("alpha", jnp.concatenate([jnp.zeros(1), r_alpha]))
     beta = numpyro.deterministic("beta", jnp.concatenate([r_beta, jnp.zeros(1)]))
     rho = numpyro.deterministic("rho", 2.0 * r_rho - 1.0)
@@ -76,6 +85,8 @@ def ccl_model(data: dict[str, Any]) -> None:
     p_mat = colmask * pow_table[expo]
     mu = numpyro.deterministic("mu", p_mat @ big_b)
 
+    # Likelihood: log(C[w,d]) ~ Normal(mu, sig[d]) — Stan model block line 69,
+    # `logloss ~ normal(mu, sig[d])`. sig[d0] broadcasts the per-dev SD to cells.
     numpyro.sample("obs", dist.Normal(mu, sig[d0]), obs=logloss)
 
 
@@ -105,6 +116,9 @@ def sample(
     numpyro.set_host_device_count(chains)
     seed = 0 if seed is None else int(seed)
 
+    # Init strategy is left at NUTS's default (init_to_uniform): no custom init is
+    # passed, so the convergence comparison in card.md reflects the centered
+    # parameterization itself, not an init trick — kept identical across backends.
     kernel = NUTS(ccl_model, target_accept_prob=target_accept)
     mcmc = MCMC(
         kernel,
@@ -118,6 +132,8 @@ def sample(
     mcmc.run(jax.random.PRNGKey(seed), data)
     runtime_s = time.perf_counter() - t0
 
+    # Stamp runtime + backend onto the idata attrs; model.py::convergence() and
+    # the card's cross-backend table read wall-clock and backend label from here.
     idata = az.from_numpyro(mcmc)
     idata.attrs["runtime_s"] = runtime_s
     idata.attrs["backend"] = "numpyro"

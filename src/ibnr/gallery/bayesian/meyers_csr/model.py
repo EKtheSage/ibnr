@@ -70,7 +70,12 @@ class MeyersCSR(GalleryEntry):
     ) -> MeyersCSR:
         if backend not in BACKENDS:
             raise ValueError(f"backend must be one of {BACKENDS}, got {backend!r}")
+        # as_of slices the triangle to the training diagonal (backtest cutoff);
+        # None trains on the whole triangle as given.
         train = triangle.as_of(as_of) if as_of is not None else triangle
+        # stan_data builds the shared Meyers contract dict (the Stan `data`
+        # block per CLAUDE.md decision 3). CSR consumes logloss = log paid,
+        # logprem = log net earned premium, and the (w, d) index arrays.
         self.contract_ = stan_data(train, loss_field=loss_field, premium_field=premium_field)
         self._loss_field = loss_field
         self.backend_ = backend
@@ -123,13 +128,24 @@ class MeyersCSR(GalleryEntry):
         c = self.contract_
         n_w, n_d = c["n_w"], c["n_d"]
 
+        # Posterior draws of the cross-classified parameters (see model.stan):
+        #   alpha[w]  accident-year level offset (alpha[1] = 0 anchors the level)
+        #   logelr    log expected loss ratio; e^logelr is the Cape Cod ELR
+        #   sig[d]    lognormal scale per dev lag, decreasing in d (more settled
+        #             claims -> less process variance)
         alpha = pooled(self.idata_, "alpha")  # (draws, n_w)
         logelr = pooled(self.idata_, "logelr")  # (draws,)
         sig = pooled(self.idata_, "sig")  # (draws, n_d)
         n_draws = logelr.shape[0]
+        # Ultimate = last dev lag n_d; use sig at n_d. The settlement-rate term
+        # beta[d] * (1 - gamma)^(w-1) vanishes because beta[n_d] = 0, so the
+        # speedup/slowdown drift does NOT enter the ultimate (why CSR ultimates
+        # coincide with the plain CRC model's — card.md "Predictive distribution").
         sig_last = sig[:, n_d - 1]
-        logprem = np.log(c["premium"])  # per origin
+        logprem = np.log(c["premium"])  # per origin, shape (n_w,)
 
+        # Origin 1 is fully developed at the cutoff: its observed C[1, n_d] is
+        # the deterministic anchor (zero predictive variance), per CSR.R step 1.
         first_mask = (c["w"] == 1) & (c["d"] == n_d)
         if not first_mask.any():
             raise ValueError(
@@ -139,10 +155,13 @@ class MeyersCSR(GalleryEntry):
         c1_ult = float(c["loss"][first_mask][0])
 
         rng = np.random.default_rng(seed)
-        ults = np.empty((n_draws, n_w))
+        ults = np.empty((n_draws, n_w))  # (draws, n_w): ultimate per origin
         ults[:, 0] = c1_ult
+        # Origins w >= 2 are conditionally independent (CSR has no across-origin
+        # rho, unlike CCL): each C[w, n_d] ~ lognormal(mu, sig[n_d]) with
+        # mu = logprem[w] + logelr + alpha[w]. This is CSR.R step 2.
         for j in range(1, n_w):
-            mu = logprem[j] + logelr + alpha[:, j]
+            mu = logprem[j] + logelr + alpha[:, j]  # (draws,)
             ults[:, j] = np.exp(rng.normal(mu, sig_last))
 
         targets = pd.DataFrame(
@@ -179,6 +198,10 @@ class MeyersCSR(GalleryEntry):
         if self.idata_ is None:
             raise RuntimeError("call fit() first")
         if var_names is None:
+            # Sampled (non-deterministic) core parameters: logelr (log ELR),
+            # r_alpha (free AY offsets), r_beta (dev profile), a_ig (the
+            # inverse-gamma variance components building sig2), and gamma (the
+            # settlement-rate trend — CSR's signature parameter).
             var_names = ["logelr", "r_alpha", "r_beta", "a_ig", "gamma"]
         var_names = [v for v in var_names if v in self.idata_.posterior]
         summ = az.summary(self.idata_, var_names=var_names)

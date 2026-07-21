@@ -26,6 +26,10 @@ from ibnr.triangle.core import Triangle
 
 STAN_FILE = Path(__file__).parent / "model.stan"
 
+#: Clark's two growth curves G(x) = fraction of ultimate emerged by age x
+#: months. loglogistic: G = 1 / (1 + (theta/x)^omega); weibull:
+#: G = 1 - exp(-(x/theta)^omega). Integer codes are passed to Stan as data so
+#: the port cannot drift on which curve it fits (Clark 2003, section 2).
 CURVE_CODES = {"loglogistic": 1, "weibull": 2}
 
 #: posterior backends this entry can dispatch to (ports land in milestone 5)
@@ -74,6 +78,9 @@ class ClarkGrowthCurve(GalleryEntry):
         if growth_curve not in CURVE_CODES:
             raise ValueError(f"growth_curve must be one of {tuple(CURVE_CODES)}")
         train = triangle.as_of(as_of) if as_of is not None else triangle
+        # odp_stan_data builds the INCREMENTAL-cell contract (Clark models
+        # incremental emergence, not cumulative); premium is required for the
+        # Cape Cod ELR and negative increments are rejected upstream.
         self.contract_ = odp_stan_data(train, loss_field=loss_field, premium_field=premium_field)
         if "premium" not in self.contract_:
             raise ValueError("clark_growth_curve needs a premium_field (Cape Cod ultimates)")
@@ -93,6 +100,13 @@ class ClarkGrowthCurve(GalleryEntry):
         c = self.contract_
         c["phi"] = self.mle_.params_["phi"]
 
+        # Assemble the Stan `data` block. Ages are DATA, not model logic (so a
+        # port cannot drift on the convention): each incremental cell at dev d
+        # spans the age interval (age_lo, age_hi] measured in months from the
+        # origin's *average* accident date, hence the -step/2 mid-period shift
+        # (Clark 2003 uses the average date of the accident period). For dev d
+        # the raw window is ((d-1)*step, d*step]; subtracting step/2 centers it,
+        # and the first period's lower edge is clamped to 0.
         step = c["dev_grain_months"]
         stan_data = {
             "len_data": c["len_data"],
@@ -101,9 +115,11 @@ class ClarkGrowthCurve(GalleryEntry):
             "age_lo": np.maximum(step * (c["d"] - 1) - step / 2, 0.0),
             "age_hi": step * c["d"] - step / 2,
             "inc_loss": c["inc_loss"],
-            "logprem_w": np.log(c["premium"]),
-            "phi": c["phi"],
+            "logprem_w": np.log(c["premium"]),  # (n_w,): log net earned premium
+            "phi": c["phi"],  # plug-in Pearson dispersion from the MLE twin
             "curve": CURVE_CODES[growth_curve],
+            # theta prior median tracks the grain (4 dev periods): keeps the
+            # scale prior comparable across annual/quarterly triangles.
             "theta_prior_median": 4.0 * step,
         }
         self.idata_ = self._sample_stan(
@@ -156,20 +172,33 @@ class ClarkGrowthCurve(GalleryEntry):
         n_w, n_d, step, phi = c["n_w"], c["n_d"], c["dev_grain_months"], c["phi"]
         curve = self._curve
 
-        logelr = pooled(self.idata_, "logelr")
-        om = pooled(self.idata_, "omega")
-        th = pooled(self.idata_, "theta")
+        # Posterior draws: logelr (log ELR), omega (curve shape), theta (curve
+        # scale in months). Parameter risk comes from these draws.
+        logelr = pooled(self.idata_, "logelr")  # (draws,)
+        om = pooled(self.idata_, "omega")  # (draws,)
+        th = pooled(self.idata_, "theta")  # (draws,)
         n_draws = logelr.shape[0]
-        elr_prem = np.exp(logelr[:, None] + np.log(c["premium"])[None, :])
+        # Cape Cod expected ultimate per origin: elr * premium. One ELR shared
+        # across origins (Clark's recommendation for triangle-sized data).
+        elr_prem = np.exp(logelr[:, None] + np.log(c["premium"])[None, :])  # (draws, n_w)
 
         rng = np.random.default_rng(seed)
-        ults = np.tile(c["paid_to_date"], (n_draws, 1)).astype(float)
+        # Anchor each origin at its observed paid-to-date, then add simulated
+        # future increments cell-by-cell (fully-developed origins get no cells).
+        ults = np.tile(c["paid_to_date"], (n_draws, 1)).astype(float)  # (draws, n_w)
         for j in range(n_w):
+            # Only unobserved future dev lags (beyond the latest seen for this
+            # origin) up to the triangle's final age n_d — no tail extrapolation.
             for dev in range(int(c["latest_d"][j]) + 1, n_d + 1):
                 lo = max(step * (dev - 1) - step / 2, 0.0)
                 hi = step * dev - step / 2
-                ginc = growth(hi, om, th, curve) - growth(lo, om, th, curve)
-                mu = np.maximum(elr_prem[:, j] * ginc, 1e-12)
+                # Expected fraction emerging in (lo, hi]: G(hi) - G(lo).
+                ginc = growth(hi, om, th, curve) - growth(lo, om, th, curve)  # (draws,)
+                # Expected increment E[X] = elr*premium * (G(hi) - G(lo)).
+                mu = np.maximum(elr_prem[:, j] * ginc, 1e-12)  # (draws,)
+                # Process risk as scaled-Poisson ODP: Var[X] = phi * E[X], drawn
+                # as phi * Poisson(mu/phi) (Clark 2003 ODP; same as the MLE twin,
+                # with the posterior replacing its delta-method MVN).
                 ults[:, j] += phi * rng.poisson(mu / phi)
 
         targets = pd.DataFrame(
@@ -202,6 +231,8 @@ class ClarkGrowthCurve(GalleryEntry):
         if self.idata_ is None:
             raise RuntimeError("call fit() first")
         if var_names is None:
+            # The three sampled parameters: logelr (log ELR), omega (growth-curve
+            # shape), theta (growth-curve scale). phi is plug-in data, not sampled.
             var_names = ["logelr", "omega", "theta"]
         var_names = [v for v in var_names if v in self.idata_.posterior]
         summ = az.summary(self.idata_, var_names=var_names)
