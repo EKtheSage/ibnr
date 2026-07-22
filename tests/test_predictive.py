@@ -1,3 +1,17 @@
+"""kernels.predictive + kernels.calibration: the unifying output type and the
+Meyers-style calibration test applied to it.
+
+``PredictiveDistribution`` is what every gallery entry must return — Bayesian, NN,
+or bootstrapped deterministic (CLAUDE.md design decision 4) — so its moment,
+quantile, PIT and totalling behavior is the interface the whole leaderboard rests
+on. ``ks_uniformity`` is the retrospective's verdict: predicted percentiles of
+realized outcomes should be Uniform(0, 1), and the KS statistic against that is
+the number reported as "D" throughout the analysis notebooks.
+
+Everything is checked against a Gaussian reference whose true moments are known,
+so tolerances below are Monte-Carlo noise budgets, not fudge factors.
+"""
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -8,37 +22,58 @@ from ibnr.kernels.predictive import PredictiveDistribution
 
 @pytest.fixture
 def pred():
+    """Two independent targets with known truth: N(100, 10) and N(200, 20).
+
+    20k draws puts the standard error of the mean at ~0.07% and of the SD at
+    ~0.5%, which is what sets the rtol budgets in the tests below. Seeded so the
+    tolerances are deterministic rather than flaky.
+    """
     rng = np.random.default_rng(7)
+    # (20_000 draws, 2 targets) — the canonical PredictiveDistribution layout
     samples = np.column_stack([rng.normal(100, 10, 20_000), rng.normal(200, 20, 20_000)])
     targets = pd.DataFrame({"label": ["a", "b"]})
     return PredictiveDistribution(samples=samples, targets=targets)
 
 
 def test_moments_and_quantiles(pred):
+    """Moments and quantiles are reduced over the draw axis, per target."""
     np.testing.assert_allclose(pred.mean(), [100, 200], rtol=0.01)
+    # SD converges more slowly than the mean, hence the looser 5% budget
     np.testing.assert_allclose(pred.std(), [10, 20], rtol=0.05)
     q = pred.quantile([0.025, 0.975])
-    assert q.shape == (2, 2)
+    assert q.shape == (2, 2)  # (n_quantiles, n_targets)
+    # a 95% interval on target "a" must land on mu +/- 1.96 sigma
     np.testing.assert_allclose(q[:, 0], [100 - 1.96 * 10, 100 + 1.96 * 10], rtol=0.02)
 
 
 def test_cdf_is_pit(pred):
+    """``cdf(observed)`` is the PIT value fed to the KS calibration test: the
+    fraction of draws at or below the outcome, one per target."""
     pits = pred.cdf([100.0, 240.0])
-    assert pits[0] == pytest.approx(0.5, abs=0.02)
-    assert pits[1] == pytest.approx(0.977, abs=0.01)
+    assert pits[0] == pytest.approx(0.5, abs=0.02)  # outcome at the mean
+    assert pits[1] == pytest.approx(0.977, abs=0.01)  # outcome at +2 sigma
+    # one observation per target is required — a length mismatch is a caller bug
+    # that would otherwise misalign every percentile in a retrospective
     with pytest.raises(ValueError, match="shape"):
         pred.cdf([1.0])
 
 
 def test_summary_table(pred):
+    """The reporting frame: target labels carried through, plus estimate (mean),
+    cv (sharpness) and the outcome's percentile (calibration) side by side."""
     table = pred.summary(observed=[110.0, 180.0])
     assert list(table["label"]) == ["a", "b"]
     assert table["estimate"].iloc[0] == pytest.approx(100, rel=0.01)
+    # cv = sd/mean = 20/200; rel=0.06 absorbs the SD's Monte-Carlo noise
     assert table["cv"].iloc[1] == pytest.approx(0.1, rel=0.06)
+    # 110 is +1 sigma on target "a" -> 84.1st percentile, reported on a 0-100 scale
     assert table["percentile"].iloc[0] == pytest.approx(84.1, abs=2)
 
 
 def test_with_total(pred):
+    """``with_total`` appends an aggregate target summed draw-by-draw, which is what
+    preserves dependence: the total's spread reflects the correlation between
+    targets rather than assuming independence."""
     tot = pred.with_total()
     assert tot.n_targets == 3
     assert tot.targets["label"].tolist() == ["a", "b", "total"]
@@ -46,6 +81,8 @@ def test_with_total(pred):
 
 
 def test_shape_validation():
+    """Samples must be 2-D (draws, targets) and their width must match the targets
+    frame — a silent transpose or off-by-one would mislabel every result."""
     with pytest.raises(ValueError, match="2-D"):
         PredictiveDistribution(samples=np.zeros(5), targets=pd.DataFrame({"x": [1]}))
     with pytest.raises(ValueError, match="target rows"):
@@ -53,6 +90,8 @@ def test_shape_validation():
 
 
 def test_ks_uniformity_accepts_uniform():
+    """A genuinely well-calibrated model (PITs actually uniform) is not rejected,
+    and the 5% critical value is the standard large-sample 1.36/sqrt(n)."""
     rng = np.random.default_rng(11)
     res = ks_uniformity(rng.uniform(size=200))
     assert res.critical_value_5pct == pytest.approx(1.36 / np.sqrt(200))
@@ -61,6 +100,9 @@ def test_ks_uniformity_accepts_uniform():
 
 
 def test_ks_uniformity_rejects_concentrated():
+    """PITs bunched near 0.5 — the signature of an over-dispersed model whose
+    intervals are too wide — are rejected, and ``repr`` flags it with the ``*``
+    that marks failing entries in the results tables."""
     rng = np.random.default_rng(11)
     res = ks_uniformity(np.clip(rng.normal(0.5, 0.08, 200), 0, 1))
     assert res.reject_5pct
@@ -69,7 +111,11 @@ def test_ks_uniformity_rejects_concentrated():
 
 
 def test_meyers_critical_values():
-    # the monograph's p-p plot critical values: 19.2 (n=50), 9.6 (n=200)
+    """Anchors our critical values to the published monograph so the D statistics
+    in analysis/results are directly comparable to Meyers' own p-p plots."""
+    # the monograph's p-p plot critical values: 19.2 (n=50), 9.6 (n=200).
+    # Meyers reports on a 0-100 percentile scale, hence the *100; linspace supplies
+    # exactly-uniform PITs so only the critical value (a function of n) is under test.
     assert ks_uniformity(np.linspace(0.01, 0.99, 50)).critical_value_5pct * 100 == pytest.approx(
         19.2, abs=0.05
     )
@@ -79,6 +125,8 @@ def test_meyers_critical_values():
 
 
 def test_pp_points_sorted():
+    """p-p plot coordinates: observed PITs sorted ascending against the expected
+    uniform order statistics i/(n+1), both on a 0-100 scale."""
     expected, predicted = pp_points([0.9, 0.1, 0.5])
     assert predicted.tolist() == [10.0, 50.0, 90.0]
     assert expected.tolist() == [25.0, 50.0, 75.0]

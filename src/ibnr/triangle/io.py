@@ -1,8 +1,30 @@
 """Triangle ingestion and interop.
 
-Interop is sacred: ``from_chainladder``/``to_chainladder`` and
+Every constructor in this module funnels into :func:`from_long`, which is the
+one place that normalizes column names, unpivots wide measure columns, converts
+dev-lag units and attaches :class:`~ibnr.triangle.core.TriangleMeta`. The two
+interop pairs below are thin adapters that reshape a foreign triangle into that
+same long frame — they never build a ``Triangle`` directly.
+
+Interop is sacred (CLAUDE.md): ``from_chainladder``/``to_chainladder`` and
 ``from_bermuda``/``to_bermuda`` must round-trip losslessly (modulo NaN padding
 cells, which chainladder materializes and the long format simply omits).
+
+Two conventions differ from the foreign libraries and are handled here, once:
+
+* **bermuda dev_lag origin.** bermuda's ``Cell.dev_lag`` measures months from
+  the period *end*, so the first diagonal is 0. Ours measures months from the
+  origin *start*, so the first diagonal is 12 (annual grain).
+  :func:`from_bermuda` therefore **recomputes** dev_lag from
+  ``period_start`` and ``evaluation_date`` and never reads bermuda's value;
+  :func:`to_bermuda` symmetrically emits ``period_start``/``period_end`` and
+  lets bermuda derive its own dev_lag.
+* **chainladder valuation timestamps are end-of-day.** A chainladder
+  ``valuation`` is a Timestamp at the end of the valuation period, so filters
+  like ``tri[tri.valuation <= "1985-12-31"]`` *exclude* the 1985 diagonal (use
+  ``< "1986"``). We store ``eval_date`` as a plain ``datetime.date`` at the
+  last day of the period, so both converters normalize the datetime64 columns
+  to dates and back rather than carrying timestamps across the boundary.
 """
 
 from __future__ import annotations
@@ -21,7 +43,12 @@ from ibnr.triangle.core import GRAIN_MONTHS, Triangle, TriangleMeta
 
 def resolve_backend(backend: str | BaseBackend | None = None) -> BaseBackend:
     """'duckdb' (default) and 'polars' are the two supported names; an already
-    connected ibis backend passes through."""
+    connected ibis backend passes through.
+
+    Both backends are first-class by design (CLAUDE.md #2) — duckdb is the
+    default because ibis's polars backend has no window-function support, which
+    the transforms work around but which makes duckdb the faster path.
+    """
     if backend is None or backend == "duckdb":
         return ibis.duckdb.connect()
     if backend == "polars":
@@ -32,6 +59,11 @@ def resolve_backend(backend: str | BaseBackend | None = None) -> BaseBackend:
 
 
 def _register(con: BaseBackend, data) -> IbisTable:
+    """Materialize an in-memory frame (pandas/polars/pyarrow) as a backend table.
+
+    The uuid suffix keeps repeated ingestion on one shared connection from
+    colliding on table names.
+    """
     return con.create_table(f"triangle_{uuid4().hex[:8]}", data)
 
 
@@ -59,14 +91,21 @@ def from_long(
     (stacked-long), or ``fields=[...]`` names measure columns to unpivot.
     ``dev_lag_unit`` is ``"months"`` or ``"periods"`` (multiples of dev_grain).
     ``segments`` restricts which extra columns are kept; default keeps all.
+
+    This is the single ingestion path: the chainladder/bermuda adapters build a
+    long pandas frame and hand it here so name normalization, unit conversion
+    and null dropping happen exactly once.
     """
     if isinstance(data, IbisTable):
-        t = data
+        t = data  # already an ibis expr: keep its backend, do not re-register
     else:
         con = resolve_backend(backend)
         is_path = isinstance(data, str | Path)
         t = con.read_parquet(str(data)) if is_path else _register(con, data)
 
+    # Normalize caller column names to the canonical schema. field/value only
+    # exist in stacked-long input; with fields=[...] they are created by the
+    # unpivot below, so renaming them would fail.
     renames = {"origin_period": origin, "dev_lag": dev, "eval_date": eval_date}
     if fields is None:
         renames |= {"field": field, "value": value}
@@ -75,20 +114,28 @@ def from_long(
         t = t.rename(**renames)
 
     if fields is not None:
+        # Wide input: everything that is not a measure column is an identifier.
         keep = segments if segments is not None else None
         id_cols = [c for c in t.columns if c not in fields]
         if keep is not None:
+            # Drop unrequested segment columns before the unpivot, but never the
+            # three key columns that define a cell.
             id_cols = [c for c in id_cols if c in (*keep, "origin_period", "dev_lag", "eval_date")]
             t = t.select(*id_cols, *fields)
         t = t.pivot_longer(s.cols(*fields), names_to="field", values_to="value")
     elif segments is not None:
         t = t.select(*segments, "origin_period", "dev_lag", "eval_date", "field", "value")
 
+    # dev_lag is stored in months always (CLAUDE.md milestone 1), so "periods"
+    # input (1, 2, 3... dev years/quarters) is scaled by the dev grain here.
     if dev_lag_unit == "periods":
         t = t.mutate(dev_lag=t.dev_lag.cast("int64") * GRAIN_MONTHS[dev_grain])
     elif dev_lag_unit != "months":
         raise ValueError(f"dev_lag_unit must be 'months' or 'periods', got {dev_lag_unit!r}")
 
+    # Long format: absent means unobserved. Nulls (e.g. chainladder's lower-half
+    # padding, or a field missing for one segment) are dropped rather than
+    # stored, so the triangle never carries fabricated cells.
     t = t.filter(t.value.notnull())
     meta = TriangleMeta(
         origin_grain=origin_grain, dev_grain=dev_grain, measure=measure, units=units
@@ -102,20 +149,35 @@ def from_long(
 def from_chainladder(tri, backend: str | BaseBackend | None = None) -> Triangle:
     """Convert a chainladder.Triangle (4D duck array) to a long Triangle.
 
-    NaN padding cells are dropped; chainladder rebuilds them on the way back.
+    chainladder stores an (index x column x origin x development) dense array;
+    the lower half of the square is materialized as NaN. Those padding cells are
+    dropped here — absent means unobserved in the long format — and chainladder
+    rebuilds them on the way back, so the round trip is still lossless.
+
+    chainladder's ``development`` axis is already months from origin start, the
+    same convention as ours, so dev_lag passes through unchanged (unlike
+    bermuda's, see :func:`from_bermuda`). ``valuation`` is an end-of-day
+    Timestamp and is narrowed to a plain date.
     """
+    # keepdims/implicit_axis keep the index and development axes as real columns
+    # even for single-index or single-column triangles, so the melt below sees a
+    # uniform frame regardless of triangle shape.
     df = tri.to_frame(keepdims=True, implicit_axis=True, origin_as_datetime=True).reset_index()
     field_cols = [str(c) for c in tri.columns]
     id_cols = [c for c in df.columns if c not in field_cols]
     long = df.melt(id_vars=id_cols, value_vars=field_cols, var_name="field", value_name="value")
-    long = long.dropna(subset=["value"])
+    long = long.dropna(subset=["value"])  # drop the NaN padding half
     long = long.rename(
         columns={"origin": "origin_period", "development": "dev_lag", "valuation": "eval_date"}
     )
+    # chainladder timestamps -> dates (its valuations are end-of-day timestamps;
+    # keeping them would make eval_date comparisons in as_of() timestamp-sensitive)
     long["origin_period"] = long["origin_period"].dt.date
     long["eval_date"] = long["eval_date"].dt.date
     long["dev_lag"] = long["dev_lag"].astype("int64")
 
+    # Fail loudly on grains we cannot represent (e.g. 'S') rather than silently
+    # mislabeling the metadata, which every downstream transform trusts.
     for grain, attr in ((tri.origin_grain, "origin"), (tri.development_grain, "development")):
         if grain not in GRAIN_MONTHS:
             raise ValueError(f"unsupported chainladder {attr} grain {grain!r}")
@@ -129,19 +191,33 @@ def from_chainladder(tri, backend: str | BaseBackend | None = None) -> Triangle:
 
 
 def to_chainladder(t: Triangle):
-    """Convert to a chainladder.Triangle (requires the chainladder package)."""
+    """Convert to a chainladder.Triangle (requires the chainladder package).
+
+    The inverse of :func:`from_chainladder`. We hand chainladder the *valuation*
+    (``eval_date``) rather than the dev lag as its development axis: chainladder
+    derives development from origin and valuation itself, and doing it that way
+    reproduces its own dev bucketing (including the latest-diagonal anchoring of
+    ``grain('OYDY')``) instead of second-guessing it. chainladder re-materializes
+    the NaN padding cells that the long format omitted.
+    """
     import chainladder as cl
     import pandas as pd
 
     df = t.expr.execute()
     fields = sorted(df["field"].unique())
     segments = t.segments
+    # Long -> wide: one column per field, one row per (segment, origin, eval).
+    # aggfunc="sum" is a no-op on a well-formed triangle (cells are unique);
+    # it exists so a triangle that has not been collapsed to one row per cell
+    # still produces a valid frame rather than raising.
     wide = df.pivot_table(
         index=[*segments, "origin_period", "eval_date"],
         columns="field",
         values="value",
         aggfunc="sum",
     ).reset_index()
+    # chainladder wants datetime64, not datetime.date; it normalizes the
+    # valuation column to end-of-period timestamps internally.
     wide["origin_period"] = pd.to_datetime(wide["origin_period"])
     wide["eval_date"] = pd.to_datetime(wide["eval_date"])
     return cl.Triangle(
@@ -162,6 +238,13 @@ def from_bermuda(tri, backend: str | BaseBackend | None = None) -> Triangle:
 
     Origin grain is inferred from period lengths; bermuda's incremental cells
     are detected via cell type.
+
+    **Never copy bermuda's ``Cell.dev_lag``.** bermuda measures dev lag from the
+    period *end*, so its first diagonal is 0; ours measures months from the
+    origin *start*, so the first diagonal is 12 at annual grain. dev_lag is
+    recomputed below from ``period_start`` -> ``evaluation_date`` (inclusive
+    month count, hence the ``+ 1``), which is the only value the rest of the
+    package will accept.
     """
     import pandas as pd
 
@@ -169,13 +252,20 @@ def from_bermuda(tri, backend: str | BaseBackend | None = None) -> Triangle:
     incremental = False
     grains = set()
     for cell in tri:
+        # bermuda encodes cumulative/incremental in the cell class, not metadata;
+        # any incremental cell makes the whole triangle incremental.
         incremental = incremental or "incremental" in type(cell).__name__.lower()
         start, end = cell.period_start, cell.period_end
+        # Origin grain is not stored either — infer it from the period span in
+        # months (12 for annual, 3 for quarterly, ...).
         grains.add((end.year - start.year) * 12 + end.month - start.month + 1)
         ev = cell.evaluation_date
         base = {
+            # cell.details carries bermuda's per-cell segment keys (company, lob...)
             **cell.details,
             "origin_period": start,
+            # our convention: months from origin START, inclusive of the eval
+            # month -> first annual diagonal = 12, NOT bermuda's cell.dev_lag
             "dev_lag": (ev.year - start.year) * 12 + ev.month - start.month + 1,
             "eval_date": ev,
         }
@@ -183,6 +273,9 @@ def from_bermuda(tri, backend: str | BaseBackend | None = None) -> Triangle:
             rows.append({**base, "field": field_name, "value": float(val)})
     df = pd.DataFrame(rows)
     months_to_grain = {v: k for k, v in GRAIN_MONTHS.items()}
+    # Take the widest observed period: a partially-developed final period can
+    # look shorter than the true grain, and under-calling the grain would scale
+    # dev lags wrongly downstream.
     grain = months_to_grain.get(max(grains, default=12), "Y")
     return from_long(
         df,
@@ -194,21 +287,34 @@ def from_bermuda(tri, backend: str | BaseBackend | None = None) -> Triangle:
 
 
 def to_bermuda(t: Triangle):
-    """Convert to a bermuda Triangle (requires the bermuda-ledger package)."""
+    """Convert to a bermuda Triangle (requires the bermuda-ledger package).
+
+    The inverse of :func:`from_bermuda`. Our long rows are one field per row;
+    bermuda's cell is (period, evaluation) with a ``values`` dict of all fields,
+    so rows are grouped back into cells here. We emit ``period_start`` /
+    ``period_end`` and let bermuda derive its own end-anchored dev lag — the
+    dev_lag column is deliberately not exported (see the convention note in the
+    module docstring).
+    """
     import bermuda
 
+    # cumulative vs incremental is carried by the cell class on bermuda's side
     cell_cls = bermuda.CumulativeCell if t.meta.measure == "cumulative" else bermuda.IncrementalCell
     months = GRAIN_MONTHS[t.meta.origin_grain]
     df = t.expr.execute()
     for col in ("origin_period", "eval_date"):  # bermuda wants datetime.date
         if str(df[col].dtype).startswith("datetime64"):
             df[col] = df[col].dt.date
+    # One bermuda cell per (segment..., origin, evaluation); dropna=False keeps
+    # rows whose segment value is null instead of silently losing those cells.
     keys = [*t.segments, "origin_period", "eval_date"]
     cells = []
     for cell_key, group in df.groupby(keys, dropna=False):
+        # pandas yields a scalar key when grouping on a single column
         key_vals = cell_key if isinstance(cell_key, tuple) else (cell_key,)
         cell_key = dict(zip(keys, key_vals, strict=True))
         start = cell_key["origin_period"]
+        # bermuda's period_end is inclusive: the day before the next period starts
         end = _add_months(start, months) - dt.timedelta(days=1)
         details = {k: v for k, v in cell_key.items() if k in t.segments}
         cells.append(
@@ -224,5 +330,11 @@ def to_bermuda(t: Triangle):
 
 
 def _add_months(d: dt.date, months: int) -> dt.date:
+    """Shift a date by whole months, keeping the day-of-month.
+
+    Only ever called on period *start* dates (day 1 for every supported grain),
+    so the day-of-month is always valid in the target month — this deliberately
+    does not implement end-of-month clamping.
+    """
     y, m = divmod(d.year * 12 + d.month - 1 + months, 12)
     return dt.date(y, m + 1, d.day)

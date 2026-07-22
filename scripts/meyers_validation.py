@@ -15,6 +15,46 @@ takes zero cells natively and the lognormal variant drops and counts its
 own non-positive cells. Company selection applies both Table A.1 screens
 (CV1 net premium, CV2 net/direct premium ratio) for every model.
 
+METHODOLOGY (this script produces published results — read before changing)
+
+1. Cohort-data parity. `select_companies` runs the identical mechanical
+   screen for every model, so any two entries validated here are scored on
+   the same insurers. That is why `meyers_csr` carries Meyers' floor-of-1
+   paid clamp: without it the lognormal would reject cohorts the incurred
+   study kept, and the two studies would no longer be comparable. Model
+   differences must come from the models, not from who they were allowed
+   to see. `compare_gallery.py` reuses `select_companies` for the same
+   reason.
+
+2. Training slice vs realized outcomes. Each entry fits
+   `as_of="1997-12-31"` — the upper triangle a reserving actuary could have
+   seen at year-end 1997 — while the outcome is the ultimate realized in
+   later statement years, read from the FULL triangle by
+   `entry.realized_ultimates(tri)`. CRITICAL GOTCHA (CLAUDE.md): the mart
+   carries accident years past the 1988-1997 study window, so any aggregate
+   taken from the full triangle MUST be restricted to the origins present in
+   the training slice, or it silently sums post-study accident years (this
+   bit `compare_gallery.point_context` once and produced 2.4x inflated
+   outcomes). Here the restriction is enforced twice over: the selection SQL
+   only admits companies with a complete 10x10 square over
+   `TRAIN_AYS` = 1988-1997, and `realized_ultimates()` scores exactly the
+   origins the entry trained on.
+
+3. Scoring. Only the TOTAL row of the summary table is kept (`table.iloc[-1]`
+   = the sum over accident years), matching the monograph, which validates
+   the distribution of total unpaid loss rather than individual cells. Its
+   `percentile` is the PIT value of the realized total; uniformity of those
+   percentiles across companies is tested with KS at 5% (critical value
+   1.36/sqrt(n) — 19.2 at n=50, 9.6 at n=200; `kernels.calibration` prints
+   `D x 100` and flags rejection with `*`, Meyers' own convention).
+
+4. Failure handling. A fit that raises records an `error` row and the study
+   continues; the JSON report prints a `failed` count. Failures are visible
+   in the CSV but drop out of the KS panel, so a model that fit fewer
+   companies is calibrated on a smaller (and probably easier) panel — always
+   read `n` and `failed` together. The one silent data alteration is the
+   paid clamp, restricted to `MODELS_WITH_PAID_CLAMP` and documented there.
+
 Usage:
     uv run python scripts/meyers_validation.py --per-line 50
     uv run python scripts/meyers_validation.py --model meyers_csr --per-line 50
@@ -93,6 +133,10 @@ CV2_LIMITS = {
 
 EXCLUDED_GROUPS = {"38997"}  # excluded by Meyers after provisional testing
 
+#: the monograph's study window: accident years 1988-1997, so the as_of
+#: 1997-12-31 slice is a full 10x10 upper triangle and the realized lower half
+#: is available in later statement years. Any origin outside this range is
+#: post-study and must never enter an outcome aggregate (see module docstring).
 TRAIN_AYS = (1988, 1997)
 # Monograph appendix: "minimum annual premium of greater than $20,000 and
 # minimum annual incurred loss of greater than $4,000", with Schedule P
@@ -104,7 +148,38 @@ MIN_LOSS = 4.0
 
 
 def select_companies(mart_path: Path, line: str, per_line: int) -> pd.DataFrame:
-    """Mechanical selection per the monograph appendix (incl. the CV2 screen)."""
+    """Mechanical selection per the monograph appendix (incl. the CV2 screen).
+
+    Deliberately mechanical: no judgement, no per-model tuning, so the cohort
+    is reproducible and identical across every entry validated here (the
+    cohort-data parity rule). The screens select insurers whose book was
+    STABLE over the study window — Meyers' point is that a reserving model
+    should be tested where the data is well behaved, not where growth or
+    reinsurance churn confounds development.
+
+    - CV1: coefficient of variation of net earned premium across accident
+      years — rejects rapidly growing/shrinking books.
+    - CV2: CV of the net/direct premium ratio — rejects books whose
+      reinsurance program changed materially over the window.
+    - complete 10x10 square: the company must have all 100 cells, so the
+      realized outcome exists for every training origin.
+
+    Rows come back ordered by cv1 ascending; ``per_line`` then takes the top
+    n (Meyers' "top 50"), so the cap is deterministic, not a random sample.
+    """
+    # Runs against the mart parquet directly rather than through the Triangle
+    # layer: this is cohort selection, not modelling, and it needs raw
+    # Schedule P columns (bulk_loss, direct premium) the triangle does not carry.
+    #
+    # Notes on the query below:
+    #   * `incurred_loss - bulk_loss` is Meyers' "incurred", NET of bulk+IBNR.
+    #     That definition is load-bearing, not cosmetic: gross-of-bulk incurred
+    #     fails the WC KS test badly (D=36.7). See CLAUDE.md milestone 2.
+    #   * `n_cells = 100` is 10 accident years x 10 development ages — anything
+    #     less means some training origin has no realized outcome to score.
+    #   * the `prem` CTE reads statement_year = 1997 only: premium and the
+    #     latest-diagonal loss as BOOKED at the as_of date, so selection uses
+    #     no information from after the training cutoff.
     q = f"""
     with base as (
         select company_code, accident_year, development_age, statement_year,
@@ -148,11 +223,23 @@ def select_companies(mart_path: Path, line: str, per_line: int) -> pd.DataFrame:
 def run_line(
     warehouse: Path, line: str, companies: pd.DataFrame, args: argparse.Namespace
 ) -> list[dict]:
+    """Fit + score one line of business, one company at a time.
+
+    Returns one row per company: the predictive total (estimate/se/cv), the
+    realized outcome, its percentile (the PIT value fed to the KS test), the
+    worst R-hat of the fit, and wall-clock seconds. Companies whose fit raises
+    yield an ``error`` row instead — the study runs to completion either way.
+    """
+    # the FULL triangle for this line; each entry slices to as_of internally
+    # and scores only the origins it trained on
     tri_line = load_schedule_p(warehouse, lines=[line])
     loss_field = args.loss_field or MODEL_LOSS_FIELDS[args.model]
     if loss_field == "paid_loss" and args.model in MODELS_WITH_PAID_CLAMP:
         # Meyers' pmax(cum_pdloss, 1): floor paid cells at 1 (in $000s) so the
-        # lognormal accepts every cohort the incurred screens admit
+        # lognormal accepts every cohort the incurred screens admit.
+        # This is the ONE place the harness alters the data. It is confined to
+        # MODELS_WITH_PAID_CLAMP because a clamp shifts increments; the ODP and
+        # compartmental entries must see the unclamped series.
         e = tri_line.expr
         tri_line = tri_line.with_expr(
             e.mutate(value=ibis.ifelse(e.field == "paid_loss", ibis.greatest(e.value, 1), e.value))
@@ -180,6 +267,8 @@ def run_line(
                 if args.model != "compartmental":
                     raise SystemExit(f"--variant does not apply to {args.model}")
                 fit_kwargs["variant"] = args.variant
+            # the monograph's cutoff: train on the diagonal visible at
+            # year-end 1997, score against what later statements realized
             entry = gallery.fit(
                 args.model,
                 tri,
@@ -188,9 +277,17 @@ def run_line(
                 **fit_kwargs,
             )
             pred = entry.predict(seed=args.seed)
+            # realized_ultimates() restricts to the origins the entry trained
+            # on, keeping post-study accident years out of the outcome
             realized = entry.realized_ultimates(tri)
             table = pred.summary(observed=realized)
+            # last row = the sum over accident years. Meyers validates the
+            # TOTAL unpaid distribution, not per-origin cells, so this is the
+            # only row scored.
             total = table.iloc[-1]
+            # worst R-hat across all parameters: a convergence red flag stored
+            # alongside the result so a bad fit can be spotted post hoc rather
+            # than quietly polluting the KS panel
             rhat = (
                 entry.fit_.summary()["R_hat"].max() if args.model in MCMC_MODELS else float("nan")
             )
@@ -219,6 +316,7 @@ def run_line(
 
 
 def main() -> int:
+    """Select cohorts per line, fit + score each, write the CSV, test uniformity."""
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--warehouse",
@@ -247,14 +345,19 @@ def main() -> int:
         "or Model 2 (lognormal)",
     )
     ap.add_argument("--lines", nargs="+", default=MEYERS_LINES, choices=MEYERS_LINES)
+    # 50 per line x 4 lines = the monograph's 200-company retrospective; the
+    # combined KS critical value at n=200 is 9.6 (x100)
     ap.add_argument("--per-line", type=int, default=50)
     ap.add_argument("--chains", type=int, default=4)
     ap.add_argument("--warmup", type=int, default=1000)
     ap.add_argument("--draws", type=int, default=2500)
+    # fixes both the selection order and the sampler streams, so a published
+    # run reproduces cell for cell
     ap.add_argument("--seed", type=int, default=20260612)
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args()
     if args.out is None:
+        # one CSV per model so entries never overwrite each other's results;
         # non-default ablations get a suffix (precedent: clark_validation_weibull)
         suffix = f"_{args.variant}" if args.variant not in (None, "gaussian") else ""
         args.out = (
@@ -264,23 +367,37 @@ def main() -> int:
             / f"{args.model}_validation{suffix}.csv"
         )
 
+    # Resolves --warehouse (local path, github://...@publish_id, or the
+    # @latest release) to a concrete cached parquet. Provenance: published
+    # runs should pass an explicit @publish_id so the cohort is pinned to an
+    # immutable gold publish rather than whatever "latest" happened to be.
     mart = active_mart_path(args.warehouse)
     all_rows: list[dict] = []
+    # one cohort per line; the same cohort every model sees (see docstring)
     for line in args.lines:
         companies = select_companies(mart, line, args.per_line)
         print(f"{line}: {len(companies)} companies selected", flush=True)
         all_rows += run_line(args.warehouse, line, companies, args)
 
+    # written before scoring so a long MCMC run's results survive a crash in
+    # the summary code
     df = pd.DataFrame(all_rows)
     df.to_csv(args.out, index=False)
     print(f"\nwrote {args.out}")
 
+    # THE headline test: are the predictive distributions honest? Percentiles
+    # are PIT values in 0-100, so divide by 100 before the uniformity test.
+    # Failure rows have a null percentile and drop out here — read `failed`
+    # in the JSON report alongside `n`.
     ok = df[df.get("percentile").notna()] if "percentile" in df else pd.DataFrame()
-    if len(ok) >= 5:
+    if len(ok) >= 5:  # KS on a handful of points says nothing; don't print it
         print("\nUniformity of total-outcome percentiles (Meyers p-p test):")
+        # per line (n<=50, crit 19.2) then pooled ALL (n<=200, crit 9.6): the
+        # pooled test is the demanding one and is the published headline
         for line, grp in ok.groupby("line"):
             print(f"  {line:<24} n={len(grp):>3}  {ks_uniformity(grp['percentile'] / 100)}")
         print(f"  {'ALL':<24} n={len(ok):>3}  {ks_uniformity(ok['percentile'] / 100)}")
+        # machine-readable one-liner for the calling harness/notebook
         report = {
             "n": len(ok),
             "ks_all": ks_uniformity(ok["percentile"] / 100).statistic,

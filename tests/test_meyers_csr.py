@@ -1,7 +1,16 @@
 """End-to-end smoke test of the meyers_csr entry against the gold mart.
 
+Same shape as ``test_meyers_ccl.py`` (mart → as_of slice → Stan fit →
+PredictiveDistribution → score), plus one CSR-specific structural check:
+the ``speedup`` term. CSR (Changing Settlement Rate) replaces CCL's AY
+correlation with a claim-settlement-speed trend, so ``beta[d]`` is scaled by
+``speedup[w] = (1 - gamma)^(w-1)`` — accident years settle progressively
+faster (gamma > 0) or slower (gamma < 0) than the first.
+
 Slow (compiles the Stan model on first run, then samples) and mart-dependent;
-runs only when cmdstan and the local warehouse are both available.
+runs only when cmdstan and the local warehouse are both available. See
+``test_meyers_ccl`` for why cmdstan work sits behind the ``slow`` marker;
+``mart`` auto-skips when the local Schedule P gold mart is missing.
 """
 
 import numpy as np
@@ -20,8 +29,15 @@ pytestmark = [
 ]
 
 
+# Module-scoped: one sample serves every test here — the fit is the slow part.
 @pytest.fixture(scope="module")
 def fitted():
+    """Fit CSR on the Meyers setup: 1988-1997 accident years, 1997 diagonal.
+
+    Same company, cutoff, and pinned seed as the CCL smoke test so the two
+    entries are directly comparable; chains/iterations are trimmed from the
+    production retro settings to keep runtime tolerable.
+    """
     from ibnr import gallery
     from ibnr.data.schedule_p import load_schedule_p
 
@@ -40,6 +56,12 @@ def fitted():
 
 
 def test_fit_converges(fitted):
+    """The sampler converged on CSR's core parameters.
+
+    Same conventions as the CCL test: restrict to the model's own parameters
+    (level, settlement-rate trend gamma, AY/dev effects, dev sigmas), R-hat
+    < 1.1 and ESS > 100 loosened for a 2-chain short run.
+    """
     _, entry = fitted
     summary = entry.fit_.summary()
     core = summary.loc[summary.index.str.match(r"logelr|gamma|alpha|beta|sig\[")]
@@ -49,6 +71,14 @@ def test_fit_converges(fitted):
 
 
 def test_speedup_shape(fitted):
+    """speedup is the exact deterministic transform of gamma, draw by draw.
+
+    Pins Meyers' CSR definition ``speedup[w] = (1 - gamma)^(w-1)``: the first
+    accident year is the reference (speedup == 1 exactly, not approximately),
+    and later years scale geometrically. Checked per draw rather than on
+    posterior means because it is an algebraic identity inside the model, so
+    the tolerance is float-noise tight (1e-6), not statistical.
+    """
     _, entry = fitted
     from ibnr.gallery.bayesian.meyers_csr.model import pooled
 
@@ -61,6 +91,13 @@ def test_speedup_shape(fitted):
 
 
 def test_predict_and_score(fitted):
+    """predict() honors the PredictiveDistribution contract and lands in the
+    right ballpark.
+
+    The 2x/0.5x band on the total is a wiring fence (units, anchor, prior
+    runaway), not a calibration claim — calibration is settled by the
+    200-company retrospective, where CSR is the best-calibrated paid entry.
+    """
     tri, entry = fitted
     pred = entry.predict(seed=1)
     assert pred.n_targets == 11  # 10 accident years + total
@@ -77,6 +114,11 @@ def test_predict_and_score(fitted):
 
 
 def test_evaluate_contract(fitted):
+    """evaluate() returns the kernels-backed dict every entry must produce.
+
+    Superset check so kernels can add scores without breaking entries; the
+    per-target percentiles feed the PIT/KS calibration harness.
+    """
     tri, entry = fitted
     result = entry.evaluate(entry.realized_ultimates(tri))
     assert set(result) >= {"summary", "percentiles"}

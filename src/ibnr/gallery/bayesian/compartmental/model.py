@@ -1,9 +1,36 @@
 """Hierarchical compartmental reserving gallery entry (Gesmann & Morris).
 
-Compartments EX -> OS -> PD (closed-form ODE solution) fit JOINTLY to case
-outstanding and paid losses — the only entry in the family that uses both
-triangles at once. Two ablatable variants, both from the monograph's case
-study with its published brms priors held verbatim:
+Reference: Gesmann & Morris, *Hierarchical Compartmental Reserving Models*
+(CAS Research Paper, 2020); the published brms code of the Section 5 case
+study (appendix 7.2) is ground truth for both parameterization and priors.
+See ``card.md`` for the model card and the 200-company Schedule P
+retrospective, ``kernels.contract.compartmental_stan_data`` for the data
+contract, and ``model.stan`` / ``model_lognormal.stan`` for the two fits.
+
+The mechanism: premium flows through three compartments, exposure (EX) ->
+case outstanding (OS) -> paid (PD), driven by two per-year rates and two
+loss ratios::
+
+    EX' = -ker * EX                    ker = earning/reporting rate
+    OS' =  ker * RLR * EX - kp * OS    RLR = reported loss ratio
+    PD' =  kp  * RRF * OS              kp  = payment (settlement) rate,
+                                       RRF = reserve robustness factor
+
+With EX(0) = 1 per unit of premium this linear system has the closed form
+implemented in :func:`os_curve` / :func:`paid_curve` below (and, identically,
+in the Stan ``functions`` blocks) — no ODE solver anywhere. The ultimate
+loss ratio is RLR * RRF: RLR sets how much of premium is ever *reported* as
+case reserves, RRF the factor by which the case estimates are ultimately
+redundant (RRF < 1) or deficient (RRF > 1).
+
+This is the ONLY gallery entry that fits case outstanding and paid JOINTLY:
+the contract stacks two blocks of cells (delta = 0 outstanding, computed as
+``reported_loss - paid_loss``; delta = 1 paid) that share one set of
+compartmental parameters, and ``t`` is the development age in YEARS at the
+cell's period end because ker/kp are per-year rates.
+
+Two ablatable variants, both from the monograph's case study with its
+published brms priors held verbatim:
 
 - ``variant="gaussian"`` (default): case-study Model 1 — Gaussian on OS +
   cumulative paid amounts, correlated (RLR, RRF) accident-year effects,
@@ -32,6 +59,8 @@ from ibnr.kernels.contract import compartmental_stan_data, realized_values
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.triangle.core import Triangle
 
+#: one Stan program per variant — the eject pattern (CLAUDE.md design note 6):
+#: literal, readable source the user can scaffold out and edit, not codegen
 STAN_FILES = {
     "gaussian": Path(__file__).parent / "model.stan",
     "lognormal": Path(__file__).parent / "model_lognormal.stan",
@@ -43,12 +72,23 @@ BACKENDS = ("stan",)
 
 def os_curve(t, ker, kp, rlr):
     """Outstanding loss ratio at age t years: OS(t) of the EX->OS->PD system
-    with EX(0) = 1 (the same closed form as the Stan functions block)."""
+    with EX(0) = 1 (the same closed form as the Stan functions block).
+
+    A hump: case reserves build at rate ``ker`` as exposure is reported and
+    drain at rate ``kp`` as claims settle, so OS -> 0 as t -> inf. Note the
+    ``ker - kp`` denominator is singular at ker == kp; the lognormal priors
+    (medians 3 and 1) keep the sampler far from that ridge in practice.
+    Broadcasts over numpy arrays of posterior draws.
+    """
     return rlr * ker / (ker - kp) * (np.exp(-kp * t) - np.exp(-ker * t))
 
 
 def paid_curve(t, ker, kp, rlr, rrf):
-    """Cumulative paid loss ratio at age t years; -> RLR * RRF as t -> inf."""
+    """Cumulative paid loss ratio at age t years; -> RLR * RRF as t -> inf.
+
+    The integral of ``kp * RRF * OS(t)``, i.e. the growth curve this entry
+    predicts on. Multiply by the origin's premium for an amount.
+    """
     return rlr * rrf / (ker - kp) * (ker * (1 - np.exp(-kp * t)) - kp * (1 - np.exp(-ker * t)))
 
 
@@ -65,11 +105,16 @@ class Compartmental(GalleryEntry):
     family = "bayesian"
 
     def __init__(self) -> None:
+        # the standardized joint paid+outstanding dict (contract.py); also
+        # carries the metadata predict() needs: origin_periods, premium,
+        # paid_to_date, latest_d, dev_grain_months
         self.contract_: dict | None = None
         self.idata_ = None
         self.fit_ = None  # cmdstan fit object
         self.backend_: str | None = None
         self.variant_: str | None = None
+        # {"outstanding": n, "paid_incremental": n} — cells the lognormal
+        # likelihood could not take; a mechanical study must report them
         self.dropped_cells_: dict | None = None  # lognormal only
         self._loss_field: str | None = None
 
@@ -95,6 +140,21 @@ class Compartmental(GalleryEntry):
         max_treedepth: int = 15,
         show_progress: bool = False,
     ) -> Compartmental:
+        """Fit one cohort (single company x line) as of a training diagonal.
+
+        ``as_of`` is how the retrospective trains on an early diagonal; the
+        contract requires paid and reported on identical cells and contiguous
+        dev lags per origin. ``variant`` selects the Stan program (and with it
+        the likelihood, the observation scale and how many varying effects the
+        parameters carry) — everything else about the two arms is shared, so
+        the variants stay directly ablatable.
+
+        The default sampler settings are the monograph's own (adapt_delta
+        0.99, max_treedepth 15): the four-parameter nonlinear hierarchy has a
+        funnel-shaped geometry that diverges at Stan's defaults. They are the
+        reason a company costs ~160 s (gaussian) / ~250 s (lognormal) of
+        sequential-chain wall clock, ~20x the Meyers-family entries.
+        """
         if backend not in BACKENDS:
             raise ValueError(f"backend must be one of {BACKENDS}, got {backend!r}")
         if variant not in STAN_FILES:
@@ -125,6 +185,11 @@ class Compartmental(GalleryEntry):
         return self
 
     def _gaussian_stan_data(self) -> dict:
+        """Model 1 rows: the contract as-is — OS levels and cumulative paid as
+        AMOUNTS, every cell kept. The Gaussian likelihood takes zero and
+        negative outstanding natively (redundant case reserves, or a fully
+        run-off origin), which is exactly why this arm survives a mechanical
+        200-company retrospective without a clamp."""
         c = self.contract_
         return {
             "len_data": c["len_data"],
@@ -147,11 +212,18 @@ class Compartmental(GalleryEntry):
         w = c["w"]
         value = c["loss"].copy()
         # difference the paid block within each origin (rows are sorted by
-        # (delta, w, d) and contiguous per origin, so a shifted diff works)
+        # (delta, w, d) and contiguous per origin, so a shifted diff works).
+        # prepend=0 makes dev 1 its own increment, matching the Stan branch
+        # that uses paid_curve(t) undifferenced when t <= devfreq.
         for j in range(1, c["n_w"] + 1):
             sel = paid_blk & (w == j)
             value[sel] = np.diff(c["loss"][sel], prepend=0.0)
+        # to loss ratios: the compartmental curves ARE loss ratios (EX(0) = 1
+        # per unit premium), so Model 2 models them on that scale directly
         ratio = value / c["premium"][w - 1]
+        # the lognormal has support (0, inf): a redundant case-reserve level or
+        # a negative paid increment (salvage/subrogation, a reopened-then-
+        # closed year) has to leave the likelihood entirely
         keep = ratio > 0
         self.dropped_cells_ = {
             "outstanding": int((~keep & (c["delta"] == 0)).sum()),
@@ -159,6 +231,8 @@ class Compartmental(GalleryEntry):
         }
         if not keep.any():
             raise ValueError("no positive cells left for the lognormal variant")
+        # ker/kp are per-year rates, so the dev period length goes to Stan in
+        # years too (1.0 on the annual Schedule P grain)
         step_years = c["dev_grain_months"] / 12.0
         return {
             "len_data": int(keep.sum()),
@@ -189,6 +263,7 @@ class Compartmental(GalleryEntry):
         import arviz as az
         from cmdstanpy import CmdStanModel
 
+        # Windows RTools PATH/MAKE fixup; no-op elsewhere (see CLAUDE.md)
         ensure_stan_toolchain()
         model = CmdStanModel(stan_file=str(STAN_FILES[self.variant_]))
         t0 = time.perf_counter()
@@ -204,6 +279,8 @@ class Compartmental(GalleryEntry):
             show_progress=show_progress,
         )
         runtime_s = time.perf_counter() - t0
+        # log_lik is per stacked cell, so ELPD/LOO in kernels/ scores the
+        # joint paid+outstanding fit (not paid alone) — noted in the card
         idata = az.from_cmdstanpy(self.fit_, log_likelihood="log_lik")
         idata.attrs["runtime_s"] = runtime_s
         idata.attrs["backend"] = "stan"
@@ -222,7 +299,14 @@ class Compartmental(GalleryEntry):
         - lognormal: anchored at paid-to-date, adding lognormal incremental
           draws cell-by-cell through the final age with the per-(origin, dev)
           compartmental parameters.
-        No tail beyond the triangle's final age in either variant.
+        No tail beyond the triangle's final age in either variant: the
+        retrospective scores the realized paid at the triangle's last dev age,
+        so extrapolating past it would score a different quantity.
+
+        Both arms return a (draws, n_w) sample matrix that ``with_total()``
+        widens to (draws, n_w + 1) — the total column is the draw-wise sum, so
+        it inherits the parameter correlation across origins rather than
+        assuming independence.
         """
         if self.idata_ is None or self.contract_ is None:
             raise RuntimeError("call fit() first")
@@ -244,8 +328,18 @@ class Compartmental(GalleryEntry):
         return pred.with_total()
 
     def _predict_gaussian(self, rng) -> np.ndarray:
+        """Model 1 predictive: one Normal draw on the AMOUNT scale per
+        posterior draw. Returns (draws, n_w).
+
+        Note the sharpness cost the card documents: sigma_paid is a single
+        amount-scale constant shared by every origin, so a mature origin's
+        predictive band is as wide (in dollars) as a green one's, and the
+        total's CV comes out around 2.5% — too sharp, which is what drives the
+        gaussian arm's KS failure.
+        """
         c = self.contract_
         n_w, n_d = c["n_w"], c["n_d"]
+        # the triangle's last dev age, in years — the scoring age
         t_final = n_d * c["dev_grain_months"] / 12.0
         rlr = pooled(self.idata_, "RLR")  # (draws, n_w)
         rrf = pooled(self.idata_, "RRF")  # (draws, n_w)
@@ -254,21 +348,42 @@ class Compartmental(GalleryEntry):
         sigma_paid = pooled(self.idata_, "sigma_paid")  # (draws,)
         ults = np.empty((rlr.shape[0], n_w))
         for j in range(n_w):
+            # the oldest origin(s) already reached the scoring age in the
+            # training slice: its outcome is observed, so it enters at zero
+            # variance rather than being re-simulated. Same convention as the
+            # Meyers-family entries, so the retro percentiles are comparable.
             if int(c["latest_d"][j]) >= n_d:  # fully developed: observed anchor
                 ults[:, j] = c["paid_to_date"][j]
                 continue
+            # per-origin RLR/RRF carry what this origin's own cells taught the
+            # posterior; ker/kp are shared across accident years in Model 1
             mu = c["premium"][j] * paid_curve(t_final, ker, kp, rlr[:, j], rrf[:, j])
             ults[:, j] = rng.normal(mu, sigma_paid)
         return ults
 
     def _predict_lognormal(self, rng) -> np.ndarray:
+        """Model 2 predictive: anchored at paid-to-date, then one lognormal
+        INCREMENT drawn per future (origin, dev) cell and accumulated. Returns
+        (draws, n_w).
+
+        Because Model 2 puts varying effects on the parameters by both
+        accident year and development period, the compartmental parameters
+        have to be rebuilt cell by cell (the brms nlf transforms, mirrored
+        from ``model_lognormal.stan``) — there is no single curve per origin.
+        Anchoring on observed paid rather than re-simulating the whole curve
+        is what removes the gaussian arm's level bias (median estimate /
+        outcome 0.99-1.02 per line; see card.md).
+        """
         c = self.contract_
         n_w, n_d = c["n_w"], c["n_d"]
         step_years = c["dev_grain_months"] / 12.0
+        # population-level ("intercept") coefficients on the unconstrained
+        # scale; each is (draws,)
         b_oker = pooled(self.idata_, "b_oker")
         b_okp = pooled(self.idata_, "b_okp")
         b_orlr = pooled(self.idata_, "b_oRLR")
         b_orrf = pooled(self.idata_, "b_oRRF")
+        # row 0 = oRLR, row 1 = oRRF: the CORRELATED accident-year effects
         u_ay = pooled(self.idata_, "u_ay")  # (draws, 2, n_w)
         u_rlr_dev = pooled(self.idata_, "u_RLR_dev")  # (draws, n_d)
         u_rrf_dev = pooled(self.idata_, "u_RRF_dev")
@@ -278,23 +393,42 @@ class Compartmental(GalleryEntry):
         u_kp_dev = pooled(self.idata_, "u_kp_dev")
         sigma_paid = pooled(self.idata_, "sigma_paid")
 
+        # start every draw at the origin's observed paid-to-date, then add
+        # simulated increments for the unobserved cells only
         ults = np.tile(c["paid_to_date"], (b_oker.shape[0], 1)).astype(float)
         for j in range(n_w):
+            # cells strictly past this origin's latest observed dev, out to
+            # the scoring age; empty for fully developed origins
             for dev in range(int(c["latest_d"][j]) + 1, n_d + 1):
-                di = dev - 1
+                di = dev - 1  # Stan is 1-indexed, the pooled arrays are 0-
+                # the brms nlf transforms, identical to model_lognormal.stan:
+                # lognormal medians (3, 1, 0.7, 0.8) with CoVs (10, 10, 20,
+                # 10)%. Each line is (draws,).
                 ker = 3.0 * np.exp(0.1 * (b_oker + u_ker_ay[:, j] + u_ker_dev[:, di]))
                 kp = 1.0 * np.exp(0.1 * (b_okp + u_kp_ay[:, j] + u_kp_dev[:, di]))
                 rlr = 0.7 * np.exp(0.2 * (b_orlr + u_ay[:, 0, j] + u_rlr_dev[:, di]))
                 rrf = 0.8 * np.exp(0.1 * (b_orrf + u_ay[:, 1, j] + u_rrf_dev[:, di]))
                 t_hi = dev * step_years
                 mu = paid_curve(t_hi, ker, kp, rlr, rrf)
+                # the cell's expected INCREMENT: the curve differenced over
+                # (t - devfreq, t] with the SAME cell parameters. dev == 1 is
+                # its own increment (paid_curve(0) = 0), matching the Stan
+                # t <= devfreq branch.
                 if dev > 1:
                     mu = mu - paid_curve(t_hi - step_years, ker, kp, rlr, rrf)
+                # mu is a loss ratio, so scale by premium after drawing; the
+                # lognormal is parameterized by log-mean, hence log(mu)
                 ults[:, j] += c["premium"][j] * rng.lognormal(np.log(mu), sigma_paid)
         return ults
 
     def realized_ultimates(self, full_triangle: Triangle) -> np.ndarray:
-        """Outcomes aligned to predict()'s targets (per origin + total)."""
+        """Outcomes aligned to predict()'s targets (per origin + total).
+
+        Read off the FULL (post-training) triangle at the same dev age
+        predict() targets, restricted to the origins that were in the training
+        slice — the CLAUDE.md gotcha: taking every origin present in the full
+        triangle silently scores post-study accident years.
+        """
         if self.contract_ is None:
             raise RuntimeError("call fit() first")
         c = self.contract_
@@ -307,7 +441,13 @@ class Compartmental(GalleryEntry):
         return np.append(per_origin, per_origin.sum())
 
     def convergence(self, var_names: list[str] | None = None) -> dict:
-        """Convergence diagnostics from the fitted posterior."""
+        """Convergence diagnostics from the fitted posterior.
+
+        Summarized over the SAMPLED parameters only — the non-centered ``z_*``
+        and the transformed per-origin RLR/RRF are excluded so a single badly
+        identified varying effect does not dominate max_rhat. The retro harness
+        writes this dict per company; see card.md for the R-hat > 1.05 counts.
+        """
         import arviz as az
 
         if self.idata_ is None:

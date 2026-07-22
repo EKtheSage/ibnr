@@ -1,9 +1,18 @@
 """Fast checks of the ODP contract and its chain-ladder equivalence.
 
+Everything the Bayesian ODP entry needs *before* Stan runs: the Triangle →
+`odp_stan_data` mapping (design decision 3, the Stan data block is the data
+contract), the ODP maximum-likelihood fit, and the Pearson dispersion phi.
+
 The genins (Taylor & Ashe) sample is England & Verrall's own worked example;
 all increments are positive, so it exercises the contract without tripping
 the negative-increment guard. No cmdstan needed — everything here is the
-plug-in numpy layer under the Bayesian entry.
+plug-in numpy layer under the Bayesian entry, which is why these run in the
+default suite while ``test_england_verrall_odp.py`` sits behind ``slow``.
+
+Marked ``tieout``: the load-bearing claims are equalities against
+chainladder-python and against a published number from the paper, not internal
+self-consistency.
 """
 
 import chainladder as cl
@@ -19,6 +28,12 @@ pytestmark = pytest.mark.tieout
 
 @pytest.fixture(scope="module")
 def genins_contract():
+    """genins as both a chainladder Triangle (the reference) and our contract dict.
+
+    Round-tripping through ``Triangle.from_chainladder`` rather than building the
+    long table by hand keeps the tie-out honest: both sides start from literally
+    the same numbers.
+    """
     tri_cl = cl.load_sample("genins")
     t = Triangle.from_chainladder(tri_cl)
     field = t.fields[0]
@@ -26,8 +41,16 @@ def genins_contract():
 
 
 def test_incrementals_rebuild_cumulative(genins_contract):
+    """The contract's derived arrays are internally consistent with the source.
+
+    ODP is fit on *increments* while the triangle stores cumulatives, and the
+    predictive anchors on ``paid_to_date``/``latest_d``. Each of those three is
+    derived independently, so this pins that they still describe one triangle:
+    increments cumulate back, paid_to_date is the latest diagonal, and latest_d
+    counts down 10..1 across origins (square 10x10 upper triangle, 55 cells).
+    """
     _, c = genins_contract
-    assert c["len_data"] == 55
+    assert c["len_data"] == 55  # 10 + 9 + ... + 1
     assert c["n_w"] == c["n_d"] == 10
     # increments cumulate back to the stored cumulative losses
     rebuilt = np.zeros_like(c["inc_loss"])
@@ -43,6 +66,15 @@ def test_incrementals_rebuild_cumulative(genins_contract):
 
 
 def test_ipf_reproduces_chainladder_ultimates(genins_contract):
+    """The ODP MLE (fit by iterative proportional fitting) IS the chain ladder.
+
+    Two halves of the classic result. First the Poisson MLE property: fitted
+    values reproduce the observed row totals *exactly* (rel=1e-9 is IPF
+    convergence noise, not statistical slack). Then the consequence actuaries
+    care about — paid-to-date plus the fitted future increments equals
+    chainladder-python's volume-weighted ultimates. This equivalence is what
+    licenses the Bayesian entry's vague-prior sanity check.
+    """
     tri_cl, c = genins_contract
     m = odp_mle_fitted(c["w"], c["d"], c["inc_loss"], c["n_w"], c["n_d"])
     # observed row totals are matched exactly (Poisson MLE property)
@@ -60,6 +92,13 @@ def test_ipf_reproduces_chainladder_ultimates(genins_contract):
 
 
 def test_pearson_phi_positive(genins_contract):
+    """phi reproduces the published dispersion for the paper's own example.
+
+    phi scales the whole ODP predictive variance, so an error here is invisible
+    in point estimates and fatal to calibration. The band is loose because the
+    published figure depends on the degrees-of-freedom convention (n - p, and
+    which parameters are counted as free); the order of magnitude is the signal.
+    """
     _, c = genins_contract
     phi = pearson_phi(c["w"], c["d"], c["inc_loss"], c["n_w"], c["n_d"])
     assert phi > 0
@@ -70,7 +109,14 @@ def test_pearson_phi_positive(genins_contract):
 
 def test_pearson_phi_tolerates_zero_dev_column():
     """A fully-paid-early book has an all-zero last dev column; the fitted
-    means there are exactly 0 and must be excluded, not fatal."""
+    means there are exactly 0 and must be excluded, not fatal.
+
+    Regression test: Pearson residuals divide by sqrt(fitted), so a zero column
+    used to produce inf/nan phi and reject the company outright. Recovered 34
+    companies in the 200-company retrospective when fixed. Synthetic rather than
+    a real triangle so the degenerate column is unambiguous; the seed just makes
+    the gamma draws reproducible.
+    """
     rng = np.random.default_rng(7)
     n = 4
     w, d, inc = [], [], []
@@ -85,6 +131,14 @@ def test_pearson_phi_tolerates_zero_dev_column():
 
 
 def test_negative_increment_rejected():
+    """The contract refuses triangles the ODP likelihood cannot represent.
+
+    An over-dispersed Poisson has non-negative support, so a negative
+    incremental (salvage/subrogation, a reserve takedown) is not a data quirk to
+    clamp — it invalidates the model. Fail at contract time with a clear error
+    rather than letting Stan diverge. raa is the canonical example: it carries a
+    well-known negative increment.
+    """
     tri_cl = cl.load_sample("raa")  # raa has a famous negative increment
     t = Triangle.from_chainladder(tri_cl)
     with pytest.raises(ValueError, match="negative incremental"):
