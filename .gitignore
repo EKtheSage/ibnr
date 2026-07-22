@@ -12,11 +12,12 @@ build/
 .ipynb_checkpoints/
 .coverage
 
-# cmdstan compiled artifacts (model.stan is the source of truth)
-src/**/model.exe
+# cmdstan compiled artifacts (model*.stan is the source of truth)
+src/**/model*.exe
 src/**/model
-src/**/model.hpp
-src/**/model.o
+src/**/model_lognormal
+src/**/model*.hpp
+src/**/model*.o
 
 # OS noise
 Thumbs.db

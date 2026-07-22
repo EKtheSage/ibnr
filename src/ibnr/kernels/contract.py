@@ -206,6 +206,113 @@ def odp_stan_data(
     return data
 
 
+def compartmental_stan_data(
+    triangle: Triangle,
+    *,
+    paid_field: str,
+    reported_field: str,
+    premium_field: str,
+) -> dict[str, Any]:
+    """Map a single-cohort cumulative Triangle to the compartmental (joint
+    paid + outstanding) dict.
+
+    The Gesmann & Morris compartmental family fits BOTH processes at once:
+    cumulative paid (``delta = 1``) and case outstanding (``delta = 0``,
+    computed here as ``reported_field - paid_field`` — a level, not a
+    cumulative). Rows are the stacked cells sorted by (delta, w, d), with
+    ``t`` the development age in YEARS at the cell's period end (t = d for
+    annual grains) — the monograph's ODE rate parameters are per-year, and
+    its wkcomp case study measures t exactly this way (Lag = 1..10).
+
+    Both fields must be present on the same (w, d) cells (inner-join
+    semantics would silently drop data — mismatches raise instead). No
+    positivity is enforced: the Gaussian variant takes any value; the
+    lognormal variant drops its own non-positive cells and must document
+    the count. Carries ``paid_to_date``/``latest_d`` (per-origin anchors)
+    and per-origin ``premium`` like the other contracts.
+    """
+    if triangle.meta.measure != "cumulative":
+        raise ValueError("compartmental_stan_data requires a cumulative triangle")
+    df = triangle.select_fields([paid_field, reported_field]).execute()
+    if df.empty:
+        raise ValueError(f"no rows for fields {paid_field!r}/{reported_field!r}")
+    segs = triangle.segments
+    if segs and len(df.drop_duplicates(segs)) > 1:
+        raise ValueError(
+            f"triangle has multiple segment combinations on {segs}; filter to one cohort first"
+        )
+
+    df = df.copy()
+    df["origin_period"] = _as_date(df["origin_period"])
+    df["eval_date"] = _as_date(df["eval_date"])
+    step = GRAIN_MONTHS[triangle.meta.dev_grain]
+    if (df["dev_lag"] % step != 0).any():
+        raise ValueError(f"dev_lag values are not multiples of the {step}-month dev grain")
+
+    wide = df.pivot_table(
+        index=["origin_period", "dev_lag"], columns="field", values="value", aggfunc="first"
+    )
+    counts = df.groupby(["origin_period", "dev_lag", "field"]).size()
+    if (counts > 1).any():
+        raise ValueError(
+            "multiple rows per (origin, dev) cell; slice with as_of()/latest_diagonal() first"
+        )
+    for field in (paid_field, reported_field):
+        if field not in wide.columns or wide[field].isna().any():
+            raise ValueError(
+                f"{field!r} is missing on some (origin, dev) cells; the compartmental "
+                "model needs paid and reported on the identical cells"
+            )
+    wide = wide.reset_index()
+
+    origins = sorted(wide["origin_period"].unique())
+    dev_steps = sorted((wide["dev_lag"] // step).unique())
+    if dev_steps[0] < 1:
+        raise ValueError("dev_lag must be positive")
+    n_w, n_d = len(origins), int(dev_steps[-1])
+    w_of = {o: i + 1 for i, o in enumerate(origins)}
+    wide["w"] = wide["origin_period"].map(w_of)
+    wide["d"] = (wide["dev_lag"] // step).astype(int)
+    wide = wide.sort_values(["w", "d"]).reset_index(drop=True)
+
+    # the paid anchors (and the lognormal variant's incremental differencing)
+    # need contiguous dev cells within each origin
+    for w_idx, grp in wide.groupby("w"):
+        devs = grp["d"].tolist()
+        if devs != list(range(1, len(devs) + 1)):
+            raise ValueError(
+                f"origin index {w_idx} has non-contiguous dev lags {devs}; "
+                "paid-to-date anchoring would fabricate cells"
+            )
+
+    paid = wide[paid_field].to_numpy(dtype=float)
+    outstanding = (wide[reported_field] - wide[paid_field]).to_numpy(dtype=float)
+    w_arr = wide["w"].to_numpy(dtype=int)
+    d_arr = wide["d"].to_numpy(dtype=int)
+
+    # stacked rows: the outstanding block (delta = 0) then the paid block
+    # (delta = 1), each sorted by (w, d)
+    latest = wide.loc[wide.groupby("w")["d"].idxmax()].sort_values("w")
+    data: dict[str, Any] = {
+        "len_data": 2 * len(wide),
+        "n_w": n_w,
+        "n_d": n_d,
+        "w": np.concatenate([w_arr, w_arr]),
+        "d": np.concatenate([d_arr, d_arr]),
+        "t": np.concatenate([d_arr, d_arr]).astype(float) * (step / 12.0),
+        "delta": np.concatenate([np.zeros(len(wide), dtype=int), np.ones(len(wide), dtype=int)]),
+        "loss": np.concatenate([outstanding, paid]),
+        # metadata (not part of the Stan data block proper)
+        "origin_periods": origins,
+        "dev_grain_months": step,
+        "paid_to_date": latest[paid_field].to_numpy(dtype=float),
+        "latest_d": latest["d"].to_numpy(dtype=int),
+    }
+    premium = _premium_by_origin(triangle, premium_field, origins)
+    data["premium"] = premium
+    return data
+
+
 def ccl_mu_index(data: dict[str, Any]) -> dict[str, np.ndarray]:
     """Static arrays that turn the CCL ``mu`` recurrence into one matmul.
 

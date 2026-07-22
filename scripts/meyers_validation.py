@@ -9,7 +9,10 @@ total ultimate, and test the percentiles for uniformity (KS / p-p).
 Models: ``meyers_ccl`` fits Meyers' "incurred" = reported_loss (incurred net
 of bulk+IBNR); ``meyers_csr`` fits paid_loss with Meyers' floor-of-1 clamp
 (his ``pmax(cum_pdloss, 1)``) so the paid study keeps the identical company
-cohort as the incurred one. Company selection applies both Table A.1 screens
+cohort as the incurred one. ``compartmental`` scores paid but fits paid and
+outstanding (= reported - paid) jointly, unclamped — its gaussian default
+takes zero cells natively and the lognormal variant drops and counts its
+own non-positive cells. Company selection applies both Table A.1 screens
 (CV1 net premium, CV2 net/direct premium ratio) for every model.
 
 Usage:
@@ -46,11 +49,20 @@ MODEL_LOSS_FIELDS = {
     "england_verrall_odp": "paid_loss",
     "clark": "paid_loss",
     "clark_growth_curve": "paid_loss",
+    # compartmental scores paid but also consumes reported (outstanding =
+    # reported - paid) through its own joint contract
+    "compartmental": "paid_loss",
 }
 
 #: models fit by MCMC — they take the chains/warmup/draws arguments and
 #: report R-hat; the likelihood-based entries (clark) take neither
-MCMC_MODELS = {"meyers_ccl", "meyers_csr", "england_verrall_odp", "clark_growth_curve"}
+MCMC_MODELS = {
+    "meyers_ccl",
+    "meyers_csr",
+    "england_verrall_odp",
+    "clark_growth_curve",
+    "compartmental",
+}
 
 #: models needing Meyers' pmax(cum_pdloss, 1) floor — the lognormal cannot
 #: take non-positive cells. The ODP takes zeros natively and must see the
@@ -164,6 +176,10 @@ def run_line(
                 if args.model not in ("clark", "clark_growth_curve"):
                     raise SystemExit(f"--growth-curve does not apply to {args.model}")
                 fit_kwargs["growth_curve"] = args.growth_curve
+            if args.variant is not None:
+                if args.model != "compartmental":
+                    raise SystemExit(f"--variant does not apply to {args.model}")
+                fit_kwargs["variant"] = args.variant
             entry = gallery.fit(
                 args.model,
                 tri,
@@ -223,6 +239,13 @@ def main() -> int:
         help="clark / clark_growth_curve only: override the growth curve "
         "(entry default: loglogistic)",
     )
+    ap.add_argument(
+        "--variant",
+        default=None,
+        choices=["gaussian", "lognormal"],
+        help="compartmental only: case-study Model 1 (gaussian, entry default) "
+        "or Model 2 (lognormal)",
+    )
     ap.add_argument("--lines", nargs="+", default=MEYERS_LINES, choices=MEYERS_LINES)
     ap.add_argument("--per-line", type=int, default=50)
     ap.add_argument("--chains", type=int, default=4)
@@ -232,8 +255,13 @@ def main() -> int:
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args()
     if args.out is None:
+        # non-default ablations get a suffix (precedent: clark_validation_weibull)
+        suffix = f"_{args.variant}" if args.variant not in (None, "gaussian") else ""
         args.out = (
-            Path(__file__).parents[1] / "analysis" / "results" / f"{args.model}_validation.csv"
+            Path(__file__).parents[1]
+            / "analysis"
+            / "results"
+            / f"{args.model}_validation{suffix}.csv"
         )
 
     mart = active_mart_path(args.warehouse)
