@@ -55,6 +55,12 @@ METHODOLOGY (this script produces published results — read before changing)
    read `n` and `failed` together. The one silent data alteration is the
    paid clamp, restricted to `MODELS_WITH_PAID_CLAMP` and documented there.
 
+5. Provenance. Every results row is stamped with the gold-mart `publish_id`
+   resolved at run time (`mart_publish_id`), so a CSV traces back to an exact
+   immutable publish even when `--warehouse` was left at "@latest" — same
+   convention as `compare_gallery.py` (CLAUDE.md: experiment runs should pin
+   a concrete @publish_id).
+
 Usage:
     uv run python scripts/meyers_validation.py --per-line 50
     uv run python scripts/meyers_validation.py --model meyers_csr --per-line 50
@@ -74,7 +80,7 @@ import ibis
 import pandas as pd
 
 from ibnr import gallery
-from ibnr.data.schedule_p import active_mart_path, load_schedule_p
+from ibnr.data.schedule_p import active_mart_path, active_publish_id, load_schedule_p
 from ibnr.kernels.calibration import ks_uniformity
 
 # None falls through to ibnr's resolution: IBNR_SCHEDULE_P_WAREHOUSE env var,
@@ -382,6 +388,10 @@ def main() -> int:
     # written before scoring so a long MCMC run's results survive a crash in
     # the summary code
     df = pd.DataFrame(all_rows)
+    # Provenance stamping (CLAUDE.md): the gold mart is published as immutable
+    # GitHub releases, so recording the resolved publish_id pins these results
+    # to an exact dataset version even when --warehouse was "@latest".
+    df["mart_publish_id"] = active_publish_id(args.warehouse)
     df.to_csv(args.out, index=False)
     print(f"\nwrote {args.out}")
 
