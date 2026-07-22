@@ -1,0 +1,13 @@
+# keep the build context to what the image COPYs (pyproject/README/src/scripts)
+.git
+.venv
+analysis
+docs
+tests
+**/__pycache__
+**/*.pyc
+# locally compiled cmdstan artifacts next to the .stan sources (Windows dev
+# box) — the image compiles its own Linux executables at build time
+src/**/*.exe
+src/**/*.o
+src/**/*.d

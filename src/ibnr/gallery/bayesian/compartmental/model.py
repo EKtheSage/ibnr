@@ -138,6 +138,7 @@ class Compartmental(GalleryEntry):
         # max_treedepth = 15 — the hierarchy is genuinely hard geometry
         target_accept: float = 0.99,
         max_treedepth: int = 15,
+        parallel_chains: int = 1,
         show_progress: bool = False,
     ) -> Compartmental:
         """Fit one cohort (single company x line) as of a training diagonal.
@@ -180,9 +181,21 @@ class Compartmental(GalleryEntry):
             seed=seed,
             target_accept=target_accept,
             max_treedepth=max_treedepth,
+            parallel_chains=parallel_chains,
             show_progress=show_progress,
         )
         return self
+
+    @classmethod
+    def precompile(cls) -> None:
+        """Compile both variants' Stan programs ahead of use (container build,
+        or before a worker pool spawns, so concurrent first-fits never race
+        the compiler)."""
+        from cmdstanpy import CmdStanModel
+
+        ensure_stan_toolchain()
+        for stan_file in STAN_FILES.values():
+            CmdStanModel(stan_file=str(stan_file))
 
     def _gaussian_stan_data(self) -> dict:
         """Model 1 rows: the contract as-is — OS levels and cumulative paid as
@@ -256,6 +269,7 @@ class Compartmental(GalleryEntry):
         seed,
         target_accept,
         max_treedepth,
+        parallel_chains,
         show_progress,
     ):
         import time
@@ -270,7 +284,9 @@ class Compartmental(GalleryEntry):
         self.fit_ = model.sample(
             data=stan_data,
             chains=chains,
-            parallel_chains=1,  # sequential: fair single-core runtime vs future ports
+            # 1 = sequential, the fair single-core runtime convention vs future
+            # ports; the retro harness raises it in late escalation stages
+            parallel_chains=parallel_chains,
             iter_warmup=iter_warmup,
             iter_sampling=iter_sampling,
             seed=seed,

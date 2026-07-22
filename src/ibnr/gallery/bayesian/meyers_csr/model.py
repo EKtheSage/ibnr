@@ -66,6 +66,8 @@ class MeyersCSR(GalleryEntry):
         # 0.9 default: the gamma x beta interaction makes CSR's centered
         # geometry harder than CCL's (Meyers ran adapt_delta = 0.9999)
         target_accept: float = 0.9,
+        parallel_chains: int = 1,
+        max_treedepth: int | None = None,
         show_progress: bool = False,
     ) -> MeyersCSR:
         if backend not in BACKENDS:
@@ -85,12 +87,32 @@ class MeyersCSR(GalleryEntry):
             iter_sampling=iter_sampling,
             seed=seed,
             target_accept=target_accept,
+            parallel_chains=parallel_chains,
+            max_treedepth=max_treedepth,
             show_progress=show_progress,
         )
         return self
 
+    @classmethod
+    def precompile(cls) -> None:
+        """Compile the Stan program ahead of use (container build, or before a
+        worker pool spawns, so concurrent first-fits never race the compiler)."""
+        from cmdstanpy import CmdStanModel
+
+        ensure_stan_toolchain()
+        CmdStanModel(stan_file=str(STAN_FILE))
+
     def _sample_stan(
-        self, *, chains, iter_warmup, iter_sampling, seed, target_accept, show_progress
+        self,
+        *,
+        chains,
+        iter_warmup,
+        iter_sampling,
+        seed,
+        target_accept,
+        parallel_chains,
+        max_treedepth,
+        show_progress,
     ):
         import time
 
@@ -103,11 +125,14 @@ class MeyersCSR(GalleryEntry):
         self.fit_ = model.sample(
             data={k: self.contract_[k] for k in STAN_DATA_KEYS},
             chains=chains,
-            parallel_chains=1,  # sequential: fair single-core runtime vs future ports
+            # 1 = sequential, the fair single-core runtime convention vs future
+            # ports; the retro harness raises it in late escalation stages
+            parallel_chains=parallel_chains,
             iter_warmup=iter_warmup,
             iter_sampling=iter_sampling,
             seed=seed,
             adapt_delta=target_accept,
+            max_treedepth=max_treedepth,
             show_progress=show_progress,
         )
         runtime_s = time.perf_counter() - t0

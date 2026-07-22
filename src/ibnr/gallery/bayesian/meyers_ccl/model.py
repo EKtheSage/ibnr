@@ -88,6 +88,8 @@ class MeyersCCL(GalleryEntry):
         iter_sampling: int = 2500,
         seed: int | None = None,
         target_accept: float = 0.8,
+        parallel_chains: int = 1,
+        max_treedepth: int | None = None,
         show_progress: bool = False,
     ) -> MeyersCCL:
         """Sample the CCL posterior for one cohort's training triangle.
@@ -116,6 +118,16 @@ class MeyersCCL(GalleryEntry):
             "numpyro": self._sample_numpyro,
             "pymc": self._sample_pymc,
         }[backend]
+        # parallel_chains / max_treedepth are cmdstan-level controls the
+        # retro harness escalates on; the ports keep their own defaults
+        extra = {}
+        if backend == "stan":
+            extra = {"parallel_chains": parallel_chains, "max_treedepth": max_treedepth}
+        elif parallel_chains != 1 or max_treedepth is not None:
+            raise ValueError(
+                "parallel_chains / max_treedepth are stan-backend controls; "
+                f"the {backend!r} port does not take them"
+            )
         # All three return a comparable arviz.InferenceData, so everything
         # downstream (predict, convergence, parity) is backend-agnostic.
         self.idata_ = sampler(
@@ -125,13 +137,32 @@ class MeyersCCL(GalleryEntry):
             seed=seed,
             target_accept=target_accept,
             show_progress=show_progress,
+            **extra,
         )
         return self
 
     # -- backends ------------------------------------------------------------
 
+    @classmethod
+    def precompile(cls) -> None:
+        """Compile the Stan program ahead of use (container build, or before a
+        worker pool spawns, so concurrent first-fits never race the compiler)."""
+        from cmdstanpy import CmdStanModel
+
+        ensure_stan_toolchain()
+        CmdStanModel(stan_file=str(STAN_FILE))
+
     def _sample_stan(
-        self, *, chains, iter_warmup, iter_sampling, seed, target_accept, show_progress
+        self,
+        *,
+        chains,
+        iter_warmup,
+        iter_sampling,
+        seed,
+        target_accept,
+        show_progress,
+        parallel_chains=1,
+        max_treedepth=None,
     ):
         """Reference backend: cmdstanpy NUTS on ``model.stan``.
 
@@ -153,11 +184,14 @@ class MeyersCCL(GalleryEntry):
             # (premium, origin_periods, ...) would be rejected by cmdstan
             data={k: self.contract_[k] for k in STAN_DATA_KEYS},
             chains=chains,
-            parallel_chains=1,  # sequential: fair single-core runtime vs the ports
+            # 1 = sequential, the fair single-core runtime convention vs the
+            # ports; the retro harness raises it in late escalation stages
+            parallel_chains=parallel_chains,
             iter_warmup=iter_warmup,
             iter_sampling=iter_sampling,
             seed=seed,
             adapt_delta=target_accept,
+            max_treedepth=max_treedepth,
             show_progress=show_progress,
         )
         # Sampling wall-clock only (compile excluded — it is cached after the

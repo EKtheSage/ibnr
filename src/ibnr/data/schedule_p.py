@@ -112,6 +112,24 @@ def _resolve_source(warehouse: str | Path | None) -> str | Path:
     return warehouse
 
 
+def pinned_source(warehouse: str | Path | None = None, mart: str = TRAINING_MART) -> str:
+    """Resolve a warehouse argument to a CONCRETE, worker-safe source string.
+
+    For a GitHub spec, ``@latest`` is pinned to its publish_id and the mart
+    asset is downloaded into the cache up front. The parallel harness hands
+    THIS string to its workers, so they never re-resolve ``@latest`` (a race
+    against a release published mid-run would split the study across two data
+    versions) and never call gh concurrently — they only read the local cache.
+    Local warehouse paths pass through unchanged.
+    """
+    source = _resolve_source(warehouse)
+    if _is_github_spec(source):
+        repo, tag = _parse_github_spec(str(source))
+        _release_asset(repo, tag, mart)  # warm the cache before workers spawn
+        return f"{GITHUB_SCHEME}{repo}@{tag}"
+    return str(source)
+
+
 # -- GitHub release consumption ---------------------------------------------------
 #
 # The data repo publishes each gold promote as an immutable release tagged with

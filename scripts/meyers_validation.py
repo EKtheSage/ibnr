@@ -61,10 +61,26 @@ METHODOLOGY (this script produces published results — read before changing)
    convention as `compare_gallery.py` (CLAUDE.md: experiment runs should pin
    a concrete @publish_id).
 
+6. Parallel execution + staged escalation (`kernels.harness`). Companies fit
+   across a process pool (all cores by default; `--workers`, or the
+   IBNR_MAX_WORKERS env var in containers). Each model runs a two-stage
+   sampler policy (STAGE_POLICIES): a cheap first pass, then a re-fit at the
+   expensive settings ONLY for companies failing the convergence gates
+   (R-hat/divergences/ESS — read `stage` in the CSV to see who escalated).
+   For the Meyers-family entries stage 1 IS the published entry default, so
+   escalation can only improve on the published runs; for `compartmental`
+   stage 1 relaxes the monograph's adapt_delta 0.99 / treedepth 15 (that is
+   the point — those settings cost 160-250 s/company and most companies do
+   not need them). `--no-escalate` restores the single-stage entry-default
+   behavior of the published CSVs. Note `max_rhat` is now
+   `entry.convergence()`'s (core sampled parameters, matching the cards'
+   convention) rather than the worst over all transformed quantities.
+
 Usage:
     uv run python scripts/meyers_validation.py --per-line 50
     uv run python scripts/meyers_validation.py --model meyers_csr --per-line 50
     uv run python scripts/meyers_validation.py --lines workers_compensation --per-line 5 --chains 2
+    uv run python scripts/meyers_validation.py --model compartmental --workers 8
 """
 
 from __future__ import annotations
@@ -72,16 +88,15 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import time
+from dataclasses import replace
 from pathlib import Path
 
 import duckdb
-import ibis
 import pandas as pd
 
-from ibnr import gallery
-from ibnr.data.schedule_p import active_mart_path, active_publish_id, load_schedule_p
+from ibnr.data.schedule_p import active_mart_path, active_publish_id, pinned_source
 from ibnr.kernels.calibration import ks_uniformity
+from ibnr.kernels.harness import RetroTask, SamplerSettings, run_retro
 
 # None falls through to ibnr's resolution: IBNR_SCHEDULE_P_WAREHOUSE env var,
 # else the GitHub release default (github://...@latest, cached locally).
@@ -98,16 +113,6 @@ MODEL_LOSS_FIELDS = {
     # compartmental scores paid but also consumes reported (outstanding =
     # reported - paid) through its own joint contract
     "compartmental": "paid_loss",
-}
-
-#: models fit by MCMC — they take the chains/warmup/draws arguments and
-#: report R-hat; the likelihood-based entries (clark) take neither
-MCMC_MODELS = {
-    "meyers_ccl",
-    "meyers_csr",
-    "england_verrall_odp",
-    "clark_growth_curve",
-    "compartmental",
 }
 
 #: models needing Meyers' pmax(cum_pdloss, 1) floor — the lognormal cannot
@@ -226,99 +231,61 @@ def select_companies(mart_path: Path, line: str, per_line: int) -> pd.DataFrame:
     return out.head(per_line).reset_index(drop=True)
 
 
-def run_line(
-    warehouse: Path, line: str, companies: pd.DataFrame, args: argparse.Namespace
-) -> list[dict]:
-    """Fit + score one line of business, one company at a time.
+#: the monograph's training cutoff: the diagonal visible at year-end 1997
+AS_OF = "1997-12-31"
 
-    Returns one row per company: the predictive total (estimate/se/cv), the
-    realized outcome, its percentile (the PIT value fed to the KS test), the
-    worst R-hat of the fit, and wall-clock seconds. Companies whose fit raises
-    yield an ``error`` row instead — the study runs to completion either way.
+#: two-stage sampler escalation per model (kernels.harness). Stage 1 is the
+#: cheap first pass, stage 2 re-fits only the companies that fail the
+#: convergence gates — at the expensive settings, with chains in parallel
+#: (few tasks remain by then, so cores are otherwise idle). target_accept /
+#: max_treedepth of None mean "the entry's own default", so the Meyers-family
+#: default stage 1 reproduces the published single-stage runs exactly.
+DEFAULT_STAGES = (
+    SamplerSettings(),
+    SamplerSettings(target_accept=0.99, max_treedepth=15, parallel_chains=4),
+)
+STAGE_POLICIES = {
+    # the compartmental entry's OWN default is the monograph's expensive
+    # adapt_delta 0.99 / treedepth 15 (160-250 s/company); stage 1 relaxes it
+    # and lets the gates decide who really needs the monograph settings
+    "compartmental": (
+        SamplerSettings(target_accept=0.9, max_treedepth=12),
+        SamplerSettings(target_accept=0.99, max_treedepth=15, parallel_chains=4),
+    ),
+}
+
+
+def stages_for(model: str, args: argparse.Namespace) -> tuple[SamplerSettings, ...]:
+    """The escalation ladder for one model, with the CLI's MCMC budget applied.
+
+    ``--no-escalate`` collapses to a single entry-default stage — the exact
+    behavior (and cost) of the published pre-harness runs.
     """
-    # the FULL triangle for this line; each entry slices to as_of internally
-    # and scores only the origins it trained on
-    tri_line = load_schedule_p(warehouse, lines=[line])
-    loss_field = args.loss_field or MODEL_LOSS_FIELDS[args.model]
-    if loss_field == "paid_loss" and args.model in MODELS_WITH_PAID_CLAMP:
-        # Meyers' pmax(cum_pdloss, 1): floor paid cells at 1 (in $000s) so the
-        # lognormal accepts every cohort the incurred screens admit.
-        # This is the ONE place the harness alters the data. It is confined to
-        # MODELS_WITH_PAID_CLAMP because a clamp shifts increments; the ODP and
-        # compartmental entries must see the unclamped series.
-        e = tri_line.expr
-        tri_line = tri_line.with_expr(
-            e.mutate(value=ibis.ifelse(e.field == "paid_loss", ibis.greatest(e.value, 1), e.value))
+    policy = (SamplerSettings(),) if args.no_escalate else STAGE_POLICIES.get(model, DEFAULT_STAGES)
+    return tuple(
+        replace(
+            s,
+            chains=args.chains,
+            iter_warmup=args.warmup,
+            iter_sampling=args.draws,
+            parallel_chains=min(s.parallel_chains, args.chains),
         )
-    rows = []
-    for i, code in enumerate(companies["company_code"], 1):
-        tri = tri_line.filter(ibis._.company_code == code)
-        t0 = time.perf_counter()
-        try:
-            fit_kwargs = (
-                {
-                    "chains": args.chains,
-                    "iter_warmup": args.warmup,
-                    "iter_sampling": args.draws,
-                    "seed": args.seed,
-                }
-                if args.model in MCMC_MODELS
-                else {}
-            )
-            if args.growth_curve is not None:
-                if args.model not in ("clark", "clark_growth_curve"):
-                    raise SystemExit(f"--growth-curve does not apply to {args.model}")
-                fit_kwargs["growth_curve"] = args.growth_curve
-            if args.variant is not None:
-                if args.model != "compartmental":
-                    raise SystemExit(f"--variant does not apply to {args.model}")
-                fit_kwargs["variant"] = args.variant
-            # the monograph's cutoff: train on the diagonal visible at
-            # year-end 1997, score against what later statements realized
-            entry = gallery.fit(
-                args.model,
-                tri,
-                loss_field=loss_field,
-                as_of="1997-12-31",
-                **fit_kwargs,
-            )
-            pred = entry.predict(seed=args.seed)
-            # realized_ultimates() restricts to the origins the entry trained
-            # on, keeping post-study accident years out of the outcome
-            realized = entry.realized_ultimates(tri)
-            table = pred.summary(observed=realized)
-            # last row = the sum over accident years. Meyers validates the
-            # TOTAL unpaid distribution, not per-origin cells, so this is the
-            # only row scored.
-            total = table.iloc[-1]
-            # worst R-hat across all parameters: a convergence red flag stored
-            # alongside the result so a bad fit can be spotted post hoc rather
-            # than quietly polluting the KS panel
-            rhat = (
-                entry.fit_.summary()["R_hat"].max() if args.model in MCMC_MODELS else float("nan")
-            )
-            rows.append(
-                {
-                    "line": line,
-                    "company_code": code,
-                    "estimate": total["estimate"],
-                    "se": total["se"],
-                    "cv": total["cv"],
-                    "outcome": total["outcome"],
-                    "percentile": total["percentile"],
-                    "max_rhat": rhat,
-                    "seconds": time.perf_counter() - t0,
-                }
-            )
-            print(
-                f"  [{i}/{len(companies)}] {line} {code}: pct={total['percentile']:.1f} "
-                f"rhat={rhat:.3f} ({rows[-1]['seconds']:.1f}s)",
-                flush=True,
-            )
-        except Exception as e:  # keep the study going; record the failure
-            rows.append({"line": line, "company_code": code, "error": str(e)})
-            print(f"  [{i}/{len(companies)}] {line} {code}: FAILED {e}", flush=True)
-    return rows
+        for s in policy
+    )
+
+
+def print_progress(row: dict, stage: int, done: int, total: int) -> None:
+    """Per-fit progress line, called from the parent as pool results land."""
+    where = f"  [{done}/{total} stage{stage}] {row['line']} {row['company_code']}"
+    if row.get("error") is not None:
+        print(f"{where}: FAILED {row['error']}", flush=True)
+        return
+    rhat = row.get("max_rhat")
+    rhat = float("nan") if rhat is None else float(rhat)
+    print(
+        f"{where}: pct={row['percentile']:.1f} rhat={rhat:.3f} ({row['seconds']:.1f}s)",
+        flush=True,
+    )
 
 
 def main() -> int:
@@ -361,6 +328,23 @@ def main() -> int:
     # run reproduces cell for cell
     ap.add_argument("--seed", type=int, default=20260612)
     ap.add_argument("--out", type=Path, default=None)
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="process-pool size (default: IBNR_MAX_WORKERS env var, else all cores minus one)",
+    )
+    ap.add_argument(
+        "--serial",
+        action="store_true",
+        help="run everything in this process (debugging; real tracebacks)",
+    )
+    ap.add_argument(
+        "--no-escalate",
+        action="store_true",
+        help="single stage at the entry's default sampler settings — the exact "
+        "behavior of the published pre-harness runs (compartmental included)",
+    )
     args = ap.parse_args()
     if args.out is None:
         # one CSV per model so entries never overwrite each other's results;
@@ -372,22 +356,65 @@ def main() -> int:
             / "results"
             / f"{args.model}_validation{suffix}.csv"
         )
+    # fail on a bad --out NOW, not after hours of MCMC when the CSV writes
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+
+    # entry-specific fit arguments, passed through the harness verbatim
+    fit_kwargs: dict = {}
+    if args.growth_curve is not None:
+        if args.model not in ("clark", "clark_growth_curve"):
+            raise SystemExit(f"--growth-curve does not apply to {args.model}")
+        fit_kwargs["growth_curve"] = args.growth_curve
+    if args.variant is not None:
+        if args.model != "compartmental":
+            raise SystemExit(f"--variant does not apply to {args.model}")
+        fit_kwargs["variant"] = args.variant
+    loss_field = args.loss_field or MODEL_LOSS_FIELDS[args.model]
+    # Meyers' pmax(cum_pdloss, 1): floor paid cells at 1 (in $000s) so the
+    # lognormal accepts every cohort the incurred screens admit. The ONE data
+    # alteration, confined to MODELS_WITH_PAID_CLAMP (a clamp shifts
+    # increments; ODP and compartmental must see the unclamped series).
+    clamp_paid = loss_field == "paid_loss" and args.model in MODELS_WITH_PAID_CLAMP
 
     # Resolves --warehouse (local path, github://...@publish_id, or the
     # @latest release) to a concrete cached parquet. Provenance: published
     # runs should pass an explicit @publish_id so the cohort is pinned to an
     # immutable gold publish rather than whatever "latest" happened to be.
     mart = active_mart_path(args.warehouse)
-    all_rows: list[dict] = []
+    # pinned + cache-warmed so pool workers never resolve @latest or call gh
+    source = pinned_source(args.warehouse)
+
     # one cohort per line; the same cohort every model sees (see docstring)
+    tasks: list[RetroTask] = []
     for line in args.lines:
         companies = select_companies(mart, line, args.per_line)
         print(f"{line}: {len(companies)} companies selected", flush=True)
-        all_rows += run_line(args.warehouse, line, companies, args)
+        tasks += [
+            RetroTask(
+                model=args.model,
+                warehouse=source,
+                line=line,
+                company_code=code,
+                as_of=AS_OF,
+                loss_field=loss_field,
+                clamp_paid=clamp_paid,
+                seed=args.seed,
+                fit_kwargs=dict(fit_kwargs),
+            )
+            for code in companies["company_code"]
+        ]
+
+    rows = run_retro(
+        tasks,
+        stages=stages_for(args.model, args),
+        max_workers=args.workers,
+        executor="serial" if args.serial else "process",
+        progress=print_progress,
+    )
 
     # written before scoring so a long MCMC run's results survive a crash in
     # the summary code
-    df = pd.DataFrame(all_rows)
+    df = pd.DataFrame(rows)
     # Provenance stamping (CLAUDE.md): the gold mart is published as immutable
     # GitHub releases, so recording the resolved publish_id pins these results
     # to an exact dataset version even when --warehouse was "@latest".

@@ -71,6 +71,8 @@ class ClarkGrowthCurve(GalleryEntry):
         iter_sampling: int = 2500,
         seed: int | None = None,
         target_accept: float = 0.8,
+        parallel_chains: int = 1,
+        max_treedepth: int | None = None,
         show_progress: bool = False,
     ) -> ClarkGrowthCurve:
         if backend not in BACKENDS:
@@ -129,12 +131,33 @@ class ClarkGrowthCurve(GalleryEntry):
             iter_sampling=iter_sampling,
             seed=seed,
             target_accept=target_accept,
+            parallel_chains=parallel_chains,
+            max_treedepth=max_treedepth,
             show_progress=show_progress,
         )
         return self
 
+    @classmethod
+    def precompile(cls) -> None:
+        """Compile the Stan program ahead of use (container build, or before a
+        worker pool spawns, so concurrent first-fits never race the compiler)."""
+        from cmdstanpy import CmdStanModel
+
+        ensure_stan_toolchain()
+        CmdStanModel(stan_file=str(STAN_FILE))
+
     def _sample_stan(
-        self, stan_data, *, chains, iter_warmup, iter_sampling, seed, target_accept, show_progress
+        self,
+        stan_data,
+        *,
+        chains,
+        iter_warmup,
+        iter_sampling,
+        seed,
+        target_accept,
+        parallel_chains,
+        max_treedepth,
+        show_progress,
     ):
         import time
 
@@ -147,11 +170,14 @@ class ClarkGrowthCurve(GalleryEntry):
         self.fit_ = model.sample(
             data=stan_data,
             chains=chains,
-            parallel_chains=1,  # sequential: fair single-core runtime vs future ports
+            # 1 = sequential, the fair single-core runtime convention vs future
+            # ports; the retro harness raises it in late escalation stages
+            parallel_chains=parallel_chains,
             iter_warmup=iter_warmup,
             iter_sampling=iter_sampling,
             seed=seed,
             adapt_delta=target_accept,
+            max_treedepth=max_treedepth,
             show_progress=show_progress,
         )
         runtime_s = time.perf_counter() - t0

@@ -90,6 +90,37 @@ the adapter (`src/ibnr/data/schedule_p.py`). Everything mart-dependent
 auto-skips when no data source is available — the package and its test suite
 work standalone on the public raa/clrd samples.
 
+## Parallel retrospectives & the compute container
+
+`ibnr.kernels.harness` is the compute layer for every study script (and the
+seam a future hosted scoring API will call): it fans company×line fits across
+a process pool — **all visible cores by default**, `IBNR_MAX_WORKERS` or
+`--workers` to override — and runs a staged sampler-escalation policy: a cheap
+first pass, then a re-fit at expensive settings (monograph `adapt_delta`,
+parallel chains) *only* for companies failing the convergence gates
+(R-hat / divergences / bulk ESS). Every results row records which `stage` it
+came from. `--serial` and `--no-escalate` reproduce the sequential
+single-stage behavior of the published runs.
+
+```sh
+uv run python scripts/meyers_validation.py --model compartmental --per-line 50   # parallel + escalation, by default
+```
+
+The `Dockerfile` packages all of this as a self-contained compute image —
+package, cmdstan and **every gallery Stan model pre-compiled** — so other
+services can call it with zero startup cost:
+
+```sh
+docker build -t ibnr .
+docker run --rm -e GH_TOKEN=<token> -e IBNR_MAX_WORKERS=8 --cpus 8 \
+  -v ibnr-cache:/data/ibnr-cache -v "$PWD/results:/app/analysis/results" \
+  ibnr python scripts/meyers_validation.py --model compartmental --per-line 50
+```
+
+`GH_TOKEN` authenticates the gold-mart release download (private data repo);
+set `IBNR_MAX_WORKERS` to match `--cpus`, since a cpu-limited container still
+reports the host's core count to Python.
+
 ## Related repositories
 
 Three-repo research setup (see `docs/three-repo-workflow.md` for the full
