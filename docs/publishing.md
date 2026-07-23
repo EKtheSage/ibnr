@@ -7,57 +7,74 @@ repository** — there is no secret to leak, and nothing to rotate.
 The workflow is [`.github/workflows/release.yml`](../.github/workflows/release.yml).
 
 > **A published version number is permanent.** PyPI lets you *yank* a release,
-> but you can never re-upload the same version. Rehearse on TestPyPI first, and
-> bump `version` in `pyproject.toml` for anything after that.
+> but you can never re-upload the same version. Run the pre-flight below first;
+> if something does slip through, the fix is to bump `version` in
+> `pyproject.toml` and release again, not to re-upload.
+
+We deliberately **do not use TestPyPI** — it needs a second, separate account,
+and the checks below cover what a rehearsal there would have caught.
 
 ## One-time setup
 
-Trusted Publishing requires a *pending publisher* on each index — "pending"
-because it is registered before the project exists. Create one on **both**
-indexes.
+Trusted Publishing requires a *pending publisher* — "pending" because it is
+registered before the project exists.
 
-**PyPI** — <https://pypi.org/manage/account/publishing/>
-**TestPyPI** — <https://test.pypi.org/manage/account/publishing/>
+Create one at <https://pypi.org/manage/account/publishing/> with exactly these
+values (they must match the workflow file, or the upload is rejected):
 
-Enter exactly these values (they must match the workflow file, or the upload is
-rejected):
+| Field | Value |
+|---|---|
+| PyPI Project Name | `ibnr` |
+| Owner | `EKtheSage` |
+| Repository name | `probabilistic-ml-reserving` |
+| Workflow name | `release.yml` |
+| Environment name | `pypi` |
 
-| Field | PyPI | TestPyPI |
-|---|---|---|
-| PyPI Project Name | `ibnr` | `ibnr` |
-| Owner | `EKtheSage` | `EKtheSage` |
-| Repository name | `probabilistic-ml-reserving` | `probabilistic-ml-reserving` |
-| Workflow name | `release.yml` | `release.yml` |
-| Environment name | `pypi` | `testpypi` |
+The `pypi` GitHub Environment is created automatically on first use. Optionally
+add required reviewers to it under *Settings → Environments* so a release needs
+an explicit approval click.
 
-The two GitHub Environments (`pypi`, `testpypi`) are created automatically on
-first use. Optionally add required reviewers to the `pypi` environment under
-*Settings → Environments* so a real release needs an explicit approval click.
+Renaming the workflow file or the environment breaks the trust relationship —
+update the publisher on PyPI if you ever do.
 
-Renaming the workflow file or an environment breaks the trust relationship —
-update the publisher on both indexes if you ever do.
+## Pre-flight (replaces the TestPyPI rehearsal)
 
-## Rehearse on TestPyPI
+**1. Dry run in CI.** *Actions → Release → Run workflow.* This builds the
+distributions, runs `twine check --strict`, and uploads them as a downloadable
+artifact — it publishes nothing. Only a tag push can publish.
 
-*Actions → Release → Run workflow → target: `testpypi`*
-
-Then check the rendered page at <https://test.pypi.org/project/ibnr/>:
-
-- the README renders (no raw markdown, no broken tables)
-- License shows **MPL-2.0**, and the LICENSE file is present under the sidebar
-- classifiers and the Homepage/Repository/Issues links are all there
-- the `bayesian` / `nn` / `viz` extras appear
-
-Install from TestPyPI to confirm the artifact is actually usable. Core deps come
-from real PyPI, so point `--extra-index-url` back at it:
+**2. Confirm the README will render on PyPI.** A description that fails to
+render shows up as raw text on the project page. `twine check --strict` (run by
+the workflow) is the authoritative gate; to inspect the HTML yourself:
 
 ```sh
-uv run --with ibnr --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ python -c "import ibnr; print(ibnr.__version__, ibnr.gallery.list())"
+uv build
+uvx --with "readme_renderer[md]" python -c "import zipfile,glob,email,readme_renderer.markdown as md; m=email.message_from_string(zipfile.ZipFile(glob.glob('dist/*.whl')[0]).read([n for n in zipfile.ZipFile(glob.glob('dist/*.whl')[0]).namelist() if n.endswith('METADATA')][0]).decode()); h=md.render(m.get_payload()); print('FAILED' if h is None else f'renders OK ({len(h)} chars)')"
 ```
+
+**3. Check the metadata PyPI will display.**
+
+```sh
+uvx --from twine python -c "import zipfile,glob; z=zipfile.ZipFile(glob.glob('dist/*.whl')[0]); print(z.read([n for n in z.namelist() if n.endswith('METADATA')][0]).decode().split('Description-Content-Type')[0])"
+```
+
+Expect `License-Expression: MPL-2.0`, `License-File: LICENSE`, the classifiers,
+and the `Project-URL` entries.
+
+**4. Install the built wheel into a throwaway env** — the strongest check, and
+it needs no index at all:
+
+```sh
+uv venv /tmp/cr && uv pip install --python /tmp/cr/bin/python dist/*.whl
+/tmp/cr/bin/python -c "import ibnr; from ibnr import gallery; print(ibnr.__version__, gallery.list())"
+```
+
+Should print `0.1.0` and all 10 gallery entries, with only core dependencies
+installed.
 
 ## Release to PyPI
 
-Once the rehearsal looks right, tag the commit on `main`:
+Once the pre-flight looks right, tag the commit on `main`:
 
 ```sh
 git tag v0.1.0 && git push origin v0.1.0
