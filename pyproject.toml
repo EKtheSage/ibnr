@@ -32,6 +32,9 @@ dev = [
     "nbformat>=5",
     "ipykernel>=6",
 ]
+# Documentation site (Quarto-based; needs the `quarto` CLI installed separately).
+# Build with: uv run --group docs great-docs build
+docs = ["great-docs>=0.15"]
 
 [build-system]
 requires = ["hatchling"]

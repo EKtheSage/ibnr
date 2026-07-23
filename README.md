@@ -145,4 +145,20 @@ Optional extras: `[bayesian]` (cmdstanpy, numpyro, pymc, arviz, bayesblend),
 `[nn]` (torch), `[viz]` (altair). The core depends only on
 `ibis-framework[duckdb,polars]`.
 
+### Documentation
+
+The API documentation site is generated with
+[great-docs](https://github.com/posit-dev/great-docs) (Quarto-based) from
+`great-docs.yml` plus the package docstrings. Requires the `quarto` CLI on your
+PATH.
+
+```sh
+uv run --no-default-groups --group docs great-docs build      # -> great-docs/_site
+uv run --no-default-groups --group docs great-docs preview    # serve locally
+```
+
+The `great-docs/` build directory is gitignored; only `great-docs.yml` is
+tracked. `.github/workflows/docs.yml` rebuilds the site on every push and
+deploys `main` to GitHub Pages.
+
 License: MPL-2.0.
