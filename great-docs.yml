@@ -1,0 +1,186 @@
+# Great Docs Configuration
+# See https://posit-dev.github.io/great-docs/user-guide/configuration.html
+
+# Module Name (optional)
+# ----------------------
+# Set this if your importable module name differs from the project name.
+# Example: project 'py-yaml12' with module name 'yaml12'
+# module: yaml12
+
+# Docstring Parser
+# ----------------
+# The docstring format used in your package (numpy, google, or sphinx)
+parser: numpy
+
+# Dynamic Introspection
+# ---------------------
+# Use runtime introspection for more accurate documentation (default: true).
+# Set to false here on purpose: most of the documented API lives in submodules
+# (`gallery.*`, `kernels.*`, `kernels.harness.*`) that griffe's dynamic loader
+# can't reach as attributes of the top-level `ibnr` module, so it would fail on
+# the first submodule member and fall back to static analysis for the whole
+# reference anyway. Static analysis reads these plain defs correctly with no
+# warning; flip back to true if the public API ever flattens onto `ibnr`.
+dynamic: false
+
+# Project links & hero
+# --------------------
+repo: https://github.com/EKtheSage/probabilistic-ml-reserving
+tagline: >
+  Probabilistic loss reserving with mandatory evaluation — Bayesian MCMC,
+  neural, and statistical methods over a long-format triangle data layer.
+
+# API Discovery Settings
+# ----------------------
+# Exclude items from auto-documentation
+# exclude:
+#   - InternalClass
+#   - helper_function
+
+# Logo & Favicon
+# ---------------
+# Point to a single logo file (replaces the text title in the navbar):
+# logo: assets/logo.svg
+#
+# For light/dark variants:
+# logo:
+#   light: assets/logo-light.svg
+#   dark: assets/logo-dark.svg
+#
+# To show the text title alongside the logo, add: show_title: true
+
+# Author Information
+# ------------------
+# Author metadata for display in the landing page sidebar
+# You can add additional fields: github, orcid, affiliation, homepage
+authors:
+  - name: Ethan Kang
+    role: Author
+    # affiliation: 
+    email: ethan.yskang@gmail.com
+    github: EKtheSage
+    # orcid: 
+    # homepage: 
+
+# Funding / Copyright Holder
+# --------------------------
+# Credit the organization that funds or holds copyright for this package.
+# Displays in sidebar and footer. Homepage and ROR provide links.
+# funding:
+#   name: "Posit Software, PBC"
+#   roles:
+#     - Copyright holder
+#     - funder
+#   homepage: https://posit.co
+#   ror: https://ror.org/03wc8by49
+
+# API Reference Structure
+# -----------------------
+# Customize the sections below to organize your API documentation.
+# - Reorder items within a section to change their display order
+# - Move items between sections or create new sections
+# - Use 'members: false' to exclude methods from documentation
+# - Add 'desc:' to sections for descriptions
+
+reference:
+  - title: Triangle
+    desc: >
+      The long-format triangle data layer — a tidy table of
+      origin_period / dev_lag / eval_date cells over an ibis expression
+      (duckdb or polars backend), carrying grain, cumulative/incremental,
+      and units metadata.
+    contents:
+      - name: Triangle
+        members: false  # methods documented in their own section below
+      - TriangleMeta
+
+  - title: Triangle transforms & interop
+    desc: >
+      Cumulative/incremental conversion, grain changes, as_of() backtest
+      slicing, and lossless round-trips with chainladder-python and bermuda.
+    contents:
+      - Triangle.from_long
+      - Triangle.from_chainladder
+      - Triangle.to_chainladder
+      - Triangle.from_bermuda
+      - Triangle.to_bermuda
+      - Triangle.to_cumulative
+      - Triangle.to_incremental
+      - Triangle.with_dev_grain
+      - Triangle.with_origin_grain
+      - Triangle.as_of
+      - Triangle.latest_diagonal
+      - Triangle.filter
+      - Triangle.select_fields
+      - Triangle.to_wide
+      - Triangle.to_pandas
+      - Triangle.to_polars
+      - Triangle.execute
+      - Triangle.count
+      - Triangle.with_expr
+      - Triangle.validate
+
+  - title: Gallery
+    desc: >
+      Discover, retrieve, and fit reserving models through the GalleryEntry
+      contract. Every entry — Bayesian, neural, or statistical — produces a
+      PredictiveDistribution.
+    contents:
+      - gallery.list
+      - gallery.get
+      - gallery.fit
+      - name: gallery.GalleryEntry
+        members: true
+
+  - title: Evaluation kernels
+    desc: >
+      The unifying predictive-distribution output type and the cross-backend
+      posterior-parity tooling.
+    contents:
+      - name: kernels.PredictiveDistribution
+        members: true
+      - kernels.ParityReport
+      - kernels.compare_posteriors
+
+  - title: Retrospective harness
+    desc: >
+      Parallel company x line backtesting with staged sampler escalation —
+      the compute seam behind the study scripts.
+    contents:
+      - kernels.harness.run_retro
+      - kernels.harness.run_task
+      - kernels.harness.RetroTask
+      - kernels.harness.SamplerSettings
+      - kernels.harness.ConvergenceGates
+      - kernels.harness.precompile
+      - kernels.harness.default_max_workers
+
+# Site URL
+# --------
+# Canonical address of the deployed documentation site.
+# Required for subdirectory deployments, skills page install commands,
+# .well-known/ discovery, and sitemaps.
+site_url: "https://ekthesage.github.io/probabilistic-ml-reserving/"
+
+# Site Settings
+# -------------
+# site:
+#   theme: flatly              # Quarto theme (default: flatly)
+#   toc: true                  # Show table of contents (default: true)
+#   toc-depth: 2               # TOC heading depth (default: 2)
+#   toc-title: On this page    # TOC title (default: "On this page")
+
+# Jupyter Kernel
+# --------------
+# Jupyter kernel to use for executing code cells in .qmd files.
+# This is set at the project level so it applies to all pages, including
+# auto-generated API reference pages. Can be overridden in individual .qmd
+# file frontmatter if needed for special cases.
+jupyter: python3
+
+# CLI Documentation
+# -----------------
+# cli:
+#   enabled: true              # Enable CLI documentation
+#   module: my_package.cli     # Module containing Click commands
+#   name: cli                  # Name of the Click command object

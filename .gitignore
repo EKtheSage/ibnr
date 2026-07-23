@@ -12,6 +12,9 @@ build/
 .ipynb_checkpoints/
 .coverage
 
+# great-docs generated site (source of truth is great-docs.yml + docstrings)
+great-docs/
+
 # cmdstan compiled artifacts (model*.stan is the source of truth)
 src/**/model*.exe
 src/**/model
