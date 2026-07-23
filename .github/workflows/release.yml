@@ -1,0 +1,98 @@
+name: Release
+
+# Publishes `ibnr` using PyPI Trusted Publishing (OIDC) — no API token is ever
+# stored in this repository. PyPI verifies the identity of this workflow
+# directly, so there is no long-lived secret to leak or rotate.
+#
+# Two ways to run it:
+#   * Rehearsal -> Actions > Release > "Run workflow", target = testpypi
+#   * Real release -> push a version tag:  git tag v0.1.0 && git push origin v0.1.0
+#
+# Requires a matching "pending publisher" configured on each index
+# (see docs/publishing.md). The values there must match THIS file's name
+# (release.yml) and the environment names below, or PyPI will refuse the upload.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Which index to publish to"
+        type: choice
+        options:
+          - testpypi
+          - pypi
+        default: testpypi
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      # Fails the run before anything is uploaded if the metadata or the
+      # README (which becomes the PyPI project description) is malformed.
+      - name: Validate distribution metadata
+        run: uvx twine check --strict dist/*
+
+      - name: Show what will be published
+        run: ls -l dist/
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  testpypi:
+    name: Publish to TestPyPI
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/ibnr/
+    permissions:
+      id-token: write # required for Trusted Publishing; nothing else is needed
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  pypi:
+    name: Publish to PyPI
+    needs: build
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/ibnr/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
