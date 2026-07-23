@@ -52,6 +52,29 @@ and are compared head-to-head by `scripts/compare_gallery.py` (KS/PIT
 calibration + CRPS on the Meyers retrospective protocol). See
 `analysis/02_transformer_vs_statistical.ipynb` for the comparison analysis.
 
+## Installation
+
+```sh
+uv add ibnr            # or: pip install ibnr
+```
+
+The core install (`ibis-framework[duckdb,polars]` + scipy) covers the triangle
+layer, the `statistical` gallery entries, and the evaluation kernels. The
+heavier methods sit behind optional extras:
+
+```sh
+uv add "ibnr[bayesian]"   # cmdstanpy, numpyro, pymc, arviz, bayesblend
+uv add "ibnr[nn]"         # torch
+uv add "ibnr[viz]"        # altair
+```
+
+> **`[bayesian]` installs cmdstanpy, not CmdStan itself.** The Stan entries
+> compile their `model.stan` at runtime, so a CmdStan toolchain must be present.
+> Install it once with `python -m cmdstanpy.install_cmdstan` — this needs a C++
+> toolchain (RTools on Windows, `build-essential`/Xcode command-line tools on
+> Linux/macOS). The bundled `Dockerfile` ships CmdStan with every gallery Stan
+> model pre-compiled if you would rather not set this up locally.
+
 ## Data: the CAS Schedule P gold mart
 
 Real-data fitting and the `-m mart` tests read the **gold mart published by
@@ -145,4 +168,4 @@ Optional extras: `[bayesian]` (cmdstanpy, numpyro, pymc, arviz, bayesblend),
 `[nn]` (torch), `[viz]` (altair). The core depends only on
 `ibis-framework[duckdb,polars]`.
 
-License: MPL-2.0.
+License: MPL-2.0 — see [LICENSE](LICENSE).

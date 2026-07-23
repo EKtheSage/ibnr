@@ -6,6 +6,31 @@ readme = "README.md"
 license = "MPL-2.0"
 requires-python = ">=3.11"
 authors = [{ name = "Ethan Kang", email = "ethan.yskang@gmail.com" }]
+keywords = [
+    "actuarial",
+    "loss-reserving",
+    "reserving",
+    "ibnr",
+    "insurance",
+    "bayesian",
+    "mcmc",
+    "probabilistic",
+    "triangle",
+    "chainladder",
+]
+# No "License ::" classifier: `license` above is an SPDX expression (PEP 639),
+# and hatchling rejects declaring the license both ways.
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "ibis-framework[duckdb,polars]>=9.5",
     "numpy>=1.26",
@@ -17,6 +42,11 @@ dependencies = [
 bayesian = ["cmdstanpy", "numpyro", "pymc", "arviz", "bayesblend"]
 nn = ["torch>=2.2"]
 viz = ["altair"]
+
+[project.urls]
+Homepage = "https://github.com/EKtheSage/probabilistic-ml-reserving"
+Repository = "https://github.com/EKtheSage/probabilistic-ml-reserving"
+Issues = "https://github.com/EKtheSage/probabilistic-ml-reserving/issues"
 
 [dependency-groups]
 dev = [
