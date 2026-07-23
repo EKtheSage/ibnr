@@ -44,9 +44,9 @@ nn = ["torch>=2.2"]
 viz = ["altair"]
 
 [project.urls]
-Homepage = "https://github.com/EKtheSage/probabilistic-ml-reserving"
-Repository = "https://github.com/EKtheSage/probabilistic-ml-reserving"
-Issues = "https://github.com/EKtheSage/probabilistic-ml-reserving/issues"
+Homepage = "https://github.com/EKtheSage/ibnr"
+Repository = "https://github.com/EKtheSage/ibnr"
+Issues = "https://github.com/EKtheSage/ibnr/issues"
 
 [dependency-groups]
 dev = [

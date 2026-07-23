@@ -25,7 +25,7 @@ dynamic: false
 
 # Project links & hero
 # --------------------
-repo: https://github.com/EKtheSage/probabilistic-ml-reserving
+repo: https://github.com/EKtheSage/ibnr
 tagline: >
   Probabilistic loss reserving with mandatory evaluation — Bayesian MCMC,
   neural, and statistical methods over a long-format triangle data layer.
@@ -160,7 +160,7 @@ reference:
 # Canonical address of the deployed documentation site.
 # Required for subdirectory deployments, skills page install commands,
 # .well-known/ discovery, and sitemaps.
-site_url: "https://ekthesage.github.io/probabilistic-ml-reserving/"
+site_url: "https://ekthesage.github.io/ibnr/"
 
 # Site Settings
 # -------------

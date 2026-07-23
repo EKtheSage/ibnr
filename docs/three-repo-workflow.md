@@ -8,8 +8,8 @@ grant, Kang & De Virgilis).
 ## The three repos and their single responsibilities
 
 ```
-cas-schedule-p-data-model          probabilistic-ml-reserving (ibnr)      transformers_reserving
-─────────────────────────          ─────────────────────────────────      ──────────────────────
+cas-schedule-p-data-model          ibnr                                   transformers_reserving
+─────────────────────────          ────                                   ──────────────────────
 Data Vault warehouse               models + evaluation + harnesses        Quarto manuscript
 raw Schedule P → gold mart         gallery: nn_transformer, sur,          experiments/ (thin runner,
 versioned parquet publishes        copula_glm, meyers_ccl, ...            pins ibnr) → results/*.csv
@@ -66,7 +66,7 @@ transformers_reserving/
   Code/            # existing R prototype (torch-for-R, ggplot adapters) — kept
   Manuscript/      # manuscript.qmd + references.bib (existing)
   experiments/     # NEW — thin Python runner
-    pyproject.toml #   depends on: ibnr @ git+https://github.com/<org>/probabilistic-ml-reserving
+    pyproject.toml #   depends on: ibnr @ git+https://github.com/<org>/ibnr
     uv.lock        #   pins the exact ibnr commit → reproducible experiments
     configs/       #   paper-specific choices: lines, screens, seeds, model configs
     run_backtest.py  # calls ibnr's gallery/harness, writes ../results/*.csv
@@ -127,7 +127,7 @@ parallel implementation maintained by hand.
 ## Concrete next actions
 
 1. ~~`git init` + GitHub push of this repo; tag `v0.1.0`.~~ **Done 2026-07-07**
-   (https://github.com/EKtheSage/probabilistic-ml-reserving).
+   (https://github.com/EKtheSage/ibnr).
 2. ~~Add mart-version stamping to the harness CSVs.~~ **Done.**
 3. ~~Data releases + `github://` consumption.~~ **Done**: data repo publishes
    gold promotes as releases (`pipeline/release.py`); ibnr consumes them via

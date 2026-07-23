@@ -26,7 +26,7 @@ values (they must match the workflow file, or the upload is rejected):
 |---|---|
 | PyPI Project Name | `ibnr` |
 | Owner | `EKtheSage` |
-| Repository name | `probabilistic-ml-reserving` |
+| Repository name | `ibnr` |
 | Workflow name | `release.yml` |
 | Environment name | `pypi` |
 
