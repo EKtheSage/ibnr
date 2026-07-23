@@ -132,20 +132,7 @@ integration proposal):
 | `probabilistic-ml-reserving` (this repo, package `ibnr`) | modeling: gallery entries, eval kernels, backtest harnesses |
 | [`transformers_reserving`](https://github.com/marcopark90/transformers_reserving) | research manuscript (CAS grant, Quarto): consumes experiment artifacts produced here |
 
-## Development
-
-```sh
-uv sync                                  # core + dev deps
-uv run pytest                            # full suite (both ibis backends)
-uv run pytest -m "not tieout and not mart"   # fast unit tests only
-uv run ruff check . && uv run ruff format --check .
-```
-
-Optional extras: `[bayesian]` (cmdstanpy, numpyro, pymc, arviz, bayesblend),
-`[nn]` (torch), `[viz]` (altair). The core depends only on
-`ibis-framework[duckdb,polars]`.
-
-### Documentation
+## Documentation
 
 The API documentation site is generated with
 [great-docs](https://github.com/posit-dev/great-docs) (Quarto-based) from
@@ -160,5 +147,18 @@ uv run --no-default-groups --group docs great-docs preview    # serve locally
 The `great-docs/` build directory is gitignored; only `great-docs.yml` is
 tracked. `.github/workflows/docs.yml` rebuilds the site on every push and
 deploys `main` to GitHub Pages.
+
+## Development
+
+```sh
+uv sync                                  # core + dev deps
+uv run pytest                            # full suite (both ibis backends)
+uv run pytest -m "not tieout and not mart"   # fast unit tests only
+uv run ruff check . && uv run ruff format --check .
+```
+
+Optional extras: `[bayesian]` (cmdstanpy, numpyro, pymc, arviz, bayesblend),
+`[nn]` (torch), `[viz]` (altair). The core depends only on
+`ibis-framework[duckdb,polars]`.
 
 License: MPL-2.0.
