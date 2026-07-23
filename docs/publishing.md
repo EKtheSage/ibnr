@@ -69,7 +69,7 @@ uv venv /tmp/cr && uv pip install --python /tmp/cr/bin/python dist/*.whl
 /tmp/cr/bin/python -c "import ibnr; from ibnr import gallery; print(ibnr.__version__, gallery.list())"
 ```
 
-Should print `0.1.0` and all 10 gallery entries, with only core dependencies
+Should print `0.2.0` and all 10 gallery entries, with only core dependencies
 installed.
 
 ## Release to PyPI
@@ -77,7 +77,7 @@ installed.
 Once the pre-flight looks right, tag the commit on `main`:
 
 ```sh
-git tag v0.1.0 && git push origin v0.1.0
+git tag v0.2.0 && git push origin v0.2.0
 ```
 
 The tag push builds, validates with `twine check --strict`, and publishes to
@@ -87,6 +87,14 @@ PyPI. Verify:
 uv run --with ibnr python -c "import ibnr; print(ibnr.__version__, ibnr.gallery.list())"
 ```
 
+### Why the first release is 0.2.0
+
+`v0.1.0` was already taken by a local dev tag on the 2026-07-06 "Initial import"
+commit, 22 commits behind the first publishable tree and never released from.
+Rather than rewrite a tag, the first PyPI release is **0.2.0**. The old tag is
+left in place as historical marker; there is no `0.1.0` on PyPI and never will
+be.
+
 ## Cutting a later version
 
 1. Bump `version` in `pyproject.toml` (it is a literal string, not VCS-derived).
@@ -94,6 +102,8 @@ uv run --with ibnr python -c "import ibnr; print(ibnr.__version__, ibnr.gallery.
 3. Tag `vX.Y.Z` and push the tag.
 
 Keep the tag and `pyproject.toml` version in agreement — nothing enforces it yet.
+Check `git tag -l` first: a tag that already exists will not re-trigger a
+release.
 
 ## What ships in the wheel
 
