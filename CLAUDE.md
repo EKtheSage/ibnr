@@ -76,6 +76,8 @@ Before writing `triangle/core.py` or `data/schedule_p.py`: inspect that repo. De
 6. Full Bayesian gallery with held-out-diagonal ELPD, PIT calibration, and bayesblend stacking. Leaderboard works.
 7. Rest of the NN family joins the same leaderboard via PredictiveDistribution (deeptriangle, mdn, resnet; HPO in kernels/tuning.py).
 8. (Secondary) viz/site.py renders the gallery as a quarto static site with interactive altair charts.
+9. Speed benchmark vs chainladder-python: time equivalent operations (triangle construction, transforms, Mack/basic-CL fits) on both duckdb and polars backends against chainladder's numpy backend, on raa/clrd and the Schedule P mart; publish the comparison table.
+10. Worked examples mirroring chainladder-python's docs/gallery: reproduce their published example outputs side by side with ibnr's, showing feature parity and that our numbers match a trusted reference (not made up). Overlaps with the `tieout` tests but as user-facing narrative docs.
 
 ## Key references
 
