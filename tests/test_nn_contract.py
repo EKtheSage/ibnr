@@ -1,10 +1,10 @@
-"""kernels.nn_contract: the NN data contract. Pure numpy — no torch needed.
+"""kernels.nn_contract: the NN data contract. Pure numpy - no torch needed.
 
 The neural entries consume dense masked grids rather than long rows: features are
 incremental loss ratios (increment / earned premium) on a (cohort, channel,
 n_w, n_d) tensor, paired with an ``obs_mask`` marking which cells the network is
 allowed to attend to. Normalizing by premium is what makes triangles from
-companies of wildly different size poolable — Schedule P triangles are small and
+companies of wildly different size poolable - Schedule P triangles are small and
 overfitting is the central risk, so training always spans many company x line
 cohorts.
 
@@ -15,7 +15,7 @@ produces meaningless ratios and must be dropped (reported, not hidden); the
 anchor used for the autoregressive rollout (``latest_cum``/``latest_dev``) must
 stay the raw cumulative even where the mask says the increment is unusable.
 
-Deliberately torch-free — ``ibnr.gallery`` and its contracts must import without
+Deliberately torch-free - ``ibnr.gallery`` and its contracts must import without
 the ``[nn]`` extra (CLAUDE.md), so these run in the core CI job. Both ibis
 backends via ``backend_name``.
 """
@@ -65,7 +65,7 @@ def test_nn_data_shapes_and_values(two_cohorts):
 
     # hand-computed incremental loss ratios for lob_a
     incr = np.array([[100.0, 50.0, 25.0], [110.0, 55.0, 0.0], [120.0, 0.0, 0.0]])
-    # features are incremental LOSS RATIOS, not dollars — this is what makes
+    # features are incremental LOSS RATIOS, not dollars - this is what makes
     # differently-sized companies poolable into one training set
     want = incr / PREMIUM["lob_a"][:, None]
     # unobserved cells are zero-filled; obs_mask (not the value) tells the network
@@ -90,7 +90,7 @@ def test_nn_data_shapes_and_values(two_cohorts):
 
 def test_nn_data_feature_channels(two_cohorts, backend_name):
     """Extra fields (e.g. reported loss alongside paid) become additional channels
-    on the same grid, normalized identically — here reported = 3x paid, so channel 1
+    on the same grid, normalized identically - here reported = 3x paid, so channel 1
     must be exactly 3x channel 0."""
     df = two_cohorts.execute().copy()
     for col in ("origin_period", "eval_date"):
@@ -111,7 +111,7 @@ def test_nn_data_feature_channels(two_cohorts, backend_name):
 
 
 def test_nn_data_rejects_duplicate_fields(two_cohorts):
-    """Listing the target field as a feature must raise — it would hand the network
+    """Listing the target field as a feature must raise - it would hand the network
     the answer as an input channel."""
     with pytest.raises(ValueError, match="duplicate fields"):
         nn_data(two_cohorts, loss_field="paid_loss", feature_fields=("paid_loss",))
@@ -121,7 +121,7 @@ def test_nn_data_gap_predecessor_is_unobserved(backend_name):
     """An interior hole masks out two cells, not one: the missing cell itself and
     its successor, whose increment would otherwise silently span two dev periods.
 
-    But the rollout anchor is unaffected — it reads the raw cumulative at the latest
+    But the rollout anchor is unaffected - it reads the raw cumulative at the latest
     observed dev, which is still a valid paid-to-date even across a gap.
     """
     gappy = CUM.copy()
@@ -140,7 +140,7 @@ def test_nn_data_gap_predecessor_is_unobserved(backend_name):
 
 def test_nn_data_drops_bad_premium_cohorts(backend_name):
     """A cohort with non-positive premium is dropped rather than divided by, and
-    lands in ``dropped`` with a reason — exclusions must be auditable, since a
+    lands in ``dropped`` with a reason - exclusions must be auditable, since a
     silently shrinking training pool changes results without changing any metric."""
     bad_premium = {"lob_a": PREMIUM["lob_a"], "lob_b": np.array([400.0, -1.0, 440.0])}
     t = make_multiline_triangle(
@@ -180,7 +180,7 @@ def test_nn_data_rejects_incremental(two_cohorts):
 
 def test_nn_data_obs_mask_matches_as_of_slice(two_cohorts):
     """Backtest composition: ``as_of`` then ``nn_data`` yields a grid containing only
-    pre-cutoff information — the grid shrinks to the origins and devs that existed at
+    pre-cutoff information - the grid shrinks to the origins and devs that existed at
     the cutoff, so nothing after it can reach the network."""
     sliced = two_cohorts.as_of(dt.date(2011, 12, 31))  # keeps calendar diagonals 1-2
     data = nn_data(sliced, loss_field="paid_loss", premium_field="earned_premium")
@@ -193,7 +193,7 @@ def test_nn_data_obs_mask_matches_as_of_slice(two_cohorts):
 
 def test_nn_data_origin_missing_from_one_cohort(backend_name):
     """Cohorts share one origin axis built from the union, so a line that never wrote
-    a given accident year still occupies its row — fully masked, with a zero anchor
+    a given accident year still occupies its row - fully masked, with a zero anchor
     at dev 0. Keeping the axis aligned is what lets cohorts batch together."""
     partial = CUM.copy()
     partial[2, :] = np.nan  # lob_a has no 2012 origin; lob_b does

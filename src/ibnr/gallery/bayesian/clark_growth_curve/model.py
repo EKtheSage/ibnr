@@ -3,7 +3,7 @@
 Clark's (2003) over-dispersed Poisson growth-curve likelihood with the
 Cape Cod ultimate structure, sampled with Stan. The dispersion ``phi`` is
 the Pearson scale from the statistical ``clark`` entry's MLE fit of the
-identical model — plug-in, mirroring ``england_verrall_odp``. The LDF
+identical model - plug-in, mirroring ``england_verrall_odp``. The LDF
 (free-ultimates) variant lives in the statistical entry; scaffold this model
 if you want a Bayesian LDF version. NumPyro/PyMC ports arrive with milestone
 5; the ``backend`` argument already reserves the seam."""
@@ -190,7 +190,7 @@ class ClarkGrowthCurve(GalleryEntry):
         """Ultimates per origin + total: paid-to-date plus simulated future
         increments through the final age. Parameter risk from the posterior
         draws of (logelr, omega, theta); process risk as scaled-Poisson ODP
-        draws — the same decomposition as the MLE entry, with the posterior
+        draws - the same decomposition as the MLE entry, with the posterior
         replacing the MVN delta method."""
         if self.idata_ is None or self.contract_ is None:
             raise RuntimeError("call fit() first")
@@ -214,7 +214,7 @@ class ClarkGrowthCurve(GalleryEntry):
         ults = np.tile(c["paid_to_date"], (n_draws, 1)).astype(float)  # (draws, n_w)
         for j in range(n_w):
             # Only unobserved future dev lags (beyond the latest seen for this
-            # origin) up to the triangle's final age n_d — no tail extrapolation.
+            # origin) up to the triangle's final age n_d - no tail extrapolation.
             for dev in range(int(c["latest_d"][j]) + 1, n_d + 1):
                 lo = max(step * (dev - 1) - step / 2, 0.0)
                 hi = step * dev - step / 2

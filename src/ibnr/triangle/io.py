@@ -4,7 +4,7 @@ Every constructor in this module funnels into :func:`from_long`, which is the
 one place that normalizes column names, unpivots wide measure columns, converts
 dev-lag units and attaches :class:`~ibnr.triangle.core.TriangleMeta`. The two
 interop pairs below are thin adapters that reshape a foreign triangle into that
-same long frame — they never build a ``Triangle`` directly.
+same long frame - they never build a ``Triangle`` directly.
 
 Interop is sacred (CLAUDE.md): ``from_chainladder``/``to_chainladder`` and
 ``from_bermuda``/``to_bermuda`` must round-trip losslessly (modulo NaN padding
@@ -45,7 +45,7 @@ def resolve_backend(backend: str | BaseBackend | None = None) -> BaseBackend:
     """'duckdb' (default) and 'polars' are the two supported names; an already
     connected ibis backend passes through.
 
-    Both backends are first-class by design (CLAUDE.md #2) — duckdb is the
+    Both backends are first-class by design (CLAUDE.md #2) - duckdb is the
     default because ibis's polars backend has no window-function support, which
     the transforms work around but which makes duckdb the faster path.
     """
@@ -151,7 +151,7 @@ def from_chainladder(tri, backend: str | BaseBackend | None = None) -> Triangle:
 
     chainladder stores an (index x column x origin x development) dense array;
     the lower half of the square is materialized as NaN. Those padding cells are
-    dropped here — absent means unobserved in the long format — and chainladder
+    dropped here - absent means unobserved in the long format - and chainladder
     rebuilds them on the way back, so the round trip is still lossless.
 
     chainladder's ``development`` axis is already months from origin start, the
@@ -256,7 +256,7 @@ def from_bermuda(tri, backend: str | BaseBackend | None = None) -> Triangle:
         # any incremental cell makes the whole triangle incremental.
         incremental = incremental or "incremental" in type(cell).__name__.lower()
         start, end = cell.period_start, cell.period_end
-        # Origin grain is not stored either — infer it from the period span in
+        # Origin grain is not stored either - infer it from the period span in
         # months (12 for annual, 3 for quarterly, ...).
         grains.add((end.year - start.year) * 12 + end.month - start.month + 1)
         ev = cell.evaluation_date
@@ -292,7 +292,7 @@ def to_bermuda(t: Triangle):
     The inverse of :func:`from_bermuda`. Our long rows are one field per row;
     bermuda's cell is (period, evaluation) with a ``values`` dict of all fields,
     so rows are grouped back into cells here. We emit ``period_start`` /
-    ``period_end`` and let bermuda derive its own end-anchored dev lag — the
+    ``period_end`` and let bermuda derive its own end-anchored dev lag - the
     dev_lag column is deliberately not exported (see the convention note in the
     module docstring).
     """
@@ -333,7 +333,7 @@ def _add_months(d: dt.date, months: int) -> dt.date:
     """Shift a date by whole months, keeping the day-of-month.
 
     Only ever called on period *start* dates (day 1 for every supported grain),
-    so the day-of-month is always valid in the target month — this deliberately
+    so the day-of-month is always valid in the target month - this deliberately
     does not implement end-of-month clamping.
     """
     y, m = divmod(d.year * 12 + d.month - 1 + months, 12)

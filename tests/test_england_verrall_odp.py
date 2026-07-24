@@ -10,7 +10,7 @@ Fast numeric checks of the same contract (on the Taylor & Ashe genins sample,
 no cmdstan needed) live in ``test_odp_contract.py``.
 
 Slow (compiles the Stan model on first run, then samples) and mart-dependent;
-runs only when cmdstan and the local warehouse are both available — see
+runs only when cmdstan and the local warehouse are both available - see
 ``test_meyers_ccl`` for the ``slow``/``mart`` marker rationale.
 """
 
@@ -63,7 +63,7 @@ def test_fit_converges(fitted):
     funnel, so anything worse signals a real problem rather than a short run.
     ``phi`` is the Pearson dispersion estimated *outside* the sampler and
     plugged into the likelihood; a non-positive value would silently disable
-    over-dispersion (this bit us once — see the phi fix in the retro history).
+    over-dispersion (this bit us once - see the phi fix in the retro history).
     """
     _, entry = fitted
     summary = entry.fit_.summary()
@@ -81,8 +81,8 @@ def test_posterior_centers_on_chainladder(fitted):
     fitted values reproduce chain-ladder ultimates exactly, so with priors that
     carry no information the Bayesian posterior mean must land on the same
     number. 5% is the tolerance because the two are not identical even in
-    theory — MCMC noise, mild prior pull, and mean-vs-mode on a right-skewed
-    predictive all contribute — but a genuine model error moves it far more.
+    theory - MCMC noise, mild prior pull, and mean-vs-mode on a right-skewed
+    predictive all contribute - but a genuine model error moves it far more.
     """
     from ibnr.gallery.bayesian.england_verrall_odp.model import odp_mle_fitted
 

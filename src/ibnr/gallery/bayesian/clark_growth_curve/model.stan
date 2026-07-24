@@ -1,7 +1,7 @@
-// Bayesian Clark growth-curve reserving (Cape Cod form) — likelihood from
+// Bayesian Clark growth-curve reserving (Cape Cod form) - likelihood from
 // Clark, "LDF Curve-Fitting and Stochastic Reserving: A Maximum Likelihood
 // Approach" (CAS Forum 2003); priors are this package's choice (there is no
-// published Stan ground truth for a Bayesian Clark — the model card pins
+// published Stan ground truth for a Bayesian Clark - the model card pins
 // them, and the milestone-5 ports must hold them constant).
 //
 // Incremental losses X[w,d] are over-dispersed Poisson around a growth-curve

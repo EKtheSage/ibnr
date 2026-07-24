@@ -1,6 +1,6 @@
 name: Release
 
-# Publishes `ibnr` using PyPI Trusted Publishing (OIDC) — no API token is ever
+# Publishes `ibnr` using PyPI Trusted Publishing (OIDC) - no API token is ever
 # stored in this repository. PyPI verifies the identity of this workflow
 # directly, so there is no long-lived secret to leak or rotate.
 #
@@ -55,7 +55,7 @@ jobs:
   pypi:
     name: Publish to PyPI
     needs: build
-    # Tag pushes only — a manual "Run workflow" is always a dry run.
+    # Tag pushes only - a manual "Run workflow" is always a dry run.
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     environment:

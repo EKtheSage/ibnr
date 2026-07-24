@@ -4,7 +4,7 @@ Same shape as ``test_meyers_ccl.py`` (mart → as_of slice → Stan fit →
 PredictiveDistribution → score), plus one CSR-specific structural check:
 the ``speedup`` term. CSR (Changing Settlement Rate) replaces CCL's AY
 correlation with a claim-settlement-speed trend, so ``beta[d]`` is scaled by
-``speedup[w] = (1 - gamma)^(w-1)`` — accident years settle progressively
+``speedup[w] = (1 - gamma)^(w-1)`` - accident years settle progressively
 faster (gamma > 0) or slower (gamma < 0) than the first.
 
 Slow (compiles the Stan model on first run, then samples) and mart-dependent;
@@ -29,7 +29,7 @@ pytestmark = [
 ]
 
 
-# Module-scoped: one sample serves every test here — the fit is the slow part.
+# Module-scoped: one sample serves every test here - the fit is the slow part.
 @pytest.fixture(scope="module")
 def fitted():
     """Fit CSR on the Meyers setup: 1988-1997 accident years, 1997 diagonal.
@@ -95,7 +95,7 @@ def test_predict_and_score(fitted):
     right ballpark.
 
     The 2x/0.5x band on the total is a wiring fence (units, anchor, prior
-    runaway), not a calibration claim — calibration is settled by the
+    runaway), not a calibration claim - calibration is settled by the
     200-company retrospective, where CSR is the best-calibrated paid entry.
     """
     tri, entry = fitted

@@ -2,7 +2,7 @@
 raa / clrd samples, on both backends. Milestone 1 acceptance tests.
 
 ``ibnr`` is positioned as a companion to chainladder-python, not a fork, so
-numbers that both libraries can compute must agree exactly — otherwise no
+numbers that both libraries can compute must agree exactly - otherwise no
 comparison downstream (Mack baselines, ClarkLDF, the gallery leaderboard) means
 anything. chainladder is the reference implementation; where we differ it is on
 purpose and the difference is asserted here rather than tolerated.
@@ -35,7 +35,7 @@ pytestmark = pytest.mark.tieout
 @pytest.fixture(scope="module")
 def raa():
     """Reinsurance Association of America: the canonical 10x10 single-triangle
-    sample. Module-scoped — loading is pure I/O and the object is never mutated."""
+    sample. Module-scoped - loading is pure I/O and the object is never mutated."""
     return cl.load_sample("raa")
 
 
@@ -48,7 +48,7 @@ def clrd():
 
 def cl_total(tri) -> float:
     """Grand total over a chainladder 4D array, ignoring the NaN padding outside
-    the observed region — the one summary both representations must agree on."""
+    the observed region - the one summary both representations must agree on."""
     return float(np.nansum(tri.values))
 
 
@@ -96,7 +96,7 @@ def test_raa_cum_to_incr(raa, backend_name):
     """Our differencing matches chainladder's ``cum_to_incr`` exactly on raa.
 
     raa is a dense square triangle with no interior gaps and no zero increments,
-    so the sparsity conventions never bite here — this is the clean case, and
+    so the sparsity conventions never bite here - this is the clean case, and
     equality is expected to be total. (The messy case is test_clrd_cum_to_incr.)
     """
     ours = Triangle.from_chainladder(raa, backend=backend_name).to_incremental()
@@ -115,7 +115,7 @@ def test_raa_incr_to_cum(raa, backend_name):
 
 def test_raa_as_of_matches_valuation_slice(raa, backend_name):
     """``as_of(date)`` is the same backtest slice as chainladder's valuation filter
-    — the gotcha being that the two spell the same cutoff differently."""
+    - the gotcha being that the two spell the same cutoff differently."""
     t = Triangle.from_chainladder(raa, backend=backend_name)
     ours = t.as_of("1985-12-31")
     # chainladder valuations are end-of-day timestamps (1985-12-31 23:59:59.999),
@@ -182,7 +182,7 @@ def test_clrd_cum_to_incr(clrd, backend_name):
     np.testing.assert_allclose(ours_only["value_ours"], 0.0, atol=1e-8)
 
     # Theirs only: chainladder fabricated an increment by treating a missing cell as
-    # zero. Each must therefore involve a hole in the cumulative source — either the
+    # zero. Each must therefore involve a hole in the cumulative source - either the
     # cell itself or its dev-12-months predecessor was never observed.
     cell_keys = ["GRNAME", "LOB", "field", "origin_period", "dev_lag"]
     src = sorted_long(source)

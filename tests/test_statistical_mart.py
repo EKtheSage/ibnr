@@ -5,20 +5,20 @@ in the fast suite (mart-gated only).
 What this file protects: the synthetic-data tests in ``test_sur.py`` /
 ``test_copula_glm.py`` / ``test_nn_transformer.py`` simulate from each model's
 own generative assumptions, so they cannot catch failures that only real data
-produces — ragged triangles, wildly unequal exposure, near-degenerate
+produces - ragged triangles, wildly unequal exposure, near-degenerate
 covariances, companies whose paid increments go negative. These smokes run the
 full public path (``gallery.fit`` -> ``predict`` -> ``realized_ultimates`` ->
 ``summary``) on genuine CAS Schedule P triangles and assert the output is
 sane rather than exact.
 
 Marker rationale (``mart``): the warehouse is not vendored, so these skip
-cleanly on a clean checkout — the package must be usable and testable without
+cleanly on a clean checkout - the package must be usable and testable without
 it (CLAUDE.md). They are NOT ``slow``: no Stan compile, and the NN config below
 is deliberately tiny.
 
 Assertions are intentionally weak (finite, positive, plausible CV, percentile
-in range). Accuracy is not tested here — that is the job of the 200-company
-retrospectives in ``scripts/`` — this only guarantees the entries do not fall
+in range). Accuracy is not tested here - that is the job of the 200-company
+retrospectives in ``scripts/`` - this only guarantees the entries do not fall
 over on real inputs.
 """
 
@@ -118,7 +118,7 @@ def company(two_lines):
 def _check_total_row(pred, realized):
     """Sanity-check the grand-total row of the scored summary.
 
-    Bounds are loose on purpose — this is a smoke, not a calibration test.
+    Bounds are loose on purpose - this is a smoke, not a calibration test.
     CV < 5 (500%) merely rules out a blown-up predictive distribution, and the
     percentile check confirms the PIT machinery placed the realized ultimate
     somewhere on [0, 100] rather than emitting NaN.
@@ -147,7 +147,7 @@ def test_sur_mart_smoke(two_lines, company):
 
 def test_copula_mart_smoke(two_lines, company):
     """Same for the copula entry, plus the estimated cross-line correlation is
-    a valid correlation on real (not simulated-from-the-model) residuals — the
+    a valid correlation on real (not simulated-from-the-model) residuals - the
     case most likely to produce a degenerate or out-of-range estimate."""
     from ibnr import gallery
 
@@ -167,7 +167,7 @@ def test_nn_transformer_mart_smoke(two_lines):
     than one is the point: Schedule P triangles are ~55 cells, so overfitting is
     the central NN risk and the entry is only ever validated pooled.
 
-    ``importorskip`` keeps torch optional — ``ibnr.gallery`` must import and
+    ``importorskip`` keeps torch optional - ``ibnr.gallery`` must import and
     register NN entries without the ``[nn]`` extra installed.
     """
     torch = pytest.importorskip("torch")  # noqa: F841

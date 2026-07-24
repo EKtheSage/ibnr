@@ -2,8 +2,8 @@
 
 What this file protects: SUR is the frequentist *dependence* baseline the ML
 entries are measured against, so the invariants that matter are (a) it collapses
-to the volume-weighted chain ladder when lines are independent — otherwise a
-"multivariate" reserve is not comparable to the univariate benchmark — and (b)
+to the volume-weighted chain ladder when lines are independent - otherwise a
+"multivariate" reserve is not comparable to the univariate benchmark - and (b)
 positive cross-line correlation actually widens the diversified grand total,
 which is the whole reason a multi-line model exists.
 
@@ -199,7 +199,7 @@ def test_sur_target_layout_and_realized(backend_name):
     assert labels[n_cells] == "lob_0/total"
     assert np.isfinite(pred.samples).all()
 
-    # Realized ultimates come from the full square's last dev column — the
+    # Realized ultimates come from the full square's last dev column - the
     # quantity a backtest scores the predictive distribution against.
     realized = entry.realized_ultimates(full)
     assert realized.shape == (pred.n_targets,)

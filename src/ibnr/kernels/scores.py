@@ -1,4 +1,4 @@
-"""Proper scoring rules, implemented once — gallery entries call these.
+"""Proper scoring rules, implemented once - gallery entries call these.
 
 Only sample-based estimators live here: they apply uniformly to every
 PredictiveDistribution regardless of the model family that produced it.

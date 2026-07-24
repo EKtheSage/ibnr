@@ -1,6 +1,6 @@
 """kernels.scores: sample-based CRPS against closed forms.
 
-CRPS is the headline proper score on the gallery leaderboard — it rewards
+CRPS is the headline proper score on the gallery leaderboard - it rewards
 sharpness subject to calibration, so a model cannot win by widening its
 intervals. It is computed once here from raw draws (every entry produces a
 ``PredictiveDistribution``, never a parametric family), which means the estimator
@@ -30,7 +30,7 @@ def gaussian_crps(y: float, mu: float, sigma: float) -> float:
 
 
 def test_crps_matches_gaussian_closed_form():
-    """The sample estimator converges to the analytic CRPS — correctness check on
+    """The sample estimator converges to the analytic CRPS - correctness check on
     the estimator itself, at the center, at +1 sigma and far out in the tail."""
     rng = np.random.default_rng(7)
     mu, sigma = 3.0, 2.0
@@ -55,7 +55,7 @@ def test_crps_degenerate_forecast_is_absolute_error():
 
 def test_crps_nan_outcome_propagates():
     """An unemerged outcome yields NaN for that target only, leaving its neighbours
-    scored — retrospectives rely on this to drop unscoreable origins rather than
+    scored - retrospectives rely on this to drop unscoreable origins rather than
     treat them as perfectly predicted."""
     rng = np.random.default_rng(0)
     samples = rng.normal(size=(1000, 2))

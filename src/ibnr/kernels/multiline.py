@@ -5,43 +5,43 @@ one-company, many-lines-of-business cumulative Triangle to dense arrays,
 consumed by the statistical dependence models (SUR, copula) and by the
 multi-line transformer (``gallery/nn/transformer_ml``, for the target layout
 and predictive assembly). Per CLAUDE.md decision 3 the contract is defined
-once here and every consumer takes the identical dict — no entry grows its
+once here and every consumer takes the identical dict - no entry grows its
 own data prep.
 
 Cross-refs: ``kernels/contract.py`` (the single-cohort Stan contract this
 mirrors), ``kernels/predictive.py`` (``PredictiveDistribution``),
 ``gallery/statistical/sur/card.md`` and ``gallery/statistical/copula_glm/card.md``.
 
-THE CONTRACT — keys returned by ``multiline_data`` (shape; dtype; meaning):
+THE CONTRACT - keys returned by ``multiline_data`` (shape; dtype; meaning):
 
-- ``n_lob``, ``n_w``, ``n_d`` : int — sizes of the LOB, origin and dev axes.
+- ``n_lob``, ``n_w``, ``n_d`` : int - sizes of the LOB, origin and dev axes.
   ``n_d`` is the LARGEST observed dev step, so the (n_w, n_d) grid is a
   rectangle whose unobserved corner is NaN, not a ragged triangle.
 - ``lobs``          : list, len n_lob; the sorted distinct LOB labels. Index
   ``k`` into every LOB axis is defined by this list and nothing else.
 - ``origin_periods``: list[dt.date], len n_w; sorted ascending. Index ``w``.
-- ``cum``           : (n_lob, n_w, n_d) float64 — CUMULATIVE loss in triangle
+- ``cum``           : (n_lob, n_w, n_d) float64 - CUMULATIVE loss in triangle
   units. Absent cells are NaN (never 0: a 0 in the Schedule P mart is a real
   reported zero, see CLAUDE.md "absent = unobserved, zero = explicit").
   Dev step ``d`` (1-based, as in ``stan_data``) lives at index ``d - 1``,
   where ``d = dev_lag // dev_grain_months``.
-- ``obs_mask``      : (n_lob, n_w, n_d) bool — ``~isnan(cum)``. True = observed
+- ``obs_mask``      : (n_lob, n_w, n_d) bool - ``~isnan(cum)``. True = observed
   (a training cell); False = to be predicted (or outside the study). Invariant
   enforced below: ``obs_mask[k] == obs_mask[0]`` for every k.
-- ``dev_grain_months``: int — months per dev step (12 for annual triangles).
-- ``lob_column``    : str — which segment column defined the LOB axis, so a
+- ``dev_grain_months``: int - months per dev step (12 for annual triangles).
+- ``lob_column``    : str - which segment column defined the LOB axis, so a
   consumer can label its outputs without re-deriving it.
-- ``units``         : str | None — carried through from Triangle metadata onto
+- ``units``         : str | None - carried through from Triangle metadata onto
   the eventual ``PredictiveDistribution``.
 - ``premium``       : (n_lob, n_w) float64, ONLY when ``premium_field`` is
-  given — booked earned premium per (lob, origin) at its latest evaluation.
+  given - booked earned premium per (lob, origin) at its latest evaluation.
   Guaranteed complete and strictly positive (exposure-scaled models divide
   by it), so no NaN handling is needed downstream.
 
 Alignment invariants a reviewer should check consumers rely on:
 
 1. One company per call. Any non-LOB segment column carrying >1 distinct
-   value is a hard error — these models fit one company at a time.
+   value is a hard error - these models fit one company at a time.
 2. Every line shares the SAME origin axis and the SAME observed-cell mask.
    Cross-line dependence is estimated cell-by-cell (contemporaneous residual
    correlation), so a misaligned pair of triangles would silently pair up
@@ -49,7 +49,7 @@ Alignment invariants a reviewer should check consumers rely on:
    something to quietly intersect away.
 3. Cumulative, not incremental: ``triangle.meta.measure`` must be
    "cumulative". Slice the training window with ``triangle.as_of(...)``
-   BEFORE calling — this module consumes every row it is handed.
+   BEFORE calling - this module consumes every row it is handed.
 
 Predictive target layout (fixed, and shared by every multiline entry):
 
@@ -90,7 +90,7 @@ def multiline_data(
 ) -> dict[str, Any]:
     """Map a one-company multi-LOB cumulative Triangle to dense arrays.
 
-    Returns the dict documented in the module docstring — the single data
+    Returns the dict documented in the module docstring - the single data
     contract for every multiline entry. Slice training data with
     ``triangle.as_of(...)`` before calling: this function uses every row it
     sees, so an unsliced triangle silently trains on the future.
@@ -116,7 +116,7 @@ def multiline_data(
         if len(values) > 1:
             raise ValueError(
                 f"multiple {col!r} values {sorted(map(str, values))}; "
-                "multiline models fit one company at a time — filter first"
+                "multiline models fit one company at a time - filter first"
             )
 
     df = df.copy()
@@ -196,7 +196,7 @@ def _premium_by_lob_origin(
     ``lobs``/``origins`` axes of ``cum``.
 
     Premium is an origin-level exposure measure, not a triangle cell, so the
-    LATEST evaluation of each (lob, origin) is the booked value — the same
+    LATEST evaluation of each (lob, origin) is the booked value - the same
     convention as ``contract._premium_by_origin``. Completeness and strict
     positivity are contract guarantees (models divide losses by premium to
     get loss ratios), so gaps raise instead of becoming NaN downstream.
@@ -240,7 +240,7 @@ def realized_multiline(
     The backtest scoring targets: the model is fit on an ``as_of`` slice and
     then judged against what actually developed by ``dev_lag`` (the Meyers
     retrospective design). Pass ``lobs``/``origins`` straight from the fitted
-    contract dict — the axes must match the prediction's, and origins present
+    contract dict - the axes must match the prediction's, and origins present
     in the full triangle but absent from the training slice are deliberately
     NOT added here (see CLAUDE.md's post-study accident-year gotcha).
     The multiline analogue of ``contract.realized_values``; feed the result to
@@ -267,7 +267,7 @@ def multiline_targets(
     """Target metadata matching ``flatten_with_totals`` column order:
     per-(lob, origin) rows lob-major, then per-lob totals, then grand total.
 
-    One row per predictive sample column, in the same order — this frame is
+    One row per predictive sample column, in the same order - this frame is
     what makes a ``PredictiveDistribution`` self-describing for scoring. Total
     rows carry ``origin_period=None`` (and ``line_of_business=None`` on the
     grand total) and NaN premium: premium is only defined per (lob, origin),
@@ -304,7 +304,7 @@ def flatten_with_totals(arr: np.ndarray) -> np.ndarray:
     (rather than summing marginal quantiles) is the actuarial point: the total
     reserve's distribution then reflects the model's own cross-line dependence,
     so diversification shows up as a narrower total than the sum of the
-    per-line intervals. NaN propagation is intended — an unobserved outcome
+    per-line intervals. NaN propagation is intended - an unobserved outcome
     must poison its totals rather than be silently treated as zero.
     """
     # last two axes are (lob, origin); leading axes (draws, ...) pass through
@@ -321,7 +321,7 @@ def assemble_predictive(
 ) -> PredictiveDistribution:
     """Build the PredictiveDistribution from per-(lob, origin) ultimate draws.
 
-    ults: (n_draws, n_lob, n_w) — ULTIMATE losses, not reserves (reserve =
+    ults: (n_draws, n_lob, n_w) - ULTIMATE losses, not reserves (reserve =
     ultimate - paid to date; scoring is done on ultimates so every entry is
     comparable). Totals are derived here rather than accepted from the caller
     so they are always row-sums of the same draws, which is the only way

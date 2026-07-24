@@ -21,7 +21,7 @@ _active_manifest.json              kernels: CRPS, PIT/KS, contracts       R/ggpl
 ```
 
 - **Data** (`cas-schedule-p-data-model`): owns ingestion and the Data Vault
-  model; its only public surface is the **gold mart publish** — a versioned
+  model; its only public surface is the **gold mart publish** - a versioned
   parquet file named by `warehouse/_active_manifest.json`. Nothing downstream
   reaches past the mart.
 - **Modeling** (this repo, package `ibnr`): owns model implementations, the
@@ -31,7 +31,7 @@ _active_manifest.json              kernels: CRPS, PIT/KS, contracts       R/ggpl
   figures, and paper-specific experiment configuration. It runs experiments
   *through* ibnr and typesets *from* the artifacts.
 
-## Contract 1 — data → modeling (in place, both transports)
+## Contract 1 - data → modeling (in place, both transports)
 
 `ibnr.data.schedule_p.load_schedule_p()` accepts (directly or via
 `IBNR_SCHEDULE_P_WAREHOUSE`):
@@ -46,10 +46,10 @@ _active_manifest.json              kernels: CRPS, PIT/KS, contracts       R/ggpl
 
 The harness scripts stamp `mart_publish_id` into every results CSV, so any
 figure in the paper traces to an exact data publish. Marco needs neither the
-vault pipeline nor a warehouse clone — `gh auth login` plus the ~5 MB release
+vault pipeline nor a warehouse clone - `gh auth login` plus the ~5 MB release
 download is the entire data dependency.
 
-## Contract 2 — modeling → manuscript (the proposal)
+## Contract 2 - modeling → manuscript (the proposal)
 
 ### Step 0: put ibnr on GitHub
 
@@ -63,18 +63,18 @@ A small uv-managed Python project inside `transformers_reserving`:
 
 ```
 transformers_reserving/
-  Code/            # existing R prototype (torch-for-R, ggplot adapters) — kept
+  Code/            # existing R prototype (torch-for-R, ggplot adapters) - kept
   Manuscript/      # manuscript.qmd + references.bib (existing)
-  experiments/     # NEW — thin Python runner
+  experiments/     # NEW - thin Python runner
     pyproject.toml #   depends on: ibnr @ git+https://github.com/<org>/ibnr
     uv.lock        #   pins the exact ibnr commit → reproducible experiments
     configs/       #   paper-specific choices: lines, screens, seeds, model configs
     run_backtest.py  # calls ibnr's gallery/harness, writes ../results/*.csv
-  results/         # NEW — committed CSV artifacts (small, versioned, diffable)
+  results/         # NEW - committed CSV artifacts (small, versioned, diffable)
   References/
 ```
 
-The runner is intentionally thin — it configures and calls
+The runner is intentionally thin - it configures and calls
 `ibnr.gallery.fit(...)` / the `compare_gallery` machinery; **no modeling code
 lives in the manuscript repo**. When an experiment needs a model variant,
 the variant is added to ibnr's gallery (with a card and tests) and the
@@ -87,7 +87,7 @@ Marco's plotting investment (`plot_model_comparison.R`,
 `model_plot_adapters.R`, `plotting_core.R`) survives untouched in spirit: the
 adapters re-point from the R prototype's outputs to the tidy CSVs in
 `results/`. The CSV layout is already tidy one-row-per-(model, line,
-company) with estimate/se/cv/outcome/percentile/crps — designed to be read
+company) with estimate/se/cv/outcome/percentile/crps - designed to be read
 by R as easily as Python. `manuscript.qmd` (Quarto handles R and Python
 chunks side by side) reads `results/*.csv` in R chunks and renders ggplot
 figures; no figure ever computes a model.
@@ -98,11 +98,11 @@ figures; no figure ever computes a model.
 `multivariate.R` / `traditional.R` were the exploration that shaped the
 research questions. Under this proposal the Python gallery entries
 (`nn_transformer`, `sur`, `copula_glm`, `meyers_ccl`) become the canonical
-experiment implementations — one engine, tested, with cards documenting every
+experiment implementations - one engine, tested, with cards documenting every
 modeling choice. The R files stay in `Code/` as the historical prototype (or
 move to an `archive/`), and the manuscript's methods section cites the ibnr
 cards. If an R-native artifact is ever required (e.g. a journal demands R),
-`gallery.scaffold()`-style ejection of a single model is the path — not a
+`gallery.scaffold()`-style ejection of a single model is the path - not a
 parallel implementation maintained by hand.
 
 ### Why artifact handoff instead of calling ibnr from the .qmd
@@ -113,7 +113,7 @@ parallel implementation maintained by hand.
 - **Language neutrality**: CSVs keep the R/ggplot pipeline and any future
   Python figures equally happy.
 - **Reviewability**: committed CSVs diff cleanly when a model or the data
-  publish changes — a rerun that moves a number is visible in the PR.
+  publish changes - a rerun that moves a number is visible in the PR.
 
 ## Division-of-labor summary
 

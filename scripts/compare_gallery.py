@@ -1,15 +1,15 @@
 """Head-to-head gallery backtest on the Schedule P gold mart.
 
 Compares the transformer (nn_transformer) against the classical multivariate
-baselines (sur, copula_glm) — and optionally meyers_ccl — on the Meyers
+baselines (sur, copula_glm) - and optionally meyers_ccl - on the Meyers
 retrospective protocol: train as of 1997-12-31, score realized ultimates,
 report outcome percentiles (KS uniformity) and CRPS per model.
 
 Company set: companies passing the monograph's Table A.1 screens on AT
-LEAST TWO requested lines, each scored on exactly its passing lines — the
+LEAST TWO requested lines, each scored on exactly its passing lines - the
 same (company, line) pairs for every model, including the transformer's
 training pool (no monoline data anywhere; Ethan's comparability rule). The
-headline field is paid_loss — the copula's lognormal marginals cannot take
+headline field is paid_loss - the copula's lognormal marginals cannot take
 the negative late increments of reported losses.
 
 Fit shapes per model:
@@ -17,14 +17,14 @@ Fit shapes per model:
   nn_transformer    ONE pooled fit on the screened (company, line) pairs,
                     then per-(company, line) segment predicts
   meyers_ccl        one cmdstan fit per company x line (slow; opt-in)
-  chain_ladder      volume-weighted CL point estimate per (company, line) —
+  chain_ladder      volume-weighted CL point estimate per (company, line) -
                     the distribution-free skill benchmark (always included)
 
 Every row carries `anchor` (loss-to-date at the as_of date) and `premium`
 (line premium), so downstream analysis can score on the RESERVE basis:
 ultimate errors flatter models for data they merely copied forward.
 
-METHODOLOGY (this script produces published results — read before changing)
+METHODOLOGY (this script produces published results - read before changing)
 
 1. Cohort-data parity. Every model is scored on the SAME (company, line)
    cells, and the pooled NN entries train on exactly those scored pairs
@@ -34,12 +34,12 @@ METHODOLOGY (this script produces published results — read before changing)
    headline. See `screened_company_lines` and `pair_filter`.
 
 2. Training slice vs realized outcomes. Models fit `tri_all.as_of(args.as_of)`
-   — the upper triangle visible at 1997-12-31. Outcomes come from the FULL
+   - the upper triangle visible at 1997-12-31. Outcomes come from the FULL
    triangle (the realized bottom-right). CRITICAL GOTCHA (CLAUDE.md): the
    Schedule P mart carries accident years past the study window (1988-2007,
    not 1988-1997), so any outcome or aggregate read off the full triangle
    MUST be restricted to the origins present in the training slice. Omitting
-   that restriction silently sums post-study accident years — it bit
+   that restriction silently sums post-study accident years - it bit
    `point_context` once and inflated "outcomes" by 2.4x. The guard lives in
    `point_context` (the `origin_period.isin(grid.index)` filter); entries'
    own `realized_ultimates()` apply the equivalent restriction internally.
@@ -101,7 +101,7 @@ from ibnr.kernels.scores import crps  # noqa: E402
 #: models cheap enough to run as the default trio (seconds-to-minutes per
 #: company); meyers_ccl is opt-in because it compiles and samples in cmdstan.
 FAST_MODELS = ["sur", "copula_glm", "nn_transformer"]
-#: multi-line transformer arms — the only entries that model cross-line
+#: multi-line transformer arms - the only entries that model cross-line
 #: dependence, so the only ones producing a meaningful diversified total.
 ML_MODELS = ["nn_ml_ar", "nn_ml_joint"]
 
@@ -109,7 +109,7 @@ ML_MODELS = ["nn_ml_ar", "nn_ml_joint"]
 def screened_company_lines(
     mart: Path, lines: list[str], per_line: int
 ) -> tuple[dict[str, list[str]], dict[str, list[tuple[str, str]]]]:
-    """(scored, pools) — the cohort definition the whole study rests on.
+    """(scored, pools) - the cohort definition the whole study rests on.
 
     scored: company -> its screen-passing lines, for companies passing the
     Table A.1 screens on >=2 requested lines; every model scores exactly
@@ -117,12 +117,12 @@ def screened_company_lines(
     (wiring checks), 0 = all.
 
     The >=2-line requirement is what makes the multi-line entries (sur,
-    copula_glm, nn_ml_*) meaningful at all — a monoline company has no
-    cross-line dependence to estimate — and holding the cohort fixed across
+    copula_glm, nn_ml_*) meaningful at all - a monoline company has no
+    cross-line dependence to estimate - and holding the cohort fixed across
     ALL models is Ethan's comparability rule: differences in the leaderboard
     must come from the models, not from who they were allowed to look at.
 
-    pools: (company, line) training-pair pools for the transformer —
+    pools: (company, line) training-pair pools for the transformer -
     "multiline" (the scored pairs; the default and the comparability rule),
     "screened" (>=1 passing line, i.e. + monoline companies; for comparison runs only).
     """
@@ -136,7 +136,7 @@ def screened_company_lines(
         for code in sets[line]:
             by_company.setdefault(code, []).append(line)
     # sorted() so the cohort (and any --per-line truncation of it) is
-    # deterministic across runs — results CSVs must be reproducible
+    # deterministic across runs - results CSVs must be reproducible
     scored = {c: ls for c, ls in sorted(by_company.items()) if len(ls) >= 2}
     if per_line:
         scored = dict(list(scored.items())[:per_line])
@@ -158,7 +158,7 @@ def line_total_rows(pred, realized, label_map: dict[str, str]) -> dict[str, dict
     ``label_map`` maps an output key (a line name, or "ALL") to the target
     label the entry used, so every model's rows land in one common schema.
     ``percentile`` is the PIT value of the realized outcome under the model's
-    own predictive draws — the input to the KS uniformity test. ``crps`` is
+    own predictive draws - the input to the KS uniformity test. ``crps`` is
     in dollars here; `summarize` normalizes it by the outcome.
     """
     table = pred.summary(observed=realized)
@@ -185,7 +185,7 @@ def point_context(tri_all, scored, args) -> tuple[list[dict], dict, dict]:
 
     anchor = loss-to-date at the as_of date (sum of each origin's latest
     observed cumulative in the training slice); premium = line premium.
-    chain_ladder = volume-weighted CL point ultimate — the distribution-free
+    chain_ladder = volume-weighted CL point ultimate - the distribution-free
     skill benchmark every model is measured against. Keys are
     (company, line) plus (company, "ALL") sums.
 
@@ -200,7 +200,7 @@ def point_context(tri_all, scored, args) -> tuple[list[dict], dict, dict]:
     past the 1988-1997 study window, so the outcome query MUST be filtered to
     the origins present in the training grid. This function once omitted that
     filter and reported outcomes 2.4x too large (CLAUDE.md gotcha). The guard
-    is the `origin_period.isin(grid.index)` predicate below — do not remove
+    is the `origin_period.isin(grid.index)` predicate below - do not remove
     it, and replicate it in any new full-triangle aggregate.
     """
     train = tri_all.as_of(args.as_of)  # upper triangle visible at the as_of date
@@ -225,7 +225,7 @@ def point_context(tri_all, scored, args) -> tuple[list[dict], dict, dict]:
             devs = sorted(grid.columns)
             # volume-weighted development factors over overlapping origins:
             # f_a = sum(C_{.,b}) / sum(C_{.,a}) across origins observed at both
-            # ages — the textbook chain-ladder age-to-age estimator. A dev step
+            # ages - the textbook chain-ladder age-to-age estimator. A dev step
             # with no overlapping origins falls back to 1.0 (no development).
             factors = {}
             for a, b in zip(devs[:-1], devs[1:], strict=True):
@@ -249,7 +249,7 @@ def point_context(tri_all, scored, args) -> tuple[list[dict], dict, dict]:
                 & (full["dev_lag"] == n_d_months)
                 # LOAD-BEARING GUARD (see docstring): the mart carries origins
                 # beyond the study window, so outcomes are restricted to the
-                # training slice's origins — exactly the origins the models
+                # training slice's origins - exactly the origins the models
                 # were asked to predict. Dropping this inflated outcomes 2.4x.
                 & full["origin_period"].isin(grid.index)
             ]
@@ -272,7 +272,7 @@ def point_context(tri_all, scored, args) -> tuple[list[dict], dict, dict]:
             outcome_total += outcome
             prem_total += line_prem
         # company "ALL" row: a plain sum across the company's scored lines.
-        # For a point estimate that is exactly right — diversification only
+        # For a point estimate that is exactly right - diversification only
         # affects the spread, which chain_ladder does not produce.
         anchors[(code, "ALL")] = anchor_total
         premiums[(code, "ALL")] = prem_total
@@ -295,14 +295,14 @@ def run_multiline_model(model: str, tri_all, scored, args) -> list[dict]:
     estimate cross-line correlation (Zhang 2010 SUR / Shi & Frees 2011 copula);
     scoring then reads both the per-line totals and the diversified company
     total out of the same predictive distribution. The as_of slicing happens
-    inside ``gallery.fit`` — the triangle handed in here is the full one.
+    inside ``gallery.fit`` - the triangle handed in here is the full one.
 
     A fit that raises is recorded as an ``error`` row and the study continues;
     silently skipping would make the failure invisible in the results CSV.
     """
     rows = []
     for i, (code, lines_c) in enumerate(scored.items(), 1):
-        # exactly this company's SCORED lines — cohort-data parity
+        # exactly this company's SCORED lines - cohort-data parity
         tri = tri_all.filter((ibis._.company_code == code) & ibis._.line_of_business.isin(lines_c))
         t0 = time.perf_counter()
         try:
@@ -327,7 +327,7 @@ def run_multiline_model(model: str, tri_all, scored, args) -> list[dict]:
                 print(f"  {model} {code}: factor marginal unidentified, using hoerl", flush=True)
             pred = entry.predict(n_draws=args.draws, seed=args.seed)
             # realized_ultimates() reads the FULL triangle but restricts to the
-            # origins the entry trained on — the same post-study-origin guard
+            # origins the entry trained on - the same post-study-origin guard
             # point_context applies by hand
             realized = entry.realized_ultimates(tri)
             # per-line totals plus the diversified company total ("total")
@@ -360,10 +360,10 @@ def run_transformer(tri_market, scored, pools, args) -> list[dict]:
 
     Unlike the per-company statistical models, the NN is trained globally
     across cohorts and only specialized at predict time via ``segment=``. Its
-    per-line draws are INDEPENDENT — this entry models no cross-line
+    per-line draws are INDEPENDENT - this entry models no cross-line
     dependence, so it emits no diversified company total (see nn_ml_* for that).
     """
-    # default pool: exactly the scored (company, line) pairs — the models see
+    # default pool: exactly the scored (company, line) pairs - the models see
     # identical cohort data; "screened" (+monoline pairs) and "market" (every
     # cohort) are alternate pools, run only to measure how much the pool
     # choice matters. The pinned-dev mean is a pooled statistic, so pool
@@ -398,7 +398,7 @@ def run_transformer(tri_market, scored, pools, args) -> list[dict]:
         )
 
     rows = []
-    # predict the SCORED pairs only, whatever the training pool was — the
+    # predict the SCORED pairs only, whatever the training pool was - the
     # scored panel is fixed across models by construction
     for code, lines_c in scored.items():
         for line in lines_c:
@@ -433,7 +433,7 @@ def run_transformer(tri_market, scored, pools, args) -> list[dict]:
 def run_transformer_ml(tri_market, scored, pools, args, dependence: str) -> list[dict]:
     """The multi-line transformer: one pooled company-level fit (attention
     across each company's screened lines), then per-company predicts in the
-    SUR layout — per-line totals AND the diversified grand total.
+    SUR layout - per-line totals AND the diversified grand total.
 
     ``dependence`` selects the head: "ar" samples lines sequentially with an
     autoregressive link, "joint" uses a multivariate Gaussian-mixture head
@@ -541,7 +541,7 @@ def point_summary(df: pd.DataFrame) -> None:
     """Distribution-free comparison on the RESERVE basis: est/actual reserve
     = (estimate|outcome) - anchor. Reports error levels, the chain-ladder
     skill ratio, and paired Wilcoxon tests (all models score identical
-    cells). Premium-normalized MAE is the robust headline — actual reserves
+    cells). Premium-normalized MAE is the robust headline - actual reserves
     can sit near zero (late favorable development), which blows up APEs.
 
     Why reserve and not ultimate basis: ultimate = anchor + reserve, and the
@@ -627,7 +627,7 @@ def summarize(df: pd.DataFrame) -> None:
     on CRPS while being wrong about its own uncertainty.
 
     ks_uniformity prints ``D x 100`` with the 5% critical value 1.36/sqrt(n)
-    x 100 and marks rejection with ``*`` — Meyers' own convention, so results
+    x 100 and marks rejection with ``*`` - Meyers' own convention, so results
     here are directly comparable to the monograph's tables.
     """
     # per-line cells only; "ALL" (diversified totals) get their own panel
@@ -637,7 +637,7 @@ def summarize(df: pd.DataFrame) -> None:
     for model, grp in ok.groupby("model"):
         print(f"\n{model}:")
         # per line, then pooled: COMBINED has ~4x the n, so its critical value
-        # is ~half as wide — a model can pass every line yet fail COMBINED
+        # is ~half as wide - a model can pass every line yet fail COMBINED
         for line, sub in grp.groupby("line"):
             print(f"  {line:<24} n={len(sub):>3}  {ks_uniformity(sub['percentile'] / 100)}")
         print(f"  {'COMBINED':<24} n={len(grp):>3}  {ks_uniformity(grp['percentile'] / 100)}")
@@ -672,7 +672,7 @@ def summarize(df: pd.DataFrame) -> None:
 def main() -> int:
     """Run the study: fix the cohort, run each requested model on it, score, write.
 
-    Order matters — the cohort is resolved ONCE up front and every model
+    Order matters - the cohort is resolved ONCE up front and every model
     runner is handed the same ``scored`` dict, which is the mechanism behind
     the cohort-data parity rule.
     """
@@ -774,7 +774,7 @@ def main() -> int:
         all_rows += run_meyers(tri_by_line, scored, args.lines, args)
 
     df = pd.DataFrame(all_rows)
-    # join anchors/premiums onto every row by (company, line) — including the
+    # join anchors/premiums onto every row by (company, line) - including the
     # "ALL" rows, whose anchor/premium are the company-level sums. Failure rows
     # get them too, so a failed cell is still identifiable in the CSV.
     keys = list(zip(df["company_code"], df["line"], strict=True))

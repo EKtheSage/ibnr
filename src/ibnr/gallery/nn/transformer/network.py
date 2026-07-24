@@ -1,13 +1,13 @@
 """The triangle transformer network: masked-cell encoder with a mixture
-density head. This module imports torch — only import it from inside the
+density head. This module imports torch - only import it from inside the
 entry's fit/predict paths (``ibnr.gallery`` must import without the [nn]
 extra; see model.py and CLAUDE.md's "torch must never be imported at module
 level" rule).
 
 Three pieces, all consumed by ``model.py``:
-- ``TriangleTransformer`` — the encoder + MDN head (the ``nn.Module``);
-- ``mdn_nll`` — the training loss (masked mixture negative log likelihood);
-- ``mdn_sample`` — one draw per cell, used by the autoregressive rollout.
+- ``TriangleTransformer`` - the encoder + MDN head (the ``nn.Module``);
+- ``mdn_nll`` - the training loss (masked mixture negative log likelihood);
+- ``mdn_sample`` - one draw per cell, used by the autoregressive rollout.
 
 This is the SINGLE-LINE transformer: each cohort (company x LOB) is encoded
 on its own, so its per-line predictive draws are independent. Cross-line
@@ -45,7 +45,7 @@ class TriangleTransformer(nn.Module):
     embedding never received a gradient. Distance-past-cutoff is supervised
     directly by the cutoff augmentation, and the autoregressive rollout
     re-encodes after every sampled diagonal, so inference only ever consumes
-    distance-1 predictions — the most supervised case.
+    distance-1 predictions - the most supervised case.
     """
 
     def __init__(
@@ -117,13 +117,13 @@ class TriangleTransformer(nn.Module):
         context_mask: torch.Tensor,  # (B, W, D) bool
         lob_idx: torch.Tensor,  # (B,) long
         log_premium: torch.Tensor,  # (B,) normalized
-        cutoff: torch.Tensor,  # (B,) long — 1-based conditioning diagonal
+        cutoff: torch.Tensor,  # (B,) long - 1-based conditioning diagonal
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Encode one batch of cohort grids and read an MDN over every cell.
 
         B = cohorts in the batch, F = channels, W = origins, D = dev lags,
         T = W*D tokens, K = mixture components. Returns log_pi, mu, sigma each
-        (B, W, D, K) — a K-Gaussian mixture over the normalized incremental
+        (B, W, D, K) - a K-Gaussian mixture over the normalized incremental
         loss ratio of every cell. Only ``context_mask``-true cells contribute
         their values; the rest are zeroed, so their tokens carry position +
         conditioning only (the model must predict them, not read them)."""
@@ -145,7 +145,7 @@ class TriangleTransformer(nn.Module):
         # per-cohort conditioning (LOB + size) -> (B, d), broadcast to all tokens
         cond = self.cond_proj(torch.cat([self.lob_emb(lob_idx), log_premium.unsqueeze(-1)], -1))
         tok = tok + cond.unsqueeze(1)  # (B, T, d)
-        h = self.encoder(self.drop(tok))  # (B, T, d) — full self-attention over the grid
+        h = self.encoder(self.drop(tok))  # (B, T, d) - full self-attention over the grid
         # head -> (B, T, 3K), reshaped to per-cell (B, W, D, 3, K): the 3 slot
         # splits into mixture logits / means / raw scales.
         out = self.head(self.out_norm(h)).reshape(b, self.n_w, self.n_d, 3, self.cfg.n_components)
@@ -172,11 +172,11 @@ def mdn_nll(
     mu: torch.Tensor,
     sigma: torch.Tensor,
     y: torch.Tensor,  # (B, W, D)
-    mask: torch.Tensor,  # (B, W, D) bool — cells that count
+    mask: torch.Tensor,  # (B, W, D) bool - cells that count
 ) -> torch.Tensor:
     """Mean negative log likelihood of the mixture over masked cells.
 
-    Training objective. ``mask`` is the set of scored cells — under cutoff
+    Training objective. ``mask`` is the set of scored cells - under cutoff
     augmentation, the observed training cells strictly past the drawn cutoff
     (the "predict the next diagonals" task). Per cell the log density is the
     log-sum-exp over K components of log_pi + log N(y; mu, sigma); the loss is

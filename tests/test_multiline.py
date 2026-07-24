@@ -3,7 +3,7 @@
 The multi-line entries (sur, copula_glm, nn_transformer_ml) all model dependence
 ACROSS lines of business for one company, so they need a rectangular
 (lob, origin, dev) grid with a common origin axis and an identical observed-cell
-pattern per line — that alignment is the whole precondition of a cross-line
+pattern per line - that alignment is the whole precondition of a cross-line
 covariance being meaningful. This file pins the grid construction, the target
 layout, and the guards that refuse data the models cannot honestly consume.
 
@@ -11,7 +11,7 @@ Target layout is a fixed convention shared by every multi-line entry:
 per-(lob, origin) ultimates first in lob-major order, then one total per lob, then
 the diversified grand total last. Totals are summed draw by draw, so the grand
 total's spread carries the modelled cross-line dependence rather than assuming
-independence — that number is the diversification benefit these models exist to
+independence - that number is the diversification benefit these models exist to
 quantify.
 
 Runs on both ibis backends via ``backend_name``.
@@ -37,7 +37,7 @@ from ibnr.kernels.multiline import (
 from .conftest import make_multiline_triangle, upper_mask
 
 # Standard 3x3 upper triangle, NaN = unobserved. lob_b is exactly 2x lob_a in both
-# loss and premium, so the two lines share loss ratios — any per-line asymmetry in
+# loss and premium, so the two lines share loss ratios - any per-line asymmetry in
 # the emitted arrays is then a contract bug rather than a data artefact.
 CUM_A = np.array(
     [
@@ -118,7 +118,7 @@ def test_multiline_data_rejects_incremental(backend_name):
 def test_multiline_data_rejects_restated_cells(backend_name):
     """A triangle still carrying restatement history (same cell at two eval_dates)
     must raise, not pick arbitrarily. The caller has to decide the vintage via
-    ``as_of()`` / ``latest_diagonal()`` — silently choosing would leak the future."""
+    ``as_of()`` / ``latest_diagonal()`` - silently choosing would leak the future."""
     t = make_multiline_triangle(backend_name, {"lob_a": CUM_A, "lob_b": CUM_B})
     df = t.execute()
     df = df.copy()
@@ -134,7 +134,7 @@ def test_multiline_data_rejects_restated_cells(backend_name):
 
 def test_realized_multiline_alignment(two_lob):
     """Outcomes come back on the same (lob, origin) grid the model was fit on, with
-    NaN where the outcome has not emerged — positional alignment is what stops a
+    NaN where the outcome has not emerged - positional alignment is what stops a
     retrospective scoring lob_a's draws against lob_b's realized ultimate."""
     data = multiline_data(two_lob, loss_field="paid_loss")
     realized = realized_multiline(
@@ -172,7 +172,7 @@ def test_targets_and_flatten_layout():
     ]
 
     # sequential values (0..11) so every flattened position is individually
-    # identifiable — a transposed lob/origin axis would be visible immediately
+    # identifiable - a transposed lob/origin axis would be visible immediately
     ults = np.arange(2 * 2 * 3, dtype=float).reshape(2, 2, 3)  # (draws, lob, origin)
     flat = flatten_with_totals(ults)
     assert flat.shape == (2, 9)  # (draws, targets), matching len(targets) above

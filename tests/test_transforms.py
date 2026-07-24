@@ -1,4 +1,4 @@
-"""Behavioral spec for ``triangle/transforms.py`` — the core algebra of the
+"""Behavioral spec for ``triangle/transforms.py`` - the core algebra of the
 Triangle layer: cumulative<->incremental, grain changes, and the ``as_of``
 backtest slice.
 
@@ -27,7 +27,7 @@ from .conftest import assert_triangles_equal, d, sorted_long
 
 def test_cum_incr_round_trip(small_cumulative):
     """incr = diff(cum) cell-by-cell within an origin, and to_cumulative undoes it
-    exactly — differencing must not lose or fabricate cells."""
+    exactly - differencing must not lose or fabricate cells."""
     incr = small_cumulative.to_incremental()
     assert incr.meta.measure == "incremental"
     wide = incr.to_wide()
@@ -41,7 +41,7 @@ def test_cum_incr_round_trip(small_cumulative):
 
 
 def test_cum_incr_idempotent(small_cumulative):
-    """Converting to the measure a triangle already has is a no-op — and returns
+    """Converting to the measure a triangle already has is a no-op - and returns
     the *same object* (``is``), so callers can convert defensively for free."""
     assert small_cumulative.to_cumulative() is small_cumulative
     incr = small_cumulative.to_incremental()
@@ -49,8 +49,8 @@ def test_cum_incr_idempotent(small_cumulative):
 
 
 def test_as_of(small_cumulative):
-    """``as_of`` yields the triangle as it stood at a past evaluation date — the
-    slice every backtest trains on — and carries metadata through unchanged."""
+    """``as_of`` yields the triangle as it stood at a past evaluation date - the
+    slice every backtest trains on - and carries metadata through unchanged."""
     upper = small_cumulative.as_of("2021-12-31")
     df = sorted_long(upper)
     # 3 of the 6 cells had been evaluated by 12/31/2021: (2020, 12/24) and (2021, 12)
@@ -61,7 +61,7 @@ def test_as_of(small_cumulative):
 
 
 def test_latest_diagonal(small_cumulative):
-    """The latest diagonal is one cell per origin at its most recent eval — the
+    """The latest diagonal is one cell per origin at its most recent eval - the
     paid-to-date column reserves are measured against (reserve = ultimate - this)."""
     diag = sorted_long(small_cumulative.latest_diagonal())
     assert len(diag) == 3
@@ -164,7 +164,7 @@ def test_origin_grain(backend_name):
 
 def test_as_of_drops_restatements(backend_name):
     """With restatement history in the table, ``as_of`` must return what was booked
-    at that date, not the latest revision — otherwise backtests leak the future.
+    at that date, not the latest revision - otherwise backtests leak the future.
 
     ``eval_date`` is a stored first-class column precisely so this is expressible:
     the same (origin, dev) cell legitimately appears twice with different values.

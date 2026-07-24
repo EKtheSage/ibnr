@@ -5,7 +5,7 @@ multi-segment cumulative Triangle to dense numpy grids + masks, consumed by
 the neural gallery entries (``gallery/nn/transformer``,
 ``gallery/nn/transformer_ml``). Per CLAUDE.md decision 3 the contract lives
 here once and every entry consumes the identical dict; per the [nn]-extra
-rule, torch conversion happens inside each entry — this module never imports
+rule, torch conversion happens inside each entry - this module never imports
 torch (``tests/test_gallery.py`` enforces the import boundary).
 
 Cross-refs: ``kernels/contract.py`` (Stan contract; ``logprem`` there plays
@@ -22,7 +22,7 @@ CORE CONVENTIONS
 - Grids are (n_w, n_d): origin index ``w`` (sorted origins, SHARED across all
   cohorts so a cohort missing an origin is simply masked out) x 1-based dev
   step ``d = dev_lag // dev_grain_months`` stored at index ``d - 1``.
-- ``x`` holds INCREMENTAL LOSS RATIOS — incremental loss / that origin's
+- ``x`` holds INCREMENTAL LOSS RATIOS - incremental loss / that origin's
   premium. Dividing by premium is the cross-cohort normalizer that lets one
   network pool a $2M company with a $2B one; incrementals (rather than
   cumulatives) keep successive cells from being near-perfectly autocorrelated.
@@ -33,7 +33,7 @@ CORE CONVENTIONS
 - ``obs_mask`` therefore marks cells with a *usable increment*, NOT raw cell
   presence. Reviewers should not read it as "the triangle has a value here".
 - Absent cells are represented as x = 0.0 AND obs_mask = False. The zero is
-  padding for the tensor only — it is never a claim that the increment was
+  padding for the tensor only - it is never a claim that the increment was
   zero, and every consumer must gate on the mask, never on ``x != 0``.
 - ``latest_cum``/``latest_dev`` are the per-origin ANCHORS: ultimate =
   latest_cum + premium * (sum of predicted future incremental loss ratios).
@@ -44,42 +44,42 @@ CORE CONVENTIONS
   cal_idx, which is what ``as_of``/eval_date means on a dense grid; it drives
   cutoff augmentation and the eval_date-style validation split.
 
-THE CONTRACT — keys returned by ``nn_data`` (shape; dtype; meaning). n_c =
+THE CONTRACT - keys returned by ``nn_data`` (shape; dtype; meaning). n_c =
 kept cohorts, n_f = channels (= 1 + len(feature_fields)), n_w origins,
 n_d dev steps:
 
-- ``x``              : (n_c, n_f, n_w, n_d) float64 — incremental loss ratios.
+- ``x``              : (n_c, n_f, n_w, n_d) float64 - incremental loss ratios.
   Channel 0 is ALWAYS ``loss_field`` (the prediction target); channels 1..
   follow ``feature_fields`` order. NaN-free by construction: unusable cells
   are zero-filled (see the mask rule above).
-- ``obs_mask``       : (n_c, n_w, n_d) bool — usable channel-0 increments;
+- ``obs_mask``       : (n_c, n_w, n_d) bool - usable channel-0 increments;
   True = observed/trainable, False = to be predicted or absent.
-- ``cal_idx``        : (n_w, n_d) int — 1-based diagonal number; shared by all
+- ``cal_idx``        : (n_w, n_d) int - 1-based diagonal number; shared by all
   cohorts (calendar time is a property of the grid, not of a cohort).
-- ``premium``        : (n_c, n_w) float64 — booked earned premium per origin,
+- ``premium``        : (n_c, n_w) float64 - booked earned premium per origin,
   NaN where the cohort has no positive premium for that origin (kept cohorts
   only have such NaNs on origins with no losses at all).
-- ``log_premium``    : (n_c,) float64 — log of the cohort's mean origin
+- ``log_premium``    : (n_c,) float64 - log of the cohort's mean origin
   premium; a size feature, the NN analogue of Stan's ``logprem`` offset.
 - ``lob_idx``/``lob_levels``, ``company_idx``/``company_levels`` : (n_c,) int
   categorical codes plus their level lists (embedding vocabularies). Degrade
   to a single "all" level when the column is absent, so a network always has
   a valid embedding table.
-- ``latest_cum``     : (n_c, n_w) float64 — latest OBSERVED cumulative loss
+- ``latest_cum``     : (n_c, n_w) float64 - latest OBSERVED cumulative loss
   per origin (0.0 when the origin is entirely unobserved for this cohort).
-- ``latest_dev``     : (n_c, n_w) int — 1-based dev index of that anchor
+- ``latest_dev``     : (n_c, n_w) int - 1-based dev index of that anchor
   (0 = nothing observed). Future cells are ``d_index >= latest_dev``.
-- ``cohorts``        : DataFrame, n_c rows — the segment values per cohort,
+- ``cohorts``        : DataFrame, n_c rows - the segment values per cohort,
   row order == axis 0 of every array above. The join key back to the triangle.
-- ``dropped``        : DataFrame — screened-out cohorts + reason; a failed
+- ``dropped``        : DataFrame - screened-out cohorts + reason; a failed
   cohort is reported, never silently vanished (retro scripts log these).
 - ``origin_periods`` : list[dt.date], len n_w, ascending. ``n_w``/``n_d``:
   int sizes. ``fields``: list[str], the channel order of axis 1.
-- ``dev_grain_months``: int — months per dev step.
+- ``dev_grain_months``: int - months per dev step.
 
 INVARIANTS consumers rely on: the triangle must be cumulative and pre-sliced
 with ``as_of(...)`` (this module uses every row it is given); one row per
-(cohort, field, origin, dev) — duplicates mean several evaluation dates
+(cohort, field, origin, dev) - duplicates mean several evaluation dates
 survived; and axis 0 alignment between ``x``, ``obs_mask``, ``premium``,
 ``latest_cum``, ``latest_dev``, ``lob_idx``, ``company_idx`` and ``cohorts``.
 """
@@ -108,7 +108,7 @@ def nn_data(
 ) -> dict[str, Any]:
     """Map a multi-segment cumulative Triangle to dense grids and masks.
 
-    Returns the dict documented in the module docstring — the single data
+    Returns the dict documented in the module docstring - the single data
     contract for every NN entry. Slice training data with
     ``triangle.as_of(...)`` before calling: this function uses every row it
     sees, so an unsliced triangle silently trains on the future.
@@ -117,7 +117,7 @@ def nn_data(
     than raised on (missing/non-positive premium, no usable increments) and
     reported in ``dropped``: an NN fit spans hundreds of company x line
     triangles from the Schedule P mart, so one bad triangle must not kill the
-    run — but it must still be visible, since a shrinking pool changes what
+    run - but it must still be visible, since a shrinking pool changes what
     the pooled model learned.
     """
     if triangle.meta.measure != "cumulative":
@@ -210,7 +210,7 @@ def nn_data(
         incr[:, :, 1:] = cum[:, :, 1:] - cum[:, :, :-1]
         obs = ~np.isnan(incr[0])  # (n_w, n_d) usable TARGET-channel increments
 
-        # screen 1: every origin that has losses must have positive premium —
+        # screen 1: every origin that has losses must have positive premium -
         # x is loss/premium, so a zero/missing denominator is unusable, and
         # dropping the whole cohort keeps its origin axis interpretable
         origin_has_loss = ~np.all(np.isnan(cum[0]), axis=1)  # (n_w,)
@@ -231,7 +231,7 @@ def nn_data(
             ratios = incr / premium[None, :, None]  # (n_f, n_w, n_d)
         x = np.where(np.isnan(ratios), 0.0, ratios)
         # non-target channels may be missing where the target is observed; zero-fill
-        # so `x` is NaN-free. This zero is PADDING, not a zero increment —
+        # so `x` is NaN-free. This zero is PADDING, not a zero increment -
         # consumers must gate on obs_mask, never on `x != 0`.
         x[:, ~obs] = 0.0
 
@@ -323,7 +323,7 @@ def nn_company_data(
     A cohort here is one COMPANY; its lines of business become an explicit
     axis so a model can attend across them (the learned analogue of SUR's
     contemporaneous correlation / the copula's cell dependence). Built by
-    regrouping ``nn_data``'s (company, line) cohorts — screening, increment
+    regrouping ``nn_data``'s (company, line) cohorts - screening, increment
     and premium rules are identical by construction. Lines a company does
     not write (or that were dropped) are all-zero and ``line_mask``-ed out.
 
@@ -331,11 +331,11 @@ def nn_company_data(
     - arrays gain a line axis: ``x`` (n_c, L, F, W, D), ``obs_mask``
       (n_c, L, W, D), ``premium``/``latest_cum`` (n_c, L, W),
       ``latest_dev`` (n_c, L, W), ``log_premium`` (n_c, L);
-    - ``line_mask`` (n_c, L) — lines actually present per company;
-    - ``companies`` — one row per company (segment columns minus the LOB).
+    - ``line_mask`` (n_c, L) - lines actually present per company;
+    - ``companies`` - one row per company (segment columns minus the LOB).
 
     Alignment guarantees (what makes cross-line attention meaningful):
-    - The line axis is ``lob_levels`` — a GLOBAL vocabulary shared by every
+    - The line axis is ``lob_levels`` - a GLOBAL vocabulary shared by every
       company, so index ``li`` means the same line everywhere and an embedding
       or an attention head can be compared across companies.
     - The (w, d) grid and ``cal_idx`` are shared across companies AND lines:
@@ -345,7 +345,7 @@ def nn_company_data(
     - Absent lines are all-zero across ``x``/``premium``/anchors and False in
       ``line_mask``; as in the flat contract those zeros are padding, so a
       consumer MUST gate on ``line_mask`` (and ``obs_mask``) rather than on
-      the values. ``log_premium`` is 0 there too — a padding value, not a
+      the values. ``log_premium`` is 0 there too - a padding value, not a
       $1 premium.
     - Unlike ``kernels.multiline``, lines here are NOT required to share an
       observed-cell pattern: the mask is what the attention consumes, so
@@ -370,7 +370,7 @@ def nn_company_data(
         cohorts[company_cols].drop_duplicates().sort_values(company_cols).reset_index(drop=True)
     )
     row_of = {tuple(r): i for i, r in enumerate(companies.itertuples(index=False))}
-    # L is the GLOBAL number of lines, not this company's count — every company
+    # L is the GLOBAL number of lines, not this company's count - every company
     # gets a full-width line axis and unwritten lines are masked off
     n_c, n_l = len(companies), len(flat["lob_levels"])
     _, n_f, n_w, n_d = flat["x"].shape
@@ -434,7 +434,7 @@ def cutoff_masks(
     ``cal_idx`` is (n_w, n_d) while ``obs_mask`` carries leading cohort/line
     axes; numpy broadcasting aligns them, so both returned masks have
     ``obs_mask``'s shape. Both are subsets of ``obs_mask``, so unobserved and
-    absent cells appear in neither — future cells to be PREDICTED are exactly
+    absent cells appear in neither - future cells to be PREDICTED are exactly
     the ones in neither mask.
     """
     on_or_before = cal_idx <= cutoff

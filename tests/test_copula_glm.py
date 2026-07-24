@@ -10,7 +10,7 @@ diversified total (a dependence model that doesn't is worthless).
 
 Tests simulate FROM the model's own generative process, so a failure is an
 estimation/plumbing bug rather than a model-misspecification artifact. Data is
-synthetic and in-repo — the package must be testable without the Schedule P
+synthetic and in-repo - the package must be testable without the Schedule P
 mart (mart-backed smokes live in ``test_statistical_mart.py``).
 
 Note the headline-field constraint from CLAUDE.md: lognormal marginals cannot
@@ -34,7 +34,7 @@ START = 2000
 # recover two distinct marginal scales, not one shared one.
 SIGMAS = np.array([0.10, 0.15])
 # Decaying incremental paid loss ratios: 45% of premium in dev 1 down to 5% in
-# dev 5 — a plausible short-tail paid pattern.
+# dev 5 - a plausible short-tail paid pattern.
 DEV_LEVEL = np.log(np.array([0.45, 0.25, 0.15, 0.08, 0.05]))  # incremental LR by dev
 
 
@@ -60,7 +60,7 @@ def simulate_lognormal_square(rng, *, n_w=8, rho=0.6, sigmas=SIGMAS, premium=100
 
 
 def fit_on_upper(backend_name, cum, *, premium=1000.0, **fit_kwargs):
-    """Build the full-square triangle (premium included — the marginals are
+    """Build the full-square triangle (premium included - the marginals are
     loss *ratios*, so exposure is required) and fit on the upper-triangle
     ``as_of`` slice; the square is retained for realized-ultimate scoring."""
     n_lob, n_w, _ = cum.shape

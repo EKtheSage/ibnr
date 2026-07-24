@@ -1,4 +1,4 @@
-// Hierarchical compartmental reserving — Gesmann & Morris, "Hierarchical
+// Hierarchical compartmental reserving - Gesmann & Morris, "Hierarchical
 // Compartmental Reserving Models" (CAS Research Paper, 2020), case-study
 // Model 1 (their appendix 7.2.2, published brms code = ground truth).
 //
@@ -10,7 +10,7 @@
 // jointly on case outstanding (delta = 0, a level) and cumulative paid
 // (delta = 1), with a separate sigma per delta (brms: sigma ~ 0 + deltaf on
 // the log link). ker and kp are fixed across accident years; (RLR, RRF)
-// carry correlated accident-year varying effects with an LKJ(1) prior —
+// carry correlated accident-year varying effects with an LKJ(1) prior -
 // the family's signature reserving-cycle structure.
 //
 // Parameterization matches the brms nlf transforms exactly:
@@ -19,11 +19,11 @@
 //   RRF[w] = 0.8 * exp(0.1 * (b_oRRF + u_RRF[w]))
 // so the population priors are lognormal with medians (3, 1, 0.7, 0.8) and
 // CoVs (10%, 10%, 20%, 10%). t is the development age in YEARS at the
-// cell's period end (the case study's Lag = 1..10) — ker/kp are per-year.
+// cell's period end (the case study's Lag = 1..10) - ker/kp are per-year.
 // CLOSED-FORM ODE SOLUTION. The linear EX -> OS -> PD system is solved
 // analytically, so there is no ODE integrator anywhere in this program (the
 // monograph's own simplification for the two-rate case). Both curves are
-// LOSS RATIOS — EX(0) = 1 means one unit of premium — so callers multiply by
+// LOSS RATIOS - EX(0) = 1 means one unit of premium - so callers multiply by
 // the origin's premium to get an amount. Mirrored in numpy in model.py
 // (os_curve / paid_curve) for the predictive simulation; the two must stay in
 // step. The (ker - kp) denominator is singular at ker == kp; the priors
@@ -44,7 +44,7 @@ functions {
 }
 // DATA BLOCK = the contract (kernels/contract.py::compartmental_stan_data).
 // Rows are DELTA-STACKED: the outstanding block (delta = 0) first, then the
-// paid block (delta = 1), each sorted by (w, d) over the same cells — so
+// paid block (delta = 1), each sorted by (w, d) over the same cells - so
 // len_data = 2 * (number of observed triangle cells) and the two blocks share
 // one set of compartmental parameters. This joint layout is what makes this
 // the only gallery entry fitting case reserves and paid together.
@@ -56,14 +56,14 @@ data {
   array[len_data] int<lower=0, upper=1> delta; // 0 = outstanding, 1 = paid
   // OS = reported - paid (a level, not a cumulative); paid is cumulative.
   // Both are AMOUNTS in Model 1. No positivity is enforced: redundant case
-  // reserves make OS <= 0 and the Gaussian takes that natively — the reason
+  // reserves make OS <= 0 and the Gaussian takes that natively - the reason
   // this arm needs no clamp in a mechanical 200-company retrospective.
   array[len_data] real loss; // amounts; OS may be <= 0, Gaussian takes it
   vector<lower=0>[n_w] premium; // per accident year; scales the loss ratios
 }
 // PARAMETERS. Everything is sampled on an UNCONSTRAINED (o-prefixed) scale
 // and mapped to the strictly positive compartmental parameters by the
-// lognormal transforms in transformed parameters — the monograph's stated
+// lognormal transforms in transformed parameters - the monograph's stated
 // reason for this parameterization (no boundary, so Stan's default U(-2, 2)
 // init on the unconstrained scale is always valid).
 parameters {
@@ -80,21 +80,21 @@ parameters {
 transformed parameters {
   // Non-centered varying effects: u = diag(sd) * L * z with z ~ N(0, 1) gives
   // (u_RLR, u_RRF) ~ MVN(0, D Omega D). This is brms's own default and ports
-  // must keep it — a centered version is a different geometry, not the same
+  // must keep it - a centered version is a different geometry, not the same
   // model at finite sample size (CLAUDE.md design note 7).
   matrix[2, n_w] u_ay = diag_pre_multiply(sd_ay, L_ay) * z_ay;
   // The brms nlf transforms, verbatim: lognormal population priors with
   // medians (3, 1, 0.7, 0.8) and CoVs (10%, 10%, 20%, 10%). Actuarially:
   // exposure is reported ~3x faster than it is paid (ker = 3/yr vs kp = 1/yr),
   // ~70% of premium is expected to be reported as loss, and case reserves are
-  // expected to run off ~20% redundant (RRF = 0.8) — hence ULR ~ 0.56.
+  // expected to run off ~20% redundant (RRF = 0.8) - hence ULR ~ 0.56.
   real ker = 3 * exp(0.1 * b_oker);
   real kp = 1 * exp(0.1 * b_okp);
   vector<lower=0>[n_w] RLR;
   vector<lower=0>[n_w] RRF;
   vector[len_data] mu;
   for (j in 1:n_w) {
-    // per accident year: the reserving-cycle structure lives here — a hard
+    // per accident year: the reserving-cycle structure lives here - a hard
     // market moves RLR and RRF together (rho_ay > 0 = prudent case reserves)
     RLR[j] = 0.7 * exp(0.2 * (b_oRLR + u_ay[1, j]));
     RRF[j] = 0.8 * exp(0.1 * (b_oRRF + u_ay[2, j]));
@@ -110,7 +110,7 @@ transformed parameters {
   }
 }
 // MODEL BLOCK. Every prior below is held VERBATIM from the monograph's
-// appendix 7.2 brms code (its `mypriors1` object) — do not retune them here;
+// appendix 7.2 brms code (its `mypriors1` object) - do not retune them here;
 // they are the ablation baseline and the milestone-5 ports must match them.
 // The card documents what transferring them mechanically costs: they were
 // calibrated on one fast-settling workers' comp book, and on long-tailed
@@ -139,7 +139,7 @@ model {
   log_sigma_paid ~ student_t(1, 0, 1000);
   // Joint Gaussian likelihood, one shared mu vector, residual scale switched
   // by block (brms: sigma ~ 0 + deltaf on the log link). A single constant
-  // amount-scale sigma per block is Model 1's known weakness — mature and
+  // amount-scale sigma per block is Model 1's known weakness - mature and
   // green accident years get the same dollar band, hence the ~2.5% total CV.
   for (i in 1:len_data) {
     loss[i] ~ normal(mu[i], delta[i] == 0 ? exp(log_sigma_os) : exp(log_sigma_paid));

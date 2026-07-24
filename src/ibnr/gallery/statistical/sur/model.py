@@ -1,4 +1,4 @@
-"""Seemingly unrelated regression across lines of business — the multivariate
+"""Seemingly unrelated regression across lines of business - the multivariate
 chain ladder of Zhang (2010), estimated by hand-rolled feasible GLS.
 
 Role in the gallery: the frequentist stochastic-dependence baseline against
@@ -19,7 +19,7 @@ line by line. ``intercept=True`` switches the design to Zhang's general form
 
 Cross-refs: card.md (model card, small-sample ladder, limitations);
 ``kernels.multiline`` (the shared one-company/many-LOB data contract, target
-layout, and PredictiveDistribution assembly — this entry never grows its own
+layout, and PredictiveDistribution assembly - this entry never grows its own
 data prep); Zhang (2010), *A general multivariate framework for predicting
 reserves*, and Prohl & Schmidt on the multivariate chain ladder.
 """
@@ -357,7 +357,7 @@ def _mack_tail_variance(done: list[dict], n_lob: int) -> np.ndarray:
 
 def _nearest_pd(mat: np.ndarray) -> np.ndarray:
     """Symmetrize and floor the eigenvalues so downstream Cholesky factors
-    exist. Floored dimensions bias correlations toward zero — documented."""
+    exist. Floored dimensions bias correlations toward zero - documented."""
     sym = (mat + mat.T) / 2.0
     vals, vecs = np.linalg.eigh(sym)
     if vals.min() >= EIG_FLOOR:

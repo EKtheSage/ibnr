@@ -135,7 +135,7 @@ def test_escalation_refits_only_failures_and_keeps_order():
     )
     assert [r["company_code"] for r in rows] == ["A", "B", "C"]  # task order kept
     assert rows[0]["stage"] == 1 and rows[0]["max_rhat"] == 1.001
-    # B's final row is the ESCALATED attempt — replaced, not duplicated
+    # B's final row is the ESCALATED attempt - replaced, not duplicated
     assert rows[1]["stage"] == 2 and rows[1]["max_rhat"] == 1.001
     # errors escalate too (the raise may have been a sampler failure)
     assert rows[2]["stage"] == 2 and rows[2]["error"] == "again"

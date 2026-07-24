@@ -7,8 +7,8 @@ same Meyers-style PIT/CRPS harness as every other entry.
 
 Torch is imported inside fit()/predict() only: the entry must register (and
 `ibnr.gallery` must import) without the [nn] extra installed. The training
-scheme — calendar-cutoff augmentation, trailing-diagonal validation, deep
-ensembling, diagonal-by-diagonal autoregressive rollout — lives here in
+scheme - calendar-cutoff augmentation, trailing-diagonal validation, deep
+ensembling, diagonal-by-diagonal autoregressive rollout - lives here in
 literal source, per the gallery's eject pattern.
 
 This is the SINGLE-LINE transformer: each cohort (company x line of business)
@@ -45,7 +45,7 @@ def _splits(
     Returns (context_eligible, val_target, val_cutoff): the trailing
     ``val_diagonals`` observed calendar diagonals become the validation
     targets for early stopping and are excluded from every training context
-    and every training target — validating by calendar time (eval_date), the
+    and every training target - validating by calendar time (eval_date), the
     way the model is actually used at prediction, rather than by a random cell
     split. ``val_cutoff`` is the newest diagonal training may condition on."""
     c_max = int(cal_idx[obs_mask.any(axis=0)].max())
@@ -65,16 +65,16 @@ def _splits(
 def _norm_stats(
     x: np.ndarray, cells: np.ndarray, obs: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Per-(channel, dev) mean/std over training-context ``cells`` — the
+    """Per-(channel, dev) mean/std over training-context ``cells`` - the
     validation diagonals must not leak through the normalizer.
 
-    Devs with fewer than two context values (or zero spread) — in practice
+    Devs with fewer than two context values (or zero spread) - in practice
     the deepest dev, whose only observations sit on the held-out validation
-    diagonal — are *pinned*: their standardized values are defined as 0, so
+    diagonal - are *pinned*: their standardized values are defined as 0, so
     unstandardizing a prediction there returns the pooled dev mean rather
     than a value denormalized at an earlier dev's magnitude (the old
     inherit-earlier-stats scheme, which overstated fast-decaying tails).
-    A pinned dev's mean falls back to all ``obs`` cells at that dev — the
+    A pinned dev's mean falls back to all ``obs`` cells at that dev - the
     only data that exists there; std is fixed at 1."""
     _, n_f, _, n_d = x.shape
     mean, std = np.zeros((n_f, n_d)), np.ones((n_f, n_d))
@@ -123,7 +123,7 @@ class NNTransformer(GalleryEntry):
         show_progress: bool = False,
     ) -> NNTransformer:
         """Pooled fit across every cohort (segment combination) in the
-        triangle. Never fit this on a single triangle — the whole point is
+        triangle. Never fit this on a single triangle - the whole point is
         cross-cohort pooling."""
         import torch
 
@@ -171,7 +171,7 @@ class NNTransformer(GalleryEntry):
         x_norm = np.where(pinned[None, :, None, :], 0.0, x_norm)
         dev = torch.device(self._device)
         xt = torch.tensor(x_norm, dtype=torch.float32, device=dev)  # (n_c, n_f, n_w, n_d)
-        yt = xt[:, 0]  # (n_c, n_w, n_d) — target channel, normalized (channel 0)
+        yt = xt[:, 0]  # (n_c, n_w, n_d) - target channel, normalized (channel 0)
         obs_t = torch.tensor(c["obs_mask"], device=dev)
         cal_t = torch.tensor(c["cal_idx"], device=dev)
         ctx_elig_t = torch.tensor(context_elig, device=dev)
@@ -215,7 +215,7 @@ class NNTransformer(GalleryEntry):
                     # CALENDAR-CUTOFF AUGMENTATION: draw a fake as_of diagonal
                     # per cohort, condition on cells on/before it, score the
                     # observed training cells strictly after it. Each triangle
-                    # yields many "predict the next diagonals" tasks per epoch —
+                    # yields many "predict the next diagonals" tasks per epoch -
                     # the main small-data multiplier (card.md "Training").
                     cutoffs = torch.tensor(
                         rng.integers(min_cutoff, val_cutoff, size=len(idx)), device=dev
@@ -274,7 +274,7 @@ class NNTransformer(GalleryEntry):
         """Predictive ultimates from the cached global rollout.
 
         With ``segment`` (e.g. {"company_code": ..., "line_of_business": ...}):
-        per-origin ultimates for that one cohort plus their total — the same
+        per-origin ultimates for that one cohort plus their total - the same
         target layout as meyers_ccl. Without: every (cohort, origin) ultimate,
         no grand total (a total across companies is meaningless)."""
         if self.models_ is None or self.contract_ is None:
@@ -366,11 +366,11 @@ class NNTransformer(GalleryEntry):
         dev = torch.device(self._device)
 
         # future cells: at/beyond each origin's latest observed dev (its anchor)
-        # — everything to be predicted. latest_dev is 1-based, d_grid 0-based,
+        # - everything to be predicted. latest_dev is 1-based, d_grid 0-based,
         # so `>=` includes the first unobserved dev.
         d_grid = np.arange(n_d)[None, None, :]
         future = d_grid >= c["latest_dev"][:, :, None]  # (n_c, n_w, n_d) bool
-        # calendar diagonals that contain any future cell, in ascending order —
+        # calendar diagonals that contain any future cell, in ascending order -
         # the rollout advances through these one at a time.
         cal_levels = sorted(np.unique(c["cal_idx"][future.any(axis=0)]))
 
@@ -425,13 +425,13 @@ class NNTransformer(GalleryEntry):
                         if not bool(cells.any()):
                             continue
                         # context boundary advances with each sampled diagonal,
-                        # so the predicted diagonal always sits at distance 1 —
+                        # so the predicted diagonal always sits at distance 1 -
                         # the most-supervised relative-calendar position.
                         cut_b = torch.full(
                             (xb.shape[0],), int(lv) - 1, dtype=torch.long, device=dev
                         )
                         log_pi, mu, sigma = model(xb, ctx, lobb, premb, cut_b)
-                        # sample: (chunk*n_c, n_w, n_d) — one draw per cell
+                        # sample: (chunk*n_c, n_w, n_d) - one draw per cell
                         sample = net.mdn_sample(log_pi, mu, sigma, generator=gen)
                         # pinned devs -> 0 (pooled dev mean after unstandardizing)
                         sample = sample.masked_fill(pin_t[None, None, :], 0.0)

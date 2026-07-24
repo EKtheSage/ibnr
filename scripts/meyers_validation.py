@@ -10,12 +10,12 @@ Models: ``meyers_ccl`` fits Meyers' "incurred" = reported_loss (incurred net
 of bulk+IBNR); ``meyers_csr`` fits paid_loss with Meyers' floor-of-1 clamp
 (his ``pmax(cum_pdloss, 1)``) so the paid study keeps the identical company
 cohort as the incurred one. ``compartmental`` scores paid but fits paid and
-outstanding (= reported - paid) jointly, unclamped — its gaussian default
+outstanding (= reported - paid) jointly, unclamped - its gaussian default
 takes zero cells natively and the lognormal variant drops and counts its
 own non-positive cells. Company selection applies both Table A.1 screens
 (CV1 net premium, CV2 net/direct premium ratio) for every model.
 
-METHODOLOGY (this script produces published results — read before changing)
+METHODOLOGY (this script produces published results - read before changing)
 
 1. Cohort-data parity. `select_companies` runs the identical mechanical
    screen for every model, so any two entries validated here are scored on
@@ -27,8 +27,8 @@ METHODOLOGY (this script produces published results — read before changing)
    reason.
 
 2. Training slice vs realized outcomes. Each entry fits
-   `as_of="1997-12-31"` — the upper triangle a reserving actuary could have
-   seen at year-end 1997 — while the outcome is the ultimate realized in
+   `as_of="1997-12-31"` - the upper triangle a reserving actuary could have
+   seen at year-end 1997 - while the outcome is the ultimate realized in
    later statement years, read from the FULL triangle by
    `entry.realized_ultimates(tri)`. CRITICAL GOTCHA (CLAUDE.md): the mart
    carries accident years past the 1988-1997 study window, so any aggregate
@@ -45,19 +45,19 @@ METHODOLOGY (this script produces published results — read before changing)
    the distribution of total unpaid loss rather than individual cells. Its
    `percentile` is the PIT value of the realized total; uniformity of those
    percentiles across companies is tested with KS at 5% (critical value
-   1.36/sqrt(n) — 19.2 at n=50, 9.6 at n=200; `kernels.calibration` prints
+   1.36/sqrt(n) - 19.2 at n=50, 9.6 at n=200; `kernels.calibration` prints
    `D x 100` and flags rejection with `*`, Meyers' own convention).
 
 4. Failure handling. A fit that raises records an `error` row and the study
    continues; the JSON report prints a `failed` count. Failures are visible
    in the CSV but drop out of the KS panel, so a model that fit fewer
-   companies is calibrated on a smaller (and probably easier) panel — always
+   companies is calibrated on a smaller (and probably easier) panel - always
    read `n` and `failed` together. The one silent data alteration is the
    paid clamp, restricted to `MODELS_WITH_PAID_CLAMP` and documented there.
 
 5. Provenance. Every results row is stamped with the gold-mart `publish_id`
    resolved at run time (`mart_publish_id`), so a CSV traces back to an exact
-   immutable publish even when `--warehouse` was left at "@latest" — same
+   immutable publish even when `--warehouse` was left at "@latest" - same
    convention as `compare_gallery.py` (CLAUDE.md: experiment runs should pin
    a concrete @publish_id).
 
@@ -66,11 +66,11 @@ METHODOLOGY (this script produces published results — read before changing)
    IBNR_MAX_WORKERS env var in containers). Each model runs a two-stage
    sampler policy (STAGE_POLICIES): a cheap first pass, then a re-fit at the
    expensive settings ONLY for companies failing the convergence gates
-   (R-hat/divergences/ESS — read `stage` in the CSV to see who escalated).
+   (R-hat/divergences/ESS - read `stage` in the CSV to see who escalated).
    For the Meyers-family entries stage 1 IS the published entry default, so
    escalation can only improve on the published runs; for `compartmental`
    stage 1 relaxes the monograph's adapt_delta 0.99 / treedepth 15 (that is
-   the point — those settings cost 160-250 s/company and most companies do
+   the point - those settings cost 160-250 s/company and most companies do
    not need them). `--no-escalate` restores the single-stage entry-default
    behavior of the published CSVs. Note `max_rhat` is now
    `entry.convergence()`'s (core sampled parameters, matching the cards'
@@ -115,7 +115,7 @@ MODEL_LOSS_FIELDS = {
     "compartmental": "paid_loss",
 }
 
-#: models needing Meyers' pmax(cum_pdloss, 1) floor — the lognormal cannot
+#: models needing Meyers' pmax(cum_pdloss, 1) floor - the lognormal cannot
 #: take non-positive cells. The ODP takes zeros natively and must see the
 #: unclamped data (a clamp would silently alter increments); its negative-
 #: increment failures are recorded, exactly like the bootstrap ODP's.
@@ -151,7 +151,7 @@ EXCLUDED_GROUPS = {"38997"}  # excluded by Meyers after provisional testing
 TRAIN_AYS = (1988, 1997)
 # Monograph appendix: "minimum annual premium of greater than $20,000 and
 # minimum annual incurred loss of greater than $4,000", with Schedule P
-# entries in $1,000s — i.e. 20 and 4 in data units. (Reading them as $20M/$4M
+# entries in $1,000s - i.e. 20 and 4 in data units. (Reading them as $20M/$4M
 # leaves only ~10 WC companies, far short of Meyers' 50; this reading leaves
 # 72 passing the WC CV screen, of which he took the top 50.)
 MIN_PREMIUM = 20.0
@@ -164,13 +164,13 @@ def select_companies(mart_path: Path, line: str, per_line: int) -> pd.DataFrame:
     Deliberately mechanical: no judgement, no per-model tuning, so the cohort
     is reproducible and identical across every entry validated here (the
     cohort-data parity rule). The screens select insurers whose book was
-    STABLE over the study window — Meyers' point is that a reserving model
+    STABLE over the study window - Meyers' point is that a reserving model
     should be tested where the data is well behaved, not where growth or
     reinsurance churn confounds development.
 
     - CV1: coefficient of variation of net earned premium across accident
-      years — rejects rapidly growing/shrinking books.
-    - CV2: CV of the net/direct premium ratio — rejects books whose
+      years - rejects rapidly growing/shrinking books.
+    - CV2: CV of the net/direct premium ratio - rejects books whose
       reinsurance program changed materially over the window.
     - complete 10x10 square: the company must have all 100 cells, so the
       realized outcome exists for every training origin.
@@ -186,7 +186,7 @@ def select_companies(mart_path: Path, line: str, per_line: int) -> pd.DataFrame:
     #   * `incurred_loss - bulk_loss` is Meyers' "incurred", NET of bulk+IBNR.
     #     That definition is load-bearing, not cosmetic: gross-of-bulk incurred
     #     fails the WC KS test badly (D=36.7). See CLAUDE.md milestone 2.
-    #   * `n_cells = 100` is 10 accident years x 10 development ages — anything
+    #   * `n_cells = 100` is 10 accident years x 10 development ages - anything
     #     less means some training origin has no realized outcome to score.
     #   * the `prem` CTE reads statement_year = 1997 only: premium and the
     #     latest-diagonal loss as BOOKED at the as_of date, so selection uses
@@ -236,7 +236,7 @@ AS_OF = "1997-12-31"
 
 #: two-stage sampler escalation per model (kernels.harness). Stage 1 is the
 #: cheap first pass, stage 2 re-fits only the companies that fail the
-#: convergence gates — at the expensive settings, with chains in parallel
+#: convergence gates - at the expensive settings, with chains in parallel
 #: (few tasks remain by then, so cores are otherwise idle). target_accept /
 #: max_treedepth of None mean "the entry's own default", so the Meyers-family
 #: default stage 1 reproduces the published single-stage runs exactly.
@@ -258,7 +258,7 @@ STAGE_POLICIES = {
 def stages_for(model: str, args: argparse.Namespace) -> tuple[SamplerSettings, ...]:
     """The escalation ladder for one model, with the CLI's MCMC budget applied.
 
-    ``--no-escalate`` collapses to a single entry-default stage — the exact
+    ``--no-escalate`` collapses to a single entry-default stage - the exact
     behavior (and cost) of the published pre-harness runs.
     """
     policy = (SamplerSettings(),) if args.no_escalate else STAGE_POLICIES.get(model, DEFAULT_STAGES)
@@ -342,7 +342,7 @@ def main() -> int:
     ap.add_argument(
         "--no-escalate",
         action="store_true",
-        help="single stage at the entry's default sampler settings — the exact "
+        help="single stage at the entry's default sampler settings - the exact "
         "behavior of the published pre-harness runs (compartmental included)",
     )
     args = ap.parse_args()
@@ -424,7 +424,7 @@ def main() -> int:
 
     # THE headline test: are the predictive distributions honest? Percentiles
     # are PIT values in 0-100, so divide by 100 before the uniformity test.
-    # Failure rows have a null percentile and drop out here — read `failed`
+    # Failure rows have a null percentile and drop out here - read `failed`
     # in the JSON report alongside `n`.
     ok = df[df.get("percentile").notna()] if "percentile" in df else pd.DataFrame()
     if len(ok) >= 5:  # KS on a handful of points says nothing; don't print it

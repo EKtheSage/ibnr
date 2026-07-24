@@ -11,8 +11,8 @@ that matter for reproducible experiments are:
 
 * **Immutability.** A release tag names one publish forever. The manifest's
   ``publish_id`` must equal the tag it was fetched under, and a resolved
-  ``@latest`` is always reported as the concrete id — never the string
-  "latest" — so results CSVs can be stamped with something re-fetchable.
+  ``@latest`` is always reported as the concrete id - never the string
+  "latest" - so results CSVs can be stamped with something re-fetchable.
 * **Integrity.** Size mismatch on disk triggers a re-download; a sha256
   mismatch after download raises AND deletes the corrupt file, so a poisoned
   cache can never be silently reused.
@@ -147,7 +147,7 @@ def test_sha_mismatch_after_download_raises(tmp_path, monkeypatch):
 def test_publish_id_tag_mismatch_refused(tmp_path, monkeypatch):
     """Immutability gate: if the manifest's ``publish_id`` disagrees with the
     tag it was fetched under, the release was mutated and any experiment
-    stamped with that id would be unreproducible — so refuse."""
+    stamped with that id would be unreproducible - so refuse."""
     make_cache(tmp_path, monkeypatch, tag="some_other_publish")
     forbid_download(monkeypatch)
     with pytest.raises(ValueError, match="immutable"):
@@ -156,7 +156,7 @@ def test_publish_id_tag_mismatch_refused(tmp_path, monkeypatch):
 
 def test_unknown_table_lists_available(tmp_path, monkeypatch):
     """Asking for a table the publish does not contain fails with a KeyError
-    that names it (and, in the message, what is available) — publishes evolve,
+    that names it (and, in the message, what is available) - publishes evolve,
     so this is the discoverability path."""
     make_cache(tmp_path, monkeypatch)
     forbid_download(monkeypatch)
@@ -166,7 +166,7 @@ def test_unknown_table_lists_available(tmp_path, monkeypatch):
 
 def test_default_source_is_latest_github_release(tmp_path, monkeypatch):
     """With no env var set, resolution falls through to ``DEFAULT_SOURCE``
-    (the GitHub release), not to a local warehouse — the local checkout is only
+    (the GitHub release), not to a local warehouse - the local checkout is only
     ever an override."""
     make_cache(tmp_path, monkeypatch)
     forbid_download(monkeypatch)
@@ -196,7 +196,7 @@ def test_latest_resolves_once_then_uses_cache(tmp_path, monkeypatch):
 
 
 def _gh_authed() -> bool:
-    """gh CLI present AND authenticated — the only precondition for the one
+    """gh CLI present AND authenticated - the only precondition for the one
     test below that really talks to GitHub."""
     if shutil.which("gh") is None:
         return False

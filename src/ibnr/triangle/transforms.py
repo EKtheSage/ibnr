@@ -89,7 +89,7 @@ def as_of(t: Triangle, eval_date: dt.date | str) -> Triangle:
 
 def latest_diagonal(t: Triangle) -> Triangle:
     """For each cell key, keep the observation with the greatest dev_lag (and its
-    latest eval_date) — the current diagonal of each sub-triangle."""
+    latest eval_date) - the current diagonal of each sub-triangle."""
     keys = _cell_keys(t)
     expr = _keep_latest_eval(t.expr, [*keys, "dev_lag"])  # collapse restatements
     latest = expr.group_by(keys).agg(dev_lag=_.dev_lag.max())
@@ -119,7 +119,7 @@ def change_dev_grain(t: Triangle, grain: str) -> Triangle:
     anchor = e.aggregate(_anchor=_.eval_date.max())
     a = e.cross_join(anchor)
     # whole months this observation sits behind the latest diagonal; mutate it
-    # into a real column BEFORE filtering/grouping — the ibis polars backend
+    # into a real column BEFORE filtering/grouping - the ibis polars backend
     # loses cross-joined columns when predicates reference them directly
     e = a.mutate(
         _behind=a["_anchor"].year() * 12

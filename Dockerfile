@@ -1,7 +1,7 @@
 # ibnr compute image: the package + cmdstan + every gallery Stan model
 # COMPILED IN, so a container start pays zero toolchain cost. This is the
 # image other services call today (scripts/) and the base the hosted scoring
-# API will run on — both go through kernels/harness.py, which parallelizes
+# API will run on - both go through kernels/harness.py, which parallelizes
 # across all visible cores by default.
 #
 #   docker build -t ibnr .

@@ -18,7 +18,7 @@ loss ratios::
 
 With EX(0) = 1 per unit of premium this linear system has the closed form
 implemented in :func:`os_curve` / :func:`paid_curve` below (and, identically,
-in the Stan ``functions`` blocks) — no ODE solver anywhere. The ultimate
+in the Stan ``functions`` blocks) - no ODE solver anywhere. The ultimate
 loss ratio is RLR * RRF: RLR sets how much of premium is ever *reported* as
 case reserves, RRF the factor by which the case estimates are ultimately
 redundant (RRF < 1) or deficient (RRF > 1).
@@ -32,11 +32,11 @@ cell's period end because ker/kp are per-year rates.
 Two ablatable variants, both from the monograph's case study with its
 published brms priors held verbatim:
 
-- ``variant="gaussian"`` (default): case-study Model 1 — Gaussian on OS +
+- ``variant="gaussian"`` (default): case-study Model 1 - Gaussian on OS +
   cumulative paid amounts, correlated (RLR, RRF) accident-year effects,
   ker/kp fixed across accident years. Takes zero/negative cells natively,
   which is what a 200-company mechanical retrospective needs.
-- ``variant="lognormal"``: case-study Model 2 — lognormal on OS +
+- ``variant="lognormal"``: case-study Model 2 - lognormal on OS +
   incremental paid loss ratios, accident- AND development-year varying
   effects on all four compartmental parameters. Non-positive cells cannot
   enter the likelihood; they are dropped and counted in ``dropped_cells_``.
@@ -59,7 +59,7 @@ from ibnr.kernels.contract import compartmental_stan_data, realized_values
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.triangle.core import Triangle
 
-#: one Stan program per variant — the eject pattern (CLAUDE.md design note 6):
+#: one Stan program per variant - the eject pattern (CLAUDE.md design note 6):
 #: literal, readable source the user can scaffold out and edit, not codegen
 STAN_FILES = {
     "gaussian": Path(__file__).parent / "model.stan",
@@ -113,7 +113,7 @@ class Compartmental(GalleryEntry):
         self.fit_ = None  # cmdstan fit object
         self.backend_: str | None = None
         self.variant_: str | None = None
-        # {"outstanding": n, "paid_incremental": n} — cells the lognormal
+        # {"outstanding": n, "paid_incremental": n} - cells the lognormal
         # likelihood could not take; a mechanical study must report them
         self.dropped_cells_: dict | None = None  # lognormal only
         self._loss_field: str | None = None
@@ -135,7 +135,7 @@ class Compartmental(GalleryEntry):
         iter_sampling: int = 2500,
         seed: int | None = None,
         # the monograph ran both case-study models at adapt_delta = 0.99,
-        # max_treedepth = 15 — the hierarchy is genuinely hard geometry
+        # max_treedepth = 15 - the hierarchy is genuinely hard geometry
         target_accept: float = 0.99,
         max_treedepth: int = 15,
         parallel_chains: int = 1,
@@ -147,7 +147,7 @@ class Compartmental(GalleryEntry):
         contract requires paid and reported on identical cells and contiguous
         dev lags per origin. ``variant`` selects the Stan program (and with it
         the likelihood, the observation scale and how many varying effects the
-        parameters carry) — everything else about the two arms is shared, so
+        parameters carry) - everything else about the two arms is shared, so
         the variants stay directly ablatable.
 
         The default sampler settings are the monograph's own (adapt_delta
@@ -198,7 +198,7 @@ class Compartmental(GalleryEntry):
             CmdStanModel(stan_file=str(stan_file))
 
     def _gaussian_stan_data(self) -> dict:
-        """Model 1 rows: the contract as-is — OS levels and cumulative paid as
+        """Model 1 rows: the contract as-is - OS levels and cumulative paid as
         AMOUNTS, every cell kept. The Gaussian likelihood takes zero and
         negative outstanding natively (redundant case reserves, or a fully
         run-off origin), which is exactly why this arm survives a mechanical
@@ -217,7 +217,7 @@ class Compartmental(GalleryEntry):
     def _lognormal_stan_data(self) -> dict:
         """Model 2 rows: OS levels and incremental paid, as LOSS RATIOS,
         non-positive cells dropped (the lognormal cannot take them). The
-        drop counts land in ``dropped_cells_`` — a mechanical study must
+        drop counts land in ``dropped_cells_`` - a mechanical study must
         report them, they are the variant's analogue of the ODP entries'
         negative-increment failures."""
         c = self.contract_
@@ -296,7 +296,7 @@ class Compartmental(GalleryEntry):
         )
         runtime_s = time.perf_counter() - t0
         # log_lik is per stacked cell, so ELPD/LOO in kernels/ scores the
-        # joint paid+outstanding fit (not paid alone) — noted in the card
+        # joint paid+outstanding fit (not paid alone) - noted in the card
         idata = az.from_cmdstanpy(self.fit_, log_likelihood="log_lik")
         idata.attrs["runtime_s"] = runtime_s
         idata.attrs["backend"] = "stan"
@@ -308,7 +308,7 @@ class Compartmental(GalleryEntry):
 
         - gaussian: each not-fully-developed origin draws
           Normal(premium * paid_curve(t_final), sigma_paid) per posterior
-          draw — the model's own (unconditional-given-parameters) predictive;
+          draw - the model's own (unconditional-given-parameters) predictive;
           the accident-year effects carry what the origin's observed cells
           taught the posterior. Fully developed origins anchor at the
           observed value (zero variance), as in the Meyers-family entries.
@@ -320,7 +320,7 @@ class Compartmental(GalleryEntry):
         so extrapolating past it would score a different quantity.
 
         Both arms return a (draws, n_w) sample matrix that ``with_total()``
-        widens to (draws, n_w + 1) — the total column is the draw-wise sum, so
+        widens to (draws, n_w + 1) - the total column is the draw-wise sum, so
         it inherits the parameter correlation across origins rather than
         assuming independence.
         """
@@ -350,12 +350,12 @@ class Compartmental(GalleryEntry):
         Note the sharpness cost the card documents: sigma_paid is a single
         amount-scale constant shared by every origin, so a mature origin's
         predictive band is as wide (in dollars) as a green one's, and the
-        total's CV comes out around 2.5% — too sharp, which is what drives the
+        total's CV comes out around 2.5% - too sharp, which is what drives the
         gaussian arm's KS failure.
         """
         c = self.contract_
         n_w, n_d = c["n_w"], c["n_d"]
-        # the triangle's last dev age, in years — the scoring age
+        # the triangle's last dev age, in years - the scoring age
         t_final = n_d * c["dev_grain_months"] / 12.0
         rlr = pooled(self.idata_, "RLR")  # (draws, n_w)
         rrf = pooled(self.idata_, "RRF")  # (draws, n_w)
@@ -385,7 +385,7 @@ class Compartmental(GalleryEntry):
         Because Model 2 puts varying effects on the parameters by both
         accident year and development period, the compartmental parameters
         have to be rebuilt cell by cell (the brms nlf transforms, mirrored
-        from ``model_lognormal.stan``) — there is no single curve per origin.
+        from ``model_lognormal.stan``) - there is no single curve per origin.
         Anchoring on observed paid rather than re-simulating the whole curve
         is what removes the gaussian arm's level bias (median estimate /
         outcome 0.99-1.02 per line; see card.md).
@@ -442,7 +442,7 @@ class Compartmental(GalleryEntry):
 
         Read off the FULL (post-training) triangle at the same dev age
         predict() targets, restricted to the origins that were in the training
-        slice — the CLAUDE.md gotcha: taking every origin present in the full
+        slice - the CLAUDE.md gotcha: taking every origin present in the full
         triangle silently scores post-study accident years.
         """
         if self.contract_ is None:
@@ -459,7 +459,7 @@ class Compartmental(GalleryEntry):
     def convergence(self, var_names: list[str] | None = None) -> dict:
         """Convergence diagnostics from the fitted posterior.
 
-        Summarized over the SAMPLED parameters only — the non-centered ``z_*``
+        Summarized over the SAMPLED parameters only - the non-centered ``z_*``
         and the transformed per-origin RLR/RRF are excluded so a single badly
         identified varying effect does not dominate max_rhat. The retro harness
         writes this dict per company; see card.md for the R-hat > 1.05 counts.

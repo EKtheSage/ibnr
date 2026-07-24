@@ -1,28 +1,28 @@
-"""Clark (2003) growth-curve reserving — maximum likelihood entry.
+"""Clark (2003) growth-curve reserving - maximum likelihood entry.
 
 Clark, "LDF Curve-Fitting and Stochastic Reserving: A Maximum Likelihood
 Approach" (CAS Forum 2003). Incremental losses follow an over-dispersed
 Poisson whose mean is an ultimate times the increment of a parametric growth
 curve G(x | omega, theta) evaluated at ages measured from the origin period's
-average accident date (x = 12d - 6 for annual grains — the convention
+average accident date (x = 12d - 6 for annual grains - the convention
 chainladder-python's ClarkLDF also uses; the tieout tests pin this).
 
 Methods, per the paper:
 - ``ldf``: each origin carries its own ultimate U_w (profile MLE
   U_w = paid-to-date / G(age_w), so the point ultimate is the truncated-LDF
   answer paid * G(x_max)/G(age_w)).
-- ``cape_cod``: U_w = ELR * premium_w with a single profiled ELR — Clark's
+- ``cape_cod``: U_w = ELR * premium_w with a single profiled ELR - Clark's
   recommendation for thin triangles.
 
 Predictive distribution = Clark's own variance decomposition, simulated:
 parameter risk from the MVN with covariance phi * inverse observed Fisher
 information (log-parameter space), process risk as scaled-Poisson ODP draws,
-truncated at the triangle's final age (no tail extrapolation — the backtest
+truncated at the triangle's final age (no tail extrapolation - the backtest
 scores C[w, n_d], and chainladder's ClarkLDF truncates identically).
 
 Relation to ``bayesian/clark_growth_curve``: identical model and growth-curve
 parameterization, different inference. This statistical-family entry is
-frequentist — a single MLE point estimate whose uncertainty is *simulated*
+frequentist - a single MLE point estimate whose uncertainty is *simulated*
 (parameter risk from an asymptotic MVN via the delta method, process risk from
 scaled-Poisson draws), so no MCMC and no priors. The Bayesian twin instead
 samples the joint posterior of the same parameters. Both emit the same
@@ -264,7 +264,7 @@ class Clark(GalleryEntry):
                 ginc = growth(hi, om, th, curve) - growth(lo, om, th, curve)  # (n_draws,)
                 mu = np.maximum(levels[:, j] * ginc, 1e-12)  # (n_draws,)
                 # PROCESS RISK: od-Poisson draw X ~ phi * Poisson(mu/phi),
-                # mean mu, variance phi*mu — same process law as the ODP entries.
+                # mean mu, variance phi*mu - same process law as the ODP entries.
                 ults[:, j] += phi * rng.poisson(mu / phi)
 
         targets = pd.DataFrame(

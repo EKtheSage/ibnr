@@ -16,14 +16,14 @@ Why parity is a gate and not a nicety (CLAUDE.md design decision 7): the point
 of the ports is a cross-backend convergence/speed comparison (R-hat, ESS,
 divergences, runtime) published in the model card. That comparison is
 meaningless until the ports are shown to target the *same posterior* as the
-Stan reference — otherwise you are timing two different models. So parity is a
+Stan reference - otherwise you are timing two different models. So parity is a
 correctness gate that must pass BEFORE any performance number is quoted.
 
 What ``kernels.parity.compare_posteriors`` actually gates: per parameter
 element, |mean_ref - mean_port| / combined MCSE-of-mean and
 |sd_ref - sd_port| / combined MCSE-of-sd, both required within ``z_tol`` (4 by
 default). Scaling by MCSE rather than a flat percentage is what makes this
-robust on short chains — a weakly identified parameter (the deepest-dev ``sig``
+robust on short chains - a weakly identified parameter (the deepest-dev ``sig``
 sees one observation) has a large MCSE and is tolerated automatically. The
 marginal two-sample KS statistic is computed and reported for context but does
 NOT gate: MCMC autocorrelation inflates it, so it is diagnostic only.
@@ -46,7 +46,7 @@ def simulate_ccl_contract(n_w: int = 8, n_d: int = 8, seed: int = 0) -> dict:
 
     Draws from Meyers' Correlated Chain Ladder itself: log loss for cell (w, d)
     is normal around logprem + logelr + alpha_w + beta_d plus rho times the
-    previous accident year's residual at the same dev lag — that AR(1)-across-
+    previous accident year's residual at the same dev lag - that AR(1)-across-
     accident-years term is the "correlated" in CCL, and ``prev_idx`` is the
     Stan-side pointer implementing it. ``sig`` is built as a reverse cumsum of
     positive increments so volatility is monotonically decreasing in dev lag.
@@ -67,7 +67,7 @@ def simulate_ccl_contract(n_w: int = 8, n_d: int = 8, seed: int = 0) -> dict:
     ]
     cells.sort()
     # 1-based row pointer to the same dev lag one accident year earlier, 0 when
-    # there is none — Stan has no null, so 0 is the sentinel.
+    # there is none - Stan has no null, so 0 is the sentinel.
     row_of = {c: i for i, c in enumerate(cells)}
     w = np.array([c[0] for c in cells])
     d = np.array([c[1] for c in cells])
@@ -105,7 +105,7 @@ def test_ccl_mu_index_matches_recurrence():
     """``ccl_mu_index`` is the load-bearing shared prep: it unrolls Stan's
     sequential mu recurrence into a closed form the vectorized NumPyro/PyMC
     ports can evaluate in one matmul. This pins it against the literal forward
-    loop over several triangle shapes — if it drifts, both ports silently
+    loop over several triangle shapes - if it drifts, both ports silently
     sample a different model than Stan and parity means nothing."""
     from ibnr.kernels.contract import ccl_mu_index
 
@@ -143,7 +143,7 @@ def test_ccl_mu_index_matches_recurrence():
 
 def test_numpyro_model_shapes():
     """Cheap structural guard on the NumPyro port: trace the model once (no
-    sampling) and check the parameterization matches Stan's — zero-pinned
+    sampling) and check the parameterization matches Stan's - zero-pinned
     alpha[0]/beta[-1], one sigma per dev lag, strictly decreasing in dev, and
     rho inside (-1, 1). Runs in the default suite because it needs no
     compilation, so re-parameterization regressions surface immediately rather
@@ -178,7 +178,7 @@ def test_pymc_model_builds():
     graph: the free RV set must be exactly the non-centered raw parameters
     (r_alpha/r_beta/a_ig/r_rho + logelr), with alpha/beta/rho/sig/mu as
     deterministics. Pinning free-vs-deterministic is how a centered/non-centered
-    drift — which would invalidate any convergence comparison — gets caught."""
+    drift - which would invalidate any convergence comparison - gets caught."""
     pytest.importorskip("pymc")
     from ibnr.gallery.bayesian.meyers_ccl import model_pymc
 
@@ -212,13 +212,13 @@ def test_numpyro_pymc_parity():
     posterior and every parameter element must agree in mean AND SD within
     ``z_tol`` MCSE units (``kernels.parity.compare_posteriors``). Marked
     ``parity`` + ``slow`` because it runs two real MCMC fits; it needs no
-    cmdstan, so CI can enforce parity without a Stan toolchain — the
+    cmdstan, so CI can enforce parity without a Stan toolchain - the
     Stan-as-ground-truth three-way run lives in ``scripts/parity_meyers.py``.
     """
     # Small triangle + modest draws keep PyMC's PyTensor sampler tractable on a
     # BLAS-less install. Short chains inflate MCSE, but that is exactly what the
     # z-score scaling absorbs, so shrinking the budget loosens the test rather
-    # than making it flaky. Identical seed on both sides is cosmetic — the
+    # than making it flaky. Identical seed on both sides is cosmetic - the
     # samplers differ, so the check is statistical either way.
     pytest.importorskip("numpyro")
     pytest.importorskip("pymc")

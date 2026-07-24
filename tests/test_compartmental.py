@@ -64,7 +64,7 @@ def make_joint_triangle(n_w=4, n_d=4, premium=1000.0, os_floor=0.0):
 def contract():
     """The joint paid+outstanding Stan contract built from the noise-free triangle.
 
-    OS is not a stored field — the contract derives it as reported minus paid.
+    OS is not a stored field - the contract derives it as reported minus paid.
     """
     tri = make_joint_triangle()
     return compartmental_stan_data(
@@ -89,7 +89,7 @@ def test_curves_match_numerical_ode():
 
     The entry solves the compartment ODEs analytically for speed (Stan would
     otherwise need an ODE solver in the likelihood, the monograph's hardest
-    parity case). This is the only test that proves the algebra is right — an
+    parity case). This is the only test that proves the algebra is right - an
     independent numerical integration of the same system. rtol=1e-6 is the
     integrator's own accuracy floor, not modelling slack; the solver is run
     tight (rtol 1e-10) so any gap is attributable to the closed form.
@@ -168,7 +168,7 @@ def test_lognormal_data_assembly(contract):
     *incremental* loss ratios (monograph appendix 7.2), so the transformation is
     asymmetric across the delta blocks and easy to get backwards. Verified by
     cumulating the paid rows back onto the known curve. On noise-free data no
-    cell is non-positive, so the lognormal support drops nothing — that
+    cell is non-positive, so the lognormal support drops nothing - that
     baseline is what makes the next test meaningful.
     """
     entry = Compartmental()
@@ -195,7 +195,7 @@ def test_lognormal_data_assembly(contract):
 
 
 def test_lognormal_drops_nonpositive_cells():
-    """Non-positive cells are dropped, not clamped — lognormal has no mass at 0.
+    """Non-positive cells are dropped, not clamped - lognormal has no mass at 0.
 
     Real books do produce zero or negative OS (a line closed out, or paid
     overtaking reported). Clamping would fabricate a tiny positive observation
@@ -235,7 +235,7 @@ from .test_meyers_ccl import _cmdstan_ready  # noqa: E402
 from .test_schedule_p import MART_AVAILABLE, WAREHOUSE  # noqa: E402
 
 # Applied per-test rather than via pytestmark: this module's fast half must not
-# be skipped. Note this local name shadows nothing — pytest.mark.slow is still
+# be skipped. Note this local name shadows nothing - pytest.mark.slow is still
 # applied separately alongside it.
 slow = pytest.mark.skipif(
     not MART_AVAILABLE or not _cmdstan_ready(),
@@ -247,7 +247,7 @@ slow = pytest.mark.skipif(
 def fitted():
     """Gaussian variant (Model 1) on the same company/cutoff/seed as the other
     Bayesian smoke tests. Iterations are far below the monograph's production
-    settings (adapt_delta .99, treedepth 15, ~200s/company) — this is a wiring
+    settings (adapt_delta .99, treedepth 15, ~200s/company) - this is a wiring
     check, not the retrospective.
     """
     from ibnr import gallery
@@ -291,7 +291,7 @@ def test_predict_and_score(fitted):
 
     A fence only. The retrospective already knows this variant is miscalibrated
     (combined D=39.9*, too sharp at CV~2.5%, and the monograph's single-company
-    priors bias the loss ratio) — that is a calibration finding, not something
+    priors bias the loss ratio) - that is a calibration finding, not something
     this smoke test should re-litigate.
     """
     tri, entry = fitted

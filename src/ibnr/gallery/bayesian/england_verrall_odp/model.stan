@@ -1,4 +1,4 @@
-// Bayesian over-dispersed Poisson (ODP) cross-classified chain ladder —
+// Bayesian over-dispersed Poisson (ODP) cross-classified chain ladder -
 // England & Verrall, "Stochastic Claims Reserving in General Insurance",
 // B.A.J. 8 III (2002), sections 3.2 (ODP), 7.11 (Bayesian implementation).
 //
@@ -9,7 +9,7 @@
 //   alpha[1] = 0, beta[1] = 0
 //
 // The premium offset only re-centers alpha (each origin has a free level), so
-// the model family — and its MLE, which reproduces chain-ladder reserves —
+// the model family - and its MLE, which reproduces chain-ladder reserves -
 // is identical to E&V's; the offset just makes the vague priors exchangeable
 // across origins of different sizes.
 //

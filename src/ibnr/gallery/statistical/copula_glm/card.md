@@ -1,4 +1,4 @@
-# copula_glm — Copula-linked lognormal regressions (dependent loss reserving)
+# copula_glm - Copula-linked lognormal regressions (dependent loss reserving)
 
 **Family:** statistical (frequentist stochastic; simulation-based predictive)
 **Provenance:** Shi & Frees (2011), *Dependent loss reserving using copulas*
@@ -22,7 +22,7 @@ Dependence: within each (origin, dev) cell, `(eps_1, ..., eps_K)` follows a
 scale the copula reduces to a correlation matrix of normal scores.
 
 The factor design spends `1 + (n_w - 1) + (n_d - 1)` parameters per line
-(19 on a 10x10 square with 55 points — Shi & Frees' own budget). The Hoerl
+(19 on a 10x10 square with 55 points - Shi & Frees' own budget). The Hoerl
 curve option collapses the dev effects to 2 parameters for thin triangles.
 
 ## Estimation
@@ -44,7 +44,7 @@ observed cumulative. Ultimates per (lob, origin), per-lob totals, grand total
 
 **Parameter uncertainty:** `param_uncertainty="bootstrap"` (default) refits
 marginals + copula on `n_boot=200` triangles simulated from the fitted model
-and assigns each predictive draw a random replicate's parameters — a
+and assigns each predictive draw a random replicate's parameters - a
 parametric bootstrap. Refits are one `p x n_obs` pseudo-inverse multiply per
 replicate, so this costs milliseconds. `"plugin"` uses point estimates only
 and visibly understates reserve variability at triangle sample sizes.
@@ -57,20 +57,20 @@ cumulative input, aligned observed cells, positive premium. Default
 at late lags (case releases), which a lognormal marginal cannot represent.**
 `nonpositive="error"` (default) fails loudly, reporting the offending cell
 count; `nonpositive="drop"` censors those cells in every line (documented as
-biased — it truncates the left tail of the marginals).
+biased - it truncates the left tail of the marginals).
 
 ## Extensions (scaffold ideas, not implemented)
 
-- Student-t copula (tail dependence) — swap the Gaussian scores for t scores.
-- Gamma GLM marginals — replace the OLS-on-logs with IRLS.
-- Cell-level covariates (calendar-year effects) — extra design columns.
+- Student-t copula (tail dependence) - swap the Gaussian scores for t scores.
+- Gamma GLM marginals - replace the OLS-on-logs with IRLS.
+- Cell-level covariates (calendar-year effects) - extra design columns.
 
 ## Limitations
 
 - Cell-level independence: dependence acts only within an (origin, dev) cell
   across lines, not along calendar years within a line.
 - The copula correlation is treated as re-estimated per bootstrap replicate,
-  but replicates are simulated from the point-estimate copula — correlation
+  but replicates are simulated from the point-estimate copula - correlation
   uncertainty is approximated, not fully propagated.
 - The last origin's level effect rests on a single observed cell (inherent to
   the design, as in Shi & Frees).

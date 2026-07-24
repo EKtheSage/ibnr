@@ -3,11 +3,11 @@
 The research entry: one encoder attends over every (line, origin, dev) cell
 of a COMPANY, and cross-line dependence enters the draws either by
 within-diagonal line-by-line autoregression ("ar") or an explicit joint
-Gaussian-mixture head ("joint") — config.dependence. Torch is imported
+Gaussian-mixture head ("joint") - config.dependence. Torch is imported
 inside fit()/predict() only. Training scheme (calendar-cutoff augmentation,
 trailing-diagonal validation, pinned per-dev standardization, deep
 ensembling, diagonal-by-diagonal rollout) mirrors nn_transformer; the
-normalization and split helpers are imported from it — one implementation.
+normalization and split helpers are imported from it - one implementation.
 """
 
 from __future__ import annotations
@@ -95,14 +95,14 @@ class NNTransformerML(GalleryEntry):
 
         # validation split: hold out the last cfg.val_diagonals calendar
         # diagonals (an eval_date-style split). A cutoff is per company but
-        # spans all its lines — calendar is shared across a company's lines.
+        # spans all its lines - calendar is shared across a company's lines.
         obs_any = c["obs_mask"].any(axis=1)  # (n_c, n_w, n_d): any line observed
         _, _, val_cutoff = _splits(obs_any, c["cal_idx"], cfg.val_diagonals)
         cal = c["cal_idx"]  # (n_w, n_d) 1-based diagonal index
         ctx_elig = c["obs_mask"] & (cal[None, None] <= val_cutoff)  # cells trainable as context
         val_tgt = c["obs_mask"] & (cal[None, None] > val_cutoff)  # held-out validation targets
 
-        # pinned per-(line, channel, dev) standardization — run the single-line
+        # pinned per-(line, channel, dev) standardization - run the single-line
         # helper once per line so the rules are identical by construction. A dev
         # with <2 context values is "pinned": standardized value forced to 0 and
         # rollout draws there replaced by the pooled dev mean (v2 fix, see card).
@@ -177,7 +177,7 @@ class NNTransformerML(GalleryEntry):
                     idx = torch.tensor(perm[start : start + cfg.batch_size], device=dev)
                     # calendar-cutoff augmentation: each company in the batch
                     # gets a random conditioning diagonal; cells on/before it are
-                    # context, later observed cells are the prediction targets —
+                    # context, later observed cells are the prediction targets -
                     # this teaches the model to forecast future diagonals
                     cutoffs = torch.tensor(
                         rng.integers(min_cutoff, val_cutoff, size=len(idx)), device=dev
@@ -229,9 +229,9 @@ class NNTransformerML(GalleryEntry):
         n_draws: int | None = None,
         seed: int | None = None,
     ) -> PredictiveDistribution:
-        """With ``segment`` identifying one company: the SUR layout —
+        """With ``segment`` identifying one company: the SUR layout -
         per-(lob, origin) ultimates for its present lines, per-lob totals,
-        grand total — so cross-line diversification is visible in the draws.
+        grand total - so cross-line diversification is visible in the draws.
         Without: every (company, line, origin) ultimate, no totals."""
         if self.models_ is None or self.contract_ is None:
             raise RuntimeError("call fit() first")
@@ -327,7 +327,7 @@ class NNTransformerML(GalleryEntry):
 
         "ar": within a diagonal the lines are sampled one at a time in a
         seeded random order (fresh order per diagonal per chunk), each fed
-        back before the next — cross-line dependence via conditioning.
+        back before the next - cross-line dependence via conditioning.
         "joint": one forward per diagonal; every (origin, dev) cell-group's
         line vector is drawn jointly from the multivariate mixture.
         """
@@ -345,10 +345,10 @@ class NNTransformerML(GalleryEntry):
         dev = torch.device(self._device)
 
         # future = cells strictly past each (company, line)'s latest observed dev
-        # and belonging to a written line — the increments we must simulate
+        # and belonging to a written line - the increments we must simulate
         d_grid = np.arange(n_d)[None, None, None, :]
         future = (d_grid >= c["latest_dev"][:, :, :, None]) & c["line_mask"][:, :, None, None]
-        # calendar diagonals to fill, in order — the rollout is autoregressive
+        # calendar diagonals to fill, in order - the rollout is autoregressive
         # across these (each conditions on all earlier ones)
         cal_levels = sorted(np.unique(c["cal_idx"][future.any(axis=(0, 1))]))
 

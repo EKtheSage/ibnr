@@ -6,14 +6,14 @@ What this file protects, in three layers:
 1. **Network.** The masked-cell triangle transformer emits a valid mixture
    density at every cell (normalized weights, positive sigmas), the MDN NLL is
    finite, and sampling is seed-reproducible. A point estimator cannot enter the
-   gallery — the distributional head IS the contract, so its validity is pinned
+   gallery - the distributional head IS the contract, so its validity is pinned
    directly rather than inferred from downstream metrics.
 2. **Training scheme.** The calendar split and per-dev standardization. These
    are where leakage hides: validation is a held-out *calendar diagonal* (not a
    random cell split, which would leak future development into training), and
    normalization statistics must be computed from context cells only. The v2
-   fix recorded in CLAUDE.md — pinned per-dev standardization replacing the old
-   inherit-earlier-dev tail stats — was the dominant defect in v1, so
+   fix recorded in CLAUDE.md - pinned per-dev standardization replacing the old
+   inherit-earlier-dev tail stats - was the dominant defect in v1, so
    ``_norm_stats`` gets an explicit poisoning test.
 3. **Entry.** PredictiveDistribution layout, ``realized_ultimates`` alignment,
    determinism, and error paths.
@@ -174,7 +174,7 @@ def test_exposure_sigma_head_matches_baseline_at_init():
 
     Actuarial motivation: process variance scales with exposure, so sigma is
     multiplied by premium**(p-1) with p learnable. Initialized at p = 1 the
-    variant must be *numerically identical* to the flat-sigma baseline — that
+    variant must be *numerically identical* to the flat-sigma baseline - that
     is what makes any measured difference attributable to the feature rather
     than to a reinitialized head. The second half checks the knob is live: a
     non-unit p changes sigma and gradient reaches ``raw_p``.
@@ -245,14 +245,14 @@ def test_splits_raise_on_tiny_windows():
 
 
 def test_norm_stats_ignore_validation_cells_except_pinned():
-    """No leakage through standardization — and an explicit record of the one
+    """No leakage through standardization - and an explicit record of the one
     documented exception.
 
     Per-dev mean/std are computed from CONTEXT cells only, so poisoning the
     validation diagonal with 1e6 must leave them untouched. The exception is a
     dev lag with fewer than two context values (the deepest dev on a triangle):
     there std is *pinned* to 1 and the mean falls back to observed cells at
-    that dev. That pinning is the v2 fix from CLAUDE.md — v1 inherited the
+    that dev. That pinning is the v2 fix from CLAUDE.md - v1 inherited the
     previous dev's statistics and that inheritance was the dominant defect
     (paid err +14% -> +4%, rel-CRPS 0.092 -> 0.050). The test asserts both the
     no-leak property and the exact shape of the exception so it cannot regress
@@ -274,7 +274,7 @@ def test_norm_stats_ignore_validation_cells_except_pinned():
     # non-pinned devs never see validation cells
     np.testing.assert_allclose(mean_a[:, :3], mean_b[:, :3])
     np.testing.assert_allclose(std_a, std_b)
-    # the pinned dev's mean is the only place obs (val) cells enter — by design
+    # the pinned dev's mean is the only place obs (val) cells enter - by design
     np.testing.assert_allclose(mean_b[0, 3], 1e6)
 
 
@@ -284,7 +284,7 @@ def test_norm_stats_ignore_validation_cells_except_pinned():
 def test_fit_predict_contract(backend_name):
     """The GalleryEntry contract for a single segment: per-origin ultimates
     plus a total, positive draws, a scorable summary against realized
-    ultimates, and — importantly — a fully developed first origin whose
+    ultimates, and - importantly - a fully developed first origin whose
     "predicted" ultimate is anchored at its observed latest cumulative rather
     than resampled."""
     t = synthetic_triangle(backend_name)
@@ -331,7 +331,7 @@ def test_predict_caches_rollout_and_is_reproducible(backend_name):
 
     Caching: the autoregressive diagonal rollout is computed for ALL cohorts
     at once and reused, so asking for a second segment must not re-run it
-    (identity check on the cached array) — while still returning that segment's
+    (identity check on the cached array) - while still returning that segment's
     own draws.
 
     Determinism: a fresh fit with the same seed reproduces the draws exactly.
@@ -353,7 +353,7 @@ def test_predict_caches_rollout_and_is_reproducible(backend_name):
 
 def test_training_targets_never_touch_validation_diagonal(backend_name):
     """The no-leakage split is enforced on the entry's REAL contract, not just
-    on hand-built masks — the early-stopping signal must come from data the
+    on hand-built masks - the early-stopping signal must come from data the
     training loss never saw, or validation loss is meaningless."""
     # white-box: with val_diagonals=1 the training target mask is capped at
     # val_cutoff; verified via the split helper on the entry's real contract
@@ -402,7 +402,7 @@ def test_predict_before_fit_raises():
 
 def test_unknown_segment_raises(backend_name):
     """Segment selection fails loudly on both an unknown column and a known
-    column with no matching cohort — silently returning zero cohorts would
+    column with no matching cohort - silently returning zero cohorts would
     surface much later as an empty predictive distribution."""
     t = synthetic_triangle(backend_name)
     entry = NNTransformer().fit(t, loss_field="paid_loss", config=TINY, seed=0)

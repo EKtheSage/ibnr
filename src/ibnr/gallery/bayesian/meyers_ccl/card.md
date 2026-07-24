@@ -1,4 +1,4 @@
-# meyers_ccl — Correlated Chain Ladder (Stan reference)
+# meyers_ccl - Correlated Chain Ladder (Stan reference)
 
 ## Provenance
 
@@ -48,7 +48,7 @@ claim is made; `scripts/parity_meyers.py` runs the full comparison.
 ## Parameterization (held constant across backends for parity)
 
 - **Centered** parameterization throughout (as published), identical in all
-  three backends — "same model" across PPLs only holds when parameterization is
+  three backends - "same model" across PPLs only holds when parameterization is
   held constant, so convergence differences measure the samplers, not the code.
 - a_i ~ uniform(0,1) is implemented via the monograph's inverse-gamma trick:
   a_ig ~ inv_gamma(1,1), a_i = gamma_cdf(1/a_ig | 1, 1) = 1 - exp(-1/a_ig),
@@ -62,7 +62,7 @@ claim is made; `scripts/parity_meyers.py` runs the full comparison.
   builds `mu` with a forward recurrence over an explicit `prev_idx` array; the
   ports use its exact closed form `mu = P(rho) @ B` (see
   `kernels.contract.ccl_mu_index`) so the JAX/PyTensor autodiff graphs stay a
-  small matmul instead of an N-deep scalar chain — otherwise the PyTensor
+  small matmul instead of an N-deep scalar chain - otherwise the PyTensor
   C-compile dominates PyMC's wall-clock. The two forms are algebraically
   identical (unit-tested to <1e-10).
 - **Init / adaptation** (documented, held equal): all backends use their native
@@ -124,11 +124,11 @@ CAY-on-incurred values (Monograph 8, Figure 8.5):
 All four lines pass at 5%, as does the combined test (p = 0.31). Outcome
 percentiles are centered (per-line means 46-52). An earlier run against
 gross-of-bulk incurred failed WC at D = 36.7 with a strong over-prediction
-signature — fitting bulk-inclusive incurred is NOT equivalent; the net-of-bulk
+signature - fitting bulk-inclusive incurred is NOT equivalent; the net-of-bulk
 definition is load-bearing for calibration.
 
 Occasional divergent transitions (typically <1%, worst ~3%) occur on
-individual companies — a known property of the centered parameterization; the
+individual companies - a known property of the centered parameterization; the
 monograph used the same parameterization. Documented here for the parity
 comparison (milestone 3).
 
@@ -142,7 +142,7 @@ difference over the combined MCSE of the mean, and the SD difference over the
 combined MCSE of the SD. Both are ~N(0, 1) under the null (same posterior,
 independent runs); a parameter passes when both z-scores are within `z_tol = 4`.
 Scaling the SD check by `mcse_sd` (not a flat fractional band) is what keeps the
-gate honest on short chains — the deepest-dev `sig`, identified by a single
+gate honest on short chains - the deepest-dev `sig`, identified by a single
 observation, has a large `mcse_sd`, so its noisier SD estimate is tolerated
 automatically. KS on the pooled marginals is reported for context only (MCMC
 autocorrelation inflates it). The comparison runs against Stan when a cmdstan
@@ -150,7 +150,7 @@ toolchain is present, and NumPyro-vs-PyMC otherwise (so CI can gate parity
 without Stan). `scripts/parity_meyers.py` runs it on real Schedule P companies.
 
 Result: NumPyro and PyMC agree with the Stan reference on every checked
-parameter (`logelr`, `alpha`, `beta`, `rho`, `sig`) — means and SDs within a
+parameter (`logelr`, `alpha`, `beta`, `rho`, `sig`) - means and SDs within a
 few MCSE. The mu closed form matches the Stan `prev_idx` recurrence exactly
 (unit-tested to <1e-10), and the unbounded-`a_ig` deviation is invisible at MCMC
 resolution, as argued above.
@@ -161,7 +161,7 @@ Identical settings across backends (4 chains x 500 draws after 1000 warmup,
 single-core / sequential chain execution for a fair per-chain runtime,
 `target_accept = 0.9`, common seed) on two Schedule P WC companies as of
 1997-12-31. Diagnostics via arviz. Runtimes are cache-warm (PyTensor/JAX
-compiled, Stan binary built) — see the compile note below. Full data in
+compiled, Stan binary built) - see the compile note below. Full data in
 `analysis/results/convergence_meyers.csv`; reproduce with
 `scripts/parity_meyers.py --line workers_compensation --n-companies 2 --target-accept 0.9`.
 
@@ -181,7 +181,7 @@ wall-clock: **Stan** is fastest (~7s), **NumPyro (JAX/XLA)** ~2.5x that, **PyMC*
 backend evaluates the logp/gradient as many small ops per leapfrog, whereas
 NumPyro's JAX/XLA fuses the whole graph and Stan emits one tight translation
 unit. PyTensor also links no BLAS on this box (it warns as much), but that is a
-minor contributor at this size — the `P(rho) @ B` matmul is only 55x55. The
+minor contributor at this size - the `P(rho) @ B` matmul is only 55x55. The
 pip BLAS route (`scipy-openblas64`) does **not** help here: its MSVC-built
 library will not link against the RTools MinGW g++ PyTensor compiles with, so
 PyTensor rejects the flag. The real levers are a conda-installed PyTensor
@@ -191,7 +191,7 @@ comparison measures the samplers, not the build.
 
 **`target_accept` matters for the centered parameterization.** At the Stan
 default 0.8, Stan and NumPyro sample 11347 fine (0 / 38 divergences) but PyMC
-under-adapts badly (R-hat 1.17, 182 divergences, ESS 18) — and slows down,
+under-adapts badly (R-hat 1.17, 182 divergences, ESS 18) - and slows down,
 since divergent / max-treedepth trajectories are long. Raising `adapt_delta` to
 0.9 with 1000 warmup fixes it (11347 PyMC: 182 -> 11 divergences), consistent
 with the occasional-divergence note above. This is the documented adaptation
@@ -201,7 +201,7 @@ should use 0.9+. The 0.8 arm is kept as
 
 **One-time compile** (excluded from the runtimes above): PyTensor C-compiles
 PyMC's logp/dlogp on the first fit of a given triangle shape (~4-5 min on this
-Windows/RTools box), then caches by graph shape — every same-shape company after
+Windows/RTools box), then caches by graph shape - every same-shape company after
 is cache-warm. The vectorized `mu` (an N x N matmul, not an N-deep scalar chain)
 is what keeps this compile bounded; the unrolled form pushed it far higher.
 
@@ -209,18 +209,18 @@ is what keeps this compile bounded; the unrolled form pushed it far higher.
 
 `model_pymc.sample` takes a `nuts_sampler=` argument ("pymc" default |
 "nutpie" | "numpyro" | "blackjax") that swaps the NUTS implementation over the
-*same* model graph — posterior and parity are unaffected, only runtime changes.
+*same* model graph - posterior and parity are unaffected, only runtime changes.
 The known levers to close PyMC's ~7x gap are (a) a **conda/pixi PyTensor** with a
 matching toolchain + MKL/OpenBLAS, or (b) **`nutpie`** (Rust NUTS, compiles the
 logp via numba). Neither could be made to work on this Windows/RTools machine
 (2026-07-08):
 
 - **`nutpie` (pip/uv-installable):** installs (pulls numpy 2.x, so use an
-  isolated env), but its sampling *hangs* here — even 1 chain x 300 draws did not
+  isolated env), but its sampling *hangs* here - even 1 chain x 300 draws did not
   finish in 8 min, while NumPyro samples the same model in ~27s. A numba /
   nutpie-on-Windows issue with this graph.
 - **conda/pixi BLAS:** `pixi` resolves the coherent stack pip cannot (MKL + a
-  matching gcc), but the environment will not finalize in this sandbox —
+  matching gcc), but the environment will not finalize in this sandbox -
   Windows Defender file-locks freshly-extracted conda packages, failing the
   atomic rename (`Access is denied`). Needs a Defender exclusion / admin.
 - **pip BLAS (`scipy-openblas64`):** blocked as noted above (MSVC lib vs MinGW).

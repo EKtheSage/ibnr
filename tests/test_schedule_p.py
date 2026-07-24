@@ -1,12 +1,12 @@
-"""Adapter tests against the CAS Schedule P gold mart — resolved exactly like
+"""Adapter tests against the CAS Schedule P gold mart - resolved exactly like
 production code: env var, else the GitHub release default (with local cache).
 Skipped when no data source is reachable, so the package works without the
 mart.
 
 What this file protects: ``data/schedule_p.py`` is the only bridge between the
 external CAS Schedule P warehouse and the Triangle layer. These tests pin the
-field/segment mapping, the grain and dev-lag convention, and — most
-importantly — that our long-format pivot reproduces the *published* wide paid
+field/segment mapping, the grain and dev-lag convention, and - most
+importantly - that our long-format pivot reproduces the *published* wide paid
 triangle mart cell for cell. That tie-out is what lets the Meyers-style
 retrospectives be trusted: a silent column remap would shift every backtest.
 
@@ -14,7 +14,7 @@ Marker rationale (``mart``): these need real warehouse data, which is not
 vendored. They auto-skip when neither ``IBNR_SCHEDULE_P_WAREHOUSE`` nor the
 GitHub release is reachable, so ``uv run pytest`` is green on a clean checkout.
 The package's core invariants stay covered by the hand-built public-sample
-fixtures in ``conftest.py`` — the mart is an optional data source, never a
+fixtures in ``conftest.py`` - the mart is an optional data source, never a
 build dependency. Resolution deliberately goes through the same
 ``active_mart_path`` production uses rather than a test-only path, so a broken
 resolver shows up as a skip-with-reason rather than a false pass.
@@ -94,7 +94,7 @@ def test_mapping_and_validity(wkcomp):
     assert wkcomp.dev_lags == [12 * i for i in range(1, 11)]
     import ibis
 
-    # 26956 is a large, complete-square workers-comp filer — a stable spot
+    # 26956 is a large, complete-square workers-comp filer - a stable spot
     # check that exists in every publish of the mart.
     one = wkcomp.filter(ibis._.company_code == "26956")
     assert one.validate(strict=True) == []
@@ -105,7 +105,7 @@ def test_paid_triangle_ties_to_wide_mart():
 
     The gold publish ships both a long training mart and a pre-pivoted wide
     paid triangle. Reading the long one and pivoting it ourselves must
-    reproduce the wide one exactly — an independent check that the
+    reproduce the wide one exactly - an independent check that the
     origin/dev/eval mapping is right, since the two are produced by different
     code paths. Exact equality (approx only for float repr) is expected: this
     is a reshape, not a computation.

@@ -1,4 +1,4 @@
-// Hierarchical compartmental reserving — Gesmann & Morris (2020) case-study
+// Hierarchical compartmental reserving - Gesmann & Morris (2020) case-study
 // Model 2 (their appendix 7.2.3, published brms code = ground truth): the
 // LOGNORMAL variant the monograph selects over Model 1 ("incompatibilities
 // of a Gaussian process distribution").
@@ -41,7 +41,7 @@ functions {
 }
 // DATA BLOCK = the same delta-stacked contract as Model 1, with three
 // differences the entry applies in model.py::_lognormal_stan_data:
-// y is a LOSS RATIO (loss / premium, so no premium vector is needed — the
+// y is a LOSS RATIO (loss / premium, so no premium vector is needed - the
 // curves are already loss ratios), the paid block is INCREMENTAL, and every
 // non-positive cell has been dropped before sampling (counted in the entry's
 // dropped_cells_). d is now carried too, because Model 2 puts varying
@@ -62,7 +62,7 @@ data {
 // compartmental parameters gets an accident-year ("row") and a
 // development-period ("column") effect. All are non-centered (z_* standard
 // normals scaled by an sd_*). This extra freedom is what lets the curve
-// escape the binding case-study priors — the card's explanation for why the
+// escape the binding case-study priors - the card's explanation for why the
 // lognormal arm's median estimate/outcome sits at 0.99-1.02 per line while
 // the gaussian arm's is 0.84 on other liability.
 parameters {
@@ -100,7 +100,7 @@ transformed parameters {
     // per-CELL compartmental parameters (Model 1 has one set per accident
     // year): the brms nlf transforms with the same medians and CoVs as
     // Model 1, now summing an AY and a dev effect on the log scale.
-    // Mirrored in model.py::_predict_lognormal — keep the two in step.
+    // Mirrored in model.py::_predict_lognormal - keep the two in step.
     real ker = 3 * exp(0.1 * (b_oker + u_ker_ay[w[i]] + u_ker_dev[d[i]]));
     real kp = 1 * exp(0.1 * (b_okp + u_kp_ay[w[i]] + u_kp_dev[d[i]]));
     real RLR = 0.7 * exp(0.2 * (b_oRLR + u_ay[1, w[i]] + u_RLR_dev[d[i]]));
@@ -111,7 +111,7 @@ transformed parameters {
     } else if (t[i] > devfreq) {
       // incremental paid over (t - devfreq, t], differenced with the SAME
       // cell parameters on both ends (the monograph's claimsprocess with
-      // devfreq) — NOT the neighbouring cell's parameters
+      // devfreq) - NOT the neighbouring cell's parameters
       mu[i] = paid_curve(t[i], ker, kp, RLR, RRF)
               - paid_curve(t[i] - devfreq, ker, kp, RLR, RRF);
     } else {
@@ -154,7 +154,7 @@ model {
   z_kp_ay ~ std_normal();
   z_kp_dev ~ std_normal();
   // sigma is now a relative (log-scale) CV, so it can be given a genuinely
-  // informative prior: median 0.2. See the header note — the monograph TEXT
+  // informative prior: median 0.2. See the header note - the monograph TEXT
   // quotes LN(log 0.1, 0.2) but its appendix code, which produced the
   // published results, uses normal(log(0.2), 0.2) on the log-sigma
   // coefficients. Code wins; ports must not silently adopt the text version.

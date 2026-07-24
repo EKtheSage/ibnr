@@ -9,14 +9,14 @@ Three invariants live here:
 2. **Torch is never imported at module level** (CLAUDE.md, "Tooling &
    conventions"). The core install has no ``[nn]`` extra, so a stray
    top-level ``import torch`` in an nn entry would break plain
-   ``import ibnr.gallery`` for everyone. Only a subprocess can prove this —
+   ``import ibnr.gallery`` for everyone. Only a subprocess can prove this -
    see ``test_gallery_import_does_not_require_torch``.
 3. **The GalleryEntry contract is enforced at registration time, not at
    fit time** (design decision 5: "an entry that fails the eval harness does
    not register"). ``register()`` rejects non-subclasses, still-abstract
    classes, missing ``name``/``family``, and a missing ``card.md``.
 
-All fast — no cmdstan, no mart, no sampling.
+All fast - no cmdstan, no mart, no sampling.
 """
 
 import subprocess

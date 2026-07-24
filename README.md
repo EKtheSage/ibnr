@@ -9,8 +9,8 @@ triangle data layer backed by duckdb and polars (via ibis). A companion to
 
 Early development.
 
-**Triangle layer**: a `Triangle` is a tidy long table — `origin_period,
-dev_lag, eval_date, field, value` plus arbitrary segment columns — with
+**Triangle layer**: a `Triangle` is a tidy long table - `origin_period,
+dev_lag, eval_date, field, value` plus arbitrary segment columns - with
 transformations (cumulative/incremental, grain changes, `as_of()` backtesting
 slices) written once in ibis and tested against both the duckdb and polars
 backends, tying out to chainladder-python on the public raa/clrd samples.
@@ -25,7 +25,7 @@ t.as_of("1985-12-31")          # the triangle as known at year-end 1985
 t.to_chainladder()             # lossless round-trip
 ```
 
-**Gallery (Bayesian)**: `meyers_ccl` — Meyers' Correlated Chain Ladder in
+**Gallery (Bayesian)**: `meyers_ccl` - Meyers' Correlated Chain Ladder in
 Stan, fit/predict/evaluate through the mandatory `GalleryEntry` contract,
 producing a `PredictiveDistribution` of ultimates. Requires the `[bayesian]`
 extra and a cmdstan installation.
@@ -42,9 +42,9 @@ print(gallery.get("meyers_ccl").card())     # the model card
 # uv run python scripts/meyers_validation.py --per-line 50
 ```
 
-**Gallery (NN + statistical)**: `nn_transformer` — a PyTorch masked-cell
+**Gallery (NN + statistical)**: `nn_transformer` - a PyTorch masked-cell
 triangle transformer with a mixture density head and deep ensembling, trained
-pooled across every company × line of business (`[nn]` extra) — alongside two
+pooled across every company × line of business (`[nn]` extra) - alongside two
 classical multivariate dependence baselines: `sur` (Zhang's multivariate chain
 ladder via feasible GLS) and `copula_glm` (Shi & Frees' copula-linked
 lognormal regressions). All three produce the same `PredictiveDistribution`
@@ -70,7 +70,7 @@ uv add "ibnr[viz]"        # altair
 
 > **`[bayesian]` installs cmdstanpy, not CmdStan itself.** The Stan entries
 > compile their `model.stan` at runtime, so a CmdStan toolchain must be present.
-> Install it once with `python -m cmdstanpy.install_cmdstan` — this needs a C++
+> Install it once with `python -m cmdstanpy.install_cmdstan` - this needs a C++
 > toolchain (RTools on Windows, `build-essential`/Xcode command-line tools on
 > Linux/macOS). The bundled `Dockerfile` ships CmdStan with every gallery Stan
 > model pre-compiled if you would rather not set this up locally.
@@ -80,11 +80,11 @@ uv add "ibnr[viz]"        # altair
 Real-data fitting and the `-m mart` tests read the **gold mart published by
 [`cas-schedule-p-data-model`](https://github.com/EKtheSage/cas-schedule-p-data-model)**
 (Ethan's CAS Schedule P database; Data Vault warehouse with versioned gold
-publishes). This package never touches raw Schedule P — it consumes only the
+publishes). This package never touches raw Schedule P - it consumes only the
 published mart, from either source:
 
 ```python
-# default — no argument needed: the newest GitHub release of the data repo
+# default - no argument needed: the newest GitHub release of the data repo
 # (needs `gh auth login` once; the repo is private). @latest resolves to a
 # concrete publish_id, downloads ~5 MB to ~/.cache/ibnr, sha256-verified,
 # then reads locally forever after:
@@ -101,7 +101,7 @@ Resolution order: explicit argument > `IBNR_SCHEDULE_P_WAREHOUSE` environment
 variable (either form) > the `@latest` GitHub release. `IBNR_CACHE_DIR`
 relocates the release cache. Each data-repo gold
 promote is published as an **immutable release tagged with its `publish_id`**
-carrying every gold table plus a `manifest.json` (asset, sha256, bytes) — the
+carrying every gold table plus a `manifest.json` (asset, sha256, bytes) - the
 same `publish_id` the harness scripts stamp into every results CSV, so any
 figure traces to an exact publish.
 
@@ -110,15 +110,15 @@ Schedule P lines, accident years 1988–1997, dev ages 1–10, USD thousands;
 fields `cum_paid_loss`, `incurred_loss`, `bulk_loss`,
 `earned_prem_net/direct`, with `reported_loss = incurred − bulk` derived by
 the adapter (`src/ibnr/data/schedule_p.py`). Everything mart-dependent
-auto-skips when no data source is available — the package and its test suite
+auto-skips when no data source is available - the package and its test suite
 work standalone on the public raa/clrd samples.
 
 ## Parallel retrospectives & the compute container
 
 `ibnr.kernels.harness` is the compute layer for every study script (and the
 seam a future hosted scoring API will call): it fans company×line fits across
-a process pool — **all visible cores by default**, `IBNR_MAX_WORKERS` or
-`--workers` to override — and runs a staged sampler-escalation policy: a cheap
+a process pool - **all visible cores by default**, `IBNR_MAX_WORKERS` or
+`--workers` to override - and runs a staged sampler-escalation policy: a cheap
 first pass, then a re-fit at expensive settings (monograph `adapt_delta`,
 parallel chains) *only* for companies failing the convergence gates
 (R-hat / divergences / bulk ESS). Every results row records which `stage` it
@@ -129,8 +129,8 @@ single-stage behavior of the published runs.
 uv run python scripts/meyers_validation.py --model compartmental --per-line 50   # parallel + escalation, by default
 ```
 
-The `Dockerfile` packages all of this as a self-contained compute image —
-package, cmdstan and **every gallery Stan model pre-compiled** — so other
+The `Dockerfile` packages all of this as a self-contained compute image -
+package, cmdstan and **every gallery Stan model pre-compiled** - so other
 services can call it with zero startup cost:
 
 ```sh
@@ -184,4 +184,4 @@ Optional extras: `[bayesian]` (cmdstanpy, numpyro, pymc, arviz, bayesblend),
 `[nn]` (torch), `[viz]` (altair). The core depends only on
 `ibis-framework[duckdb,polars]`.
 
-License: MPL-2.0 — see [LICENSE](LICENSE).
+License: MPL-2.0 - see [LICENSE](LICENSE).
