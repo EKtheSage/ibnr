@@ -217,16 +217,20 @@ def point_context(tri_all, scored, args) -> tuple[list[dict], dict, dict]:
     is the `origin_period.isin(...)` predicate below - do not remove it, and
     replicate it in any new full-triangle aggregate.
 
-    COHORTS MACK REJECTS. ``cohort_grid`` demands a clean run-off staircase
-    and ``fit_mack`` strictly positive cumulatives (its variance is
-    proportional to C_{i,j}), which is more than the point estimate alone
-    needs - an accident year with zero paid at 12 months has a perfectly well
-    defined volume-weighted ultimate but no Mack sigma. Such a cohort is
-    recorded as a failure row rather than aborting the study, exactly like a
-    model fit that raises, so it shows up in the failure census instead of
-    silently reporting a number Mack's model does not admit. On the
-    1997-12-31 paid_loss panel that is 2 of 152 cells (companies 29440 and
-    42439, other_liability).
+    COHORTS MACK REJECTS. ``cohort_grid`` demands a clean run-off staircase,
+    and ``fit_mack`` rejects a negative cumulative, a dev step of zero volume,
+    and a step with too few positive origins to estimate a sigma from. It does
+    NOT reject a mere zero: the volume-weighted factor needs only S_j > 0, so an
+    accident year with zero paid at 12 months keeps its ultimate and only loses
+    one observation from that step's sigma. That distinction is load-bearing
+    here - 2 of the 152 scored cells (companies 29440 and 42439,
+    other_liability) are exactly that shape, and under a blanket positivity rule
+    the benchmark would score 150 cells against models scoring 152, which is
+    precisely what makes `cl_skill` an unpaired comparison. A cohort that IS
+    rejected is recorded as a failure row rather than aborting the study,
+    exactly like a model fit that raises, so it lands in the failure census
+    instead of silently reporting a number Mack's model does not admit. On the
+    published panel nothing is rejected.
     """
     train = tri_all.as_of(args.as_of)  # upper triangle visible at the as_of date
     # each origin's latest observed cumulative in the training slice; summed

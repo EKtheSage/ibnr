@@ -14,10 +14,30 @@ with accident years independent. Estimated on the observed run-off triangle by
     f_j-hat      = sum_i C_{i,j+1} / S_j,        S_j = sum_i C_{i,j}
     sigma_j-hat^2 = 1/(n_j - 1) * sum_i C_{i,j} * (C_{i,j+1}/C_{i,j} - f_j-hat)^2
 
-both summed over the ``n_j`` origins observing both ends of the step. The
-volume-weighted (alpha = 1) factor is Mack's estimator and the one Merz-Wuthrich
-assume; no other averaging is offered here, because the CDR formulas downstream
-are only valid for this one.
+The volume-weighted (alpha = 1) factor is Mack's estimator and the one
+Merz-Wuthrich assume; no other averaging is offered here, because the CDR
+formulas downstream are only valid for this one.
+
+THE TWO SUMS DO NOT ALWAYS RUN OVER THE SAME ORIGINS. Both range over the
+origins observing both ends of the step, but sigma's summand carries a 1/C_{i,j}
+(the weighted residual is (C_{i,j+1} - f_j C_{i,j})^2 / C_{i,j}), so it is
+estimable only where C_{i,j} > 0:
+
+    f_j-hat        all pair origins; needs only S_j > 0
+    sigma_j-hat^2  the pair origins with C_{i,j} > 0, count ``n_j``, df n_j - 1
+
+They coincide on any triangle with strictly positive cumulatives, which is most
+of them. They part on a real and unexceptional cohort - an accident year with
+zero paid at 12 months - whose chain-ladder ultimate is perfectly well defined
+and whose sigma simply has one fewer observation behind it. Refusing the whole
+cohort would throw away a usable reserve estimate; quietly summing 0 * inf into
+the variance would be worse. ``MackFit.n_obs`` and ``MackFit.n_pos`` record the
+two counts separately so the divergence is visible rather than inferred.
+
+The one thing this file cannot check on the factor path is the LATEST DIAGONAL:
+those cells have no observed successor and so enter no step's estimator, yet
+every variance formula divides by them. That guard therefore lives on the
+variance path - see ``MackFit.require_positive_open_diagonals``.
 
 Why this exists rather than a call into chainladder-python: chainladder is an
 optional interop extra (``ibnr[interop]``), and the CDR is a *core* deliverable
@@ -60,8 +80,10 @@ class MackFit:
 
     Arrays are 0-based on both axes: dev index ``j`` spans ``0 .. n_d - 1`` and
     the development step ``j -> j + 1`` carries ``f[j]``, ``sigma2[j]``,
-    ``s[j]`` (its volume denominator) and ``n_obs[j]`` (its origin count), each
-    of length ``n_d - 1``.
+    ``s[j]`` (its volume denominator), ``n_obs[j]`` (the origins behind the
+    FACTOR) and ``n_pos[j]`` (the origins behind the SIGMA), each of length
+    ``n_d - 1``. The last two differ only where a pair origin has a zero
+    cumulative; see the module docstring.
 
     ``cum`` keeps the observed triangle (NaN outside it); ``full`` is the same
     matrix with the lower triangle filled by the chain-ladder projection, so
@@ -76,7 +98,8 @@ class MackFit:
     f: np.ndarray  # (n_d - 1,) volume-weighted development factors
     sigma2: np.ndarray  # (n_d - 1,) Mack process variance parameters
     s: np.ndarray  # (n_d - 1,) S_j = sum of C_{i,j} over the origins used for f[j]
-    n_obs: np.ndarray  # (n_d - 1,) origins contributing to each step
+    n_obs: np.ndarray  # (n_d - 1,) origins behind f[j] (the full pair set)
+    n_pos: np.ndarray  # (n_d - 1,) origins behind sigma2[j] (those with C_{i,j} > 0)
     origin_periods: list[dt.date]
     dev_grain_months: int
     sigma_rule: str
@@ -117,6 +140,48 @@ class MackFit:
         """(n_w,) IBNR = ultimate - latest. Zero for a fully developed origin."""
         return self.ultimate - self.latest
 
+    # -- preconditions ---------------------------------------------------------
+
+    def require_positive_open_diagonals(self) -> None:
+        """Every OPEN origin's latest-diagonal cell must be strictly positive.
+
+        The factor estimator cannot enforce this and never could. Its ``c0``
+        cells are exactly the cells with an observed successor, and on a run-off
+        staircase an open origin's diagonal cell has none - so the diagonal is
+        the one cell class no factor-side guard ever sees. Every variance formula
+        downstream then divides by it: ``msep_runoff``'s process term
+        (``ratio_j / C-hat_{i,j}`` starting at ``j = latest_dev[i]``) and
+        Merz-Wuthrich's ``Phi_i = ratio_k / C_{i,k} + ...``.
+
+        numpy divides silently, so without this the failure is invisible: a zero
+        diagonal returns NaN msep for that origin AND a NaN total, a negative one
+        returns a finite NEGATIVE msep whose square root is then NaN, and
+        ``simulate_ultimates`` returns an exactly degenerate zero column because
+        ``var = sigma2 * state`` is non-positive and every draw comes back at its
+        mean. Nothing raises; the numbers are just wrong.
+
+        Deliberately NOT called on the point path. The chain-ladder ultimate is
+        a product of factors off that cell and needs no positivity at all, and
+        the gallery's skill benchmark (``scripts/compare_gallery.py``) wants the
+        ultimate even for a cohort whose variance is undefined. ``fit_mack``
+        therefore still succeeds; only ``msep_runoff`` / ``simulate_ultimates`` /
+        the CDR refuse.
+
+        A CLOSED origin (already at the last dev column) is exempt: it has no
+        remaining step, so nothing divides by its diagonal.
+        """
+        open_ = self.latest_dev < self.n_d - 1
+        diag = self.cum[np.arange(self.n_w), self.latest_dev]
+        bad = np.nonzero(open_ & ~(diag > 0))[0]
+        if bad.size:
+            cells = ", ".join(f"{self.origin_periods[i]}={diag[i]:g}" for i in bad)
+            raise ValueError(
+                f"non-positive cumulative on the latest diagonal of open origin(s) {cells}. "
+                "Mack's conditional variance is proportional to that cell, so every msep "
+                "rolling forward from it is undefined. The point estimate does not depend "
+                "on it and is still available as .ultimate / .reserve"
+            )
+
     # -- run-off (total) uncertainty -------------------------------------------
 
     def msep_runoff(self) -> dict[str, np.ndarray | float]:
@@ -147,6 +212,7 @@ class MackFit:
         not standard errors) plus the scalars ``msep_total``,
         ``process_total``, ``parameter_total``.
         """
+        self.require_positive_open_diagonals()  # 1/C-hat_{i,j} below starts there
         full = self.full
         ratio = np.divide(  # (n_d - 1,) sigma_j^2 / f_j^2, the recurring weight
             self.sigma2, self.f**2, out=np.zeros_like(self.sigma2), where=self.f != 0
@@ -229,7 +295,7 @@ def fit_mack_grid(grid: dict[str, Any], *, sigma_rule: str = "mack") -> MackFit:
     n_d = grid["n_d"]
     if n_d < 2:
         raise ValueError("a chain ladder needs at least two development steps")
-    f, sigma2, s, n_obs = _estimate_factors(cum, mask, sigma_rule=sigma_rule)
+    f, sigma2, s, n_obs, n_pos = _estimate_factors(cum, mask, sigma_rule=sigma_rule)
     return MackFit(
         cum=cum,
         obs_mask=mask,
@@ -238,6 +304,7 @@ def fit_mack_grid(grid: dict[str, Any], *, sigma_rule: str = "mack") -> MackFit:
         sigma2=sigma2,
         s=s,
         n_obs=n_obs,
+        n_pos=n_pos,
         origin_periods=grid["origin_periods"],
         dev_grain_months=grid["dev_grain_months"],
         sigma_rule=sigma_rule,
@@ -248,12 +315,29 @@ def fit_mack_grid(grid: dict[str, Any], *, sigma_rule: str = "mack") -> MackFit:
 
 def _estimate_factors(
     cum: np.ndarray, mask: np.ndarray, *, sigma_rule: str
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Volume-weighted factors and Mack's variance parameters, step by step.
 
-    The last step (and any step with a single observation) has no residual
-    degrees of freedom. Two conventions are offered, because the two reference
-    implementations disagree and the difference is visible in the CDR:
+    WHICH CELLS MUST BE POSITIVE, and why it is not "all of them". The factor
+    ``f_j = sum(C_{i,j+1}) / S_j`` divides once, by the column total, so it needs
+    only ``S_j > 0``; an origin sitting at zero contributes nothing to the
+    denominator and its successor to the numerator, which is exactly the
+    column-total estimator every textbook writes down. Mack's sigma divides per
+    origin, so it is estimable only on the pair origins with ``C_{i,j} > 0``.
+    Hence three separate, separately-named errors rather than one blanket check:
+
+    - ``C_{i,j} < 0``  -> hard error. A negative weight makes sigma_j^2 itself
+      negative, which makes the msep negative and its square root NaN, all
+      silently. There is no reading of Mack's model under which this is data.
+    - ``S_j <= 0``     -> hard error. 0/0 factor.
+    - fewer than 2 positive origins at a step that HAS several pairs -> hard
+      error. This is not the last step's missing-degrees-of-freedom case and
+      must not be extrapolated into: ``_tail_sigma2`` would happily return 0.0
+      at ``j = 0`` and declare the most volatile development step noiseless.
+
+    The last step (and any step with a single observation) genuinely has no
+    residual degrees of freedom. Two conventions are offered, because the two
+    reference implementations disagree and the difference is visible in the CDR:
 
     ``mack``        Mack's own rule from section 3 of the paper,
                     sigma_J^2 = min(sigma_{J-1}^4 / sigma_{J-2}^2,
@@ -266,13 +350,14 @@ def _estimate_factors(
                     to Mack's rule when the regression is not identified (fewer
                     than two positive sigmas) or would give a non-positive value.
 
-    Returns (f, sigma2, s, n_obs), each of length ``n_d - 1``.
+    Returns (f, sigma2, s, n_obs, n_pos), each of length ``n_d - 1``.
     """
     n_d = cum.shape[1]
     f = np.zeros(n_d - 1)
     sigma2 = np.full(n_d - 1, np.nan)
     s = np.zeros(n_d - 1)
     n_obs = np.zeros(n_d - 1, dtype=int)
+    n_pos = np.zeros(n_d - 1, dtype=int)
     for j in range(n_d - 1):
         pair = mask[:, j] & mask[:, j + 1]
         c0, c1 = cum[pair, j], cum[pair, j + 1]
@@ -281,21 +366,42 @@ def _estimate_factors(
                 f"no origin observes both dev steps {j + 1} and {j + 2}; "
                 "the triangle cannot support a chain-ladder factor there"
             )
-        if (c0 <= 0).any():
+        if (c0 < 0).any():
+            bad = [f"{o}" for o in np.nonzero(pair)[0][c0 < 0]]
             raise ValueError(
-                f"non-positive cumulative loss at dev step {j + 1}; Mack's model divides "
-                "by C_{i,j} (its variance is proportional to it)"
+                f"negative cumulative loss at dev step {j + 1} (origin index {', '.join(bad)}); "
+                "Mack's variance is proportional to C_{i,j}, so a negative cell drives "
+                "sigma_j^2 itself negative and every msep built on it with it"
             )
         s[j] = c0.sum()
+        if s[j] <= 0:
+            raise ValueError(
+                f"zero volume at dev step {j + 1}: every origin observing both ends of "
+                "the step sits at zero, so the volume-weighted factor is 0/0"
+            )
         n_obs[j] = c0.size
         f[j] = c1.sum() / s[j]
-        if c0.size > 1:
-            # Mack's weighted residual variance: weights C_{i,j}, df = n_j - 1.
-            sigma2[j] = float((c0 * (c1 / c0 - f[j]) ** 2).sum() / (c0.size - 1))
+        # sigma's weighted residual is (c1 - f*c0)^2 / c0, so only the strictly
+        # positive origins can carry it - a subset of the factor's. df is that
+        # subset's count minus one, NOT n_obs - 1: dividing a shorter sum by a
+        # longer df would shrink sigma for exactly the cohorts this admits.
+        pos = c0 > 0
+        n_pos[j] = int(pos.sum())
+        if n_obs[j] > 1 and n_pos[j] < 2:
+            raise ValueError(
+                f"dev step {j + 1} has {n_obs[j]} origins but only {n_pos[j]} with a "
+                "positive cumulative, so sigma_j^2 has nothing to be estimated from. "
+                "This is not the last step's missing-degrees-of-freedom case and is not "
+                "extrapolated into - at an early step that would silently declare the "
+                "most volatile part of the development noiseless"
+            )
+        if n_pos[j] > 1:
+            p0, p1 = c0[pos], c1[pos]
+            sigma2[j] = float((p0 * (p1 / p0 - f[j]) ** 2).sum() / (n_pos[j] - 1))
     missing = np.nonzero(np.isnan(sigma2))[0]
     for j in missing:
         sigma2[j] = _tail_sigma2(sigma2, j, rule=sigma_rule)
-    return f, sigma2, s, n_obs
+    return f, sigma2, s, n_obs, n_pos
 
 
 def simulate_ultimates(
@@ -322,6 +428,9 @@ def simulate_ultimates(
     risk. The ``total`` column is the row-sum of the same draws, so the
     diversification is in the samples rather than assumed.
     """
+    # a non-positive diagonal would give var = sigma2 * state <= 0, which
+    # draw_step returns at its mean - a silent point mass, not an error
+    fit.require_positive_open_diagonals()
     rng = np.random.default_rng(seed)
     n_w, n_d = fit.n_w, fit.n_d
     f_true = np.tile(fit.f, (n_draws, 1))
