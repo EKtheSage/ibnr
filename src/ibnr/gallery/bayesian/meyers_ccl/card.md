@@ -64,13 +64,16 @@ claim is made; `scripts/parity_meyers.py` runs the full comparison.
   while leaving `logelr` and `rho` untouched. The ports now carry Stan's
   constraint: an interval-constrained parameter with the `InverseGamma(1,1)`
   density as a factor (NumPyro) / `pm.Truncated` (PyMC).
-- **Init deviation (documented, and necessary).** Both ports seed `a_ig` at
-  1e3. The (0, 1e5) interval transform maps the default unconstrained
-  uniform(-2,2) init onto a_ig in (1.2e4, 8.8e4), hard against the upper bound;
-  Stan starts there without trouble, the ports do not - NumPyro reaches max
-  R-hat 1.59 / ESS 7, and PyMC fails outright (`_init_jitter` steps past the
-  bound, giving `logp = -inf` and a SamplingError before warmup). Only this one
-  site's warmup path is affected; the stationary posterior is not.
+  In PyMC, **both** bounds must be declared (`lower=0, upper=1e5`): with
+  `upper=` alone it picks a one-sided `log(upper - x)` transform that knows
+  nothing of the InverseGamma's own lower bound, so the default jitter pushes
+  `x` negative, out of support, for a `logp = -inf` SamplingError before warmup.
+- **NumPyro init deviation (documented, and necessary).** The NumPyro port
+  seeds `a_ig` at 1e3: the (0, 1e5) interval transform maps the default
+  unconstrained uniform(-2,2) init onto a_ig in (1.2e4, 8.8e4), hard against
+  the upper bound. Stan starts there without trouble; NumPyro reaches max R-hat
+  1.59 / ESS 7. Only that one site's warmup path is affected, and the
+  stationary posterior is not. PyMC needs no override once both bounds are set.
 - **Judge these models on `sig`, not `a_ig`.** The individual `a_ig[j]` are
   weakly identified in *every* backend including Stan - the likelihood only
   sees their cumulative sums through `sig2` - so their R-hat/ESS look alarming
@@ -166,35 +169,73 @@ autocorrelation inflates it). The comparison runs against Stan when a cmdstan
 toolchain is present, and NumPyro-vs-PyMC otherwise (so CI can gate parity
 without Stan). `scripts/parity_meyers.py` runs it on real Schedule P companies.
 
-Result: NumPyro and PyMC agree with the Stan reference on every checked
-parameter (`logelr`, `alpha`, `beta`, `rho`, `sig`) - means and SDs within a
-few MCSE. The mu closed form matches the Stan `prev_idx` recurrence exactly
-(unit-tested to <1e-10), and the unbounded-`a_ig` deviation is invisible at MCMC
-resolution, as argued above.
+**Result, re-measured 2026-07-24 (4 chains x 2500 draws after 1000 warmup,
+`target_accept = 0.9`, two WC companies; `analysis/results/parity_meyers.csv`):
+4 of 4 PASS.**
+
+| company | backend | max &#124;z_mean&#124; | max &#124;z_sd&#124; | max KS | verdict |
+|---|---|---|---|---|---|
+| 11347 | numpyro | 1.65 | 2.45 | 0.025 | PASS |
+| 11347 | pymc | 1.53 | 3.24 | 0.031 | PASS |
+| 38687 | numpyro | 2.18 | 1.58 | 0.022 | PASS |
+| 38687 | pymc | 1.93 | 2.07 | 0.018 | PASS |
+
+The mu closed form matches the Stan `prev_idx` recurrence exactly (unit-tested
+to <1e-10).
+
+**This supersedes the original milestone-4 parity claim, which was not
+reproducible.** Two corrections, both found in 2026-07-24 while porting CSR:
+
+1. **The gate was silently lenient.** `kernels.parity` read `az.summary`, which
+   rounds to 3 decimals; every z-score is a difference of two summaries over
+   their combined MCSE, so any parameter whose MCSE rounded to `0.000` took the
+   `if mcse > 0 else 0.0` branch and scored `z = 0` - an automatic pass,
+   precisely for the best-identified parameters. Fixed (`round_to="none"`) and
+   guarded by a test. The old headline figures (max|z_mean| 2.8, max|z_sd| 3.6)
+   were produced through that bug.
+2. **The unbounded `a_ig` was a real defect**, not the harmless deviation
+   claimed above - see the Parameterization section. Restoring Stan's bound cut
+   max KS from ~0.10 to ~0.03 and dropped the ports' divergences by an order of
+   magnitude (numpyro 24 -> 1, pymc 11 -> 8 on 11347).
+
+**Draw budget matters in both directions - measure, don't assume.** At the
+original 500-draw protocol the post-fix SD check straddled the tolerance with
+the *failing backend alternating by cohort* (numpyro failed 38687 at 4.03, pymc
+failed 11347 at 5.83) - the signature of noise, since at low ESS `mcse_sd` is
+itself poorly estimated. Re-running the identical fits at 2500 draws dropped
+pymc's max|z_sd| from **5.83 to 3.24** and numpyro's from 3.28 to 2.45, giving
+the 4/4 above; a *systematic* gap would instead have grown by ~sqrt(5). Parity
+is therefore quoted at 2500 draws, and the table below is the matching run.
+Practical rule: do not gate parity below ~1000 draws.
 
 ### Convergence & runtime
 
-Identical settings across backends (4 chains x 500 draws after 1000 warmup,
+Identical settings across backends (4 chains x 2500 draws after 1000 warmup,
 single-core / sequential chain execution for a fair per-chain runtime,
 `target_accept = 0.9`, common seed) on two Schedule P WC companies as of
-1997-12-31. Diagnostics via arviz. Runtimes are cache-warm (PyTensor/JAX
-compiled, Stan binary built) - see the compile note below. Full data in
+1997-12-31 - the same run the parity table above comes from. Diagnostics via
+arviz. Runtimes are cache-warm (PyTensor/JAX compiled, Stan binary built) - see
+the compile note below. Full data in
 `analysis/results/convergence_meyers.csv`; reproduce with
-`scripts/parity_meyers.py --line workers_compensation --n-companies 2 --target-accept 0.9`.
+`scripts/parity_meyers.py --line workers_compensation --n-companies 2 --draws 2500 --target-accept 0.9`.
 
-| company | backend | runtime | max R-hat | min ESS-bulk | divergences /2000 |
+| company | backend | runtime | max R-hat | min ESS-bulk | divergences /10000 |
 |---|---|---|---|---|---|
-| 11347 | stan | 6.6s | 1.01 | 477 | 0 |
-| 11347 | numpyro | 24.2s | 1.01 | 436 | 24 |
-| 11347 | pymc | 59.1s | 1.01 | 588 | 11 |
-| 38687 | stan | 6.7s | 1.02 | 403 | 18 |
-| 38687 | numpyro | 15.3s | 1.01 | 501 | 10 |
-| 38687 | pymc | 41.2s | 1.01 | 563 | 11 |
+| 11347 | stan | 9.3s | 1.00 | 2897 | 0 |
+| 11347 | numpyro | 22.0s | 1.00 | 3107 | 1 |
+| 11347 | pymc | 67.1s | 1.00 | 3569 | 8 |
+| 38687 | stan | 6.8s | 1.00 | 2873 | 27 |
+| 38687 | numpyro | 16.7s | 1.00 | 2981 | 3 |
+| 38687 | pymc | 66.7s | 1.00 | 2861 | 23 |
+
+(The earlier 500-draw table is superseded: those fits predate the `a_ig` fix, so
+their divergence counts - numpyro 24, pymc 11 on 11347 - reflect the missing
+bound rather than the samplers.)
 
 **All three backends reach the same posterior** (parity passes, above) at
-comparable R-hat (<=1.02) and ESS (~400-600 from 2000 draws). The difference is
-wall-clock: **Stan** is fastest (~7s), **NumPyro (JAX/XLA)** ~2.5x that, **PyMC**
-~7x. The gap is the backend, not the model or parameterization: PyTensor's C
+comparable R-hat (1.00) and ESS (~2900-3600 from 10000 draws). The difference is
+wall-clock: **Stan** is fastest (~7-9s), **NumPyro (JAX/XLA)** ~2.5x that,
+**PyMC** ~7-10x. The gap is the backend, not the model or parameterization: PyTensor's C
 backend evaluates the logp/gradient as many small ops per leapfrog, whereas
 NumPyro's JAX/XLA fuses the whole graph and Stan emits one tight translation
 unit. PyTensor also links no BLAS on this box (it warns as much), but that is a

@@ -1,0 +1,5 @@
+label,reference,backend,max_abs_z_mean,max_abs_z_sd,max_ks,n_params,passed
+workers_compensation:11347,stan,numpyro,3.5846506371689815,2.8875759177498352,0.0344,32,True
+workers_compensation:11347,stan,pymc,2.4163240838025053,4.140078789523516,0.0335,32,False
+workers_compensation:38687,stan,numpyro,2.617449490277866,2.9727466194557235,0.0412,32,True
+workers_compensation:38687,stan,pymc,2.0582991969497715,2.1163684873638178,0.0245,32,True

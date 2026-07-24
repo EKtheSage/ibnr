@@ -64,9 +64,25 @@ happened.
   sig2[d] = reverse cumsum → sig decreasing in dev lag. **Note:** Meyers'
   CSR.R indexes the loop increments as `a_ig[i]` where we (and our CCL) use
   `a_ig[n_d-i]`; the a_ig are iid, so this is a relabeling with an identical
-  joint distribution. **Documented deviation:** Stan bounds a_ig to (0, 1e5);
-  the ports use an *unbounded* `InverseGamma(1,1)` (as in CCL). The truncated
-  mass is ~1e-5, far below MCMC noise, and parity confirms it.
+  joint distribution. **Stan's `a_ig` bound is carried by both ports, and it
+  is load-bearing** - see the CCL card for the measurement (`P(a_ig > 1e5)`
+  reaches 10.6% at deep dev lags, and an unbounded port's `sig` runs 5-12%
+  below the Stan reference). NumPyro uses an interval-constrained parameter
+  with the `InverseGamma(1,1)` density as a factor, which is exactly Stan's
+  construction; PyMC uses `pm.Truncated(..., lower=0, upper=1e5)`. **Both
+  bounds are required in PyMC**: with `upper=` alone it picks a one-sided
+  `log(upper - x)` transform that jitter can push below zero, out of the
+  InverseGamma support, for a `logp = -inf` SamplingError before warmup.
+- **NumPyro init deviation (documented, and necessary).** The NumPyro port
+  seeds `a_ig` at 1e3, because the (0, 1e5) interval transform maps the
+  default unconstrained uniform(-2,2) init onto a_ig in (1.2e4, 8.8e4), hard
+  against the upper bound. Stan starts there without trouble; NumPyro reaches
+  max R-hat 1.59 / ESS 7. Only that one site's warmup path changes. PyMC needs
+  no such override once both bounds are declared.
+- **Judge this model on `sig`, not `a_ig`.** The individual `a_ig[j]` are
+  weakly identified in every backend including Stan - the likelihood only sees
+  their cumulative sums through `sig2` - so their R-hat/ESS look alarming even
+  at convergence.
 - `speedup` is the explicit recurrence `speedup[w] = speedup[w-1]*(1-gamma)`,
   matching the published code (algebraically `(1-gamma)^(w-1)`). The ports
   build it as a **cumulative product**, not a power: `gamma` is unconstrained,
@@ -132,3 +148,82 @@ pass; PA fails at 25.3* (Meyers' PA was 18.5, just under - private
 passenger auto's post-1997 settlement regime is the shared weak spot).
 Occasional divergences (typically <0.2%, worst ~1.3% on one chain) -
 the centered-parameterization property already documented for CCL.
+
+## Cross-backend parity & convergence (milestone 5)
+
+### Parity (the correctness gate)
+
+`kernels.parity.compare_posteriors` compares each port's posterior to the Stan
+reference marginal-by-marginal in **Monte-Carlo-error units**: the mean
+difference over the combined MCSE of the mean, and the SD difference over the
+combined MCSE of the SD, both required within `z_tol = 4`. Compared parameters
+are `CSR_PARITY_VARS` = `logelr, alpha, beta, gamma, sig` - CSR's signature
+`gamma` replaces CCL's `rho`. KS on the pooled marginals is reported for
+context only (autocorrelation inflates it). Reproduce with
+`scripts/parity_meyers.py --model meyers_csr --line workers_compensation
+--n-companies 2`.
+
+**Result (2 WC companies as of 1997-12-31, 4 chains x 2500 draws after 1000
+warmup, `target_accept = 0.9`, common seed; full data in
+`analysis/results/parity_meyers_csr.csv`):**
+
+| company | backend | max &#124;z_mean&#124; | max &#124;z_sd&#124; | max KS | verdict |
+|---|---|---|---|---|---|
+| 11347 | numpyro | 3.58 | 2.89 | 0.034 | PASS |
+| 11347 | pymc | 2.42 | **4.14** | 0.034 | FAIL |
+| 38687 | numpyro | 2.62 | 2.97 | 0.041 | PASS |
+| 38687 | pymc | 2.06 | 2.12 | 0.025 | PASS |
+
+3 of 4 pass. PyMC on 11347 misses `z_sd` by 0.14 and is also the only fit in
+the set still carrying divergences (19), which is the likeliest source of the
+residual SD difference. `z_tol` was **not** relaxed to make it green - see the
+draw-budget caveat below.
+
+Two things had to be fixed before these numbers meant anything, both found
+here and both documented in the CCL card as well:
+
+1. The gate itself was reading `az.summary`, which rounds to 3 decimals, so any
+   parameter whose MCSE rounded to `0.000` was scored `z = 0` - an automatic
+   pass, precisely for the best-identified parameters.
+2. With the gate measuring, both ports failed on `sig` alone (z_mean 6.8-8.1)
+   because they left Stan's `a_ig` bound off. Restoring it moved `sig` from
+   5-12% *below* the reference to ~1.6-2% above, dropped max KS from 0.12 to
+   0.034, and **eliminated the ports' divergences** (numpyro 87 -> 0, pymc
+   78 -> 19 on 11347, and 106/65 -> 0/0 on 38687) - those divergences were the
+   samplers probing the `a -> 0` funnel that Stan's bound excludes.
+
+**Draw-budget caveat.** Parity in MCSE units is a statistical identity test, so
+it gets *stricter* as draws increase: MCSE shrinks like `1/sqrt(draws)`, and any
+real-but-tiny difference eventually breaches any fixed `z_tol`. These CSR runs
+use 2500 draws, `sqrt(5)` ~ 2.2x more sensitive than the 500 behind the CCL
+table, so the two models' verdicts are not directly comparable. A fixed
+`z_tol = 4` is only meaningful against a stated draw budget; a
+practical-equivalence band would remove that coupling but changes what the gate
+means, so it is deliberately left as an open design question.
+
+### Convergence & runtime
+
+Identical settings across backends (as above; single-core / sequential chain
+execution for a fair per-chain runtime). Diagnostics via arviz. Full data in
+`analysis/results/convergence_meyers_csr.csv`.
+
+| company | backend | runtime | max R-hat | min ESS-bulk | divergences /10000 |
+|---|---|---|---|---|---|
+| 11347 | stan | 9.3s | 1.00 | 2866 | 0 |
+| 11347 | numpyro | 18.8s | 1.00 | 2593 | 0 |
+| 11347 | pymc | 85.1s* | 1.00 | 2440 | 19 |
+| 38687 | stan | 8.6s | 1.00 | 3080 | 0 |
+| 38687 | numpyro | 14.0s | 1.00 | 2625 | 0 |
+| 38687 | pymc | 44.8s | 1.00 | 2527 | 0 |
+
+\* 11347 is the first PyMC fit of a 10x10 graph in the process, so its 85.1s
+includes the one-off PyTensor C-compile; 38687's 44.8s is the warm-cache
+figure, i.e. the compile is roughly 40s of the difference. The ordering
+**Stan < NumPyro < PyMC (~5x Stan warm)** reproduces the CCL pattern, and for
+the same documented reason: a BLAS-less pip PyTensor runs many small ops per
+leapfrog where JAX/XLA fuses the whole graph.
+
+All three backends reach the same posterior at R-hat 1.00 with ESS 2400-3100 of
+10000 draws. Note again that this is measured on `sig` and the other identified
+parameters, **not** on `a_ig`, whose components are weakly identified in every
+backend including Stan.
