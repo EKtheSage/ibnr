@@ -17,8 +17,9 @@ Fit shapes per model:
   nn_transformer    ONE pooled fit on the screened (company, line) pairs,
                     then per-(company, line) segment predicts
   meyers_ccl        one cmdstan fit per company x line (slow; opt-in)
-  chain_ladder      volume-weighted CL point estimate per (company, line) -
-                    the distribution-free skill benchmark (always included)
+  chain_ladder      volume-weighted CL point estimate per (company, line),
+                    from kernels.mack.fit_mack - the distribution-free skill
+                    benchmark (always included)
 
 Every row carries `anchor` (loss-to-date at the as_of date) and `premium`
 (line premium), so downstream analysis can score on the RESERVE basis:
@@ -70,8 +71,11 @@ METHODOLOGY (this script produces published results - read before changing)
    count. Failures are NOT silently dropped from the record, but they do
    drop out of the scored panels (rows with a null percentile/estimate), so
    compare failure counts across models before reading any leaderboard.
-   Documented soft filters: `--copula-nonpositive drop` (known left-tail
-   bias) and the copula's Hoerl fallback in `run_multiline_model`.
+   This applies to the chain_ladder benchmark too - see `point_context` for
+   the cohorts Mack's model rejects, and note that a benchmark computed on a
+   smaller panel than the models it scores makes `cl_skill` an unpaired
+   comparison. Documented soft filters: `--copula-nonpositive drop` (known
+   left-tail bias) and the copula's Hoerl fallback in `run_multiline_model`.
 
 Usage:
     uv run python scripts/compare_gallery.py --per-line 5           # wiring check
@@ -96,6 +100,7 @@ from meyers_validation import DEFAULT_WAREHOUSE, MEYERS_LINES, select_companies 
 from ibnr import gallery  # noqa: E402
 from ibnr.data.schedule_p import active_mart_path, active_publish_id, load_schedule_p  # noqa: E402
 from ibnr.kernels.calibration import ks_uniformity  # noqa: E402
+from ibnr.kernels.mack import fit_mack  # noqa: E402
 from ibnr.kernels.scores import crps  # noqa: E402
 
 #: models cheap enough to run as the default trio (seconds-to-minutes per
@@ -189,22 +194,45 @@ def point_context(tri_all, scored, args) -> tuple[list[dict], dict, dict]:
     skill benchmark every model is measured against. Keys are
     (company, line) plus (company, "ALL") sums.
 
+    The estimate is ``kernels.mack.fit_mack(...).ultimate.sum()``: the same
+    volume-weighted age-to-age factors this function used to compute inline,
+    from the one implementation the gallery's Mack entry and the one-year CDR
+    also use. A benchmark that drifts from the kernel it claims to be would
+    quietly mis-score every model in the study, so it is not reimplemented here.
+
     The anchor is what makes reserve-basis scoring possible downstream:
     reserve = ultimate - anchor, so subtracting it strips out the loss
     dollars every model simply carried forward from the training slice.
-    Premium is the normalizer for scale-free point errors.
+    Premium is the normalizer for scale-free point errors. Both, and the
+    outcome, are read straight off the triangle rather than off the ``MackFit``
+    - a cohort Mack's model rejects (below) must still contribute its
+    anchor/premium to EVERY OTHER model's reserve-basis scoring.
 
     !! THE POST-STUDY-ORIGIN TRAP !! This function reads BOTH the as_of
-    training slice (`train`, for factors/anchors/premium) and the full
+    training slice (`train`, for anchors/premium/origins) and the full
     triangle (`full`, for realized outcomes). The mart's accident years run
     past the 1988-1997 study window, so the outcome query MUST be filtered to
-    the origins present in the training grid. This function once omitted that
+    the origins present in the training slice. This function once omitted that
     filter and reported outcomes 2.4x too large (CLAUDE.md gotcha). The guard
-    is the `origin_period.isin(grid.index)` predicate below - do not remove
-    it, and replicate it in any new full-triangle aggregate.
+    is the `origin_period.isin(...)` predicate below - do not remove it, and
+    replicate it in any new full-triangle aggregate.
+
+    COHORTS MACK REJECTS. ``cohort_grid`` demands a clean run-off staircase
+    and ``fit_mack`` strictly positive cumulatives (its variance is
+    proportional to C_{i,j}), which is more than the point estimate alone
+    needs - an accident year with zero paid at 12 months has a perfectly well
+    defined volume-weighted ultimate but no Mack sigma. Such a cohort is
+    recorded as a failure row rather than aborting the study, exactly like a
+    model fit that raises, so it shows up in the failure census instead of
+    silently reporting a number Mack's model does not admit. On the
+    1997-12-31 paid_loss panel that is 2 of 152 cells (companies 29440 and
+    42439, other_liability).
     """
     train = tri_all.as_of(args.as_of)  # upper triangle visible at the as_of date
-    cum = train.select_fields(args.loss_field).execute()
+    # each origin's latest observed cumulative in the training slice; summed
+    # over a cohort's origins this is the anchor (loss-to-date), and the
+    # origins themselves are the guard the outcome query needs
+    diag = train.select_fields(args.loss_field).latest_diagonal().execute()
     prem = train.select_fields("earned_premium").latest_diagonal().execute()
     full = tri_all.select_fields(args.loss_field).execute()  # incl. realized lower half
     # deepest dev lag in the mart = the column that realizes each origin's ultimate
@@ -215,34 +243,10 @@ def point_context(tri_all, scored, args) -> tuple[list[dict], dict, dict]:
     rows: list[dict] = []
     for code, lines_c in scored.items():
         cl_total, anchor_total, outcome_total, prem_total = 0.0, 0.0, 0.0, 0.0
+        rejected: list[str] = []
         for line in lines_c:
-            sub = cum[(cum["company_code"] == code) & (cum["line_of_business"] == line)]
-            # (n_origins, n_devs) cumulative grid; NaN = unobserved (long
-            # format means absent is genuinely unobserved, never an implicit 0)
-            grid = sub.pivot_table(
-                index="origin_period", columns="dev_lag", values="value"
-            ).sort_index()
-            devs = sorted(grid.columns)
-            # volume-weighted development factors over overlapping origins:
-            # f_a = sum(C_{.,b}) / sum(C_{.,a}) across origins observed at both
-            # ages - the textbook chain-ladder age-to-age estimator. A dev step
-            # with no overlapping origins falls back to 1.0 (no development).
-            factors = {}
-            for a, b in zip(devs[:-1], devs[1:], strict=True):
-                both = grid[[a, b]].dropna()
-                factors[a] = float(both[b].sum() / both[a].sum()) if len(both) else 1.0
-            est = 0.0
-            anchor = 0.0
-            for _, r in grid.iterrows():
-                # each origin's latest observed cumulative = its diagonal cell;
-                # summed over origins this is the anchor (loss-to-date)
-                obs = r.dropna()
-                latest_dev, latest = obs.index[-1], float(obs.iloc[-1])
-                anchor += latest
-                # develop that cell to ultimate through the remaining factors
-                for d in devs[devs.index(latest_dev) : -1]:
-                    latest *= factors[d]
-                est += latest
+            d_sub = diag[(diag["company_code"] == code) & (diag["line_of_business"] == line)]
+            anchor = float(d_sub["value"].sum())
             f_sub = full[
                 (full["company_code"] == code)
                 & (full["line_of_business"] == line)
@@ -251,40 +255,57 @@ def point_context(tri_all, scored, args) -> tuple[list[dict], dict, dict]:
                 # beyond the study window, so outcomes are restricted to the
                 # training slice's origins - exactly the origins the models
                 # were asked to predict. Dropping this inflated outcomes 2.4x.
-                & full["origin_period"].isin(grid.index)
+                & full["origin_period"].isin(d_sub["origin_period"])
             ]
             outcome = float(f_sub["value"].sum())
             p_sub = prem[(prem["company_code"] == code) & (prem["line_of_business"] == line)]
             line_prem = float(p_sub["value"].sum())
             anchors[(code, line)] = anchor
             premiums[(code, line)] = line_prem
-            rows.append(
-                {
-                    "model": "chain_ladder",
-                    "line": line,
-                    "company_code": code,
-                    "estimate": est,
-                    "outcome": outcome,
-                }
+
+            cohort = tri_all.filter(
+                (ibis._.company_code == code) & (ibis._.line_of_business == line)
             )
-            cl_total += est
+            try:
+                fit = fit_mack(cohort, loss_field=args.loss_field, as_of=args.as_of)
+                est = float(fit.ultimate.sum())
+            except ValueError as e:  # keep the study going; record the failure
+                est, err = np.nan, str(e)
+                rejected.append(line)
+                print(f"  chain_ladder {line} {code}: FAILED {e}", flush=True)
+            else:
+                err = None
+                cl_total += est
+            row: dict = {
+                "model": "chain_ladder",
+                "line": line,
+                "company_code": code,
+                "estimate": est,
+                "outcome": outcome,
+            }
+            if err is not None:
+                row["error"] = err
+            rows.append(row)
             anchor_total += anchor
             outcome_total += outcome
             prem_total += line_prem
         # company "ALL" row: a plain sum across the company's scored lines.
         # For a point estimate that is exactly right - diversification only
-        # affects the spread, which chain_ladder does not produce.
+        # affects the spread, which chain_ladder does not produce. A partial
+        # sum would not be, so a company with any rejected line gets no
+        # estimate; its anchor/premium/outcome are unaffected.
         anchors[(code, "ALL")] = anchor_total
         premiums[(code, "ALL")] = prem_total
-        rows.append(
-            {
-                "model": "chain_ladder",
-                "line": "ALL",
-                "company_code": code,
-                "estimate": cl_total,
-                "outcome": outcome_total,
-            }
-        )
+        all_row: dict = {
+            "model": "chain_ladder",
+            "line": "ALL",
+            "company_code": code,
+            "estimate": np.nan if rejected else cl_total,
+            "outcome": outcome_total,
+        }
+        if rejected:
+            all_row["error"] = f"lines rejected by fit_mack: {', '.join(rejected)}"
+        rows.append(all_row)
     return rows, anchors, premiums
 
 
