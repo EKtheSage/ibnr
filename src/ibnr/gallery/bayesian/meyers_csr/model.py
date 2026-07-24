@@ -3,7 +3,7 @@
 The paid-loss counterpart of ``meyers_ccl``: a cross-classified lognormal
 with a settlement-rate trend term, fit with the Stan reference sampler
 (``model.stan``). Consumes the identical ``kernels.contract`` data dict as
-the rest of the Meyers family (the ``prev_idx`` entry is simply unused —
+the rest of the Meyers family (the ``prev_idx`` entry is simply unused -
 CSR has no across-origin correlation term). NumPyro/PyMC ports arrive with
 milestone 5; the ``backend`` argument already reserves the seam."""
 
@@ -165,7 +165,7 @@ class MeyersCSR(GalleryEntry):
         # Ultimate = last dev lag n_d; use sig at n_d. The settlement-rate term
         # beta[d] * (1 - gamma)^(w-1) vanishes because beta[n_d] = 0, so the
         # speedup/slowdown drift does NOT enter the ultimate (why CSR ultimates
-        # coincide with the plain CRC model's — card.md "Predictive distribution").
+        # coincide with the plain CRC model's - card.md "Predictive distribution").
         sig_last = sig[:, n_d - 1]
         logprem = np.log(c["premium"])  # per origin, shape (n_w,)
 
@@ -226,7 +226,7 @@ class MeyersCSR(GalleryEntry):
             # Sampled (non-deterministic) core parameters: logelr (log ELR),
             # r_alpha (free AY offsets), r_beta (dev profile), a_ig (the
             # inverse-gamma variance components building sig2), and gamma (the
-            # settlement-rate trend — CSR's signature parameter).
+            # settlement-rate trend - CSR's signature parameter).
             var_names = ["logelr", "r_alpha", "r_beta", "a_ig", "gamma"]
         var_names = [v for v in var_names if v in self.idata_.posterior]
         summ = az.summary(self.idata_, var_names=var_names)

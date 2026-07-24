@@ -4,11 +4,11 @@ The Bayesian twin of the deterministic Clark entry: the same loglogistic growth
 curve and ODP likelihood, sampled instead of maximized. Because the MLE version
 is separately tied out against chainladder's ``ClarkLDF`` (``test_clark.py``,
 fast), the load-bearing check here is that the posterior agrees with that
-already-validated MLE — which chains this entry to the external reference
+already-validated MLE - which chains this entry to the external reference
 without re-deriving it.
 
 Slow (compiles the Stan model on first run, then samples) and mart-dependent;
-runs only when cmdstan and the local warehouse are both available — see
+runs only when cmdstan and the local warehouse are both available - see
 ``test_meyers_ccl`` for the ``slow``/``mart`` marker rationale.
 """
 
@@ -56,7 +56,7 @@ def test_fit_converges(fitted):
     """The sampler converged on the level and the two growth-curve parameters.
 
     Only 3 free parameters over 55 cells, no hierarchy, so the tighter
-    thresholds (R-hat < 1.05, ESS > 200) are appropriate — a low ESS here would
+    thresholds (R-hat < 1.05, ESS > 200) are appropriate - a low ESS here would
     mean the omega/theta ridge is being sampled badly, which is the known
     failure mode of growth-curve models (the two are strongly correlated).
     """
@@ -73,7 +73,7 @@ def test_posterior_centers_on_mle(fitted):
     This is the entry's anchor to the external ClarkLDF reference (via the MLE,
     which test_clark.py ties out). 25% is deliberately generous: omega and theta
     trade off along a likelihood ridge, so posterior *means* can drift well away
-    from the mode individually while describing near-identical growth curves —
+    from the mode individually while describing near-identical growth curves -
     the parameters are only weakly identified, the curve is not.
     """
     _, entry = fitted
@@ -90,7 +90,7 @@ def test_predict_and_score(fitted):
     """predict() honors the PredictiveDistribution contract and lands in the
     right ballpark.
 
-    Wiring fence only (units, anchor, prior runaway) — Clark's true calibration
+    Wiring fence only (units, anchor, prior runaway) - Clark's true calibration
     (D=49.6-63.4* on the 200-company retro, the weakest paid entry) is measured
     by the retrospective, not here.
     """

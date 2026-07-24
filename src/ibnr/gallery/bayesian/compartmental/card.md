@@ -1,4 +1,4 @@
-# compartmental — Hierarchical Compartmental Reserving (Gesmann & Morris)
+# compartmental - Hierarchical Compartmental Reserving (Gesmann & Morris)
 
 **Family:** bayesian · **Reference:** Gesmann & Morris, *Hierarchical
 Compartmental Reserving Models*, CAS Research Paper (2020). The published
@@ -28,20 +28,20 @@ PD(t) = RLR * RRF/(ker-kp) * (ker(1 - e^(-kp t)) - kp(1 - e^(-ker t)))
 
 so the ultimate loss ratio is RLR·RRF. `t` is the development age in
 **years at the cell's period end** (the case study's `Lag` = 1..10; ker/kp
-are per-year rates; no mid-period shift — gradual earning is what the EX
+are per-year rates; no mid-period shift - gradual earning is what the EX
 compartment models). Ages, premiums and the delta indicator are data via
 `kernels.contract.compartmental_stan_data` (outstanding = `reported_loss` −
 `paid_loss`, i.e. net of bulk on both sides; the monograph's wkcomp case
-study used direct premium — we use net earned premium like the rest of the
+study used direct premium - we use net earned premium like the rest of the
 gallery, consistent with the net loss basis).
 
 ## Variants (ablatable, both from the monograph's case study)
 
-### `variant="gaussian"` (default) — case-study Model 1
+### `variant="gaussian"` (default) - case-study Model 1
 
 Gaussian likelihood on **amounts**: OS levels (delta=0) and cumulative paid
 (delta=1), `sigma` per delta on the log link. ker, kp fixed across accident
-years; (RLR, RRF) carry **correlated accident-year effects** — the
+years; (RLR, RRF) carry **correlated accident-year effects** - the
 monograph's signature reserving-cycle structure (posterior RLR–RRF
 correlation > 0 means prudent case reserves in hard markets).
 
@@ -55,12 +55,12 @@ sd(u_RLR) ~ Student-t(10,0,0.2)+,  sd(u_RRF) ~ Student-t(10,0,0.1)+
 log sigma[os], log sigma[paid] ~ Student-t(1,0,1000)
 ```
 
-Takes zero/negative cells natively — what a mechanical 200-company
+Takes zero/negative cells natively - what a mechanical 200-company
 retrospective needs. The monograph excludes Model 1 from its own model
 *selection* (a Gaussian can pay negative claims); it remains the robust
 reference fit and the Morris (2016) original.
 
-### `variant="lognormal"` — case-study Model 2
+### `variant="lognormal"` - case-study Model 2
 
 Lognormal likelihood on **loss ratios**: OS levels and **incremental** paid
 (differenced with the same cell parameters at `t` and `t - devfreq`). All
@@ -75,11 +75,11 @@ sd priors: oRLR 0.7, oRRF 0.5, oker 0.3, okp 0.3   (all Student-t(10,0,·)+,
 log sigma[δ] ~ N(log 0.2, 0.2)
 ```
 
-(The monograph text quotes `sigma ~ LN(log 0.1, 0.2)`; its appendix code —
-which produced the published results — uses `normal(log(0.2), 0.2)` on the
+(The monograph text quotes `sigma ~ LN(log 0.1, 0.2)`; its appendix code -
+which produced the published results - uses `normal(log(0.2), 0.2)` on the
 log-sigma coefficients. The code wins; documented here so ports don't
 drift.) Non-positive OS or incremental-paid cells are dropped before
-sampling and counted in `dropped_cells_` — the lognormal analogue of the
+sampling and counted in `dropped_cells_` - the lognormal analogue of the
 ODP entries' negative-increment failures.
 
 Both variants sample at the monograph's `adapt_delta = 0.99`,
@@ -88,7 +88,7 @@ Both variants sample at the monograph's `adapt_delta = 0.99`,
 ## Parameterization notes
 
 Non-centered accident-year (and dev-year) effects via
-`diag_pre_multiply(sd, L_chol) * z` — brms's own default; ports must keep
+`diag_pre_multiply(sd, L_chol) * z` - brms's own default; ports must keep
 it. Initialization is Stan's default U(-2,2) on the unconstrained scale;
 all compartmental parameters are strictly positive by construction
 (lognormal transforms of unconstrained Gaussians), the monograph's stated
@@ -100,7 +100,7 @@ Cumulative paid at the triangle's final development age per origin + total
 (no tail extrapolation):
 
 - **gaussian**: `Normal(premium[w] * PD(t_final; RLR[w], RRF[w], ker, kp),
-  sigma[paid])` per posterior draw — the model's unconditional-given-
+  sigma[paid])` per posterior draw - the model's unconditional-given-
   parameters predictive; what the origin's observed cells taught the
   posterior enters through the accident-year effects. Fully developed
   origins anchor at their observed value (zero variance), matching the
@@ -128,16 +128,16 @@ natively; the lognormal arm drops its own non-positive cells). Both arms:
 
 The two failure modes separate cleanly:
 
-- **gaussian fails on bias + sharpness** — the monograph's own critique of
+- **gaussian fails on bias + sharpness** - the monograph's own critique of
   Model 1, reproduced at scale. Constant amount-scale sigma → median total
   CV 2.5%, 110/200 outcomes outside the 5–95 band; and the case-study
   priors (ULR median ≈ 0.7·0.8 = 0.56; kp ~ LN(0, 0.1), i.e. ~63% of
   outstanding paid within a year, ±20% wiggle) were tuned to one
-  fast-settling WC book — on long-tailed other liability the median
+  fast-settling WC book - on long-tailed other liability the median
   estimate/outcome is **0.84** with 35/50 outcomes above the 95th
   percentile. Priors are load-bearing when transferred mechanically.
 - **lognormal removes the bias entirely** (median estimate/outcome
-  0.99–1.02 on every line — the AY + dev varying effects give the curve
+  0.99–1.02 on every line - the AY + dev varying effects give the curve
   enough freedom to escape the binding priors) and outside-band outcomes
   drop to 63/200. What remains is the residual too-sharp/regime problem
   concentrated in PPA + WC (percentiles leaning low = mild over-prediction
@@ -151,7 +151,7 @@ The lognormal variant is the best-calibrated paid entry after CSR.
 
 Runtime honesty: the monograph's `adapt_delta = 0.99, max_treedepth = 15`
 cost ~160 s (gaussian) / ~250 s (lognormal; WC median 488 s) per company
-sequential-chain — ~20x the Meyers-family entries. Nothing here needed a
+sequential-chain - ~20x the Meyers-family entries. Nothing here needed a
 model change; see the roadmap for the parallel retro harness and a
 two-stage escalation policy (fast settings, retry hard companies at the
 monograph settings).

@@ -3,16 +3,16 @@ purpose: the entry registers (and this config is importable) without the
 [nn] extra.
 
 Network defaults mirror the single-line transformer (disclosed as
-hand-chosen for the Schedule P regime); the new knob is ``dependence`` —
+hand-chosen for the Schedule P regime); the new knob is ``dependence`` -
 how cross-line dependence enters the DRAWS (the encoder always attends
 across lines):
 
 - "ar":    univariate MDN per cell; within each rollout diagonal the lines
            are sampled one at a time in a seeded random order, each fed
-           back as context before the next — dependence via conditioning.
+           back as context before the next - dependence via conditioning.
 - "joint": one multivariate Gaussian mixture per (origin, dev) cell-group
            across the company's lines (Cholesky-parameterized), sampled
-           jointly — dependence via an explicit correlated head.
+           jointly - dependence via an explicit correlated head.
 """
 
 from __future__ import annotations

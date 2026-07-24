@@ -1,9 +1,9 @@
-"""Meyers CCL — PyMC port of the Stan reference (``model.stan``).
+"""Meyers CCL - PyMC port of the Stan reference (``model.stan``).
 
 Same model, same **centered** parameterization, held constant for parity. The
 Stan ``data`` block dict from ``kernels.contract.stan_data`` is consumed
 verbatim; ``a_ig`` is an unbounded ``InverseGamma(1, 1)`` (see the note in
-``model_numpyro.py`` — the (0, 1e5) Stan bound is numerically irrelevant).
+``model_numpyro.py`` - the (0, 1e5) Stan bound is numerically irrelevant).
 
 ``build_model()`` returns the ``pm.Model`` graph (readable, ejectable source);
 ``sample()`` runs NUTS and returns an ``arviz.InferenceData`` carrying the same
@@ -41,7 +41,7 @@ def build_model(data: dict[str, Any]):
 
     model = pm.Model()
     with model:
-        # Priors — identical to model_numpyro.py and to Stan's `model` block
+        # Priors - identical to model_numpyro.py and to Stan's `model` block
         # (model.stan lines 64-68), held constant for parity. r_alpha/r_beta are
         # the free (n-1) accident-year / dev-lag effects; a_ig is the per-dev
         # variance seed (reparam note in module docstring); r_rho is raw on (0, 1).
@@ -53,7 +53,7 @@ def build_model(data: dict[str, Any]):
 
         # Identifiability pinning, as in Stan's transformed parameters: alpha[1]=0
         # (model.stan 42-43), beta[n_d]=0 (44-45). rho = 2*r_rho-1 maps Beta(2,2)
-        # onto (-1, 1) (model.stan 46) — the CCL correlation between successive
+        # onto (-1, 1) (model.stan 46) - the CCL correlation between successive
         # accident years' log-losses.
         alpha = pm.Deterministic("alpha", pt.concatenate([pt.zeros(1), r_alpha]))
         beta = pm.Deterministic("beta", pt.concatenate([r_beta, pt.zeros(1)]))
@@ -66,7 +66,7 @@ def build_model(data: dict[str, Any]):
         sig = pm.Deterministic("sig", pt.sqrt(sig2))
 
         # mu = P(rho) @ B, the closed form of the Stan prev_idx recurrence (see
-        # kernels.contract.ccl_mu_index) — an N x N matmul keeps the PyTensor
+        # kernels.contract.ccl_mu_index) - an N x N matmul keeps the PyTensor
         # C-graph tiny vs. the N-deep unrolled scalar chain (which dominates
         # compile time). Powers via a table indexed by the static exponents.
         base = logprem + logelr + alpha[w0] + beta[d0]
@@ -75,7 +75,7 @@ def build_model(data: dict[str, Any]):
         p_mat = colmask * pow_table[expo]
         mu = pm.Deterministic("mu", p_mat @ big_b)
 
-        # Likelihood: log(C[w,d]) ~ Normal(mu, sig[d]) — Stan model block line 69.
+        # Likelihood: log(C[w,d]) ~ Normal(mu, sig[d]) - Stan model block line 69.
         pm.Normal("obs", mu, sig[d0], observed=logloss)
     return model
 
@@ -94,15 +94,15 @@ def sample(
 ):
     """Sample the CCL posterior with PyMC's NUTS; return ``arviz.InferenceData``.
 
-    ``cores=1`` by default — PyMC's multiprocessing chain execution is fragile
+    ``cores=1`` by default - PyMC's multiprocessing chain execution is fragile
     on Windows. The returned idata carries ``sample_stats`` (divergences etc.)
     and a ``log_likelihood`` group for the observed cells (ELPD-ready).
 
     ``nuts_sampler`` selects the NUTS implementation over the *same* PyMC model
-    graph: ``"pymc"`` (native, PyTensor C backend — the default and the parity
+    graph: ``"pymc"`` (native, PyTensor C backend - the default and the parity
     reference), or a faster alternative such as ``"nutpie"`` (Rust, compiles the
     logp via numba) / ``"numpyro"`` / ``"blackjax"`` when that package is
-    installed. Because the graph is identical, only runtime changes — the
+    installed. Because the graph is identical, only runtime changes - the
     posterior (and parity) are unaffected. See the model card's convergence note
     on why native PyMC is slow on a BLAS-less pip PyTensor.
     """
@@ -117,7 +117,7 @@ def sample(
         # `init` left at pm.sample's default (jitter+adapt_diag): no custom init,
         # so the card's convergence comparison measures the centered
         # parameterization, not an init trick. compute_convergence_checks=False
-        # keeps sampling clean — R-hat/ESS are computed once via arviz in
+        # keeps sampling clean - R-hat/ESS are computed once via arviz in
         # model.py::convergence() so every backend reports identical diagnostics.
         idata = pm.sample(
             draws=iter_sampling,

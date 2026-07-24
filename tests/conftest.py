@@ -4,7 +4,7 @@ must be documented in transforms.py.
 
 Why both backends: ibis is the dataframe frontend (CLAUDE.md design decision 2)
 and duckdb/polars are equally supported, but the ibis polars backend (10.x) has
-NO window-function support at all — every ``WindowFunction`` raises
+NO window-function support at all - every ``WindowFunction`` raises
 ``OperationNotDefinedError``, and there is no ``ScalarSubquery`` either. That
 forces ``triangle/transforms.py`` to express running sums / lags as equi-join +
 group-by. Parameterizing the whole suite on ``backend_name`` is what keeps those
@@ -39,7 +39,7 @@ def backend_name(request) -> str:
 
 
 def d(iso: str) -> dt.date:
-    """Terse ``date`` literal — triangle keys are dates, not timestamps."""
+    """Terse ``date`` literal - triangle keys are dates, not timestamps."""
     return dt.date.fromisoformat(iso)
 
 
@@ -48,7 +48,7 @@ def small_cumulative(backend_name) -> Triangle:
     """3 origins x up-to-3 yearly devs, one segment, cumulative paid.
 
     A minimal square upper triangle: origin 2020 seen at devs 12/24/36, 2021 at
-    12/24, 2022 at 12 — i.e. exactly the cells a reserving actuary would have at
+    12/24, 2022 at 12 - i.e. exactly the cells a reserving actuary would have at
     12/31/2022. Values are chosen so every increment is distinct and hand-checkable
     (2020: 100 -> +50 -> +25).
     """
@@ -88,7 +88,7 @@ def make_multiline_triangle(
     Builder for the multi-LOB contracts (kernels/multiline.py, kernels/nn_contract.py),
     which consume one company at a time with >= 2 lines. Matrix layout mirrors the
     contracts' own ``(n_w, n_d)`` grids so expected values can be written as arrays.
-    NaN means unobserved and is simply not emitted — the long format never densifies
+    NaN means unobserved and is simply not emitted - the long format never densifies
     (absent = unobserved, zero = an explicit observation).
     """
     rows = []
@@ -161,7 +161,7 @@ def sorted_long(t: Triangle) -> pd.DataFrame:
 def assert_triangles_equal(a: Triangle, b: Triangle, atol: float = 1e-8) -> None:
     """Two triangles hold the same cells with the same values.
 
-    Keys are compared exactly (a fabricated or dropped cell is a hard failure — that
+    Keys are compared exactly (a fabricated or dropped cell is a hard failure - that
     is the whole point of the sparsity conventions), values only to ``atol``. The
     1e-8 default is absolute rather than relative because Schedule P values are
     dollars in the 1e3-1e7 range where float64 round-trips through SQL engines are

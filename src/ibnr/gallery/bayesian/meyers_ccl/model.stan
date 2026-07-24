@@ -1,4 +1,4 @@
-// Correlated Chain Ladder (CCL) — Meyers, "Stochastic Loss Reserving Using
+// Correlated Chain Ladder (CCL) - Meyers, "Stochastic Loss Reserving Using
 // Bayesian MCMC Models", CAS Monograph 1 (2015); renamed CAY (Correlated
 // Accident Year) in the 2nd edition, CAS Monograph 8 (2019), section 8.
 //

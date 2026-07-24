@@ -1,15 +1,15 @@
 """Multi-line triangle transformer network. See card.md and model.py.
 
 One encoder over every (line, origin, dev) cell of a COMPANY, so attention
-spans a company's lines of business — the learned analogue of SUR's
+spans a company's lines of business - the learned analogue of SUR's
 contemporaneous correlation (Zhang 2010) and the copula's cell dependence
 (Shi & Frees 2011), the two explicit baselines this entry is compared against.
 Contrast the single-line ``nn.transformer.network``: that encoder sees one
 line at a time, so its per-line draws are independent; here every line is a
-token in the same sequence and dependence can be learned. Imports torch —
+token in the same sequence and dependence can be learned. Imports torch -
 only import this module from inside the entry's fit/predict paths.
 
-Two dependence heads (config.dependence) — the research question is which
+Two dependence heads (config.dependence) - the research question is which
 mechanism carries cross-line dependence better:
 - "ar":    univariate MDN per token (identical head to the single-line model);
            cross-line dependence enters only through within-diagonal
@@ -18,7 +18,7 @@ mechanism carries cross-line dependence better:
 - "joint": per-(origin, dev) multivariate Gaussian mixture over the LINE
            vector, Cholesky-parameterized so any covariance is representable.
            At training/eval time absent or non-target lines are marginalized
-           out — a marginal of a Gaussian mixture is the mixture of the
+           out - a marginal of a Gaussian mixture is the mixture of the
            components' marginals, i.e. just drop the missing rows/cols of each
            component's mean and covariance.
 """
@@ -40,7 +40,7 @@ class TriangleTransformerML(nn.Module):
 
     Token = [channel values * context flag, context flag] projected to
     d_model, plus line / origin / dev embeddings, a relative calendar
-    embedding (distance past the conditioning cutoff — supervised by the
+    embedding (distance past the conditioning cutoff - supervised by the
     cutoff augmentation, unlike absolute positions), and per-line premium
     conditioning. Absent lines are excluded from attention via the padding
     mask and from every loss via the masks the entry passes in.
@@ -69,7 +69,7 @@ class TriangleTransformerML(nn.Module):
         self.dev_emb = nn.Embedding(n_d, d)  # development lag
         # relative calendar position: distance past the conditioning cutoff,
         # clamped to [0, n_d]. Relative (not absolute) so it is supervised at
-        # the same distances the rollout later queries — see single-line card.
+        # the same distances the rollout later queries - see single-line card.
         self.dist_emb = nn.Embedding(n_d + 1, d)
         self.prem_proj = nn.Linear(1, d)  # per-line normalized log premium -> d
         self.drop = nn.Dropout(cfg.dropout)
@@ -162,7 +162,7 @@ class TriangleTransformerML(nn.Module):
 
         The "ar" head: every cell gets its own independent 1-D mixture, exactly
         as in the single-line model. Cross-line dependence is NOT in these
-        params — it is injected later by the rollout's line-by-line sampling.
+        params - it is injected later by the rollout's line-by-line sampling.
         """
         h = self.encode(*args)  # (B, L, W, D, d)
         # last dim d -> 3*K, split into (logits, means, log-scales) x K
@@ -208,7 +208,7 @@ def joint_mdn_nll(
     mu: torch.Tensor,  # (B, W, D, K, L)
     scale_tril: torch.Tensor,  # (B, W, D, K, L, L)
     y: torch.Tensor,  # (B, L, W, D)
-    target_mask: torch.Tensor,  # (B, L, W, D) bool — cells that count
+    target_mask: torch.Tensor,  # (B, L, W, D) bool - cells that count
 ) -> torch.Tensor:
     """Mean NLL of the line vector over target cell-groups, marginalizing
     lines that are not targets in a group (absent lines, ragged masks).
@@ -217,7 +217,7 @@ def joint_mdn_nll(
     for each cell-group we drop the non-target rows/cols from every component's
     mean and covariance and score the reduced-dimension density. Groups with
     the same target pattern (which lines are present) share those index ops,
-    so we batch by distinct pattern — few distinct patterns in practice.
+    so we batch by distinct pattern - few distinct patterns in practice.
     """
     b, n_l, n_w, n_d = y.shape
     # collapse the (B, W, D) grid to one row per cell-group; L is the line axis

@@ -1,8 +1,8 @@
 """kernels.predictive + kernels.calibration: the unifying output type and the
 Meyers-style calibration test applied to it.
 
-``PredictiveDistribution`` is what every gallery entry must return — Bayesian, NN,
-or bootstrapped deterministic (CLAUDE.md design decision 4) — so its moment,
+``PredictiveDistribution`` is what every gallery entry must return - Bayesian, NN,
+or bootstrapped deterministic (CLAUDE.md design decision 4) - so its moment,
 quantile, PIT and totalling behavior is the interface the whole leaderboard rests
 on. ``ks_uniformity`` is the retrospective's verdict: predicted percentiles of
 realized outcomes should be Uniform(0, 1), and the KS statistic against that is
@@ -29,7 +29,7 @@ def pred():
     tolerances are deterministic rather than flaky.
     """
     rng = np.random.default_rng(7)
-    # (20_000 draws, 2 targets) — the canonical PredictiveDistribution layout
+    # (20_000 draws, 2 targets) - the canonical PredictiveDistribution layout
     samples = np.column_stack([rng.normal(100, 10, 20_000), rng.normal(200, 20, 20_000)])
     targets = pd.DataFrame({"label": ["a", "b"]})
     return PredictiveDistribution(samples=samples, targets=targets)
@@ -52,7 +52,7 @@ def test_cdf_is_pit(pred):
     pits = pred.cdf([100.0, 240.0])
     assert pits[0] == pytest.approx(0.5, abs=0.02)  # outcome at the mean
     assert pits[1] == pytest.approx(0.977, abs=0.01)  # outcome at +2 sigma
-    # one observation per target is required — a length mismatch is a caller bug
+    # one observation per target is required - a length mismatch is a caller bug
     # that would otherwise misalign every percentile in a retrospective
     with pytest.raises(ValueError, match="shape"):
         pred.cdf([1.0])
@@ -82,7 +82,7 @@ def test_with_total(pred):
 
 def test_shape_validation():
     """Samples must be 2-D (draws, targets) and their width must match the targets
-    frame — a silent transpose or off-by-one would mislabel every result."""
+    frame - a silent transpose or off-by-one would mislabel every result."""
     with pytest.raises(ValueError, match="2-D"):
         PredictiveDistribution(samples=np.zeros(5), targets=pd.DataFrame({"x": [1]}))
     with pytest.raises(ValueError, match="target rows"):
@@ -100,8 +100,8 @@ def test_ks_uniformity_accepts_uniform():
 
 
 def test_ks_uniformity_rejects_concentrated():
-    """PITs bunched near 0.5 — the signature of an over-dispersed model whose
-    intervals are too wide — are rejected, and ``repr`` flags it with the ``*``
+    """PITs bunched near 0.5 - the signature of an over-dispersed model whose
+    intervals are too wide - are rejected, and ``repr`` flags it with the ``*``
     that marks failing entries in the results tables."""
     rng = np.random.default_rng(11)
     res = ks_uniformity(np.clip(rng.normal(0.5, 0.08, 200), 0, 1))

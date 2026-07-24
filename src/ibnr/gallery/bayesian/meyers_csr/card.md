@@ -1,4 +1,4 @@
-# meyers_csr — Changing Settlement Rate (Meyers)
+# meyers_csr - Changing Settlement Rate (Meyers)
 
 **Family:** bayesian · **Reference:** Meyers, *Stochastic Loss Reserving Using
 Bayesian MCMC Models*, CAS Monograph 1 (2015) section 8; 2nd ed. Monograph 8
@@ -7,7 +7,7 @@ Bayesian MCMC Models*, CAS Monograph 1 (2015) section 8; 2nd ed. Monograph 8
 The monograph's **paid-loss** model: a cross-classified lognormal whose
 log-development factors trend across accident years with a settlement-rate
 parameter. Meyers built CSR because the plain cross-classified model (CRC)
-systematically overestimates paid ultimates when claim settlement speeds up —
+systematically overestimates paid ultimates when claim settlement speeds up -
 a positive `gamma` shrinks `beta[d] * (1-gamma)^(w-1)` toward zero for later
 origins, absorbing the speedup.
 
@@ -22,7 +22,7 @@ log(C[w,d]) ~ normal(mu[w,d], sig[d])
 with `alpha[1] = 0` and `beta[n_d] = 0` (so `e^logelr` reads as the expected
 loss ratio and the fully-developed origin defines the level). `gamma == 0`
 recovers the CRC model exactly; CSR differs from CCL/CAY in having **no
-across-origin correlation term** (`rho`) — origins are conditionally
+across-origin correlation term** (`rho`) - origins are conditionally
 independent given the parameters.
 
 Priors (variance-10 normals, exactly as in the monograph):
@@ -32,7 +32,7 @@ Priors (variance-10 normals, exactly as in the monograph):
 | logelr | normal(-0.4, sqrt(10)) | log expected loss ratio |
 | alpha[w], w>=2 | normal(0, sqrt(10)) | AY level offsets |
 | beta[d], d<n_d | normal(0, sqrt(10)) | development profile |
-| gamma | normal(0, **0.05**) | settlement-rate trend; **sd 0.05**, not variance — Meyers' Stan code says `gamma ~ normal(0, 0.05)` while his prose convention elsewhere quotes variances |
+| gamma | normal(0, **0.05**) | settlement-rate trend; **sd 0.05**, not variance - Meyers' Stan code says `gamma ~ normal(0, 0.05)` while his prose convention elsewhere quotes variances |
 | sig2[d] | sum_{i=d}^{n_d} a_i, a_i ~ uniform(0,1) | forces sig2 decreasing in d |
 
 ## Backends
@@ -65,11 +65,11 @@ already reserves the dispatch seam.
 
 ## Data contract
 
-`kernels.contract.stan_data` — the same dict as the whole Meyers family;
+`kernels.contract.stan_data` - the same dict as the whole Meyers family;
 CSR consumes `(len_data, n_w, n_d, w, d, logprem, logloss)` and ignores
 `prev_idx`. Fits **paid_loss** (`loss_field` default) against net earned
 premium, per the monograph. Lognormal likelihood requires positive training
-cells; Meyers clamps paid cells to a floor of 1 (in $000s) — the validation
+cells; Meyers clamps paid cells to a floor of 1 (in $000s) - the validation
 harness reproduces that clamp so the paid study keeps the same company
 cohort as the incurred (CCL) study.
 
@@ -78,7 +78,7 @@ cohort as the incurred (CCL) study.
 The monograph's simulation, exactly as in `CSR.R`:
 
 1. Origin 1 (fully developed at the training cutoff) is its observed
-   `C[1, n_d]` — zero predictive variance.
+   `C[1, n_d]` - zero predictive variance.
 2. For w >= 2: `C[w, n_d] ~ lognormal(logprem[w] + logelr + alpha[w], sig[n_d])`,
    independent across origins (`beta[n_d] = 0` kills the speedup term at
    the ultimate, which is why estimates coincide with CRC's).
@@ -97,13 +97,13 @@ across companies): run via `scripts/meyers_validation.py --model meyers_csr`.
 Results land in `analysis/results/meyers_csr_validation.csv`. The monograph's
 own paid CSR result (2nd ed. Figure 7.4) **passes uniformity outright**:
 combined KS D = 3.1 vs critical 9.6, and every line individually (CA 5.9,
-PA 18.5, WC 12.0, OL 10.4 vs critical 19.2) — versus the plain CRC's
+PA 18.5, WC 12.0, OL 10.4 vs critical 19.2) - versus the plain CRC's
 combined D = 25.5*. That is the bar to compare against.
 
 **Our result (2026-07-20, 200 companies, 4x2500 draws, adapt_delta 0.9,
-zero failures): combined KS D = 4.1 (crit 9.6, p = 0.885) — passes, in line
+zero failures): combined KS D = 4.1 (crit 9.6, p = 0.885) - passes, in line
 with Meyers' 3.1.** Per line (crit 19.2): CA 7.4, WC 11.9, OL 13.3 all
-pass; PA fails at 25.3* (Meyers' PA was 18.5, just under — private
+pass; PA fails at 25.3* (Meyers' PA was 18.5, just under - private
 passenger auto's post-1997 settlement regime is the shared weak spot).
-Occasional divergences (typically <0.2%, worst ~1.3% on one chain) —
+Occasional divergences (typically <0.2%, worst ~1.3% on one chain) -
 the centered-parameterization property already documented for CCL.

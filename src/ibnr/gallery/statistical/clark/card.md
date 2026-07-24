@@ -1,4 +1,4 @@
-# clark — Clark (2003) growth-curve MLE
+# clark - Clark (2003) growth-curve MLE
 
 **Family:** statistical · **Reference:** Clark, "LDF Curve-Fitting and
 Stochastic Reserving: A Maximum Likelihood Approach", *CAS Forum* (Fall
@@ -29,18 +29,18 @@ Growth curves (`growth_curve=`):
 
 **Ages** are measured from the origin period's average accident date
 (uniform-writing assumption): a cell at dev index `d` (annual grain) spans
-`[max(12(d-1) - 6, 0), 12d - 6]` months. This is Clark's convention and —
-verified empirically — exactly what chainladder's `ClarkLDF` does; plain
+`[max(12(d-1) - 6, 0), 12d - 6]` months. This is Clark's convention and -
+verified empirically - exactly what chainladder's `ClarkLDF` does; plain
 end-of-period ages give a visibly different curve (omega 2.04 vs 1.44 on
 genins).
 
 Methods (`method=`):
 
 - **`cape_cod`** (default, Clark's recommendation): `U[w] = ELR * premium[w]`
-  with one profiled ELR — 3 parameters total.
+  with one profiled ELR - 3 parameters total.
 - **`ldf`**: free `U[w]` per origin (profile MLE
   `U[w] = paid_to_date[w] / G(age[w])`), so the point ultimate is the
-  truncated-LDF answer `paid * G(x_max)/G(age[w])` — n_w + 2 parameters.
+  truncated-LDF answer `paid * G(x_max)/G(age[w])` - n_w + 2 parameters.
 
 The curve MLE is a 2-D Nelder-Mead over `(log omega, log theta)` with the
 level parameters profiled out in closed form (Poisson MLE given the curve).
@@ -50,14 +50,14 @@ level parameters profiled out in closed form (Poisson MLE given the curve).
 - `phi`: Pearson chi-square / (n - p), Clark's scale estimate.
 - **Parameter risk**: MVN draws on the log-parameters with covariance
   `phi * inverse observed Poisson information` (numerical Hessian at the
-  MLE) — the quasi-likelihood delta method of the paper, in log space so
+  MLE) - the quasi-likelihood delta method of the paper, in log space so
   levels stay positive.
 - **Process risk**: scaled-Poisson ODP draws `phi * Poisson(mu/phi)` per
   future cell, the same process distribution as the `england_verrall_odp`
   entry and the bootstrap ODP baselines.
 
 **Truncation:** increments are projected only to the triangle's final age
-(`n_d`) — no tail beyond the curve's support in the data. The backtest
+(`n_d`) - no tail beyond the curve's support in the data. The backtest
 scores `C[w, n_d]`, and chainladder's `ClarkLDF` ultimate truncates
 identically (its fully-developed origin gets ultimate = latest). Extending
 `G` to infinity is a deliberate non-goal here; Clark's own truncation
@@ -65,7 +65,7 @@ discussion applies.
 
 ## Data contract
 
-`kernels.contract.odp_stan_data` — incremental cells, `paid_to_date` /
+`kernels.contract.odp_stan_data` - incremental cells, `paid_to_date` /
 `latest_d` anchors, premium by origin. Negative increments are rejected
 (same ODP limitation as the bootstrap; failures are recorded, not patched).
 Zero increments are fine. The `ldf` method additionally requires positive
@@ -80,17 +80,17 @@ paid-to-date per origin; `cape_cod` does not.
   No published Meyers-monograph bar exists for Clark; the comparison set is
   the paid panel (england_verrall_odp, meyers_csr) on identical cohorts.
 
-**Result (2026-07-20, cape_cod, 95/200 companies completed — 105 rejected
+**Result (2026-07-20, cape_cod, 95/200 companies completed - 105 rejected
 for negative paid increments, PPA worst): fails uniformity catastrophically.
-Combined KS D = 61.3* vs crit 14.0 with outcome percentiles piled at ~0 —
+Combined KS D = 61.3* vs crit 14.0 with outcome percentiles piled at ~0 -
 systematic paid over-prediction.** Two stacked causes: (1) the post-1997
 settlement speedup that sinks every no-speedup paid model in this window
 (Meyers' bootstrap ODP: D = 24.1*; our Bayesian ODP panel: same story);
-(2) the loglogistic tail — G still holds several percent of ultimate beyond
+(2) the loglogistic tail - G still holds several percent of ultimate beyond
 the ages where short-tail books have finished paying, so even books the ODP
 scores mid-range get dragged to percentile ~0. The **weibull arm** isolates
 cause 2: D = 49.6* (`clark_validation_weibull.csv`,
-`--growth-curve weibull`), OL passes (25.8 < 27.8), CA improves 54→39 —
+`--growth-curve weibull`), OL passes (25.8 < 27.8), CA improves 54→39 -
 materially better, still failing on the regime. Use weibull for short-tail
 lines; treat this entry's role in the paid panel as the curve-fit baseline,
 not a calibrated reserve.

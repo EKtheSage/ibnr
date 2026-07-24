@@ -1,11 +1,11 @@
-# sur — Seemingly Unrelated Regression (multivariate chain ladder)
+# sur - Seemingly Unrelated Regression (multivariate chain ladder)
 
 **Family:** statistical (frequentist stochastic; simulation-based predictive)
 **Provenance:** Zhang (2010), *A general multivariate framework for predicting
 reserves*, and the multivariate chain ladder literature (Prohl & Schmidt).
 This entry is the no-intercept special case whose point estimates collapse to
 the volume-weighted chain ladder per line, plus a contemporaneous cross-line
-error correlation — "chain ladder + dependence", estimated jointly.
+error correlation - "chain ladder + dependence", estimated jointly.
 
 ## Model
 
@@ -54,7 +54,7 @@ pooled, not estimated.** This is a documented limitation, not a bug.
 
 `predict()` simulates each origin forward from its latest observed diagonal:
 per draw, one coefficient vector per transition sampled from
-`N(beta_hat, coef_cov)` (parameter risk, common across origins — set
+`N(beta_hat, coef_cov)` (parameter risk, common across origins - set
 `param_uncertainty=False` for process-only), plus cross-line correlated
 process noise `e_k = sqrt(C_k) * (L_d z)_k` with `L_d = chol(Sigma_d)`,
 independent across origins and transitions. Ultimates are the simulated

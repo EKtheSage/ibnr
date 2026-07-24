@@ -6,7 +6,7 @@ contract), the ODP maximum-likelihood fit, and the Pearson dispersion phi.
 
 The genins (Taylor & Ashe) sample is England & Verrall's own worked example;
 all increments are positive, so it exercises the contract without tripping
-the negative-increment guard. No cmdstan needed — everything here is the
+the negative-increment guard. No cmdstan needed - everything here is the
 plug-in numpy layer under the Bayesian entry, which is why these run in the
 default suite while ``test_england_verrall_odp.py`` sits behind ``slow``.
 
@@ -71,7 +71,7 @@ def test_ipf_reproduces_chainladder_ultimates(genins_contract):
     Two halves of the classic result. First the Poisson MLE property: fitted
     values reproduce the observed row totals *exactly* (rel=1e-9 is IPF
     convergence noise, not statistical slack). Then the consequence actuaries
-    care about — paid-to-date plus the fitted future increments equals
+    care about - paid-to-date plus the fitted future increments equals
     chainladder-python's volume-weighted ultimates. This equivalence is what
     licenses the Bayesian entry's vague-prior sanity check.
     """
@@ -135,7 +135,7 @@ def test_negative_increment_rejected():
 
     An over-dispersed Poisson has non-negative support, so a negative
     incremental (salvage/subrogation, a reserve takedown) is not a data quirk to
-    clamp — it invalidates the model. Fail at contract time with a clear error
+    clamp - it invalidates the model. Fail at contract time with a clear error
     rather than letting Stan diverge. raa is the canonical example: it carries a
     well-known negative increment.
     """

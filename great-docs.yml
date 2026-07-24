@@ -27,7 +27,7 @@ dynamic: false
 # --------------------
 repo: https://github.com/EKtheSage/ibnr
 tagline: >
-  Probabilistic loss reserving with mandatory evaluation — Bayesian MCMC,
+  Probabilistic loss reserving with mandatory evaluation - Bayesian MCMC,
   neural, and statistical methods over a long-format triangle data layer.
 
 # API Discovery Settings
@@ -85,7 +85,7 @@ authors:
 reference:
   - title: Triangle
     desc: >
-      The long-format triangle data layer — a tidy table of
+      The long-format triangle data layer - a tidy table of
       origin_period / dev_lag / eval_date cells over an ibis expression
       (duckdb or polars backend), carrying grain, cumulative/incremental,
       and units metadata.
@@ -123,7 +123,7 @@ reference:
   - title: Gallery
     desc: >
       Discover, retrieve, and fit reserving models through the GalleryEntry
-      contract. Every entry — Bayesian, neural, or statistical — produces a
+      contract. Every entry - Bayesian, neural, or statistical - produces a
       PredictiveDistribution.
     contents:
       - gallery.list
@@ -144,7 +144,7 @@ reference:
 
   - title: Retrospective harness
     desc: >
-      Parallel company x line backtesting with staged sampler escalation —
+      Parallel company x line backtesting with staged sampler escalation -
       the compute seam behind the study scripts.
     contents:
       - kernels.harness.run_retro

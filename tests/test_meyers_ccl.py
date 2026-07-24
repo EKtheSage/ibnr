@@ -2,7 +2,7 @@
 
 Protects the whole Bayesian pipeline for one real company: mart load →
 ``as_of`` training slice → Stan fit → ``PredictiveDistribution`` → scoring
-against realized ultimates. It is a *smoke* test, not the validation run —
+against realized ultimates. It is a *smoke* test, not the validation run -
 statistical calibration is settled by the 200-company retrospective in
 ``scripts/meyers_validation.py``, so the assertions here are deliberately
 loose and only catch wiring breakage.
@@ -48,12 +48,12 @@ pytestmark.append(
 )
 
 
-# Module-scoped: one sample for the whole file — the fit is the expensive part.
+# Module-scoped: one sample for the whole file - the fit is the expensive part.
 @pytest.fixture(scope="module")
 def fitted():
     """Fit CCL on the Meyers setup: 1988-1997 accident years, 1997 diagonal.
 
-    ``as_of="1997-12-31"`` is the Meyers monograph's training cutoff — a square
+    ``as_of="1997-12-31"`` is the Meyers monograph's training cutoff - a square
     10x10 upper triangle whose ultimates are realized ten years later in the same
     mart, which is what makes the retrospective possible. Chains/iterations are
     cut down from the production retro settings to keep the smoke test to a few
@@ -81,7 +81,7 @@ def test_fit_converges(fitted):
     """The sampler actually converged on the core CCL parameters.
 
     Restricted to the model's own parameters (level, AY/dev effects, the AY
-    correlation rho, the dev-varying sigmas) — generated quantities and
+    correlation rho, the dev-varying sigmas) - generated quantities and
     transformed parameters would add noise to the max/min without saying
     anything about the sampler. Thresholds are the usual diagnostic
     conventions (R-hat < 1.1, ESS > 100), loosened for a 2-chain short run.

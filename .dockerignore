@@ -7,7 +7,7 @@ tests
 **/__pycache__
 **/*.pyc
 # locally compiled cmdstan artifacts next to the .stan sources (Windows dev
-# box) — the image compiles its own Linux executables at build time
+# box) - the image compiles its own Linux executables at build time
 src/**/*.exe
 src/**/*.o
 src/**/*.d

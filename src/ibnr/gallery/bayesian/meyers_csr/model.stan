@@ -1,4 +1,4 @@
-// Changing Settlement Rate (CSR) — Meyers, "Stochastic Loss Reserving Using
+// Changing Settlement Rate (CSR) - Meyers, "Stochastic Loss Reserving Using
 // Bayesian MCMC Models", CAS Monograph 1 (2015) section 8 / Monograph 8
 // (2019, 2nd ed.) section 7. The paid-loss counterpart of CCL/CAY: the
 // cross-classified lognormal with a settlement-rate trend.

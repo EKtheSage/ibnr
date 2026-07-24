@@ -1,11 +1,11 @@
 # analysis
 
-Exploratory notebooks. Not part of the package or its test suite — they read
+Exploratory notebooks. Not part of the package or its test suite - they read
 the package and its artifacts (the validation CSVs in `analysis/results/`, the
 local CAS Schedule P gold mart) and tell the story.
 
 `results/` holds generated outputs (e.g. `scripts/meyers_validation.py` writes
-its per-insurer CSVs here by default). Regenerable — safe to delete and rebuild.
+its per-insurer CSVs here by default). Regenerable - safe to delete and rebuild.
 
 ## Running
 

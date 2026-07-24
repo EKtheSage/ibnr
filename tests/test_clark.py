@@ -1,8 +1,8 @@
 """Clark (2003) MLE tieouts against chainladder-python's ClarkLDF, plus
-predictive-contract checks. Fast — no cmdstan involved.
+predictive-contract checks. Fast - no cmdstan involved.
 
-Clark fits a parametric *growth curve* G(age; omega, theta) — loglogistic or
-Weibull — to the emergence pattern instead of estimating a free LDF per dev
+Clark fits a parametric *growth curve* G(age; omega, theta) - loglogistic or
+Weibull - to the emergence pattern instead of estimating a free LDF per dev
 age, under an over-dispersed Poisson likelihood. Two methods: ``ldf``
 (each origin's ultimate anchored on its own paid-to-date) and ``cape_cod``
 (one expected loss ratio shared across origins, requiring premium).
@@ -76,7 +76,7 @@ def test_cape_cod_elr_ties_to_chainladder(genins_tri):
 
     Under Cape Cod the fitted ``level`` is expected *loss*, so dividing by the
     (constant) premium recovers the ELR that ClarkLDF reports directly. A flat
-    premium keeps the comparison unambiguous — with varying premium the two
+    premium keeps the comparison unambiguous - with varying premium the two
     implementations' exposure weighting would also be under test.
     """
     tri_cl, t, field = genins_tri
@@ -112,7 +112,7 @@ def test_predict_contract(genins_tri):
     origin targets, the fully-developed first origin carries no uncertainty, and
     the Monte Carlo mean recovers the analytic MLE total. rel=0.05 on that last
     one is Monte Carlo error at 2000 draws on a right-skewed reserve
-    distribution — the seed is pinned so it is reproducible rather than flaky.
+    distribution - the seed is pinned so it is reproducible rather than flaky.
     """
     _, t, field = genins_tri
     entry = Clark().fit(t, loss_field=field, premium_field=None, method="ldf")

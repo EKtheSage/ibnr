@@ -9,14 +9,14 @@ is directly comparable to the statistical dependence baselines.
 Two ablatable dependence variants, both exercised here (CLAUDE.md: build both
 design variants, keep changes ablatable):
 
-* ``"ar"`` — line-by-line autoregressive sampling; independent per-line heads.
-* ``"joint"`` — a multivariate Gaussian-mixture head over lines, with absent
+* ``"ar"`` - line-by-line autoregressive sampling; independent per-line heads.
+* ``"joint"`` - a multivariate Gaussian-mixture head over lines, with absent
   lines marginalized out of the likelihood.
 
 The invariants that matter are exactly the ones a multi-line model can get
 wrong without any shape error: the joint likelihood must genuinely IGNORE
 absent lines (companies do not write every line), the joint head must be able
-to express correlation at all, and — for both variants — the grand total must
+to express correlation at all, and - for both variants - the grand total must
 be the sum of line totals WITHIN each draw, so the diversified total carries
 the dependence structure instead of being a sum of marginal means.
 
@@ -90,7 +90,7 @@ def test_forward_shapes_and_validity(dependence):
     them: ``ar`` gives per-line univariate mixtures (sigma > 0, weights
     normalized); ``joint`` gives one mixture over lines whose components carry
     a mean vector and a lower-triangular Cholesky factor with positive
-    diagonal — i.e. a genuine multivariate normal, not a diagonal one."""
+    diagonal - i.e. a genuine multivariate normal, not a diagonal one."""
     cfg = tiny(dependence)
     torch.manual_seed(0)
     model = TriangleTransformerML(cfg, n_lines=3, n_features=2, n_w=5, n_d=4)
@@ -149,8 +149,8 @@ def test_joint_nll_marginalizes_absent_lines():
 
 
 def test_joint_sample_shapes_and_determinism():
-    """Sampling the joint head returns one value per (cell, line) — component
-    selection is shared across lines, which is what makes the draw coherent —
+    """Sampling the joint head returns one value per (cell, line) - component
+    selection is shared across lines, which is what makes the draw coherent -
     and repeats exactly under the same explicit generator seed."""
     torch.manual_seed(2)
     b, n_w, n_d, k, n_l = 3, 2, 2, 2, 3
@@ -223,7 +223,7 @@ def test_fit_predict_contract(backend_name, dependence):
 def test_predict_caches_and_reproduces(backend_name):
     """The autoregressive rollout is computed once and reused across predict
     calls (identity check), and a fresh fit at the same seed reproduces the
-    draws exactly — deep-ensemble spread has to be reproducible for any
+    draws exactly - deep-ensemble spread has to be reproducible for any
     calibration result to be citable."""
     t = synthetic_triangle(backend_name)
     entry = NNTransformerML().fit(t, loss_field="paid_loss", config=tiny("ar"), seed=0)

@@ -1,6 +1,7 @@
 """ibnr: gallery-centric probabilistic loss reserving on a long-format triangle layer."""
 
-from importlib.metadata import PackageNotFoundError, version as _dist_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _dist_version
 
 from ibnr.triangle import Triangle, TriangleMeta
 

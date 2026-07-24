@@ -3,7 +3,7 @@
 If a model's predictive distributions are well calibrated, the PIT values of
 realized outcomes across many triangles are uniform on [0, 1]. Meyers tests
 this with p-p plots and the Kolmogorov-Smirnov statistic (D x 100 against the
-5% critical value 1.36/sqrt(n) x 100 — 19.2 for n=50, 9.6 for n=200).
+5% critical value 1.36/sqrt(n) x 100 - 19.2 for n=50, 9.6 for n=200).
 
 Implemented with numpy only (no scipy in the core).
 """

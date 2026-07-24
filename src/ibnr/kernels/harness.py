@@ -3,8 +3,8 @@ pool, with staged sampler escalation.
 
 This is the compute layer between a study script (``scripts/meyers_validation
 .py``, ``scripts/compare_gallery.py``) and the gallery entries. A study
-describes WHAT to run — a list of :class:`RetroTask` (model x line x company,
-training cutoff, loss field) and a per-model escalation policy — and the
+describes WHAT to run - a list of :class:`RetroTask` (model x line x company,
+training cutoff, loss field) and a per-model escalation policy - and the
 harness decides HOW: it fans the tasks over a process pool, gates every fit on
 its convergence diagnostics, and re-fits only the failures at the next stage's
 more expensive sampler settings. It is also the seam a future hosted API calls
@@ -19,13 +19,13 @@ running sequentially inside each of N workers beats N/4 workers running 4
 parallel chains (same core-seconds, better packing, and it preserves the
 entries' fair single-core runtime convention). Within-fit ``parallel_chains``
 becomes worth it only in a LATE escalation stage, when the few surviving
-tasks would otherwise leave cores idle — which is why it is a per-stage
+tasks would otherwise leave cores idle - which is why it is a per-stage
 :class:`SamplerSettings` field and the pool shrinks by that factor.
 
 Workers are separate processes (spawn, so behavior is identical on Windows
 and Linux): cmdstanpy shells out per fit and duckdb/ibis state must not be
 shared across forks. Each worker re-reads the (locally cached) gold mart for
-just its company — cheap next to any MCMC fit. Two parent-side preconditions
+just its company - cheap next to any MCMC fit. Two parent-side preconditions
 keep the pool boring: the warehouse spec handed to tasks must be CONCRETE
 (``data.schedule_p.pinned_source``, so workers never resolve ``@latest`` or
 call gh), and :func:`precompile` builds every Stan executable up front so
@@ -48,7 +48,7 @@ ENV_MAX_WORKERS = "IBNR_MAX_WORKERS"
 
 def default_max_workers() -> int:
     """Worker-pool size when the caller does not choose one: the
-    ``IBNR_MAX_WORKERS`` env var (the container-level control — inside a
+    ``IBNR_MAX_WORKERS`` env var (the container-level control - inside a
     cpu-limited container ``os.cpu_count()`` still reports the HOST's cores,
     so an orchestrator should set this alongside ``--cpus``), else all
     schedulable CPUs, leaving one for the parent and the OS."""
@@ -100,7 +100,7 @@ class ConvergenceGates:
     """Pass/fail thresholds on an entry's ``convergence()`` diagnostics.
 
     A fit failing any gate is re-run at the next stage's settings. Missing
-    diagnostics (None/NaN — e.g. a likelihood-based entry with no sampler)
+    diagnostics (None/NaN - e.g. a likelihood-based entry with no sampler)
     pass by construction: there is nothing an escalated sampler would fix.
     Defaults: the model cards' R-hat 1.05 reporting convention, ~0 tolerance
     for divergences (0.002 of draws), and a min bulk ESS low enough to flag
@@ -142,7 +142,7 @@ class RetroTask:
     training cutoff, score it against the realized outcome.
 
     ``warehouse`` must already be concrete (a local path or a pinned
-    ``github://owner/repo@publish_id`` with the mart cached) — see
+    ``github://owner/repo@publish_id`` with the mart cached) - see
     ``data.schedule_p.pinned_source``. ``fit_kwargs`` carries entry-specific
     arguments (``variant``, ``growth_curve``) verbatim: unlike sampler
     settings they are NOT signature-filtered, so a typo fails loudly as an
@@ -156,19 +156,19 @@ class RetroTask:
     as_of: str
     loss_field: str | None = None  # None: the entry's own default
     #: apply Meyers' pmax(paid, 1) floor before fitting (lognormal-on-paid
-    #: entries only — the study script owns the policy of who gets this)
+    #: entries only - the study script owns the policy of who gets this)
     clamp_paid: bool = False
     seed: int | None = None
     fit_kwargs: dict = field(default_factory=dict)
 
 
-#: diagnostics copied from ``entry.convergence()`` into every result row —
+#: diagnostics copied from ``entry.convergence()`` into every result row -
 #: the gate inputs, plus tail ESS for post-hoc reading
 _DIAG_KEYS = ("max_rhat", "min_ess_bulk", "min_ess_tail", "divergence_frac")
 
 
 def run_task(task: RetroTask, settings: SamplerSettings) -> dict:
-    """Fit + score one task: the worker function. Never raises — a failure
+    """Fit + score one task: the worker function. Never raises - a failure
     comes back as an ``error`` row so the surrounding study always completes
     (the sequential harness's contract, kept)."""
     row: dict = {"model": task.model, "line": task.line, "company_code": task.company_code}
@@ -218,8 +218,8 @@ def run_task(task: RetroTask, settings: SamplerSettings) -> dict:
 
 def precompile(models: Iterable[str] | None = None) -> None:
     """Compile the Stan program of every (given, else registered) entry that
-    has one. Called before the pool spawns — concurrent first-fits would race
-    the compiler over the same executable — and at container build time, so a
+    has one. Called before the pool spawns - concurrent first-fits would race
+    the compiler over the same executable - and at container build time, so a
     container start never pays the compile."""
     from ibnr import gallery
 
@@ -246,7 +246,7 @@ def run_retro(
     attempt (stamped ``row["stage"]``), so escalation replaces, never
     duplicates. Rows come back in task order regardless of completion order.
 
-    ``executor="serial"`` runs everything inline in this process — for tests,
+    ``executor="serial"`` runs everything inline in this process - for tests,
     debugging (real tracebacks), and platforms where spawning is unwanted.
     ``runner`` is injectable for the same reason. ``progress`` (if given) is
     called as ``progress(row, stage, done_in_stage, total_in_stage)`` from the

@@ -2,7 +2,7 @@
 
 Releases go out through **PyPI Trusted Publishing** (OIDC). GitHub Actions
 proves its identity to PyPI directly, so **no API token is stored in this
-repository** — there is no secret to leak, and nothing to rotate.
+repository** - there is no secret to leak, and nothing to rotate.
 
 The workflow is [`.github/workflows/release.yml`](../.github/workflows/release.yml).
 
@@ -11,12 +11,12 @@ The workflow is [`.github/workflows/release.yml`](../.github/workflows/release.y
 > if something does slip through, the fix is to bump `version` in
 > `pyproject.toml` and release again, not to re-upload.
 
-We deliberately **do not use TestPyPI** — it needs a second, separate account,
+We deliberately **do not use TestPyPI** - it needs a second, separate account,
 and the checks below cover what a rehearsal there would have caught.
 
 ## One-time setup
 
-Trusted Publishing requires a *pending publisher* — "pending" because it is
+Trusted Publishing requires a *pending publisher* - "pending" because it is
 registered before the project exists.
 
 Create one at <https://pypi.org/manage/account/publishing/> with exactly these
@@ -34,14 +34,14 @@ The `pypi` GitHub Environment is created automatically on first use. Optionally
 add required reviewers to it under *Settings → Environments* so a release needs
 an explicit approval click.
 
-Renaming the workflow file or the environment breaks the trust relationship —
+Renaming the workflow file or the environment breaks the trust relationship -
 update the publisher on PyPI if you ever do.
 
 ## Pre-flight (replaces the TestPyPI rehearsal)
 
 **1. Dry run in CI.** *Actions → Release → Run workflow.* This builds the
 distributions, runs `twine check --strict`, and uploads them as a downloadable
-artifact — it publishes nothing. Only a tag push can publish.
+artifact - it publishes nothing. Only a tag push can publish.
 
 **2. Confirm the README will render on PyPI.** A description that fails to
 render shows up as raw text on the project page. `twine check --strict` (run by
@@ -61,7 +61,7 @@ uvx --from twine python -c "import zipfile,glob; z=zipfile.ZipFile(glob.glob('di
 Expect `License-Expression: MPL-2.0`, `License-File: LICENSE`, the classifiers,
 and the `Project-URL` entries.
 
-**4. Install the built wheel into a throwaway env** — the strongest check, and
+**4. Install the built wheel into a throwaway env** - the strongest check, and
 it needs no index at all:
 
 ```sh
@@ -101,7 +101,7 @@ be.
 2. Merge to `main`.
 3. Tag `vX.Y.Z` and push the tag.
 
-Keep the tag and `pyproject.toml` version in agreement — nothing enforces it yet.
+Keep the tag and `pyproject.toml` version in agreement - nothing enforces it yet.
 Check `git tag -l` first: a tag that already exists will not re-trigger a
 release.
 
@@ -109,7 +109,7 @@ release.
 
 `ibnr` is a pure-Python `py3-none-any` wheel. hatchling includes every
 git-tracked file under `src/ibnr/`, so the gallery's `model.stan`,
-`model_lognormal.stan` and `card.md` files are bundled — they are located at
+`model_lognormal.stan` and `card.md` files are bundled - they are located at
 runtime via `Path(__file__).parent`, which works in an installed wheel. Verify
 after a packaging change with:
 

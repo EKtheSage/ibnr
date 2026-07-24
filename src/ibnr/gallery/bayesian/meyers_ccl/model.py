@@ -166,7 +166,7 @@ class MeyersCCL(GalleryEntry):
     ):
         """Reference backend: cmdstanpy NUTS on ``model.stan``.
 
-        Ground truth for parity — the ports are checked against this posterior
+        Ground truth for parity - the ports are checked against this posterior
         before any convergence or runtime claim is made.
         """
         # Imported lazily: the [bayesian] extra is optional, and ibnr.gallery
@@ -194,7 +194,7 @@ class MeyersCCL(GalleryEntry):
             max_treedepth=max_treedepth,
             show_progress=show_progress,
         )
-        # Sampling wall-clock only (compile excluded — it is cached after the
+        # Sampling wall-clock only (compile excluded - it is cached after the
         # first fit of a given shape); convergence() reports it per backend.
         runtime_s = time.perf_counter() - t0
         # log_lik is generated per observation for ELPD/LOO in kernels/scores
@@ -228,7 +228,7 @@ class MeyersCCL(GalleryEntry):
     def _sample_pymc(
         self, *, chains, iter_warmup, iter_sampling, seed, target_accept, show_progress
     ):
-        """PyMC (PyTensor) port — the readable reference implementation.
+        """PyMC (PyTensor) port - the readable reference implementation.
 
         Slowest of the three here (~7x Stan; PyTensor evaluates the gradient as
         many small ops and links no BLAS on this box), and the most sensitive to
@@ -260,7 +260,7 @@ class MeyersCCL(GalleryEntry):
         parameters all three expose (Monograph 8, p. 38).
 
         Because ``mu[w]`` depends on the *simulated* ``C[w-1, n_d]`` of the
-        origin above it, the recursion is inherently sequential over origins —
+        origin above it, the recursion is inherently sequential over origins -
         this is exactly the cross-accident-year dependence ``rho`` encodes, and
         it is why the per-origin ultimates are correlated within a draw (which
         in turn widens the total's predictive distribution relative to summing
@@ -279,7 +279,7 @@ class MeyersCCL(GalleryEntry):
         n_draws = logelr.shape[0]
         # Ultimate = the cell at the final dev year, so only sig[n_d] is used
         sig_last = sig[:, n_d - 1]  # (draws,)
-        # Per-origin log premium, (n_w,) — note this is NOT the contract's
+        # Per-origin log premium, (n_w,) - note this is NOT the contract's
         # `logprem`, which is per observed row.
         logprem = np.log(c["premium"])
 
@@ -324,7 +324,7 @@ class MeyersCCL(GalleryEntry):
             }
         )
         pred = PredictiveDistribution(samples=ults, targets=targets)
-        # with_total() appends the per-draw sum as an extra target — summing
+        # with_total() appends the per-draw sum as an extra target - summing
         # within a draw preserves the rho-induced cross-origin dependence, which
         # is the quantity the Meyers retrospective actually tests.
         return pred.with_total()
@@ -333,7 +333,7 @@ class MeyersCCL(GalleryEntry):
         """Outcomes aligned to predict()'s targets (per origin + total), taken
         from the full triangle at the final development lag.
 
-        ``full_triangle`` is the *unsliced* triangle — the later statements that
+        ``full_triangle`` is the *unsliced* triangle - the later statements that
         reveal how the training diagonal actually developed. Restricting to
         ``c["origin_periods"]`` is load-bearing: the Schedule P mart carries
         accident years beyond the training slice, and aggregating without that

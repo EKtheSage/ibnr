@@ -1,7 +1,7 @@
 """kernels.contract: Triangle -> the standardized Stan ``data`` dict.
 
 The Stan ``data`` block is the data contract (CLAUDE.md design decision 3): every
-Bayesian backend — cmdstanpy, NumPyro, PyMC — consumes the identical dict, so a
+Bayesian backend - cmdstanpy, NumPyro, PyMC - consumes the identical dict, so a
 bug here is a bug in every model at once and would show up as a spurious
 cross-backend parity failure rather than as a data bug. Nothing here needs a
 sampler, so these run in the fast suite.
@@ -55,7 +55,7 @@ def _cohort_triangle(extra_segment_rows=False):
 
 
 def test_stan_data_mapping():
-    """Full field-by-field spec of the emitted dict — the reference a reviewer can
+    """Full field-by-field spec of the emitted dict - the reference a reviewer can
     read to know what the Stan ``data`` block will receive."""
     t = _cohort_triangle()
     c = stan_data(t, loss_field="paid_loss", premium_field="earned_premium")

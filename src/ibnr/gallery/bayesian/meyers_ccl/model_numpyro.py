@@ -1,9 +1,9 @@
-"""Meyers CCL — NumPyro port of the Stan reference (``model.stan``).
+"""Meyers CCL - NumPyro port of the Stan reference (``model.stan``).
 
 Same model, same **centered** parameterization, held constant for parity: the
 Stan ``data`` block dict from ``kernels.contract.stan_data`` is consumed
 verbatim. The one documented deviation from ``model.stan`` is that ``a_ig`` is
-an *unbounded* ``InverseGamma(1, 1)`` here — Stan bounds it to (0, 1e5) purely
+an *unbounded* ``InverseGamma(1, 1)`` here - Stan bounds it to (0, 1e5) purely
 to keep ``a = gamma_cdf(1/a_ig | 1, 1)`` away from a hard 0/1 boundary; the mass
 above 1e5 is ~1e-5, far below MCMC noise, and NumPyro transforms the positive
 support to an unconstrained real anyway. ``kernels.parity`` verifies the
@@ -27,7 +27,7 @@ def ccl_model(data: dict[str, Any]) -> None:
     """NumPyro model consuming the standardized Stan data dict.
 
     Mirrors ``model.stan``: identical priors, the reverse-cumsum construction of
-    the decreasing ``sig2``, and the rho residual term — the latter via the
+    the decreasing ``sig2``, and the rho residual term - the latter via the
     vectorized closed form of Stan's ``prev_idx`` recurrence (``ccl_mu_index``).
     """
     import jax.numpy as jnp
@@ -50,7 +50,7 @@ def ccl_model(data: dict[str, Any]) -> None:
     max_expo = int(idx["expo"].max())
     root10 = np.sqrt(10.0)  # prior SD shared by all three normals: Stan sqrt(10.0)
 
-    # Priors — the monograph values, byte-for-byte the Stan `model` block
+    # Priors - the monograph values, byte-for-byte the Stan `model` block
     # (model.stan lines 64-68), held constant for parity. r_alpha/r_beta are the
     # *free* accident-year / dev-lag effects (n-1 of each; the last is pinned to 0
     # below). a_ig is the per-dev variance seed (see reparam note in the module
@@ -85,7 +85,7 @@ def ccl_model(data: dict[str, Any]) -> None:
     p_mat = colmask * pow_table[expo]
     mu = numpyro.deterministic("mu", p_mat @ big_b)
 
-    # Likelihood: log(C[w,d]) ~ Normal(mu, sig[d]) — Stan model block line 69,
+    # Likelihood: log(C[w,d]) ~ Normal(mu, sig[d]) - Stan model block line 69,
     # `logloss ~ normal(mu, sig[d])`. sig[d0] broadcasts the per-dev SD to cells.
     numpyro.sample("obs", dist.Normal(mu, sig[d0]), obs=logloss)
 
@@ -103,7 +103,7 @@ def sample(
 ):
     """Sample the CCL posterior with NUTS and return an ``arviz.InferenceData``.
 
-    ``chain_method="sequential"`` by default — robust on Windows, where JAX's
+    ``chain_method="sequential"`` by default - robust on Windows, where JAX's
     parallel/multiprocessing chain execution is fragile. Returns the same
     diagnostics arviz derives for any backend (``sample_stats.diverging`` etc.)
     plus a ``log_likelihood`` group for the observed cells (ELPD-ready).
@@ -118,7 +118,7 @@ def sample(
 
     # Init strategy is left at NUTS's default (init_to_uniform): no custom init is
     # passed, so the convergence comparison in card.md reflects the centered
-    # parameterization itself, not an init trick — kept identical across backends.
+    # parameterization itself, not an init trick - kept identical across backends.
     kernel = NUTS(ccl_model, target_accept_prob=target_accept)
     mcmc = MCMC(
         kernel,

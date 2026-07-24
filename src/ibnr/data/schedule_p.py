@@ -17,13 +17,13 @@ which is what Meyers' monograph calls "incurred".
 
 Two ways to point this adapter at data (either directly or via the
 IBNR_SCHEDULE_P_WAREHOUSE environment variable; when neither is given the
-default is ``DEFAULT_SOURCE`` — the newest GitHub release, ``@latest``
+default is ``DEFAULT_SOURCE`` - the newest GitHub release, ``@latest``
 resolved to its concrete publish_id up front):
 
-1. a local warehouse directory — parquet under ``warehouse/`` with the active
+1. a local warehouse directory - parquet under ``warehouse/`` with the active
    publish chosen by ``warehouse/_active_manifest.json`` (the sibling checkout
    of cas-schedule-p-data-model);
-2. a GitHub release spec ``github://<owner>/<repo>@<publish_id>`` — the data
+2. a GitHub release spec ``github://<owner>/<repo>@<publish_id>`` - the data
    repo publishes each gold promote as a release tagged with its publish_id,
    carrying every gold table plus a ``manifest.json`` (asset name, sha256,
    bytes per table). Assets are downloaded once via the ``gh`` CLI (which
@@ -78,7 +78,7 @@ SEGMENTS = ["company_code", "company_name", "line_of_business"]
 
 
 def active_mart_path(warehouse: str | Path | None = None, mart: str = TRAINING_MART) -> Path:
-    """Resolve a mart's parquet path — from a local warehouse's active-publish
+    """Resolve a mart's parquet path - from a local warehouse's active-publish
     manifest, or from a cached (downloading if needed) GitHub release when
     ``warehouse`` is a ``github://owner/repo@publish_id`` spec."""
     source = _resolve_source(warehouse)
@@ -93,7 +93,7 @@ def active_mart_path(warehouse: str | Path | None = None, mart: str = TRAINING_M
 
 
 def active_publish_id(warehouse: str | Path | None = None) -> str:
-    """The gold publish's version stamp — stamp this into every results
+    """The gold publish's version stamp - stamp this into every results
     artifact so figures trace back to an exact data publish."""
     source = _resolve_source(warehouse)
     if _is_github_spec(source):
@@ -119,7 +119,7 @@ def pinned_source(warehouse: str | Path | None = None, mart: str = TRAINING_MART
     asset is downloaded into the cache up front. The parallel harness hands
     THIS string to its workers, so they never re-resolve ``@latest`` (a race
     against a release published mid-run would split the study across two data
-    versions) and never call gh concurrently — they only read the local cache.
+    versions) and never call gh concurrently - they only read the local cache.
     Local warehouse paths pass through unchanged.
     """
     source = _resolve_source(warehouse)
@@ -229,7 +229,7 @@ def _release_manifest(repo: str, tag: str) -> tuple[dict, Path]:
     if str(manifest["publish_id"]) != tag:
         raise ValueError(
             f"release {repo}@{tag} carries manifest for publish "
-            f"{manifest['publish_id']!r} — publishes are immutable, refusing to mix"
+            f"{manifest['publish_id']!r} - publishes are immutable, refusing to mix"
         )
     return manifest, cache
 

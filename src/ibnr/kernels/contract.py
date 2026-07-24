@@ -2,7 +2,7 @@
 
 ``stan_data`` produces the dict consumed by the cross-classified lognormal
 family (Meyers CRC/CCL/CSR). NumPyro and PyMC implementations consume the
-IDENTICAL dict — no backend grows its own data prep.
+IDENTICAL dict - no backend grows its own data prep.
 
 Conventions:
 - ``w``/``d`` are 1-based origin/dev indices (Stan style), sorted by (w, d).
@@ -33,7 +33,7 @@ def stan_data(
 
     The triangle must contain exactly one segment combination (one company x
     line); slice with ``triangle.filter`` first. Slice training data with
-    ``triangle.as_of(...)`` before calling — this function uses every row.
+    ``triangle.as_of(...)`` before calling - this function uses every row.
     """
     if triangle.meta.measure != "cumulative":
         raise ValueError("stan_data requires a cumulative triangle")
@@ -127,12 +127,12 @@ def odp_stan_data(
 
     Same conventions as ``stan_data`` (1-based ``w``/``d`` sorted by (w, d)),
     but the observations are *incremental* losses ``inc_loss`` differenced
-    within each origin — the over-dispersed Poisson family models increments,
+    within each origin - the over-dispersed Poisson family models increments,
     not cumulatives. Zero increments are legitimate; negative increments are
     rejected (the ODP quasi-likelihood is undefined there, exactly the
     limitation of the bootstrap ODP baselines). Also carries ``paid_to_date``
     (the latest observed cumulative per origin) and ``latest_d`` (its dev
-    index) — the anchors the predictive simulation completes from.
+    index) - the anchors the predictive simulation completes from.
     """
     if triangle.meta.measure != "cumulative":
         raise ValueError("odp_stan_data requires a cumulative triangle")
@@ -218,14 +218,14 @@ def compartmental_stan_data(
 
     The Gesmann & Morris compartmental family fits BOTH processes at once:
     cumulative paid (``delta = 1``) and case outstanding (``delta = 0``,
-    computed here as ``reported_field - paid_field`` — a level, not a
+    computed here as ``reported_field - paid_field`` - a level, not a
     cumulative). Rows are the stacked cells sorted by (delta, w, d), with
     ``t`` the development age in YEARS at the cell's period end (t = d for
-    annual grains) — the monograph's ODE rate parameters are per-year, and
+    annual grains) - the monograph's ODE rate parameters are per-year, and
     its wkcomp case study measures t exactly this way (Lag = 1..10).
 
     Both fields must be present on the same (w, d) cells (inner-join
-    semantics would silently drop data — mismatches raise instead). No
+    semantics would silently drop data - mismatches raise instead). No
     positivity is enforced: the Gaussian variant takes any value; the
     lognormal variant drops its own non-positive cells and must document
     the count. Carries ``paid_to_date``/``latest_d`` (per-origin anchors)
@@ -329,7 +329,7 @@ def ccl_mu_index(data: dict[str, Any]) -> dict[str, np.ndarray]:
     so mu = P(rho) @ B with P[i, j] = (-rho)^(w_i - w_j) for cells j in the same
     column as i with w_j <= w_i (else 0). ``P`` is the only rho-dependent piece;
     everything here is data, precomputed once. This form keeps the NumPyro/PyMC
-    autodiff graphs tiny (an N x N matmul) instead of an N-deep scalar chain —
+    autodiff graphs tiny (an N x N matmul) instead of an N-deep scalar chain -
     the PyTensor C-compile of the unrolled chain is the dominant cost otherwise.
     Returns ``expo`` (N x N, the exponents w_i - w_j), ``colmask`` (N x N, 1.0
     where j contributes to i), and ``logloss_prev`` (N, the observed previous-
@@ -355,7 +355,7 @@ def realized_values(
     origins: list[dt.date],
 ) -> np.ndarray:
     """Realized cumulative losses at ``dev_lag`` months for the given origins,
-    taken from the FULL (unsliced) triangle — the scoring targets for
+    taken from the FULL (unsliced) triangle - the scoring targets for
     backtests. NaN where the outcome is not (yet) observed."""
     df = triangle.select_fields(loss_field).execute()
     df = df[df["dev_lag"] == dev_lag].copy()

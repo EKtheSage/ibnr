@@ -44,7 +44,7 @@ def odp_mle_fitted(w: np.ndarray, d: np.ndarray, inc: np.ndarray, n_w: int, n_d:
     fitting: m[w,d] = a[w] * b[d] matching the observed row and column totals
     on the triangle's support. These are exactly the chain-ladder fitted
     incrementals (Hachemeister-Stanard / Renshaw-Verrall). Returns the full
-    (n_w, n_d) rectangle — future cells hold the ODP/chain-ladder point
+    (n_w, n_d) rectangle - future cells hold the ODP/chain-ladder point
     forecasts of the unobserved increments.
 
     The multiplicative Poisson MLE m = a[w] * b[d] is the same fit as the
@@ -89,7 +89,7 @@ def pearson_phi(w: np.ndarray, d: np.ndarray, inc: np.ndarray, n_w: int, n_d: in
     # ragged support): m aligned to inc, both (len_data,).
     m = odp_mle_fitted(w, d, inc, n_w, n_d)[w - 1, d - 1]
     # An all-zero dev column (books fully paid before the last lag) fits m = 0
-    # exactly at cells where x = 0 — those cells carry no Pearson information
+    # exactly at cells where x = 0 - those cells carry no Pearson information
     # and are excluded. m = 0 against x > 0 cannot happen (margins are matched).
     live = m > 0
     if not live.any() or (inc[~live] != 0).any():
@@ -135,7 +135,7 @@ class EnglandVerrallODP(GalleryEntry):
         # Backtest slice: keep only cells reported on/before the cutoff diagonal.
         train = triangle.as_of(as_of) if as_of is not None else triangle
         # Standardized incremental ODP contract (w/d lags, inc_loss, logprem,
-        # paid_to_date/latest_d anchors) — the Stan `data` block is the contract.
+        # paid_to_date/latest_d anchors) - the Stan `data` block is the contract.
         self.contract_ = odp_stan_data(train, loss_field=loss_field, premium_field=premium_field)
         c = self.contract_
         # Estimate the dispersion once, up front, and inject it into the data
@@ -207,7 +207,7 @@ class EnglandVerrallODP(GalleryEntry):
         """Predictive distribution of ultimates (losses at the last dev period)
         by origin year plus their total: each origin's observed paid-to-date
         plus simulated future increments, X[w,d] ~ phi * Poisson(m[w,d] / phi)
-        for d beyond the origin's latest observed lag — the od-Poisson process
+        for d beyond the origin's latest observed lag - the od-Poisson process
         draw England & Verrall obtain by imputing future cells (7.11.6), and
         the same process distribution as the ODP bootstrap baselines."""
         if self.idata_ is None or self.contract_ is None:

@@ -1,6 +1,6 @@
 """PredictiveDistribution: the unifying output type for every gallery entry.
 
-Every model — Bayesian, NN, or bootstrapped deterministic — must produce one.
+Every model - Bayesian, NN, or bootstrapped deterministic - must produce one.
 It is just a matrix of posterior/predictive samples over named targets, plus
 the methods the evaluation harness needs (means, quantiles, outcome
 percentiles a la Meyers, summary tables).

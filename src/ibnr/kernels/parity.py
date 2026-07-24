@@ -1,7 +1,7 @@
 """Cross-backend posterior parity (design decision 7).
 
 Before any convergence/speed comparison is meaningful, the NumPyro and PyMC
-ports must be shown to target the *same posterior* as the Stan reference — a
+ports must be shown to target the *same posterior* as the Stan reference - a
 correctness gate, not a performance one. Two correct samplers of the same model
 differ only by Monte-Carlo noise, so we compare each marginal in MCSE units:
 
@@ -10,8 +10,8 @@ differ only by Monte-Carlo noise, so we compare each marginal in MCSE units:
 - **spread agreement**: |sd_ref - sd_port| over the combined MCSE of the *sd*.
 
 Both are z-scores that are ~N(0, 1) under the null (same posterior, independent
-runs). Scaling the spread check by ``mcse_sd`` — rather than a fixed fractional
-tolerance — is what makes parity robust on short chains: a poorly identified
+runs). Scaling the spread check by ``mcse_sd`` - rather than a fixed fractional
+tolerance - is what makes parity robust on short chains: a poorly identified
 parameter (e.g. the deepest-dev ``sig`` with one observation) has a large
 ``mcse_sd``, so its noisier SD estimate is tolerated automatically instead of
 tripping a flat 15% band. A single generous ``z_tol`` (default 4) then gates
@@ -32,7 +32,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-#: default parameters checked for the Meyers cross-classified family — the
+#: default parameters checked for the Meyers cross-classified family - the
 #: interpretable quantities predict() consumes, not the raw nuisance draws.
 CCL_PARITY_VARS = ("logelr", "alpha", "beta", "rho", "sig")
 

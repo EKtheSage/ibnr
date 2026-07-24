@@ -108,21 +108,21 @@ class CopulaGLM(GalleryEntry):
         incr[:, :, 0] = cum[:, :, 0]
         incr[:, :, 1:] = cum[:, :, 1:] - cum[:, :, :-1]
         # A cell is usable only where observed AND its increment is defined (the
-        # predecessor cumulative was also observed — gaps yield NaN differences).
+        # predecessor cumulative was also observed - gaps yield NaN differences).
         usable = mask & ~np.isnan(incr)  # (K, n_w, n_d)
         # Copula is estimated cell-by-cell across lines, so a cell counts only if
         # usable in EVERY line; collapse over the lob axis and rebroadcast.
         usable = np.broadcast_to(usable.all(axis=0), usable.shape).copy()
 
         # Lognormal marginal is undefined on non-positive increments (the crux of
-        # the paid-vs-reported choice — see the module docstring).
+        # the paid-vs-reported choice - see the module docstring).
         nonpos = usable & ~(incr > 0)
         if nonpos.any():
             cells = int(nonpos.any(axis=0).sum())  # count of offending (w, d) cells
             if nonpositive == "error":
                 raise ValueError(
                     f"{cells} cells have a non-positive increment in some line; "
-                    "lognormal marginals need positive increments — use paid losses, "
+                    "lognormal marginals need positive increments - use paid losses, "
                     'or nonpositive="drop" (biased: it censors the left tail)'
                 )
             usable &= ~nonpos.any(axis=0)  # drop the cell in every line, keep alignment
@@ -142,11 +142,11 @@ class CopulaGLM(GalleryEntry):
         if n_obs <= p:
             raise ValueError(
                 f"{n_obs} usable cells for {p} marginal parameters; "
-                'not enough data — try dev_effect="hoerl" or a coarser model'
+                'not enough data - try dev_effect="hoerl" or a coarser model'
             )
         self._check_identified(obs_w, obs_d, n_w, n_d, dev_effect)
 
-        # Marginals: OLS on logs is exact ML for a lognormal regression — no GLM
+        # Marginals: OLS on logs is exact ML for a lognormal regression - no GLM
         # IRLS needed. One pseudo-inverse solves all K lines at once.
         pinv = np.linalg.pinv(x)  # (p, n_obs)
         beta = (pinv @ y.T).T  # (K, p) per-line coefficients
@@ -188,7 +188,7 @@ class CopulaGLM(GalleryEntry):
 
         ``bootstrap`` refits the marginals+copula on ``n_boot`` triangles
         simulated from the fitted model and spreads the draws over the
-        replicates — parameter risk included. ``plugin`` uses point estimates.
+        replicates - parameter risk included. ``plugin`` uses point estimates.
         """
         if self.beta_ is None or self.contract_ is None:
             raise RuntimeError("call fit() first")
@@ -265,7 +265,7 @@ class CopulaGLM(GalleryEntry):
         Each replicate regenerates log loss ratios at the *observed* design from
         the fitted marginals + copula, then re-runs the same OLS-on-logs +
         correlation estimation. Because the design is fixed and the marginal is
-        OLS, a refit is one ``p x n_obs`` pseudo-inverse multiply — milliseconds
+        OLS, a refit is one ``p x n_obs`` pseudo-inverse multiply - milliseconds
         for n_boot=200. Returns per-replicate (beta, sigma, copula Cholesky).
         """
         n_lob = self.beta_.shape[0]
@@ -330,7 +330,7 @@ class CopulaGLM(GalleryEntry):
             if missing_d:
                 raise ValueError(
                     f"dev steps {missing_d} have no usable cells; "
-                    'factor effects unidentified — try dev_effect="hoerl"'
+                    'factor effects unidentified - try dev_effect="hoerl"'
                 )
 
 

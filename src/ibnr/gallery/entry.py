@@ -1,7 +1,7 @@
 """GalleryEntry: the contract every gallery model must satisfy.
 
 `.fit()`, `.predict()`, `.evaluate()`, `.card()` are mandatory. Evaluation
-logic lives in ``kernels`` — entries call it, never reimplement it. An entry
+logic lives in ``kernels`` - entries call it, never reimplement it. An entry
 that cannot satisfy this interface does not register.
 """
 
