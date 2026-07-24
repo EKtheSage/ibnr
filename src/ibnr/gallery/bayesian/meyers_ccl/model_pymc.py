@@ -24,10 +24,6 @@ import numpy as np
 #: Stan's ``upper=`` bound on a_ig (model.stan); see model_numpyro.py.
 A_IG_MAX = 1e5
 
-#: Explicit a_ig start. PyMC's moment-based initval for the truncated
-#: InverseGamma sits at the bound, and ``_init_jitter`` then perturbs it past
-#: the bound, giving ``logp = -inf`` and a hard SamplingError before warmup.
-A_IG_INIT = 1e3
 
 
 def build_model(data: dict[str, Any]):
@@ -59,12 +55,18 @@ def build_model(data: dict[str, Any]):
         logelr = pm.Normal("logelr", -0.4, root10)  # log expected loss ratio
         r_alpha = pm.Normal("r_alpha", 0.0, root10, shape=n_w - 1)
         r_beta = pm.Normal("r_beta", 0.0, root10, shape=n_d - 1)
-        # a_ig truncated to (0, A_IG_MAX) to match Stan's declaration; the
+        # a_ig bounded to (0, A_IG_MAX), matching Stan's
+        # `vector<lower=0, upper=1e5>` declaration. BOTH bounds are required:
+        # with `upper` alone PyMC picks a one-sided log(upper - x) transform,
+        # which jitter can push below 0 - outside the InverseGamma support -
+        # for `logp = -inf` and a SamplingError before warmup. With both, the
+        # transform is a bijection onto (0, A_IG_MAX) and cannot escape. The
         # truncation point and base parameters are fixed, so the normalizing
         # constant PyMC applies (and Stan drops) is a true constant.
         a_ig = pm.Truncated(
             "a_ig",
             pm.InverseGamma.dist(alpha=1.0, beta=1.0),
+            lower=0.0,
             upper=A_IG_MAX,
             shape=n_d,
         )
@@ -133,17 +135,14 @@ def sample(
     model = build_model(data)
     t0 = time.perf_counter()
     with model:
-        # pm.sample's `init` stays at its default (jitter+adapt_diag); the only
-        # init intervention is a_ig's explicit start below. So the card's
-        # convergence comparison still measures the centered parameterization
-        # rather than an init trick. compute_convergence_checks=False
-        # keeps sampling clean - R-hat/ESS are computed once via arviz in
-        # model.py::convergence() so every backend reports identical diagnostics.
+        # `init` left at pm.sample's default (jitter+adapt_diag): no custom
+        # init, so the card's convergence comparison measures the centered
+        # parameterization, not an init trick. (a_ig needs none - its two-sided
+        # bound gives a bijective interval transform that jitter cannot escape.)
+        # compute_convergence_checks=False keeps sampling clean - R-hat/ESS are
+        # computed once via arviz in model.py::convergence(), so every backend
+        # reports identical diagnostics.
         idata = pm.sample(
-            # a_ig's start, supplied HERE rather than as a distribution
-            # `initval`: pm.Truncated ignores that, leaving the moment-based
-            # start at the upper bound where the truncated logp is -inf.
-            initvals={"a_ig": np.full(int(data["n_d"]), A_IG_INIT)},
             draws=iter_sampling,
             tune=iter_warmup,
             chains=chains,
