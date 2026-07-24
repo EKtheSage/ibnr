@@ -1,0 +1,27 @@
+{
+  "timestamp": "2026-07-24T13:28:03",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "processor": "Intel64 Family 6 Model 197 Stepping 2, GenuineIntel",
+  "cpu_count": 16,
+  "python": "3.12.13",
+  "versions": {
+    "ibnr": "0.4.0",
+    "ibis-framework": "12.0.0",
+    "duckdb": "1.5.3",
+    "polars": "1.41.2",
+    "chainladder": "0.9.2",
+    "numpy": "1.26.4",
+    "pandas": "2.3.3"
+  },
+  "args": {
+    "repeat": 5,
+    "budget": 10.0,
+    "datasets": [
+      "raa",
+      "quarterly",
+      "clrd",
+      "schedule_p"
+    ]
+  },
+  "schedule_p_publish_id": "20260613_041006"
+}
