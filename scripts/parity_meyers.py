@@ -48,9 +48,18 @@ METHODOLOGY (this script produces published results - read before changing)
   (the triangle is generated from `--seed`) and are NOT comparable to
   mart-based rows - keep the two kinds of run in separate files.
 
+* One script, one model at a time. `--model` selects which Meyers-family entry
+  is compared; everything else - the cohort selection, the shared sampler
+  settings, the parity gate - is identical across models by construction, so
+  the CSR table means the same thing the CCL table does. Per-model wiring
+  (which loss field the reference posterior is defined on, which parameters
+  parity compares, the model's own target_accept, and the output filenames)
+  lives in `MODELS` and nowhere else.
+
 Usage:
     uv run python scripts/parity_meyers.py --line workers_compensation --n-companies 5
     uv run python scripts/parity_meyers.py --backends numpyro pymc --synthetic
+    uv run python scripts/parity_meyers.py --model meyers_csr --synthetic
 """
 
 from __future__ import annotations
@@ -61,6 +70,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+from ibnr.kernels.parity import CCL_PARITY_VARS, CSR_PARITY_VARS
 
 RESULTS = Path(__file__).parents[1] / "analysis" / "results"
 
@@ -96,7 +107,7 @@ def _load_company_contracts(warehouse, line: str, n_companies: int, seed: int):
 
 
 def _fit_backends(triangle, backends, args):
-    """Fit each backend on one triangle; return {backend: fitted MeyersCCL}.
+    """Fit each backend on one triangle; return {backend: fitted entry}.
 
     THE parity invariant lives here: every backend gets byte-identical
     arguments - same triangle, same loss field, same as_of, same chains /
@@ -104,15 +115,18 @@ def _fit_backends(triangle, backends, args):
     that differs between backends must therefore be an implementation
     difference, which is exactly what the comparison is supposed to isolate.
     """
-    from ibnr.gallery.bayesian.meyers_ccl.model import MeyersCCL
+    from ibnr import gallery
 
+    spec = MODELS[args.model]
+    entry_cls = gallery.get(args.model)
     fitted = {}
     for backend in backends:
-        # reported_loss = Meyers' incurred net of bulk - the CCL literature
-        # pairing; the Stan reference posterior is defined on this field
-        entry = MeyersCCL().fit(
+        # The loss field is part of the MODEL, not of this run: each entry's
+        # Stan reference posterior is defined on one field (CCL on Meyers'
+        # incurred net of bulk, CSR on paid), so it comes from MODELS.
+        entry = entry_cls().fit(
             triangle,
-            loss_field="reported_loss",
+            loss_field=spec["loss_field"],
             as_of="1997-12-31",
             backend=backend,
             chains=args.chains,
@@ -125,8 +139,8 @@ def _fit_backends(triangle, backends, args):
     return fitted
 
 
-def _synthetic_triangle(seed: int):
-    """A CCL-simulated single-cohort triangle (paid_loss + premium) as a Triangle.
+def _synthetic_ccl_triangle(seed: int):
+    """A CCL-simulated single-cohort triangle (reported_loss + premium) as a Triangle.
 
     Draws from the Correlated Chain Ladder generative model itself, so the
     fitted model is correctly specified and the posterior is well behaved -
@@ -196,6 +210,88 @@ def _synthetic_triangle(seed: int):
     return Triangle.from_long(df, measure="cumulative")
 
 
+def _synthetic_csr_triangle(seed: int):
+    """A CSR-simulated single-cohort triangle (paid_loss + premium) as a Triangle.
+
+    The CSR counterpart of ``_synthetic_ccl_triangle``: same cross-classified
+    lognormal, but the across-accident-year correlation ``rho`` is replaced by
+    the settlement-rate trend, so cell (w, d) is normal around
+    ``logprem + logelr + alpha[w] + beta[d] * (1 - gamma)^(w-1)`` on the log
+    scale. gamma > 0 is a speedup: later accident years' whole development
+    profile shrinks toward zero. Drawing from the model being fitted means a
+    parity failure can only be an implementation bug, never misspecification.
+    """
+    import datetime as dt
+
+    from ibnr import Triangle
+
+    rng = np.random.default_rng(seed)
+    n_w = n_d = 10
+    prem = rng.uniform(8000, 20000, n_w)
+    logelr = -0.5
+    # gamma at the scale the monograph's normal(0, 0.05) prior expects: big
+    # enough that a port ignoring the trend would visibly fail parity, small
+    # enough to stay in the region the prior actually supports
+    gamma = 0.04
+    alpha = np.concatenate([[0.0], rng.normal(0, 0.15, n_w - 1)])
+    beta = np.concatenate([np.sort(rng.uniform(-1.5, 0.0, n_d - 1)), [0.0]])
+    a = rng.uniform(0.2, 0.6, n_d)
+    # Meyers' construction: variance accumulates from the tail inward, so sig
+    # DECREASES in d - the immature cells are the noisy ones
+    sig = np.sqrt(np.cumsum(a[::-1])[::-1] * 0.01)
+    speedup = (1.0 - gamma) ** np.arange(n_w)  # (n_w,)
+    logprem = np.log(prem)
+    # fully vectorized: CSR has no across-origin recurrence to unroll
+    mu = logprem[:, None] + logelr + alpha[:, None] + beta[None, :] * speedup[:, None]
+    logc = rng.normal(mu, sig[None, :])
+
+    rows = []
+    for w in range(n_w):
+        for d in range(n_d):
+            origin = dt.date(1988 + w, 1, 1)
+            # dev_lag is months from origin START (first diagonal 12); eval_date
+            # is the year-end that (origin + dev_lag) lands in - CLAUDE.md
+            eval_date = dt.date(1988 + w + d, 12, 31)
+            loss = float(np.exp(logc[w, d]))
+            rows.append(("synthetic", origin, 12 * (d + 1), eval_date, "paid_loss", loss))
+            rows.append(
+                ("synthetic", origin, 12 * (d + 1), eval_date, "earned_premium", float(prem[w]))
+            )
+    df = pd.DataFrame(
+        rows, columns=["company_code", "origin_period", "dev_lag", "eval_date", "field", "value"]
+    )
+    return Triangle.from_long(df, measure="cumulative")
+
+
+#: Per-model wiring, and the ONLY place it lives. Everything else in this
+#: script is model-agnostic on purpose, so the CSR table is produced by exactly
+#: the protocol that produced the CCL one.
+#:
+#: - ``loss_field``   the field the entry's Stan reference posterior is defined on
+#: - ``parity_vars``  the interpretable parameters parity compares (not the raw
+#:                    nuisance draws); CSR swaps CCL's ``rho`` for ``gamma``
+#: - ``target_accept`` the model's own default (CSR's gamma x beta interaction
+#:                    makes its centered geometry harder than CCL's)
+#: - ``stem``         output filename stem; CCL keeps the pre-``--model``
+#:                    filenames so published result paths stay valid
+MODELS = {
+    "meyers_ccl": {
+        "loss_field": "reported_loss",
+        "parity_vars": CCL_PARITY_VARS,
+        "target_accept": 0.8,
+        "stem": "meyers",
+        "simulate": _synthetic_ccl_triangle,
+    },
+    "meyers_csr": {
+        "loss_field": "paid_loss",
+        "parity_vars": CSR_PARITY_VARS,
+        "target_accept": 0.9,
+        "stem": "meyers_csr",
+        "simulate": _synthetic_csr_triangle,
+    },
+}
+
+
 def run(label, triangle, backends, args):
     """Fit every backend on one cohort, then report convergence and parity.
 
@@ -228,7 +324,9 @@ def run(label, triangle, backends, args):
     reference = "stan" if "stan" in fitted else backends[0]
     idatas = {b: e.idata_ for b, e in fitted.items()}
     if len(idatas) > 1:  # nothing to compare a single backend against
-        report = compare_posteriors(idatas, reference=reference)
+        report = compare_posteriors(
+            idatas, reference=reference, var_names=MODELS[args.model]["parity_vars"]
+        )
         # one row per backend: the WORST mean/sd z-score and KS over all
         # compared parameter elements, plus the overall pass flag
         summ = report.summary()
@@ -260,6 +358,8 @@ def main() -> int:
     # None falls through to ibnr's resolution (env var, else the @latest
     # GitHub release); pass github://owner/repo@publish_id to pin a publish
     ap.add_argument("--warehouse", default=None)
+    # which Meyers-family entry to compare; per-model wiring lives in MODELS
+    ap.add_argument("--model", default="meyers_ccl", choices=sorted(MODELS))
     ap.add_argument("--line", default="workers_compensation")
     ap.add_argument("--n-companies", type=int, default=5)
     ap.add_argument(
@@ -275,28 +375,37 @@ def main() -> int:
     ap.add_argument("--chains", type=int, default=4)
     ap.add_argument("--warmup", type=int, default=1000)
     ap.add_argument("--draws", type=int, default=2500)
-    # 0.8 is Stan's default; raising it hides divergences that the
-    # convergence comparison is meant to expose
-    ap.add_argument("--target-accept", type=float, default=0.8)
+    # Default follows the MODEL (0.8 for CCL, Stan's own default; 0.9 for CSR,
+    # whose gamma x beta interaction is harder). Raising it further hides
+    # divergences the convergence comparison is meant to expose.
+    ap.add_argument("--target-accept", type=float, default=None)
     ap.add_argument("--seed", type=int, default=20260708)
     ap.add_argument("--synthetic", action="store_true", help="simulate a triangle; skip the mart")
     ap.add_argument("--out-dir", type=Path, default=RESULTS)
     args = ap.parse_args()
+    spec = MODELS[args.model]
+    if args.target_accept is None:
+        args.target_accept = spec["target_accept"]
 
     if args.synthetic:
         # distinct seeds -> distinct simulated triangles, so a parity pass is
-        # not an accident of one lucky dataset
+        # not an accident of one lucky dataset. The generator is the model's
+        # own: each entry is fit to data from the process it assumes.
         cohorts = [
-            (f"synthetic:{s}", _synthetic_triangle(seed=args.seed + s))
+            (f"synthetic:{s}", spec["simulate"](seed=args.seed + s))
             for s in range(max(1, args.n_companies))
         ]
     else:
         cohorts = _load_company_contracts(args.warehouse, args.line, args.n_companies, args.seed)
-    print(f"{len(cohorts)} cohort(s); backends={args.backends}", flush=True)
+    print(
+        f"{args.model}: {len(cohorts)} cohort(s); backends={args.backends} "
+        f"target_accept={args.target_accept}",
+        flush=True,
+    )
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    conv_path = args.out_dir / "convergence_meyers.csv"
-    parity_path = args.out_dir / "parity_meyers.csv"
+    conv_path = args.out_dir / f"convergence_{spec['stem']}.csv"
+    parity_path = args.out_dir / f"parity_{spec['stem']}.csv"
 
     conv_all, parity_all = [], []
     for label, tri in cohorts:
