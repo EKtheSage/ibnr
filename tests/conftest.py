@@ -25,7 +25,25 @@ import pytest
 
 from ibnr import Triangle
 
-BACKENDS = ["duckdb", "polars"]
+
+def _polars_available() -> bool:
+    import importlib.util
+
+    return importlib.util.find_spec("polars") is not None
+
+
+#: polars is an optional extra for users, but the dev group installs it, so a
+#: skip here means a broken dev env rather than an expected configuration.
+BACKENDS = [
+    "duckdb",
+    pytest.param(
+        "polars",
+        marks=pytest.mark.skipif(
+            not _polars_available(),
+            reason="polars backend not installed; `uv sync` installs it via the dev group",
+        ),
+    ),
+]
 
 
 @pytest.fixture(params=BACKENDS)

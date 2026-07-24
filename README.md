@@ -67,6 +67,7 @@ uv add "ibnr[bayesian]"   # cmdstanpy, numpyro, pymc, arviz, bayesblend
 uv add "ibnr[nn]"         # torch
 uv add "ibnr[viz]"        # altair
 uv add "ibnr[interop]"    # chainladder + bermuda, for to_chainladder()/to_bermuda()
+uv add "ibnr[polars]"     # the second ibis backend (duckdb is the default)
 ```
 
 > **`[bayesian]` installs cmdstanpy, not CmdStan itself.** The Stan entries
@@ -182,8 +183,9 @@ uv run ruff check . && uv run ruff format --check .
 ```
 
 Optional extras: `[bayesian]` (cmdstanpy, numpyro, pymc, arviz, bayesblend),
-`[interop]` (chainladder, bermuda-ledger),
+`[interop]` (chainladder, bermuda-ledger), `[polars]` (the second ibis backend),
 `[nn]` (torch), `[viz]` (altair). The core depends only on
-`ibis-framework[duckdb,polars]`.
+`ibis-framework[duckdb]` + scipy; duckdb is the default backend and needs nothing
+extra.
 
 License: MPL-2.0 - see [LICENSE](LICENSE).

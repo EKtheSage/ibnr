@@ -9,7 +9,7 @@ Name: **ibnr**, published on PyPI since 2026-07-23 (`uv add ibnr`). The GitHub r
 ## Dev commands
 
 ```sh
-uv sync                                   # core + dev deps (chainladder, bermuda-ledger for interop tests)
+uv sync                                   # core + dev deps (incl. polars, so both backends are tested)
 uv sync --extra bayesian                  # + cmdstanpy/numpyro/pymc/arviz/bayesblend (works on py3.12)
 uv run pytest                             # fast suite (slow excluded via addopts); transforms run on BOTH backends
 uv run pytest -m slow                     # cmdstan tests (compile + sample); needs cmdstan installed
@@ -25,7 +25,7 @@ cmdstan on this machine: installed at `~/.cmdstan` (2.39.0), built with the RToo
 ## Core design decisions - do not relitigate without asking
 
 1. **Long-format 2D triangles only.** No 4D arrays. A triangle is a tidy table: `origin_period, dev_lag, eval_date, field, value` + arbitrary segment columns (lob, company, ...). `eval_date` is a first-class stored column, not derived - all backtesting slices on it. Each triangle carries metadata: grain, cumulative/incremental flag, units. Reference design: Ledger Investing's `bermuda`.
-2. **ibis is the dataframe frontend.** Both duckdb and polars backends are supported - no debate, both. Transformations (incr↔cum via window functions, grain changes, pivots, `as_of()` slicing) are written once in ibis. The transformation test suite runs against BOTH backends; ibis's polars backend has weaker window-function coverage, so expect and document gaps.
+2. **ibis is the dataframe frontend.** Both duckdb and polars backends are supported - no debate, both. Transformations (incr↔cum via window functions, grain changes, pivots, `as_of()` slicing) are written once in ibis. The transformation test suite runs against BOTH backends; ibis's polars backend has weaker window-function coverage, so expect and document gaps. **Amended 2026-07-23 (0.4.0), at Ethan's request:** *supported* is not *installed*. Only duckdb ships in the core dependency; polars moved to the `ibnr[polars]` extra because its runtime is ~176 MB (35% of the install) that a duckdb-only user never executes - it was blocking deployment of an Azure Function that imports ibnr. The dev group still installs polars, so the dual-backend test matrix is unchanged and this decision keeps its teeth. duckdb stays the default backend.
 3. **The Stan `data` block is the data contract.** `kernels/contract.py` maps Triangle → standardized dict. NumPyro and PyMC implementations consume the identical dict. Never let a backend grow its own data prep.
 4. **`PredictiveDistribution` is the unifying output type** (`kernels/predictive.py`). Every gallery entry - Bayesian, NN, deterministic - must produce one. NN models require distributional heads (mixture/quantile heads or deep ensembles); point estimators cannot enter the gallery. Deterministic baselines (Mack, basic CL) are wrapped with bootstrap.
 5. **Evaluation is a contract, not a feature.** `GalleryEntry` ABC requires `.fit()`, `.predict()`, `.evaluate()`, `.card()`. An entry that fails the eval harness does not register. Eval algorithms (ELPD/LOO/WAIC, PIT calibration, stacking via `bayesblend`, ArviZ-based diagnostics) are implemented ONCE in `kernels/` - gallery entries call them, never reimplement.
@@ -55,7 +55,7 @@ Each gallery model dir contains: `card.md`, `model.stan`, `model_numpyro.py`, `m
 ## Tooling & conventions
 
 * `src/` layout, `uv` for env + packaging, `ruff` for lint/format, `pytest`.
-* Optional extras keep the core light: `[bayesian]` (cmdstanpy, numpyro, pymc, arviz, bayesblend), `[nn]` (torch), `[viz]` (altair, quarto tooling). Core deps ≈ ibis-framework[duckdb,polars] + scipy (scipy added 2026-07-06 for the statistical family; deliberate exception to "ibis only"). Torch must never be imported at module level - `ibnr.gallery` imports (and nn entries register) without the `[nn]` extra; `tests/test_gallery.py` enforces this in a subprocess.
+* Optional extras keep the core light: `[polars]` (the second ibis backend), `[interop]` (chainladder, bermuda-ledger, for the `to_*` converters), `[bayesian]` (cmdstanpy, numpyro, pymc, arviz, bayesblend), `[nn]` (torch), `[viz]` (altair, quarto tooling). Core deps ≈ ibis-framework[duckdb] + scipy (scipy added 2026-07-06 for the statistical family; deliberate exception to "ibis only"; polars split out 2026-07-23, see decision 2). Torch must never be imported at module level - `ibnr.gallery` imports (and nn entries register) without the `[nn]` extra; `tests/test_gallery.py` enforces this in a subprocess.
 * Test markers: `-m tieout` (results match chainladder-python on raa/clrd samples), `-m parity` (cross-backend posterior matching), `-m slow` (cmdstan compilation; separate CI job).
 * CI matrix runs core and each extra in isolation to catch hidden imports.
 * Interop is sacred: `Triangle.from_chainladder/to_chainladder`, `from_bermuda/to_bermuda` must round-trip losslessly.
