@@ -92,7 +92,7 @@ packages = ["src/ibnr"]
 testpaths = ["tests"]
 addopts = "-m \"not slow\""  # slow (cmdstan) tests run explicitly: pytest -m slow
 markers = [
-    "tieout: results match chainladder-python on raa/clrd samples",
+    "tieout: results match an external reference - chainladder-python on raa/clrd, or R ChainLadder's published CDR output",
     "parity: cross-backend posterior matching",
     "slow: cmdstan compilation; separate CI job",
     "mart: requires the local CAS Schedule P gold mart",

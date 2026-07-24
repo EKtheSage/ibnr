@@ -40,6 +40,7 @@ src/<pkg>/
   triangle/    core.py (Triangle over ibis expr), transforms.py, io.py, validate.py
   kernels/     contract.py, predictive.py, scores.py, calibration.py,
                multiline.py (multi-LOB contract), nn_contract.py (NN grids/masks),
+               mack.py (distribution-free chain ladder), cdr.py (one-year CDR),
                stacking.py, parity.py, tuning.py
   gallery/     registry.py, entry.py (GalleryEntry ABC), scaffold.py
     bayesian/  meyers_ccl/ meyers_csr/ england_verrall_odp/ compartmental/
@@ -56,7 +57,7 @@ Each gallery model dir contains: `card.md`, `model.stan`, `model_numpyro.py`, `m
 
 * `src/` layout, `uv` for env + packaging, `ruff` for lint/format, `pytest`.
 * Optional extras keep the core light: `[polars]` (the second ibis backend), `[interop]` (chainladder, bermuda-ledger, for the `to_*` converters), `[bayesian]` (cmdstanpy, numpyro, pymc, arviz, bayesblend), `[nn]` (torch), `[viz]` (altair, quarto tooling). Core deps ≈ ibis-framework[duckdb] + scipy (scipy added 2026-07-06 for the statistical family; deliberate exception to "ibis only"; polars split out 2026-07-23, see decision 2). Torch must never be imported at module level - `ibnr.gallery` imports (and nn entries register) without the `[nn]` extra; `tests/test_gallery.py` enforces this in a subprocess.
-* Test markers: `-m tieout` (results match chainladder-python on raa/clrd samples), `-m parity` (cross-backend posterior matching), `-m slow` (cmdstan compilation; separate CI job).
+* Test markers: `-m tieout` (results match an external reference: chainladder-python on raa/clrd, or R ChainLadder's published `CDR()` output on MW2014), `-m parity` (cross-backend posterior matching), `-m slow` (cmdstan compilation; separate CI job).
 * CI matrix runs core and each extra in isolation to catch hidden imports.
 * Interop is sacred: `Triangle.from_chainladder/to_chainladder`, `from_bermuda/to_bermuda` must round-trip losslessly.
 
@@ -79,8 +80,12 @@ Before writing `triangle/core.py` or `data/schedule_p.py`: inspect that repo. De
 9. Speed benchmark vs chainladder-python: time equivalent operations (triangle construction, transforms, Mack/basic-CL fits) on both duckdb and polars backends against chainladder's numpy backend, on raa/clrd and the Schedule P mart; publish the comparison table.
 10. Worked examples mirroring chainladder-python's docs/gallery: reproduce their published example outputs side by side with ibnr's, showing feature parity and that our numbers match a trusted reference (not made up). Overlaps with the `tieout` tests but as user-facing narrative docs.
 
+**Out of band (2026-07-24; asked for directly, not part of the numbered sequence): one-year CDR.** `kernels/mack.py` (native distribution-free chain ladder: volume-weighted factors, Mack sigmas under both the `mack` and `log_linear` last-step rules, run-off MSEP with the process/estimation split, run-off simulation) + `kernels/cdr.py` (Merz-Wuthrich 2008 analytic one-year CDR msep per AY and aggregated, plus an "actuary in the box" re-reserving simulation that returns a `PredictiveDistribution` of the CDR) + `kernels/contract.py::cohort_grid` (single-cohort dense grid; hard error on anything that is not a run-off staircase) + the `deterministic/mack` gallery entry (opens the `deterministic` family). Nothing delegates to chainladder-python, which has **no** CDR at all. Validation: Mack pieces tie out to `cl.MackChainladder` on raa exactly under both sigma rules (incl. the process/parameter split); the CDR ties out to R ChainLadder's published `CDR(MackChainLadder(MW2014, est.sigma="Mack"))` to 7 dp per accident year and in total; and the closed form agrees with the simulation to Monte Carlo error. Note the process/estimation labels differ between the paper's `Phi`/`Delta` split (what we report) and R's grouping - the totals are identical, the labels are not. Not yet done: the MW2014 "full picture" multi-year CDR columns (`dev="all"`), tail factors (excluded by the formulas), and a Schedule P retrospective of one-year vs run-off risk.
+
 ## Key references
 
+* Mack, Distribution-free calculation of the standard error of chain ladder reserve estimates (ASTIN Bulletin 23/2, 1993).
+* Merz & Wuthrich, Modelling the claims development result for solvency purposes (CAS E-Forum Fall 2008; R ChainLadder's `CDR.MackChainLadder`, written by Wuthrich, is the reference implementation and the tieout source).
 * Meyers, Stochastic Loss Reserving Using Bayesian MCMC Models (CAS monograph; published Stan code = ground truth for CCL/CSR).
 * England & Verrall, Stochastic Claims Reserving in General Insurance (ODP).
 * Clark, LDF Curve-Fitting and Stochastic Reserving: A Maximum Likelihood Approach (CAS Forum 2003; loglogistic/Weibull growth curves, ODP likelihood - chainladder's `ClarkLDF` is the MLE reference).

@@ -85,6 +85,43 @@ def small_cumulative(backend_name) -> Triangle:
     return Triangle.from_long(df, measure="cumulative", backend=backend_name)
 
 
+def make_cohort_triangle(
+    backend_name: str | None,
+    cum: np.ndarray,
+    *,
+    start_year: int = 2010,
+    loss_field: str = "paid_loss",
+    segment: dict[str, str] | None = None,
+) -> Triangle:
+    """Single-cohort cumulative triangle from one ``(n_w, n_d)`` matrix.
+
+    The one-LOB counterpart of ``make_multiline_triangle``, for the contracts
+    that take a single triangle at a time (``kernels/contract.py::cohort_grid``,
+    ``kernels/mack.py``, ``kernels/cdr.py``). Same conventions: NaN = unobserved
+    and simply not emitted, yearly grain, origin ``i`` = Jan 1 of
+    ``start_year + i``, dev index ``j`` = dev_lag ``12*(j+1)`` months, eval date
+    = Dec 31 of ``start_year + i + j``. ``segment`` adds constant segment
+    columns, which is how the "one cohort only" guards get exercised.
+    """
+    rows = []
+    n_w, n_d = cum.shape
+    for i in range(n_w):
+        for j in range(n_d):
+            if np.isnan(cum[i, j]):
+                continue
+            row = {
+                "origin_period": dt.date(start_year + i, 1, 1),
+                "dev_lag": 12 * (j + 1),
+                "eval_date": dt.date(start_year + i + j, 12, 31),
+                "field": loss_field,
+                "value": float(cum[i, j]),
+            }
+            rows.append({**(segment or {}), **row})
+    df = pd.DataFrame(rows)
+    kwargs = {} if backend_name is None else {"backend": backend_name}
+    return Triangle.from_long(df, measure="cumulative", **kwargs)
+
+
 def make_multiline_triangle(
     backend_name: str,
     cum_by_lob: dict[str, np.ndarray],

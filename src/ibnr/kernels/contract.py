@@ -4,6 +4,13 @@
 family (Meyers CRC/CCL/CSR). NumPyro and PyMC implementations consume the
 IDENTICAL dict - no backend grows its own data prep.
 
+``cohort_grid`` is the array-shaped sibling for the models that are not
+likelihood-in-Stan at all (the distribution-free chain ladder of
+``kernels/mack.py`` and the one-year CDR of ``kernels/cdr.py``): same single
+cohort, same validation, but a dense ``(n_w, n_d)`` matrix rather than the
+ragged Stan vectors. It is the single-cohort analogue of
+``multiline.multiline_data`` - see that module for the multi-LOB grid.
+
 Conventions:
 - ``w``/``d`` are 1-based origin/dev indices (Stan style), sorted by (w, d).
 - ``prev_idx[i]`` is the 1-based row index of the observation at
@@ -11,6 +18,8 @@ Conventions:
   prev_idx[i] < i+1 always, so mu can be built in one forward pass.
 - ``logprem`` is per-observation; ``premium`` is per-origin (each origin's
   premium at its latest eval in the triangle, i.e. the booked value).
+- ``cohort_grid``'s matrix is 0-based on both axes: ``cum[i, j]`` is origin
+  ``i`` at dev step ``j + 1`` (dev_lag ``(j + 1) * dev_grain_months``).
 """
 
 from __future__ import annotations
@@ -345,6 +354,108 @@ def ccl_mu_index(data: dict[str, Any]) -> dict[str, np.ndarray]:
     colmask = same_col.astype(float)
     logloss_prev = np.where(prev0 >= 0, logloss[np.where(prev0 >= 0, prev0, 0)], 0.0)
     return {"expo": expo, "colmask": colmask, "logloss_prev": logloss_prev}
+
+
+def cohort_grid(
+    triangle: Triangle,
+    *,
+    loss_field: str,
+    premium_field: str | None = None,
+) -> dict[str, Any]:
+    """Map a single-cohort cumulative Triangle to a dense ``(n_w, n_d)`` matrix.
+
+    THE CONTRACT (keys; shape; meaning):
+
+    - ``n_w``, ``n_d``       : int - origin count and deepest observed dev step.
+    - ``cum``                : (n_w, n_d) float64 - cumulative loss, NaN where
+      unobserved. ``cum[i, j]`` is origin ``i`` at dev step ``j + 1``.
+    - ``obs_mask``           : (n_w, n_d) bool - ``~isnan(cum)``.
+    - ``latest_dev``         : (n_w,) int - 0-based dev index of each origin's
+      last observed cell, i.e. its position on the latest diagonal.
+    - ``origin_periods``     : list[dt.date], len n_w, sorted ascending.
+    - ``dev_grain_months``   : int - months per dev step.
+    - ``units``, ``loss_field`` : carried through for labelling.
+    - ``premium``            : (n_w,) float64, only when ``premium_field`` is given.
+
+    Unlike the Stan contracts above, the consumers here (Mack's distribution-free
+    chain ladder and the Merz-Wuthrich one-year CDR) are *recursive over the
+    diagonal*: they estimate one development factor per dev step from the cells
+    above the latest diagonal, then roll each origin forward from that diagonal.
+    That only has meaning on a genuine run-off shape, so the observed set must be
+
+        observed(i, j)  <=>  j <= min(K - i, n_d - 1),   K = latest_dev[-1] + n_w - 1
+
+    (a staircase whose steps fall by one origin per dev step, flattening once an
+    origin is fully developed). Anything else - an interior hole, a ragged
+    diagonal from mixed evaluation dates - is a hard error rather than a repair:
+    silently filling it would fabricate the very cells the factors are estimated
+    from. Slice with ``as_of()`` first if the triangle carries several diagonals.
+    """
+    if triangle.meta.measure != "cumulative":
+        raise ValueError("cohort_grid requires a cumulative triangle")
+    df = triangle.select_fields(loss_field).execute()
+    if df.empty:
+        raise ValueError(f"no rows for loss field {loss_field!r}")
+    segs = triangle.segments
+    if segs and len(df.drop_duplicates(segs)) > 1:
+        raise ValueError(
+            f"triangle has multiple segment combinations on {segs}; filter to one cohort first"
+        )
+
+    df = df.copy()
+    df["origin_period"] = _as_date(df["origin_period"])
+    step = GRAIN_MONTHS[triangle.meta.dev_grain]
+    if (df["dev_lag"] % step != 0).any():
+        raise ValueError(f"dev_lag values are not multiples of the {step}-month dev grain")
+    df["d"] = (df["dev_lag"] // step).astype(int)
+    if (df["d"] < 1).any():
+        raise ValueError("dev_lag must be positive")
+    if df.duplicated(["origin_period", "d"]).any():
+        raise ValueError(
+            "multiple rows per (origin, dev) cell; slice with as_of()/latest_diagonal() first"
+        )
+
+    origins = sorted(df["origin_period"].unique())
+    n_w, n_d = len(origins), int(df["d"].max())
+    w_of = {o: i for i, o in enumerate(origins)}
+    cum = np.full((n_w, n_d), np.nan)
+    for row in df.itertuples():
+        cum[w_of[row.origin_period], int(row.d) - 1] = float(row.value)
+    obs_mask = ~np.isnan(cum)
+
+    if not obs_mask[:, 0].all():
+        missing = [origins[i] for i in np.nonzero(~obs_mask[:, 0])[0]]
+        raise ValueError(f"origins {missing} have no observation at the first dev step")
+    latest_dev = obs_mask.shape[1] - 1 - np.argmax(obs_mask[:, ::-1], axis=1)  # (n_w,)
+    # K = the calendar diagonal, in (origin + dev) units, implied by the youngest
+    # origin; every other origin must sit on the same diagonal (or be capped by
+    # n_d, having already run off).
+    diagonal = int(latest_dev[-1]) + (n_w - 1)
+    expected = np.minimum(diagonal - np.arange(n_w), n_d - 1)  # (n_w,) staircase
+    reference = np.arange(n_d)[None, :] <= expected[:, None]
+    if not (obs_mask == reference).all():
+        rows = sorted(set(np.nonzero(obs_mask != reference)[0].tolist()))[:5]
+        bad = [(origins[i], int(obs_mask[i].sum()), int(expected[i]) + 1) for i in rows]
+        raise ValueError(
+            "observed cells are not a run-off triangle; the chain-ladder kernels need "
+            "each origin observed from dev step 1 up to one common calendar diagonal. "
+            f"(origin, observed cells, expected depth) mismatches: {bad}"
+        )
+
+    data: dict[str, Any] = {
+        "n_w": n_w,
+        "n_d": n_d,
+        "cum": cum,
+        "obs_mask": obs_mask,
+        "latest_dev": latest_dev.astype(int),
+        "origin_periods": origins,
+        "dev_grain_months": step,
+        "units": triangle.meta.units,
+        "loss_field": loss_field,
+    }
+    if premium_field is not None:
+        data["premium"] = _premium_by_origin(triangle, premium_field, origins)
+    return data
 
 
 def realized_values(

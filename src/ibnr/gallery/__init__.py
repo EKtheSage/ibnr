@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import builtins
 
-from ibnr.gallery import registry as _registry
-
 # importing the subpackages self-registers their entries
+from ibnr.gallery import deterministic as _deterministic  # noqa: F401
+from ibnr.gallery import registry as _registry
 from ibnr.gallery import statistical as _statistical  # noqa: F401
 from ibnr.gallery.bayesian import clark_growth_curve as _clark_growth_curve  # noqa: F401
 from ibnr.gallery.bayesian import compartmental as _compartmental  # noqa: F401
