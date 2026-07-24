@@ -132,6 +132,22 @@ negative). The choice moves the tail quantiles - not the mean, and only
 slightly the variance - and it is the first thing to vary when the CDR
 distribution is used for capital.
 
+### Capital
+
+`kernels.cdr.cdr_risk_measures(pred, levels=(0.995,))` reports VaR and TVaR on
+the **loss** `-CDR` (the strengthening), which is the Solvency II reserve-risk
+basis:
+
+```python
+from ibnr.kernels.cdr import cdr_risk_measures
+cdr_risk_measures(entry.cdr_distribution(n_draws=100_000, seed=1))
+```
+
+Quantiles are exact empirical order statistics, so a 99.5th percentile is only
+as good as the draws behind it (at 20k draws it rests on 100 observations).
+This needs the simulation, not the closed form - a second moment does not imply
+a quantile - and it is where the choice of `process` law bites hardest.
+
 ## Prediction
 
 `predict()` returns simulated **full run-off ultimates** (per origin, plus a
