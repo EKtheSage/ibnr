@@ -104,20 +104,75 @@ def test_speedup_matches_stan_recurrence(gamma):
 # -- fast: NumPyro graph builds with correct shapes --------------------------
 
 
+def _trace_numpyro(data, seed: int = 0, a_ig: float = 1.0):
+    """Trace the NumPyro CSR model once, with ``a_ig`` substituted.
+
+    ``a_ig`` is an interval-constrained ``ImproperUniform`` carrying its density
+    as a factor - Stan's own construction (see ``model_numpyro``). NumPyro can
+    *infer* such a site but cannot FORWARD-SAMPLE it, so tracing must supply a
+    value. Everything else is sampled from its prior as usual.
+    """
+    import jax
+    import numpy as _np
+    from numpyro import handlers
+
+    from ibnr.gallery.bayesian.meyers_csr import model_numpyro
+
+    fixed = handlers.substitute(
+        model_numpyro.csr_model, {"a_ig": _np.full(data["n_d"], a_ig, dtype=float)}
+    )
+    return handlers.trace(handlers.seed(fixed, jax.random.PRNGKey(seed))).get_trace(data)
+
+
+def test_numpyro_a_ig_respects_stans_upper_bound():
+    """The ``a_ig`` site must be constrained to Stan's ``(0, 1e5)``.
+
+    This is the bug that broke parity: an *unbounded* ``InverseGamma(1,1)`` looks
+    harmless (the truncated PRIOR mass is ~1e-5) but the POSTERIOR piles into the
+    ``a -> 0`` corner at deep development lags - measured at up to 10.6% of draws
+    above the bound - which dragged ``sig`` 5-12% below the Stan reference.
+    """
+    pytest.importorskip("numpyro")
+    from numpyro.distributions import constraints
+
+    from ibnr.gallery.bayesian.meyers_csr import model_numpyro
+
+    data = simulate_csr_contract(n_w=6, n_d=6, seed=1)
+    tr = _trace_numpyro(data)
+    support = tr["a_ig"]["fn"].support
+    # the per-element constraint sits inside an IndependentConstraint (event dim)
+    interval = getattr(support, "base_constraint", support)
+    assert isinstance(interval, constraints._Interval)
+    assert interval.lower_bound == 0.0
+    assert interval.upper_bound == model_numpyro.A_IG_MAX == 1e5
+
+
+def test_pymc_a_ig_respects_stans_upper_bound():
+    """Same guard for the PyMC port: draws from the prior never exceed Stan's
+    bound, and the logp above it is -inf rather than merely small."""
+    pytest.importorskip("pymc")
+    import pymc as pm
+
+    from ibnr.gallery.bayesian.meyers_csr import model_pymc
+
+    data = simulate_csr_contract(n_w=6, n_d=6, seed=1)
+    model = model_pymc.build_model(data)
+    a_ig = model["a_ig"]
+    draws = pm.draw(a_ig, draws=20_000, random_seed=0)
+    assert draws.max() <= model_pymc.A_IG_MAX == 1e5
+    over = pm.logp(a_ig, np.full(data["n_d"], 2e5)).eval()
+    assert np.isneginf(over).all()
+
+
 def test_numpyro_model_shapes():
     """Structural guard on the NumPyro port: trace once (no sampling) and check
     the parameterization matches Stan's - zero-pinned alpha[0]/beta[-1], one
     sigma per dev lag strictly decreasing in dev, speedup starting at 1, and mu
     one value per observed cell."""
     pytest.importorskip("numpyro")
-    import jax
-    from numpyro import handlers
-
-    from ibnr.gallery.bayesian.meyers_csr import model_numpyro
 
     data = simulate_csr_contract(n_w=7, n_d=7, seed=2)
-    seeded = handlers.seed(model_numpyro.csr_model, jax.random.PRNGKey(0))
-    tr = handlers.trace(seeded).get_trace(data)
+    tr = _trace_numpyro(data, seed=0)
     alpha = np.asarray(tr["alpha"]["value"])
     beta = np.asarray(tr["beta"]["value"])
     sig = np.asarray(tr["sig"]["value"])
@@ -137,14 +192,9 @@ def test_numpyro_speedup_is_the_geometric_trend():
     actually drawn - i.e. the cumprod really is the recurrence, inside the model
     rather than only in the standalone check above."""
     pytest.importorskip("numpyro")
-    import jax
-    from numpyro import handlers
-
-    from ibnr.gallery.bayesian.meyers_csr import model_numpyro
 
     data = simulate_csr_contract(n_w=6, n_d=6, seed=5)
-    seeded = handlers.seed(model_numpyro.csr_model, jax.random.PRNGKey(3))
-    tr = handlers.trace(seeded).get_trace(data)
+    tr = _trace_numpyro(data, seed=3)
     gamma = float(np.asarray(tr["gamma"]["value"]))
     speedup = np.asarray(tr["speedup"]["value"])
     # rtol 1e-5, not machine epsilon: JAX runs in float32 by default (as does the
@@ -200,6 +250,29 @@ def test_ports_agree_on_mu_at_fixed_parameters():
         ]
     )
     np.testing.assert_allclose(expected, ref, atol=1e-12)
+
+
+def test_parity_summaries_are_not_rounded():
+    """``kernels.parity`` must read FULL-PRECISION summaries.
+
+    ``az.summary`` rounds to 3 decimals by default, and every parity z-score is
+    a difference of two summaries divided by their MCSE. Rounding the numerator
+    onto a 1e-3 grid inflates z for any parameter whose MCSE is smaller than
+    that - a parity failure invented by the formatter rather than the sampler.
+    (Symptom when this regressed: reported z-scores landing on exact multiples
+    of sqrt(2).) Guarded here by requiring at least one summary entry to carry
+    more precision than the 3-decimal default would leave.
+    """
+    pytest.importorskip("arviz")
+    import arviz as az
+
+    from ibnr.kernels import parity
+
+    rng = np.random.default_rng(0)
+    idata = az.from_dict(posterior={"logelr": rng.normal(size=(4, 500))})
+    summ = parity._summ(idata, ["logelr"])
+    values = summ.loc["logelr", ["mean", "sd", "mcse_mean", "mcse_sd"]].astype(float)
+    assert (values != values.round(3)).any(), f"summaries look rounded: {values.to_dict()}"
 
 
 def _parity_script():

@@ -2,12 +2,19 @@
 
 Same model, same **centered** parameterization, held constant for parity: the
 Stan ``data`` block dict from ``kernels.contract.stan_data`` is consumed
-verbatim. The one documented deviation from ``model.stan`` is that ``a_ig`` is
-an *unbounded* ``InverseGamma(1, 1)`` here - Stan bounds it to (0, 1e5) purely
-to keep ``a = gamma_cdf(1/a_ig | 1, 1)`` away from a hard 0/1 boundary; the mass
-above 1e5 is ~1e-5, far below MCMC noise, and NumPyro transforms the positive
-support to an unconstrained real anyway. ``kernels.parity`` verifies the
-posteriors agree.
+verbatim, **including Stan's ``a_ig`` upper bound**.
+
+This port previously left ``a_ig`` an *unbounded* ``InverseGamma(1, 1)``,
+documented as a harmless deviation on the grounds that Stan's (0, 1e5) bound
+truncates only ~1e-5 of the PRIOR. That reasoning was wrong, and it was caught
+on 2026-07-24 while porting CSR: the POSTERIOR concentrates in exactly that
+corner at deep development lags, where the data barely constrain sigma. On a
+real WC triangle, up to 10.6% of an unbounded port's ``a_ig`` draws sat above
+1e5 - the ``a -> 0`` region Stan forbids - pulling ``sig`` 5-12% below the Stan
+reference. The bound is now reproduced the way Stan implements it: an
+interval-constrained parameter carrying the ``InverseGamma(1, 1)`` density as a
+factor (same transform, same Jacobian; the truncation constant is a true
+constant and is dropped by both).
 
 ``sample()`` returns an ``arviz.InferenceData`` whose ``posterior`` group
 carries the same deterministic quantities Stan puts in ``transformed
@@ -21,6 +28,14 @@ import time
 from typing import Any
 
 import numpy as np
+
+#: Stan's ``upper=`` bound on a_ig (model.stan). Load-bearing at deep dev lags -
+#: see the module docstring.
+A_IG_MAX = 1e5
+
+#: Where a_ig chains start. The default unconstrained init lands against
+#: A_IG_MAX (see ``sample``); this is inside the posterior bulk instead.
+A_IG_INIT = 1e3
 
 
 def ccl_model(data: dict[str, Any]) -> None:
@@ -58,7 +73,13 @@ def ccl_model(data: dict[str, Any]) -> None:
     logelr = numpyro.sample("logelr", dist.Normal(-0.4, root10))  # log expected loss ratio
     r_alpha = numpyro.sample("r_alpha", dist.Normal(0.0, root10).expand([n_w - 1]))
     r_beta = numpyro.sample("r_beta", dist.Normal(0.0, root10).expand([n_d - 1]))
-    a_ig = numpyro.sample("a_ig", dist.InverseGamma(1.0, 1.0).expand([n_d]))
+    # a_ig exactly as Stan declares it: interval-constrained to (0, A_IG_MAX)
+    # with the InverseGamma(1, 1) density supplied as a factor - the direct
+    # analogue of `a_ig ~ inv_gamma(1, 1)` under `<lower=0, upper=1e5>`.
+    a_ig = numpyro.sample(
+        "a_ig", dist.ImproperUniform(dist.constraints.interval(0.0, A_IG_MAX), (), (n_d,))
+    )
+    numpyro.factor("a_ig_prior", dist.InverseGamma(1.0, 1.0).log_prob(a_ig).sum())
     r_rho = numpyro.sample("r_rho", dist.Beta(2.0, 2.0))
 
     # Identifiability pinning, exactly as Stan's transformed-parameters block:
@@ -111,15 +132,19 @@ def sample(
     import arviz as az
     import jax
     import numpyro
-    from numpyro.infer import MCMC, NUTS
+    from numpyro.infer import MCMC, NUTS, init_to_value
 
     numpyro.set_host_device_count(chains)
     seed = 0 if seed is None else int(seed)
 
-    # Init strategy is left at NUTS's default (init_to_uniform): no custom init is
-    # passed, so the convergence comparison in card.md reflects the centered
-    # parameterization itself, not an init trick - kept identical across backends.
-    kernel = NUTS(ccl_model, target_accept_prob=target_accept)
+    # Every site keeps NUTS's default init (init_to_uniform) EXCEPT a_ig, which
+    # is seeded inside its posterior bulk. Documented deviation, and necessary:
+    # the (0, 1e5) interval transform maps uniform(-2, 2) on the unconstrained
+    # scale onto a_ig in (1.2e4, 8.8e4), hard against the upper bound. Stan
+    # survives starting there; NumPyro does not. Only this site's warmup path
+    # changes - the stationary posterior is unaffected.
+    init = init_to_value(values={"a_ig": np.full(int(data["n_d"]), A_IG_INIT)})
+    kernel = NUTS(ccl_model, target_accept_prob=target_accept, init_strategy=init)
     mcmc = MCMC(
         kernel,
         num_warmup=iter_warmup,

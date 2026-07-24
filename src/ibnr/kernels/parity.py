@@ -87,10 +87,20 @@ class ParityReport:
 
 
 def _summ(idata, var_names) -> pd.DataFrame:
+    """Full-precision arviz summary for the requested variables.
+
+    ``round_to="none"`` is load-bearing, not tidiness: ``az.summary`` rounds to
+    3 decimals by DEFAULT, and every z-score here is a *difference of two
+    summaries divided by their MCSE*. Rounding first quantizes the numerator to
+    the same 1e-3 grid for every parameter, so a parameter whose MCSE is
+    ~1e-4 can be handed a rounding artifact worth several MCSE - a parity
+    failure invented by the formatter. It also makes the reported z-scores land
+    on exact multiples of sqrt(2), which is how this was noticed.
+    """
     import arviz as az
 
     present = [v for v in var_names if v in idata.posterior]
-    return az.summary(idata, var_names=present, kind="all")
+    return az.summary(idata, var_names=present, kind="all", round_to="none")
 
 
 def _pooled_draws(idata, param_label: str) -> np.ndarray | None:

@@ -53,11 +53,28 @@ claim is made; `scripts/parity_meyers.py` runs the full comparison.
 - a_i ~ uniform(0,1) is implemented via the monograph's inverse-gamma trick:
   a_ig ~ inv_gamma(1,1), a_i = gamma_cdf(1/a_ig | 1, 1) = 1 - exp(-1/a_ig),
   sig2[d] = sum_{i>=d} a_i (reverse cumsum → sig decreasing in dev lag). This
-  avoids hard zero boundaries that stall the sampler. **Documented deviation:**
-  Stan bounds a_ig to (0, 1e5); the NumPyro/PyMC ports use an *unbounded*
-  `InverseGamma(1,1)`. The truncated mass is ~1e-5 (both PPLs transform the
-  positive support to an unconstrained real anyway), far below MCMC noise; the
-  parity check confirms the posteriors are indistinguishable.
+  avoids hard zero boundaries that stall the sampler. **Stan's `a_ig` upper
+  bound is reproduced in both ports, and it is load-bearing.** Until 2026-07-24
+  the ports used an *unbounded* `InverseGamma(1,1)`, on the argument that
+  Stan's (0, 1e5) truncates only ~1e-5 of the **prior**. That was wrong: the
+  **posterior** concentrates in exactly that corner at deep dev lags, where the
+  data barely constrain sigma. Measured on WC 11347, `P(a_ig > 1e5)` runs from
+  0.1% at d=0 to **10.6% at d=8** - the `a -> 0` region Stan forbids - which
+  pulled `sig` **5-12% below** the Stan reference (worst at the deepest lags)
+  while leaving `logelr` and `rho` untouched. The ports now carry Stan's
+  constraint: an interval-constrained parameter with the `InverseGamma(1,1)`
+  density as a factor (NumPyro) / `pm.Truncated` (PyMC).
+- **Init deviation (documented, and necessary).** Both ports seed `a_ig` at
+  1e3. The (0, 1e5) interval transform maps the default unconstrained
+  uniform(-2,2) init onto a_ig in (1.2e4, 8.8e4), hard against the upper bound;
+  Stan starts there without trouble, the ports do not - NumPyro reaches max
+  R-hat 1.59 / ESS 7, and PyMC fails outright (`_init_jitter` steps past the
+  bound, giving `logp = -inf` and a SamplingError before warmup). Only this one
+  site's warmup path is affected; the stationary posterior is not.
+- **Judge these models on `sig`, not `a_ig`.** The individual `a_ig[j]` are
+  weakly identified in *every* backend including Stan - the likelihood only
+  sees their cumulative sums through `sig2` - so their R-hat/ESS look alarming
+  even at convergence.
 - The rho residual term references the *previous origin, same dev* cell. Stan
   builds `mu` with a forward recurrence over an explicit `prev_idx` array; the
   ports use its exact closed form `mu = P(rho) @ B` (see

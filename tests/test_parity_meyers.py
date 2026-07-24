@@ -155,8 +155,12 @@ def test_numpyro_model_shapes():
     from ibnr.gallery.bayesian.meyers_ccl import model_numpyro
 
     data = simulate_ccl_contract(n_w=7, n_d=7, seed=2)
-    seeded = handlers.seed(model_numpyro.ccl_model, jax.random.PRNGKey(0))
-    tr = handlers.trace(seeded).get_trace(data)
+    # a_ig is an interval-constrained ImproperUniform carrying its density as a
+    # factor (Stan's construction, matching model.stan's upper bound). NumPyro
+    # can infer such a site but not FORWARD-SAMPLE it, so tracing supplies a
+    # value; every other site is drawn from its prior as before.
+    fixed = handlers.substitute(model_numpyro.ccl_model, {"a_ig": np.full(7, 1.0)})
+    tr = handlers.trace(handlers.seed(fixed, jax.random.PRNGKey(0))).get_trace(data)
     alpha = np.asarray(tr["alpha"]["value"])
     beta = np.asarray(tr["beta"]["value"])
     sig = np.asarray(tr["sig"]["value"])

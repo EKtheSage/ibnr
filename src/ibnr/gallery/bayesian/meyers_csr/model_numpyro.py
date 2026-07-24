@@ -2,11 +2,21 @@
 
 Same model, same **centered** parameterization, held constant for parity
 (design decision 7): the Stan ``data`` block dict from
-``kernels.contract.stan_data`` is consumed verbatim. The one documented
-deviation, shared with the CCL ports, is that ``a_ig`` is an *unbounded*
-``InverseGamma(1, 1)`` here - Stan bounds it to (0, 1e5) only to keep
-``a = gamma_cdf(1/a_ig | 1, 1)`` off a hard 0/1 boundary, and the mass above
-1e5 is ~1e-5, far below MCMC noise.
+``kernels.contract.stan_data`` is consumed verbatim, **including Stan's
+``a_ig`` upper bound**.
+
+That bound is not cosmetic, contrary to what these ports (and CCL's) assumed
+until 2026-07-24. Stan declares ``vector<lower=0, upper=1e5>[n_d] a_ig``; the
+truncated *prior* mass is ~1e-5, which is where the "harmless" reading came
+from - but the *posterior* piles into exactly that corner at deep development
+lags, where the data barely constrain sigma. Measured on a real WC triangle,
+up to **10.6%** of an unbounded port's posterior draws for ``a_ig`` sat above
+1e5, i.e. in the ``a -> 0`` region Stan forbids, dragging ``sig`` 5-12% below
+the Stan reference and failing parity. So the bound is reproduced here the way
+Stan itself implements it: an interval-constrained parameter carrying the
+``InverseGamma(1, 1)`` density as a factor (NumPyro applies the same
+logit/sigmoid transform and Jacobian for an ``interval`` constraint, and the
+truncation's normalizing constant is a true constant, dropped by both).
 
 CSR is structurally easier to port than CCL: ``mu`` has no across-origin
 recurrence (no ``rho``, so ``prev_idx`` goes unused), and every quantity is a
@@ -26,6 +36,14 @@ import time
 from typing import Any
 
 import numpy as np
+
+#: Stan's ``upper=`` bound on a_ig (model.stan). Load-bearing, not cosmetic -
+#: see the module docstring; an unbounded port biases sig low at deep dev lags.
+A_IG_MAX = 1e5
+
+#: Where a_ig chains start. The default unconstrained init lands against
+#: A_IG_MAX (see ``sample``); this is inside the posterior bulk instead.
+A_IG_INIT = 1e3
 
 
 def csr_model(data: dict[str, Any]) -> None:
@@ -56,7 +74,15 @@ def csr_model(data: dict[str, Any]) -> None:
     logelr = numpyro.sample("logelr", dist.Normal(-0.4, root10))  # log expected loss ratio
     r_alpha = numpyro.sample("r_alpha", dist.Normal(0.0, root10).expand([n_w - 1]))
     r_beta = numpyro.sample("r_beta", dist.Normal(0.0, root10).expand([n_d - 1]))
-    a_ig = numpyro.sample("a_ig", dist.InverseGamma(1.0, 1.0).expand([n_d]))
+    # a_ig exactly as Stan declares it: interval-constrained to (0, A_IG_MAX)
+    # with the InverseGamma(1, 1) density supplied as a factor. numpyro.factor
+    # is the direct analogue of Stan's `a_ig ~ inv_gamma(1, 1)` under a
+    # `<lower=0, upper=1e5>` declaration - the constraint fixes the transform
+    # and Jacobian, the factor supplies the (unnormalized) density.
+    a_ig = numpyro.sample(
+        "a_ig", dist.ImproperUniform(dist.constraints.interval(0.0, A_IG_MAX), (), (n_d,))
+    )
+    numpyro.factor("a_ig_prior", dist.InverseGamma(1.0, 1.0).log_prob(a_ig).sum())
     gamma = numpyro.sample("gamma", dist.Normal(0.0, 0.05))
 
     # Identifiability pinning, exactly as Stan's transformed-parameters block:
@@ -112,15 +138,22 @@ def sample(
     import arviz as az
     import jax
     import numpyro
-    from numpyro.infer import MCMC, NUTS
+    from numpyro.infer import MCMC, NUTS, init_to_value
 
     numpyro.set_host_device_count(chains)
     seed = 0 if seed is None else int(seed)
 
-    # Init strategy left at NUTS's default (init_to_uniform): no custom init, so
-    # the convergence comparison in card.md reflects the centered
-    # parameterization itself rather than an init trick - identical across backends.
-    kernel = NUTS(csr_model, target_accept_prob=target_accept)
+    # Every site keeps NUTS's default init (init_to_uniform) EXCEPT a_ig, which
+    # is seeded in the bulk of its posterior. This is a documented deviation
+    # from "native default init everywhere" and it is necessary, not cosmetic:
+    # the (0, 1e5) interval transform maps uniform(-2, 2) on the unconstrained
+    # scale onto a_ig in (1.2e4, 8.8e4), i.e. hard against the upper bound.
+    # Stan survives starting there; NumPyro does not (max R-hat 1.59, ESS 7 -
+    # measured). init_to_value falls back to init_to_uniform for every other
+    # site, so only this one parameter's warmup path changes, and the
+    # stationary posterior is unaffected.
+    init = init_to_value(values={"a_ig": np.full(int(data["n_d"]), A_IG_INIT)})
+    kernel = NUTS(csr_model, target_accept_prob=target_accept, init_strategy=init)
     mcmc = MCMC(
         kernel,
         num_warmup=iter_warmup,
