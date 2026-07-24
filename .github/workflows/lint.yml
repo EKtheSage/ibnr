@@ -1,0 +1,30 @@
+name: Lint
+
+# There was no lint job until now, which is how an I001 (unsorted imports) error
+# reached main in 40fb1d6. `ruff check` is the gate that would have caught it.
+#
+# `ruff format --check` is deliberately NOT run yet: it currently wants to
+# reformat README.md, collapsing the aligned trailing comments in its code
+# samples. That is a separate call to make; adding the check first would just
+# pin CI red.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  ruff:
+    name: ruff check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Lint
+        run: uvx ruff check --output-format=github .

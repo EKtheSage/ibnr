@@ -41,6 +41,27 @@ from ibis.expr.types import Table as IbisTable
 from ibnr.triangle.core import GRAIN_MONTHS, Triangle, TriangleMeta
 
 
+def _require_interop(module: str, feature: str):
+    """Import an optional interop dependency, or say how to install it.
+
+    ``chainladder`` and ``bermuda`` are not core dependencies: they are only
+    needed to convert *out* to those libraries, and they live behind the
+    ``interop`` extra. Importing them lazily keeps ``import ibnr`` working on a
+    bare install; this wrapper makes the failure legible when the conversion is
+    actually called.
+    """
+    import importlib
+
+    try:
+        return importlib.import_module(module)
+    except ModuleNotFoundError as exc:  # pragma: no cover - trivial branch
+        raise ModuleNotFoundError(
+            f"{feature} requires the optional '{module}' package, which is not installed. "
+            f'Install the interop extra:  pip install "ibnr[interop]"  '
+            f"(or: uv add \"ibnr[interop]\")"
+        ) from exc
+
+
 def resolve_backend(backend: str | BaseBackend | None = None) -> BaseBackend:
     """'duckdb' (default) and 'polars' are the two supported names; an already
     connected ibis backend passes through.
@@ -200,7 +221,7 @@ def to_chainladder(t: Triangle):
     ``grain('OYDY')``) instead of second-guessing it. chainladder re-materializes
     the NaN padding cells that the long format omitted.
     """
-    import chainladder as cl
+    cl = _require_interop("chainladder", "Triangle.to_chainladder()")
     import pandas as pd
 
     df = t.expr.execute()
@@ -296,7 +317,7 @@ def to_bermuda(t: Triangle):
     dev_lag column is deliberately not exported (see the convention note in the
     module docstring).
     """
-    import bermuda
+    bermuda = _require_interop("bermuda", "Triangle.to_bermuda()")
 
     # cumulative vs incremental is carried by the cell class on bermuda's side
     cell_cls = bermuda.CumulativeCell if t.meta.measure == "cumulative" else bermuda.IncrementalCell
