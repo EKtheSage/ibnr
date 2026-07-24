@@ -22,7 +22,7 @@ import pytest
 
 from ibnr import Triangle
 from ibnr.kernels.contract import cohort_grid
-from ibnr.kernels.mack import fit_mack, simulate_ultimates
+from ibnr.kernels.mack import _tail_sigma2, fit_mack, simulate_ultimates
 
 from .conftest import make_cohort_triangle
 
@@ -134,13 +134,107 @@ def test_rejects_unknown_sigma_rule(backend_name):
         fit_mack(make_cohort_triangle(backend_name, SMALL), loss_field="paid_loss", sigma_rule="x")
 
 
-def test_rejects_non_positive_cumulative(backend_name):
-    """Mack's variance is proportional to C, so a zero cumulative has no defined
-    conditional variance. Named cell, hard error."""
+def test_zero_cumulative_keeps_the_factor_and_shrinks_the_sigma_sample(backend_name):
+    """An accident year at zero is a usable chain-ladder observation but not a
+    usable variance observation, and the two estimators part company there.
+
+    ``SMALL[2, 0] = 0`` puts the zero strictly above the diagonal (origin 2 is
+    observed at dev 0 and dev 1, so it is in step 0's pair set). The factor is
+    the column total including that origin - 0 into the denominator, its 165
+    into the numerator - which is exactly what the retired inline chain-ladder
+    benchmark in ``scripts/compare_gallery.py`` computed and what 2 of the 152
+    scored Schedule P cohorts need. Sigma drops it and loses a degree of freedom
+    with it. Every quantity below is hand-checkable from the matrix.
+    """
     bad = SMALL.copy()
     bad[2, 0] = 0.0
-    with pytest.raises(ValueError, match="non-positive cumulative"):
+    fit = fit_mack(make_cohort_triangle(backend_name, bad), loss_field="paid_loss")
+
+    s0 = 100.0 + 120.0 + 0.0
+    f0 = (150.0 + 180.0 + 165.0) / s0
+    np.testing.assert_allclose([fit.s[0], fit.f[0]], [s0, f0])  # 220.0, 2.25
+    # the two origin counts diverge exactly here, which is the point of n_pos
+    np.testing.assert_array_equal(fit.n_obs, [3, 2, 1])
+    np.testing.assert_array_equal(fit.n_pos, [2, 2, 1])
+    # sigma over origins 0 and 1 only, df = 2 - 1 = 1
+    resid = 100.0 * (150.0 / 100.0 - f0) ** 2 + 120.0 * (180.0 / 120.0 - f0) ** 2
+    np.testing.assert_allclose(fit.sigma2[0], resid / 1)  # 123.75
+    # and the variance machinery stays finite - the zero is above the diagonal,
+    # so nothing downstream ever divides by it
+    assert np.isfinite(fit.msep_runoff()["msep"]).all()
+    assert np.isfinite(fit.msep_runoff()["msep_total"])
+
+
+def test_rejects_negative_cumulative(backend_name):
+    """A negative weight makes sigma_j^2 itself negative, hence a negative msep
+    and a NaN standard error - all silently. Hard error, named origin."""
+    bad = SMALL.copy()
+    bad[2, 0] = -50.0
+    with pytest.raises(ValueError, match="negative cumulative"):
         fit_mack(make_cohort_triangle(backend_name, bad), loss_field="paid_loss")
+
+
+def test_rejects_zero_volume_step(backend_name):
+    """S_j = 0 makes the volume-weighted factor 0/0. numpy would return inf or
+    nan and carry on, so it is checked rather than divided."""
+    bad = SMALL.copy()
+    bad[0, 0] = bad[1, 0] = bad[2, 0] = 0.0
+    with pytest.raises(ValueError, match="zero volume at dev step 1"):
+        fit_mack(make_cohort_triangle(backend_name, bad), loss_field="paid_loss")
+
+
+def test_rejects_step_with_too_few_positive_origins(backend_name):
+    """A step with several pairs but under two positive ones has no sigma, and
+    must NOT fall through to the last-step extrapolation.
+
+    This is the trap the relaxation opens: ``_tail_sigma2`` looks only backwards,
+    so at j = 0 it finds nothing and returns 0.0 under BOTH sigma rules - which
+    would silently declare the first and most volatile development step
+    noiseless, and understate the youngest year's CDR accordingly.
+    """
+    bad = SMALL.copy()
+    bad[1, 0] = bad[2, 0] = 0.0  # leaves exactly one positive origin at step 0
+    with pytest.raises(ValueError, match="only 1 with a positive cumulative"):
+        fit_mack(make_cohort_triangle(backend_name, bad), loss_field="paid_loss")
+
+
+def test_tail_sigma_never_silently_fills_an_early_step(backend_name):
+    """Pins the mechanism behind the test above rather than just its symptom:
+    left to itself ``_tail_sigma2`` answers 0.0 at step 0 under both rules."""
+    assert _tail_sigma2(np.full(3, np.nan), 0, rule="mack") == 0.0
+    assert _tail_sigma2(np.full(3, np.nan), 0, rule="log_linear") == 0.0
+
+
+def test_point_estimate_survives_a_zero_diagonal_but_the_variance_does_not(backend_name):
+    """The cell no factor-side guard can see: an open origin's latest diagonal.
+
+    It has no observed successor, so it enters no development step's estimator -
+    yet every variance formula divides by it. Before this guard existed the fit
+    was accepted and ``msep_runoff()`` returned NaN for that origin AND a NaN
+    total, with no exception. The point estimate genuinely does not need the
+    cell, so it stays available; only the variance path refuses.
+    """
+    bad = SMALL.copy()
+    bad[3, 0] = 0.0  # youngest origin: its diagonal IS dev 0
+    fit = fit_mack(make_cohort_triangle(backend_name, bad), loss_field="paid_loss")
+    np.testing.assert_allclose(fit.ultimate[3], 0.0)  # the projection is still defined
+    assert np.isfinite(fit.ultimate).all()
+    for call in (
+        fit.msep_runoff,
+        fit.summary,
+        lambda: simulate_ultimates(fit, n_draws=16, seed=0),
+    ):
+        with pytest.raises(ValueError, match="latest diagonal of open origin"):
+            call()
+
+
+def test_zero_diagonal_on_a_closed_origin_is_fine(backend_name):
+    """A fully developed origin has no remaining step, so nothing divides by its
+    last cell - the guard is scoped to OPEN origins and must not over-reach."""
+    ok = SMALL.copy()
+    ok[0, 3] = 0.0  # origin 0 is at the last dev column: closed
+    fit = fit_mack(make_cohort_triangle(backend_name, ok), loss_field="paid_loss")
+    assert np.isfinite(fit.msep_runoff()["msep"]).all()
 
 
 def test_ultimate_is_latest_rolled_forward(backend_name):

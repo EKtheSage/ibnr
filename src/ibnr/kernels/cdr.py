@@ -178,6 +178,10 @@ def one_year_cdr(fit: MackFit) -> CDRResult:
     tail factor - the same two restrictions R's ``CDR.MackChainLadder``
     enforces, and both are structural here: ``fit_mack`` estimates nothing else.
     """
+    # Phi_i divides by C_{i,k_i} - the latest diagonal, the one cell class no
+    # factor-side guard can see. Checked here as well as inside msep_runoff()
+    # below so the failure is named before the loop builds a page of NaN.
+    fit.require_positive_open_diagonals()
     n_w, n_d = fit.n_w, fit.n_d
     last = n_d - 1
     k = fit.latest_dev
@@ -268,6 +272,11 @@ def simulate_one_year_cdr(
         raise ValueError(f"process must be one of {PROCESS_LAWS}, got {process!r}")
     if n_draws < 1:
         raise ValueError("n_draws must be positive")
+    # step 2's Var = sigma_{k_i}^2 * C_{i,k_i} is non-positive off a non-positive
+    # diagonal, and draw_step then returns the mean exactly - an invisible point
+    # mass rather than an error, which is the one failure a simulation cannot
+    # surface on its own
+    fit.require_positive_open_diagonals()
     rng = np.random.default_rng(seed)
     n_w, n_d = fit.n_w, fit.n_d
     k = fit.latest_dev

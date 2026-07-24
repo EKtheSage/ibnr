@@ -31,6 +31,17 @@ f[j]        = sum_i C[i,j+1] / S[j]               (volume-weighted, alpha = 1)
 sigma[j]^2  = 1/(n[j]-1) * sum_i C[i,j] * (C[i,j+1]/C[i,j] - f[j])^2
 ```
 
+The two sums do not always run over the same origins. `sigma[j]^2`'s summand
+carries a `1/C[i,j]` - the weighted residual is `(C[i,j+1] - f[j] C[i,j])^2 /
+C[i,j]` - so it is estimable only where `C[i,j] > 0`, while `f[j]` needs nothing
+beyond `S[j] > 0`. `n[j]` above is therefore the count of *positive* pair
+origins, not the pair count, and the degrees of freedom follow it. On a triangle
+with strictly positive cumulatives the two sets coincide and this says nothing;
+they part on an accident year with zero paid at 12 months, whose chain-ladder
+ultimate is perfectly well defined and whose sigma simply has one fewer
+observation behind it. `MackFit.n_obs` and `MackFit.n_pos` report the two counts
+separately, so the divergence is visible rather than inferred.
+
 `alpha = 1` is not a default but a requirement: both Mack's and
 Merz-Wuthrich's variance formulas are derived for the volume-weighted factor,
 so no other averaging is offered.
@@ -169,10 +180,22 @@ the backtest window with `as_of=` before fitting.
 
 - **Volume-weighted only**, and **no tail factor**. Both are restrictions of
   the underlying formulas, not of the implementation.
-- **Positive cumulatives required** at every observed cell: Mack's variance is
-  proportional to `C`, so a zero or negative cumulative has no defined
-  conditional variance. Incurred triangles net of bulk reserves can breach this
-  - the error names the cell.
+- **Positivity is required unevenly**, and the fit says where. Mack's variance
+  is proportional to `C`, so a zero cumulative carries no conditional variance -
+  but the volume-weighted *factor* divides only by the column total. So a zero
+  above the diagonal costs that step's sigma one observation and nothing else,
+  while a **negative** cumulative is refused outright (it would drive
+  `sigma[j]^2` itself negative, hence a negative msep and a NaN standard error),
+  as is a step with zero volume or with fewer than two positive origins. The
+  errors name the dev step and the offending origins.
+- **The latest diagonal is checked on the variance path, not at fit time.**
+  Those cells have no observed successor, so they enter no step's estimator -
+  yet `msep_runoff`, the CDR and the simulations all divide by them. `fit_mack`
+  therefore succeeds on a cohort with a non-positive diagonal and gives a valid
+  point estimate; `msep_runoff()` / `one_year_cdr()` / `simulate_*()` raise,
+  naming the origin. Incurred triangles net of bulk reserves are where this
+  bites. (Before this split the same cohort returned a silent `NaN` msep and a
+  `NaN` total.)
 - **The last step's sigma is an extrapolation**, and on a small triangle it can
   dominate the youngest accident year's uncertainty. The two rules disagree by
   design; if the answer is sensitive to which one is chosen, say so rather than

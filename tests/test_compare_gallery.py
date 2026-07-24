@@ -9,11 +9,11 @@ de-duplication: if the kernel and the old benchmark ever disagree on a clean
 run-off cohort, that is a regression in the published leaderboard, not a
 refactor.
 
-The two behaviours that are NOT identical are pinned deliberately: `fit_mack`
-rejects a cohort with a non-positive cumulative (Mack's variance is
-proportional to C_{i,j}) where the point-only inline formula happily returned a
-number, and the outcome query must keep excluding origins that post-date the
-training slice (the 2.4x gotcha in CLAUDE.md).
+Two things beyond the agreement are pinned here: the outcome query must keep
+excluding origins that post-date the training slice (the 2.4x gotcha in
+CLAUDE.md), and a cohort `fit_mack` genuinely refuses - one with a negative
+cumulative - must land in the results as a failure row rather than aborting the
+study, with its anchor and premium still recorded for every other model.
 """
 
 from __future__ import annotations
@@ -199,14 +199,26 @@ def _frame(rows):
 
 
 @pytest.mark.parametrize("post_study", [False, True])
-def test_matches_legacy_inline_chain_ladder(backend_name, post_study):
+@pytest.mark.parametrize("zero_cell", [False, True])
+def test_matches_legacy_inline_chain_ladder(backend_name, post_study, zero_cell):
     """fit_mack reproduces the retired inline benchmark cell for cell.
 
     Estimates, outcomes, anchors and premiums must all agree - on the real
-    1997-12-31 paid_loss panel the two agree to 3e-16 on all 150 cells Mack
-    accepts, so the tolerance here is float noise, not slack.
+    1997-12-31 paid_loss panel the two agree to 3e-16 on all 152 cells, so the
+    tolerance here is float noise, not slack.
+
+    ``zero_cell`` plants an accident year at zero paid at 12 months, the shape
+    of the two real Schedule P cohorts (29440 and 42439, other_liability). It
+    used to be the one place the kernel and the inline formula diverged; since
+    the factor stopped demanding strictly positive cumulatives it is just
+    another cell, and pinning the agreement is what keeps it that way.
     """
-    tri = _triangle(backend_name, post_study=post_study)
+    overrides = None
+    if zero_cell:
+        holed = SQUARE.copy()
+        holed[2, 0] = 0.0  # 2012 origin: above the diagonal, in step 0's pair set
+        overrides = {("0001", "gl"): holed}
+    tri = _triangle(backend_name, overrides=overrides, post_study=post_study)
     rows, anchors, premiums = point_context(tri, SCORED, _args())
     want_rows, want_anchors, want_premiums = legacy_point_context(tri, SCORED, _args())
 
@@ -240,21 +252,23 @@ def test_outcome_excludes_post_study_origins(backend_name):
 def test_records_mack_rejection_as_a_failure_row(backend_name):
     """A cohort Mack's model rejects becomes a failure row; the study goes on.
 
-    `fit_mack` needs strictly positive cumulatives (its variance is
-    proportional to C_{i,j}); an accident year with zero paid at 12 months has
-    a well-defined volume-weighted ultimate but no Mack sigma. The retired
-    inline formula returned a number here - that divergence is deliberate and
-    is asserted below, so it cannot change silently.
+    The rejections that remain are the ones no reading of Mack's model survives
+    - here a NEGATIVE cumulative, which would drive sigma_j^2 itself negative
+    and hand back a negative msep with a NaN standard error. (Schedule P
+    incurred net of bulk can produce these, which is why the study needs a
+    recorded failure rather than a crash.) A cohort with a zero cell is NOT one
+    of them any more; that case is pinned as an agreement in
+    `test_matches_legacy_inline_chain_ladder[zero_cell=True]`.
     """
     holed = SQUARE.copy()
-    holed[2, 0] = 0.0  # 2012 origin, zero at 12 months; observed at 24 too
+    holed[2, 0] = -40.0  # 2012 origin, negative paid at 12 months
     tri = _triangle(backend_name, overrides={("0001", "gl"): holed})
     rows, anchors, premiums = point_context(tri, SCORED, _args())
     by_key = {(r["company_code"], r["line"]): r for r in rows}
 
     bad = by_key[("0001", "gl")]
     assert np.isnan(bad["estimate"])
-    assert "non-positive cumulative loss" in bad["error"]
+    assert "negative cumulative" in bad["error"]
     # a partial sum is not a benchmark: the company total is withheld too
     assert np.isnan(by_key[("0001", "ALL")]["estimate"])
     assert "gl" in by_key[("0001", "ALL")]["error"]
@@ -271,8 +285,3 @@ def test_records_mack_rejection_as_a_failure_row(backend_name):
     assert by_key[("0001", "auto")]["estimate"] == pytest.approx(
         legacy_point_context(tri, SCORED, _args())[0][0]["estimate"]
     )
-    # the divergence being pinned: the inline formula DID produce a number here
-    legacy = {
-        (r["company_code"], r["line"]): r for r in legacy_point_context(tri, SCORED, _args())[0]
-    }
-    assert legacy[("0001", "gl")]["estimate"] > 0
