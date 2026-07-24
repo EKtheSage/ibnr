@@ -66,6 +66,7 @@ heavier methods sit behind optional extras:
 uv add "ibnr[bayesian]"   # cmdstanpy, numpyro, pymc, arviz, bayesblend
 uv add "ibnr[nn]"         # torch
 uv add "ibnr[viz]"        # altair
+uv add "ibnr[interop]"    # chainladder + bermuda, for to_chainladder()/to_bermuda()
 ```
 
 > **`[bayesian]` installs cmdstanpy, not CmdStan itself.** The Stan entries
@@ -181,6 +182,7 @@ uv run ruff check . && uv run ruff format --check .
 ```
 
 Optional extras: `[bayesian]` (cmdstanpy, numpyro, pymc, arviz, bayesblend),
+`[interop]` (chainladder, bermuda-ledger),
 `[nn]` (torch), `[viz]` (altair). The core depends only on
 `ibis-framework[duckdb,polars]`.
 

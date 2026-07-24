@@ -69,7 +69,7 @@ uv venv /tmp/cr && uv pip install --python /tmp/cr/bin/python dist/*.whl
 /tmp/cr/bin/python -c "import ibnr; from ibnr import gallery; print(ibnr.__version__, gallery.list())"
 ```
 
-Should print `0.2.0` and all 10 gallery entries, with only core dependencies
+Should print `0.3.0` and all 10 gallery entries, with only core dependencies
 installed.
 
 ## Release to PyPI
@@ -77,7 +77,7 @@ installed.
 Once the pre-flight looks right, tag the commit on `main`:
 
 ```sh
-git tag v0.2.0 && git push origin v0.2.0
+git tag v0.3.0 && git push origin v0.3.0
 ```
 
 The tag push builds, validates with `twine check --strict`, and publishes to

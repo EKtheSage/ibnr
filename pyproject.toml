@@ -1,6 +1,6 @@
 [project]
 name = "ibnr"
-version = "0.2.1"
+version = "0.3.0"
 description = "Gallery-centric probabilistic loss reserving: Bayesian MCMC and neural network methods with mandatory evaluation, over a long-format triangle data layer."
 readme = "README.md"
 license = "MPL-2.0"
@@ -42,10 +42,15 @@ dependencies = [
 bayesian = ["cmdstanpy", "numpyro", "pymc", "arviz", "bayesblend"]
 nn = ["torch>=2.2"]
 viz = ["altair"]
+# Needed only to convert OUT to these libraries (`to_chainladder`/`to_bermuda`).
+# Reading FROM them takes a foreign object the caller already built, so it needs
+# no dependency of ours.
+interop = ["chainladder>=0.8.18", "bermuda-ledger>=2.3"]
 
 [project.urls]
 Homepage = "https://github.com/EKtheSage/ibnr"
 Repository = "https://github.com/EKtheSage/ibnr"
+Documentation = "https://ekthesage.github.io/ibnr/"
 Issues = "https://github.com/EKtheSage/ibnr/issues"
 
 [dependency-groups]
