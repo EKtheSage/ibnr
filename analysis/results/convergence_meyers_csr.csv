@@ -1,0 +1,7 @@
+backend,runtime_s,n_draws,max_rhat,min_ess_bulk,min_ess_tail,divergences,divergence_frac,label
+stan,9.279376700054854,10000,1.0,2866.0,3127.0,0,0.0,workers_compensation:11347
+numpyro,18.774622400058433,10000,1.0,2593.0,2170.0,0,0.0,workers_compensation:11347
+pymc,85.06274919991847,10000,1.0,2440.0,2686.0,19,0.0019,workers_compensation:11347
+stan,8.59302240004763,10000,1.0,3080.0,3364.0,0,0.0,workers_compensation:38687
+numpyro,14.040769099956378,10000,1.0,2625.0,3049.0,0,0.0,workers_compensation:38687
+pymc,44.835825200076215,10000,1.0,2527.0,2545.0,0,0.0,workers_compensation:38687
