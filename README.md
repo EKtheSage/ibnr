@@ -63,6 +63,9 @@ entry = gallery.fit("mack", triangle, loss_field="paid_loss")
 entry.summary()          # latest, ultimate, IBNR, Mack run-off S.E.
 entry.one_year_cdr().summary()   # + one-year S.E. and its share of run-off risk
 entry.cdr_distribution(n_draws=20_000)   # the same by re-reserving, with quantiles
+
+from ibnr.kernels.cdr import cdr_risk_measures
+cdr_risk_measures(entry.cdr_distribution(n_draws=100_000, seed=1))  # VaR/TVaR 99.5
 ```
 
 The analytic msep ties out to R ChainLadder's published `CDR()` output on the

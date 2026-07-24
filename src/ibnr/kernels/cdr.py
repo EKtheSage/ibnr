@@ -29,7 +29,9 @@ other (they answer the same question and must agree):
                    the fitted Mack model, append it, re-run the chain ladder on
                    the extended triangle and take the difference. Gives the full
                    one-year CDR *distribution* (a ``PredictiveDistribution``,
-                   per CLAUDE.md decision 4), not just its second moment.
+                   per CLAUDE.md decision 4), not just its second moment - and
+                   therefore the tail quantiles (``cdr_risk_measures``) that a
+                   one-year capital figure is actually read off.
 
 The analytic and simulated second moments agree to Monte Carlo error when the
 simulation is run with the matching risk components - see
@@ -321,3 +323,40 @@ def simulated_msep(pred: PredictiveDistribution) -> np.ndarray:
     zero the model predicts, so a simulation whose mean drifts off zero is
     penalised for it rather than being silently re-centred."""
     return (pred.samples**2).mean(axis=0)
+
+
+def cdr_risk_measures(
+    pred: PredictiveDistribution, levels: tuple[float, ...] = (0.995,)
+) -> pd.DataFrame:
+    """VaR and TVaR of the one-year LOSS, from simulated CDR draws.
+
+    The capital question is asked on the adverse side, so everything here is
+    stated on the loss ``-CDR`` (the reserve strengthening): ``VaR_0.995`` is
+    the 99.5th percentile of that loss, the Solvency II reserve-risk basis, and
+    ``TVaR_0.995`` its mean beyond that point. A negative VaR means even the
+    adverse tail at that level is still a release.
+
+    Quantiles are exact empirical order statistics of the draws, so the tail
+    knots are as good as the draw count and no better - at 20k draws the 99.5th
+    percentile rests on 100 observations. Raise ``n_draws`` before reading much
+    into 99.9.
+
+    Needs the simulated distribution rather than the analytic msep: a closed
+    form gives a second moment, and no second moment implies a quantile.
+    """
+    if not all(0.0 < level < 1.0 for level in levels):
+        raise ValueError(f"levels must lie strictly inside (0, 1), got {levels}")
+    loss = -pred.samples  # adverse = the ultimate revised UP
+    out = pred.targets.copy()
+    out["mean_cdr"] = pred.samples.mean(axis=0)
+    out["sd_cdr"] = pred.samples.std(axis=0, ddof=1)
+    for level in levels:
+        var = np.quantile(loss, level, axis=0)
+        # TVaR over the draws at or beyond VaR; with few draws in the tail this
+        # is a small-sample mean, which is exactly what the caller should see.
+        tail = np.where(loss >= var, loss, np.nan)
+        with np.errstate(invalid="ignore"):
+            tvar = np.nanmean(tail, axis=0)
+        out[f"var_{level:g}"] = var
+        out[f"tvar_{level:g}"] = tvar
+    return out

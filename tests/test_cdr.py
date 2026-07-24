@@ -27,7 +27,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from ibnr.kernels.cdr import one_year_cdr, simulate_one_year_cdr, simulated_msep
+from ibnr.kernels.cdr import (
+    cdr_risk_measures,
+    one_year_cdr,
+    simulate_one_year_cdr,
+    simulated_msep,
+)
 from ibnr.kernels.mack import fit_mack
 
 from .conftest import make_cohort_triangle
@@ -289,6 +294,35 @@ def test_cdr_distribution_layout(backend_name):
     assert pred.n_targets == fit.n_w + 1
     assert list(pred.targets["label"])[-1] == "total"
     np.testing.assert_allclose(pred.samples[:, -1], pred.samples[:, :-1].sum(axis=1), rtol=1e-12)
+
+
+def test_risk_measures_are_stated_on_the_loss(backend_name):
+    """VaR/TVaR are reported on ``-CDR`` (the strengthening), which is the side
+    capital is held against, and TVaR must sit beyond VaR at every level."""
+    fit = fit_mack(
+        make_cohort_triangle(backend_name, synthetic_triangle(backend_name)),
+        loss_field="paid_loss",
+    )
+    pred = simulate_one_year_cdr(fit, n_draws=40_000, seed=41)
+    table = cdr_risk_measures(pred, levels=(0.95, 0.995))
+    assert len(table) == pred.n_targets
+    assert (table["tvar_0.995"] >= table["var_0.995"]).all()
+    assert (table["var_0.995"] >= table["var_0.95"]).all()
+    # the reported VaR is the empirical quantile of the loss, nothing smoothed
+    total_loss = -pred.samples[:, -1]
+    assert table["var_0.995"].iloc[-1] == pytest.approx(np.quantile(total_loss, 0.995))
+    # a fully developed origin cannot move, so it consumes no capital
+    assert table["var_0.995"].iloc[0] == pytest.approx(0.0)
+
+
+def test_risk_measures_reject_degenerate_levels(backend_name):
+    fit = fit_mack(
+        make_cohort_triangle(backend_name, synthetic_triangle(backend_name)),
+        loss_field="paid_loss",
+    )
+    pred = simulate_one_year_cdr(fit, n_draws=100, seed=1)
+    with pytest.raises(ValueError, match="strictly inside"):
+        cdr_risk_measures(pred, levels=(1.0,))
 
 
 @pytest.mark.parametrize("law", ["gamma", "normal", "lognormal"])
