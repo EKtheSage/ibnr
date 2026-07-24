@@ -22,7 +22,7 @@ reachable; point at it with `IBNR_SCHEDULE_P_WAREHOUSE` if it lives elsewhere.
 
 | notebook | what it covers |
 |---|---|
-| `01_triangle_and_meyers_ccl.ipynb` | Milestones 1–2: the Triangle layer & chainladder tie-out (both backends), the Schedule P adapter, a live CCL fit, and the 200-insurer Meyers validation (gross vs net of bulk). |
+| `01_triangle_and_meyers_ccl.ipynb` | Milestones 1-2: the Triangle layer & chainladder tie-out (both backends), the Schedule P adapter, a live CCL fit, and the 200-insurer Meyers validation (gross vs net of bulk). |
 
 To re-execute a notebook headless (e.g. after a data refresh):
 

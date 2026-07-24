@@ -91,7 +91,7 @@ scale, and CRPS prefers continuous samples).
 
 ## Validation
 
-Retrospective Meyers protocol (train on the 1988–1997 upper triangle as of
+Retrospective Meyers protocol (train on the 1988-1997 upper triangle as of
 1997-12-31, score the realized paid ultimate percentile, KS/PIT uniformity
 across companies): run via `scripts/meyers_validation.py --model meyers_csr`.
 Results land in `analysis/results/meyers_csr_validation.csv`. The monograph's

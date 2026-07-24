@@ -100,7 +100,7 @@ complete 10x10 triangles, all-year premium > $20,000k and incurred loss >
 $4,000k, then the 50 lowest premium-CV companies per line under the Table A.1
 CV1 limits.
 
-The model fits **reported_loss = IncurLoss − BulkLoss** (incurred net of
+The model fits **reported_loss = IncurLoss - BulkLoss** (incurred net of
 bulk+IBNR, i.e. paid + case), exactly as in the monograph. Company selection
 applies both Table A.1 screens (CV1 on net premium, CV2 on the net/direct
 premium ratio); the exact company set may still differ marginally from the

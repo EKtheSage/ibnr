@@ -30,7 +30,7 @@ so the ultimate loss ratio is RLR·RRF. `t` is the development age in
 **years at the cell's period end** (the case study's `Lag` = 1..10; ker/kp
 are per-year rates; no mid-period shift - gradual earning is what the EX
 compartment models). Ages, premiums and the delta indicator are data via
-`kernels.contract.compartmental_stan_data` (outstanding = `reported_loss` −
+`kernels.contract.compartmental_stan_data` (outstanding = `reported_loss` -
 `paid_loss`, i.e. net of bulk on both sides; the monograph's wkcomp case
 study used direct premium - we use net earned premium like the rest of the
 gallery, consistent with the net loss basis).
@@ -42,7 +42,7 @@ gallery, consistent with the net loss basis).
 Gaussian likelihood on **amounts**: OS levels (delta=0) and cumulative paid
 (delta=1), `sigma` per delta on the log link. ker, kp fixed across accident
 years; (RLR, RRF) carry **correlated accident-year effects** - the
-monograph's signature reserving-cycle structure (posterior RLR–RRF
+monograph's signature reserving-cycle structure (posterior RLR-RRF
 correlation > 0 means prudent case reserves in hard markets).
 
 ```
@@ -130,14 +130,14 @@ The two failure modes separate cleanly:
 
 - **gaussian fails on bias + sharpness** - the monograph's own critique of
   Model 1, reproduced at scale. Constant amount-scale sigma → median total
-  CV 2.5%, 110/200 outcomes outside the 5–95 band; and the case-study
+  CV 2.5%, 110/200 outcomes outside the 5-95 band; and the case-study
   priors (ULR median ≈ 0.7·0.8 = 0.56; kp ~ LN(0, 0.1), i.e. ~63% of
   outstanding paid within a year, ±20% wiggle) were tuned to one
   fast-settling WC book - on long-tailed other liability the median
   estimate/outcome is **0.84** with 35/50 outcomes above the 95th
   percentile. Priors are load-bearing when transferred mechanically.
 - **lognormal removes the bias entirely** (median estimate/outcome
-  0.99–1.02 on every line - the AY + dev varying effects give the curve
+  0.99-1.02 on every line - the AY + dev varying effects give the curve
   enough freedom to escape the binding priors) and outside-band outcomes
   drop to 63/200. What remains is the residual too-sharp/regime problem
   concentrated in PPA + WC (percentiles leaning low = mild over-prediction

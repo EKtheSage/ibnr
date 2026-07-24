@@ -67,7 +67,7 @@ volatile per dollar (CV shrinks with size), so this misfits the size
 extremes: too-narrow small books (the PPA-on-paid calibration miss) and
 mis-sized large ones. With the flag on, the sigma head carries a single
 learnable log-dollar power `p = softplus(raw_p)`; sigma is multiplied by
-`premium^(p−1)` about the pooled mean premium, so the effective dollar sd
+`premium^(p-1)` about the pooled mean premium, so the effective dollar sd
 scales as `premium^p`. `p` is initialized at **1.0**, which reproduces the
 flat-sigma baseline exactly - the two arms are a clean on/off comparison
 (`compare_gallery.py --nn-exposure-sigma`). `p < 1` widens small books and
@@ -75,7 +75,7 @@ tightens large ones; `p` is a single scalar (per-line is a future extension)
 to stay conservative on ~150-cell backtests.
 
 *Result (paid, 152-cell backtest, 2026-07-08).* The data learns
-`p ≈ 0.965` (5 members 0.952–0.982) - below 1, the actuarially-expected
+`p ≈ 0.965` (5 members 0.952-0.982) - below 1, the actuarially-expected
 direction, but only slightly. Net effect is a small, consistent win:
 combined KS 18.3 → 16.6, combined median CRPS/outcome 0.0267 → 0.0252,
 reserve MAE 3.00 → 2.95 pts of premium, chain-ladder skill 1.94 → 1.60;
