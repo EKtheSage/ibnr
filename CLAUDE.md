@@ -4,7 +4,7 @@
 
 A gallery-centric actuarial reserving package: Bayesian MCMC and neural network loss reserving methods with mandatory evaluation, model stacking, and a long-format triangle data layer backed by duckdb and polars. Designed as a companion/extension to `chainladder-python`, not a fork of it.
 
-Name: **ibnr** (PyPI availability verified 2026-06-11; import `ibnr`, repo dir name predates it). License: MPL-2.0 (deliberately matches chainladder).
+Name: **ibnr**, published on PyPI since 2026-07-23 (`uv add ibnr`). The GitHub repo and the local checkout are both `ibnr` too, so package, repo and directory all agree. License: MPL-2.0 (deliberately matches chainladder).
 
 ## Dev commands
 
