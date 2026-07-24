@@ -27,7 +27,7 @@ Priors:
 | parameter | prior | rationale |
 |---|---|---|
 | logelr | normal(-0.4, sqrt(10)) | the Meyers-family variance-10 ELR prior |
-| omega | lognormal(log 1.5, 0.5) | curve shape; mass on ~0.6–4 |
+| omega | lognormal(log 1.5, 0.5) | curve shape; mass on ~0.6-4 |
 | theta | lognormal(log(4 * grain), 1) | curve scale; median at 4 dev periods, tracks the grain |
 
 ## Dispersion phi - plug-in from the MLE twin

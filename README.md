@@ -107,9 +107,9 @@ same `publish_id` the harness scripts stamp into every results CSV, so any
 figure traces to an exact publish.
 
 The mart of record is `mart_reserving_model_training`: 150+ companies × 4
-Schedule P lines, accident years 1988–1997, dev ages 1–10, USD thousands;
+Schedule P lines, accident years 1988-1997, dev ages 1-10, USD thousands;
 fields `cum_paid_loss`, `incurred_loss`, `bulk_loss`,
-`earned_prem_net/direct`, with `reported_loss = incurred − bulk` derived by
+`earned_prem_net/direct`, with `reported_loss = incurred - bulk` derived by
 the adapter (`src/ibnr/data/schedule_p.py`). Everything mart-dependent
 auto-skips when no data source is available - the package and its test suite
 work standalone on the public raa/clrd samples.
