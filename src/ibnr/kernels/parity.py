@@ -44,6 +44,12 @@ CCL_PARITY_VARS = ("logelr", "alpha", "beta", "rho", "sig")
 #: ``speedup`` it drives.
 CSR_PARITY_VARS = ("logelr", "alpha", "beta", "gamma", "sig")
 
+#: England & Verrall ODP. A different family: no lognormal ``sig`` (the
+#: dispersion ``phi`` is a plug-in constant, not a parameter), so the compared
+#: set is just the log-link linear predictor's coefficients - the intercept and
+#: the two zero-pinned effect vectors.
+ODP_PARITY_VARS = ("c", "alpha", "beta")
+
 
 @dataclass
 class ParityReport:

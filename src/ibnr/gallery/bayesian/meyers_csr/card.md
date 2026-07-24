@@ -47,7 +47,7 @@ All three consume the identical `kernels.contract.stan_data` dict and expose
 the same deterministic quantities, so `predict()`, `convergence()` and the
 evaluation harness are backend-agnostic. `kernels.parity.compare_posteriors`
 gates the ports against the Stan reference before any convergence claim is
-made; `scripts/parity_meyers.py --model meyers_csr` runs the full comparison.
+made; `scripts/parity_gallery.py --model meyers_csr` runs the full comparison.
 
 `parallel_chains` / `max_treedepth` are cmdstan-level controls (the retro
 harness escalates on them) and are **rejected** by the ports rather than
@@ -160,7 +160,7 @@ combined MCSE of the SD, both required within `z_tol = 4`. Compared parameters
 are `CSR_PARITY_VARS` = `logelr, alpha, beta, gamma, sig` - CSR's signature
 `gamma` replaces CCL's `rho`. KS on the pooled marginals is reported for
 context only (autocorrelation inflates it). Reproduce with
-`scripts/parity_meyers.py --model meyers_csr --line workers_compensation
+`scripts/parity_gallery.py --model meyers_csr --line workers_compensation
 --n-companies 2`.
 
 **Result (2 WC companies as of 1997-12-31, 4 chains x 2500 draws after 1000

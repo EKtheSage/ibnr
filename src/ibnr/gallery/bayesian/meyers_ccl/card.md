@@ -43,7 +43,7 @@ dict and producing a common `arviz.InferenceData` that `predict()` reads off:
 
 `kernels.parity.compare_posteriors` gates the ports against the Stan reference
 (mean agreement in MCSE units, SD ratio, marginal KS) before any convergence
-claim is made; `scripts/parity_meyers.py` runs the full comparison.
+claim is made; `scripts/parity_gallery.py` runs the full comparison.
 
 ## Parameterization (held constant across backends for parity)
 
@@ -167,7 +167,7 @@ observation, has a large `mcse_sd`, so its noisier SD estimate is tolerated
 automatically. KS on the pooled marginals is reported for context only (MCMC
 autocorrelation inflates it). The comparison runs against Stan when a cmdstan
 toolchain is present, and NumPyro-vs-PyMC otherwise (so CI can gate parity
-without Stan). `scripts/parity_meyers.py` runs it on real Schedule P companies.
+without Stan). `scripts/parity_gallery.py` runs it on real Schedule P companies.
 
 **Result, re-measured 2026-07-24 (4 chains x 2500 draws after 1000 warmup,
 `target_accept = 0.9`, two WC companies; `analysis/results/parity_meyers.csv`):
@@ -217,7 +217,7 @@ single-core / sequential chain execution for a fair per-chain runtime,
 arviz. Runtimes are cache-warm (PyTensor/JAX compiled, Stan binary built) - see
 the compile note below. Full data in
 `analysis/results/convergence_meyers.csv`; reproduce with
-`scripts/parity_meyers.py --line workers_compensation --n-companies 2 --draws 2500 --target-accept 0.9`.
+`scripts/parity_gallery.py --line workers_compensation --n-companies 2 --draws 2500 --target-accept 0.9`.
 
 | company | backend | runtime | max R-hat | min ESS-bulk | divergences /10000 |
 |---|---|---|---|---|---|

@@ -10,7 +10,7 @@ Two tiers:
   small synthetic posterior and agree within MCSE via ``kernels.parity``. This
   runs without cmdstan, so CI can gate parity without a Stan toolchain. Stan is
   the ground truth but its compile is behind ``slow``; the full three-way
-  comparison lives in ``scripts/parity_meyers.py``.
+  comparison lives in ``scripts/parity_gallery.py``.
 
 Why parity is a gate and not a nicety (CLAUDE.md design decision 7): the point
 of the ports is a cross-backend convergence/speed comparison (R-hat, ESS,
@@ -217,7 +217,7 @@ def test_numpyro_pymc_parity():
     ``z_tol`` MCSE units (``kernels.parity.compare_posteriors``). Marked
     ``parity`` + ``slow`` because it runs two real MCMC fits; it needs no
     cmdstan, so CI can enforce parity without a Stan toolchain - the
-    Stan-as-ground-truth three-way run lives in ``scripts/parity_meyers.py``.
+    Stan-as-ground-truth three-way run lives in ``scripts/parity_gallery.py``.
     """
     # Small triangle + modest draws keep PyMC's PyTensor sampler tractable on a
     # BLAS-less install. Short chains inflate MCSE, but that is exactly what the

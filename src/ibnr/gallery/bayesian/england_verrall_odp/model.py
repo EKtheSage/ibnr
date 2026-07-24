@@ -28,8 +28,9 @@ STAN_FILE = Path(__file__).parent / "model.stan"
 #: keys of the standardized contract dict that form the Stan data block
 STAN_DATA_KEYS = ("len_data", "n_w", "n_d", "w", "d", "inc_loss", "logprem", "phi")
 
-#: posterior backends this entry can dispatch to (ports land in milestone 5)
-BACKENDS = ("stan",)
+#: posterior backends this entry can dispatch to; all three target the same
+#: posterior, which ``kernels.parity`` gates before any convergence claim
+BACKENDS = ("stan", "numpyro", "pymc")
 
 
 def pooled(idata, name: str) -> np.ndarray:
@@ -132,6 +133,14 @@ class EnglandVerrallODP(GalleryEntry):
     ) -> EnglandVerrallODP:
         if backend not in BACKENDS:
             raise ValueError(f"backend must be one of {BACKENDS}, got {backend!r}")
+        # parallel_chains / max_treedepth are cmdstan-level controls the retro
+        # harness escalates on. Validated BEFORE any data prep: a port that
+        # accepted them silently would report an escalated fit that never ran.
+        if backend != "stan" and (parallel_chains != 1 or max_treedepth is not None):
+            raise ValueError(
+                "parallel_chains / max_treedepth are stan-backend controls; "
+                f"the {backend!r} port does not take them"
+            )
         # Backtest slice: keep only cells reported on/before the cutoff diagonal.
         train = triangle.as_of(as_of) if as_of is not None else triangle
         # Standardized incremental ODP contract (w/d lags, inc_loss, logprem,
@@ -143,15 +152,26 @@ class EnglandVerrallODP(GalleryEntry):
         c["phi"] = pearson_phi(c["w"], c["d"], c["inc_loss"], c["n_w"], c["n_d"])
         self._loss_field = loss_field
         self.backend_ = backend
-        self.idata_ = self._sample_stan(
+        sampler = {
+            "stan": self._sample_stan,
+            "numpyro": self._sample_numpyro,
+            "pymc": self._sample_pymc,
+        }[backend]
+        extra = (
+            {"parallel_chains": parallel_chains, "max_treedepth": max_treedepth}
+            if backend == "stan"
+            else {}
+        )
+        # All three return a comparable arviz.InferenceData, so predict(),
+        # convergence() and parity are backend-agnostic.
+        self.idata_ = sampler(
             chains=chains,
             iter_warmup=iter_warmup,
             iter_sampling=iter_sampling,
             seed=seed,
             target_accept=target_accept,
-            parallel_chains=parallel_chains,
-            max_treedepth=max_treedepth,
             show_progress=show_progress,
+            **extra,
         )
         return self
 
@@ -172,10 +192,15 @@ class EnglandVerrallODP(GalleryEntry):
         iter_sampling,
         seed,
         target_accept,
-        parallel_chains,
-        max_treedepth,
         show_progress,
+        parallel_chains=1,
+        max_treedepth=None,
     ):
+        """Reference backend: cmdstanpy NUTS on ``model.stan``.
+
+        Ground truth for parity - the ports are checked against this posterior
+        before any convergence or runtime claim is made.
+        """
         import time
 
         import arviz as az
@@ -202,6 +227,43 @@ class EnglandVerrallODP(GalleryEntry):
         idata.attrs["runtime_s"] = runtime_s
         idata.attrs["backend"] = "stan"
         return idata
+
+    def _sample_numpyro(
+        self, *, chains, iter_warmup, iter_sampling, seed, target_accept, show_progress
+    ):
+        """NumPyro (JAX) port. Same parameterization, same contract.
+
+        The custom od-Poisson quasi-likelihood is a real ``dist.Distribution``
+        so the fit carries a per-observation ``log_likelihood`` group; see
+        ``model_numpyro`` for why a ``numpyro.factor`` would not.
+        """
+        from ibnr.gallery.bayesian.england_verrall_odp import model_numpyro
+
+        return model_numpyro.sample(
+            self.contract_,
+            chains=chains,
+            iter_warmup=iter_warmup,
+            iter_sampling=iter_sampling,
+            seed=seed,
+            target_accept=target_accept,
+            progress_bar=show_progress,
+        )
+
+    def _sample_pymc(
+        self, *, chains, iter_warmup, iter_sampling, seed, target_accept, show_progress
+    ):
+        """PyMC port. Same parameterization, same contract."""
+        from ibnr.gallery.bayesian.england_verrall_odp import model_pymc
+
+        return model_pymc.sample(
+            self.contract_,
+            chains=chains,
+            iter_warmup=iter_warmup,
+            iter_sampling=iter_sampling,
+            seed=seed,
+            target_accept=target_accept,
+            progressbar=show_progress,
+        )
 
     def predict(self, seed: int | None = None) -> PredictiveDistribution:
         """Predictive distribution of ultimates (losses at the last dev period)

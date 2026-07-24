@@ -1,9 +1,8 @@
-"""Cross-backend parity + convergence comparison for meyers_ccl (milestone 4).
+"""Cross-backend parity + convergence comparison for the Bayesian gallery.
 
-Fits the identical CCL model - same centered parameterization, same data
-contract, same sampler settings - with all three backends (Stan reference,
-NumPyro, PyMC) on the same Schedule P company triangle(s) as of 1997-12-31,
-then:
+Fits one gallery model - same parameterization, same data contract, same
+sampler settings - with all three backends (Stan reference, NumPyro, PyMC) on
+the same Schedule P company triangle(s) as of 1997-12-31, then:
 
 1. **Parity** (correctness gate): each port's posterior is compared to the Stan
    reference via ``kernels.parity`` (mean agreement in MCSE units, SD ratio,
@@ -11,9 +10,11 @@ then:
 2. **Convergence** (the comparison): per backend, max R-hat, min bulk/tail ESS,
    divergence count/fraction, and wall-clock sampling runtime.
 
-Writes ``analysis/results/parity_meyers.csv`` and
-``analysis/results/convergence_meyers.csv``. With ``--synthetic`` it runs on a
-CCL-simulated triangle and skips the mart (useful without the warehouse; Stan
+Writes ``analysis/results/parity_<stem>.csv`` and
+``convergence_<stem>.csv``, where the stem comes from ``MODELS`` (meyers_ccl
+keeps the bare ``meyers`` stem, so the published milestone-4 paths stay valid).
+With ``--synthetic`` it runs on a triangle simulated from the selected model's
+OWN generative process and skips the mart (useful without the warehouse; Stan
 still needs a cmdstan toolchain).
 
 METHODOLOGY (this script produces published results - read before changing)
@@ -48,18 +49,19 @@ METHODOLOGY (this script produces published results - read before changing)
   (the triangle is generated from `--seed`) and are NOT comparable to
   mart-based rows - keep the two kinds of run in separate files.
 
-* One script, one model at a time. `--model` selects which Meyers-family entry
+* One script, one model at a time. `--model` selects which gallery entry
   is compared; everything else - the cohort selection, the shared sampler
   settings, the parity gate - is identical across models by construction, so
-  the CSR table means the same thing the CCL table does. Per-model wiring
+  every model's table means the same thing. Per-model wiring
   (which loss field the reference posterior is defined on, which parameters
   parity compares, the model's own target_accept, and the output filenames)
   lives in `MODELS` and nowhere else.
 
 Usage:
-    uv run python scripts/parity_meyers.py --line workers_compensation --n-companies 5
-    uv run python scripts/parity_meyers.py --backends numpyro pymc --synthetic
-    uv run python scripts/parity_meyers.py --model meyers_csr --synthetic
+    uv run python scripts/parity_gallery.py --line workers_compensation --n-companies 5
+    uv run python scripts/parity_gallery.py --backends numpyro pymc --synthetic
+    uv run python scripts/parity_gallery.py --model meyers_csr --synthetic
+    uv run python scripts/parity_gallery.py --model england_verrall_odp --synthetic
 """
 
 from __future__ import annotations
@@ -71,22 +73,33 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from ibnr.kernels.parity import CCL_PARITY_VARS, CSR_PARITY_VARS
+from ibnr.kernels.parity import CCL_PARITY_VARS, CSR_PARITY_VARS, ODP_PARITY_VARS
 
 RESULTS = Path(__file__).parents[1] / "analysis" / "results"
 
 
-def _load_company_contracts(warehouse, line: str, n_companies: int, seed: int):
-    """Return a list of (label, training-triangle) for the top-n selected
-    companies on ``line`` as of 1997-12-31 (reuses the monograph selection).
+def _load_company_contracts(
+    warehouse, line: str, n_companies: int, seed: int, companies: list[str] | None = None
+):
+    """Return a list of (label, training-triangle) for the selected companies
+    on ``line`` as of 1997-12-31 (reuses the monograph selection).
 
     Reuses ``meyers_validation.select_companies`` rather than picking
     triangles ad hoc, so parity is demonstrated on exactly the kind of data
     the published retrospective runs on - real Schedule P cohorts, including
     their awkward late-development cells, not a curated easy case.
 
-    The triangle is returned whole; ``_fit_backends`` passes as_of to
-    ``MeyersCCL.fit``, which does the slicing.
+    ``companies`` overrides that top-n pick with explicit codes. That exists for
+    one honest reason: a model's DATA CONTRACT may refuse a cohort the size
+    ranking happens to choose. England & Verrall's ODP needs non-negative
+    incremental losses and legitimately rejects a triangle with a negative paid
+    increment (about half the Schedule P mart - a documented coverage limit of
+    the ODP family, not a defect). Naming the cohorts keeps that visible in the
+    command line instead of hiding it behind a silent skip, and the run still
+    fails loudly on anything else.
+
+    The triangle is returned whole; ``_fit_backends`` passes as_of to the
+    entry's ``fit``, which does the slicing.
     """
     import sys
 
@@ -97,12 +110,14 @@ def _load_company_contracts(warehouse, line: str, n_companies: int, seed: int):
     sys.path.insert(0, str(Path(__file__).parent))
     from meyers_validation import select_companies
 
-    mart = active_mart_path(warehouse)
-    picks = select_companies(mart, line, n_companies)
     tri_line = load_schedule_p(warehouse, lines=[line])
+    if companies:
+        codes = list(companies)
+    else:
+        mart = active_mart_path(warehouse)
+        codes = list(select_companies(mart, line, n_companies)["company_code"])
     return [
-        (f"{line}:{code}", tri_line.filter(ibis._.company_code == code))
-        for code in picks["company_code"]
+        (f"{line}:{code}", tri_line.filter(ibis._.company_code == code)) for code in codes
     ]
 
 
@@ -263,6 +278,59 @@ def _synthetic_csr_triangle(seed: int):
     return Triangle.from_long(df, measure="cumulative")
 
 
+def _synthetic_odp_triangle(seed: int):
+    """An ODP-simulated single-cohort triangle (paid_loss + premium) as a Triangle.
+
+    Drawn from England & Verrall's own generative model rather than a lognormal
+    one: INCREMENTS are over-dispersed Poisson about a log-link mean,
+
+        E[X[w,d]] = exp(logprem[w] + c + alpha[w] + beta[d]),  Var = phi * E,
+
+    realized as ``phi * Poisson(mean/phi)`` - genuinely over-dispersed, and
+    non-negative by construction, which is what the incremental contract
+    requires. Cumulatives are the running sums, since ``odp_stan_data``
+    differences a cumulative triangle back to increments.
+
+    ``alpha[0] = 0`` and ``beta[0] = 0`` are E&V's identifiability pins (note
+    the FIRST beta, unlike the Meyers family's last). Fitting the model to data
+    from the process it assumes means a parity failure can only be an
+    implementation bug, never misspecification.
+    """
+    import datetime as dt
+
+    from ibnr import Triangle
+
+    rng = np.random.default_rng(seed)
+    n_w = n_d = 10
+    prem = rng.uniform(8000, 20000, n_w)
+    c = -0.5
+    phi = 50.0  # dispersion; the entry re-estimates its own Pearson phi when fitting
+    alpha = np.concatenate([[0.0], rng.normal(0, 0.15, n_w - 1)])
+    # development profile decaying away from dev 1, so increments run off
+    beta = np.concatenate([[0.0], np.sort(rng.uniform(-2.5, -0.2, n_d - 1))[::-1]])
+    mean_inc = np.exp(np.log(prem)[:, None] + c + alpha[:, None] + beta[None, :])
+    inc = rng.poisson(mean_inc / phi) * phi  # (n_w, n_d) od-Poisson increments
+    cum = np.cumsum(inc, axis=1)
+
+    rows = []
+    for w in range(n_w):
+        for d in range(n_d):
+            origin = dt.date(1988 + w, 1, 1)
+            # dev_lag is months from origin START (first diagonal 12); eval_date
+            # is the year-end that (origin + dev_lag) lands in - CLAUDE.md
+            eval_date = dt.date(1988 + w + d, 12, 31)
+            rows.append(
+                ("synthetic", origin, 12 * (d + 1), eval_date, "paid_loss", float(cum[w, d]))
+            )
+            rows.append(
+                ("synthetic", origin, 12 * (d + 1), eval_date, "earned_premium", float(prem[w]))
+            )
+    df = pd.DataFrame(
+        rows, columns=["company_code", "origin_period", "dev_lag", "eval_date", "field", "value"]
+    )
+    return Triangle.from_long(df, measure="cumulative")
+
+
 #: Per-model wiring, and the ONLY place it lives. Everything else in this
 #: script is model-agnostic on purpose, so the CSR table is produced by exactly
 #: the protocol that produced the CCL one.
@@ -275,6 +343,13 @@ def _synthetic_csr_triangle(seed: int):
 #: - ``stem``         output filename stem; CCL keeps the pre-``--model``
 #:                    filenames so published result paths stay valid
 MODELS = {
+    "england_verrall_odp": {
+        "loss_field": "paid_loss",
+        "parity_vars": ODP_PARITY_VARS,
+        "target_accept": 0.8,
+        "stem": "odp",
+        "simulate": _synthetic_odp_triangle,
+    },
     "meyers_ccl": {
         "loss_field": "reported_loss",
         "parity_vars": CCL_PARITY_VARS,
@@ -362,6 +437,8 @@ def main() -> int:
     ap.add_argument("--model", default="meyers_ccl", choices=sorted(MODELS))
     ap.add_argument("--line", default="workers_compensation")
     ap.add_argument("--n-companies", type=int, default=5)
+    # explicit cohort codes, overriding the top-n pick; see _load_company_contracts
+    ap.add_argument("--companies", nargs="+", default=None)
     ap.add_argument(
         "--backends",
         nargs="+",
@@ -396,7 +473,9 @@ def main() -> int:
             for s in range(max(1, args.n_companies))
         ]
     else:
-        cohorts = _load_company_contracts(args.warehouse, args.line, args.n_companies, args.seed)
+        cohorts = _load_company_contracts(
+            args.warehouse, args.line, args.n_companies, args.seed, companies=args.companies
+        )
     print(
         f"{args.model}: {len(cohorts)} cohort(s); backends={args.backends} "
         f"target_accept={args.target_accept}",

@@ -9,7 +9,7 @@ Same two tiers as ``test_parity_meyers.py`` (which covers CCL):
 * **Sampling parity** (``parity`` + ``slow``): both ports sample the same small
   synthetic posterior and agree within MCSE via ``kernels.parity``. It needs no
   cmdstan, so CI can gate parity without a Stan toolchain; the three-way run
-  with Stan as ground truth lives in ``scripts/parity_meyers.py --model
+  with Stan as ground truth lives in ``scripts/parity_gallery.py --model
   meyers_csr``.
 
 CSR-specific risk this file exists to catch: ``speedup[w] = (1 - gamma)^(w-1)``
@@ -276,11 +276,11 @@ def test_parity_summaries_are_not_rounded():
 
 
 def _parity_script():
-    """Import ``scripts/parity_meyers.py`` by path (scripts/ is not a package)."""
+    """Import ``scripts/parity_gallery.py`` by path (scripts/ is not a package)."""
     import importlib.util
     from pathlib import Path
 
-    path = Path(__file__).parents[1] / "scripts" / "parity_meyers.py"
+    path = Path(__file__).parents[1] / "scripts" / "parity_gallery.py"
     spec = importlib.util.spec_from_file_location("parity_meyers_script", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -288,7 +288,7 @@ def _parity_script():
 
 
 def test_parity_script_model_registry():
-    """``scripts/parity_meyers.py`` grew a ``--model`` flag with CSR; its
+    """``scripts/parity_gallery.py`` grew a ``--model`` flag with CSR; its
     registry is the only model-specific wiring in an otherwise model-agnostic
     script, so it is worth pinning.
 
