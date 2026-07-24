@@ -69,14 +69,38 @@ def resolve_backend(backend: str | BaseBackend | None = None) -> BaseBackend:
     Both backends are first-class by design (CLAUDE.md #2) - duckdb is the
     default because ibis's polars backend has no window-function support, which
     the transforms work around but which makes duckdb the faster path.
+
+    Only duckdb is installed by default: the polars backend brings a ~176 MB
+    runtime that a duckdb-only user never executes, so it sits behind the
+    ``polars`` extra. Asking for it without that extra says so.
     """
     if backend is None or backend == "duckdb":
         return ibis.duckdb.connect()
     if backend == "polars":
-        return ibis.polars.connect()
+        try:
+            return ibis.polars.connect()
+        except Exception as exc:
+            if _polars_installed():
+                raise
+            raise ModuleNotFoundError(
+                "backend='polars' requires the optional polars backend, which is not "
+                'installed. Install the polars extra:  pip install "ibnr[polars]"  '
+                '(or: uv add "ibnr[polars]"). The default duckdb backend needs nothing extra.'
+            ) from exc
     if isinstance(backend, BaseBackend):
         return backend
     raise ValueError(f"backend must be 'duckdb', 'polars', or an ibis backend, got {backend!r}")
+
+
+def _polars_installed() -> bool:
+    """Whether the polars backend is actually importable.
+
+    Used to tell "polars is missing" apart from "polars is here and genuinely
+    failed", so a real backend error is never masked by the install hint.
+    """
+    import importlib.util
+
+    return importlib.util.find_spec("polars") is not None
 
 
 def _register(con: BaseBackend, data) -> IbisTable:

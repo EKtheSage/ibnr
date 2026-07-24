@@ -1,6 +1,6 @@
 [project]
 name = "ibnr"
-version = "0.3.0"
+version = "0.4.0"
 description = "Gallery-centric probabilistic loss reserving: Bayesian MCMC and neural network methods with mandatory evaluation, over a long-format triangle data layer."
 readme = "README.md"
 license = "MPL-2.0"
@@ -32,13 +32,19 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "ibis-framework[duckdb,polars]>=9.5",
+    # duckdb only. The polars backend pulls a ~176 MB runtime that a duckdb-only
+    # user never executes, so it lives in the `polars` extra below. Both backends
+    # remain first-class and are tested together (see the dev group).
+    "ibis-framework[duckdb]>=9.5",
     "numpy>=1.26",
     "pandas>=2",
     "scipy>=1.11",
 ]
 
 [project.optional-dependencies]
+# The second ibis backend. Only needed to pass backend="polars"; duckdb is the
+# default and covers every code path on its own.
+polars = ["ibis-framework[polars]>=9.5"]
 bayesian = ["cmdstanpy", "numpyro", "pymc", "arviz", "bayesblend"]
 nn = ["torch>=2.2"]
 viz = ["altair"]
@@ -57,6 +63,10 @@ Issues = "https://github.com/EKtheSage/ibnr/issues"
 dev = [
     "pytest>=8",
     "ruff>=0.8",
+    # polars is optional for users but REQUIRED for development: the transform
+    # suite runs against both backends, and that matrix is what keeps the
+    # polars-compatible formulations honest (CLAUDE.md #2).
+    "ibis-framework[polars]>=9.5",
     "chainladder>=0.8.18",
     "bermuda-ledger>=2.3",
     "pandas>=2",
