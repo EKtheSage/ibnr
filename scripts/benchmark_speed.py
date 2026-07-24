@@ -18,11 +18,13 @@ Methodology
 * ``schedule_p / read_parquet`` is the one end-to-end file op: ibnr's
   ``load_schedule_p`` (parquet scan + unpivot in-engine) vs the equivalent
   chainladder user path (``pd.read_parquet`` + derived column + ``cl.Triangle``).
-* Mack: ibnr's ``fit_mack`` is single-cohort by design, so multi-cohort fits
-  loop over cohorts through the public API (filter + fit), while chainladder
-  fits all cohorts in one vectorized call. That asymmetry is the point of the
-  measurement, not an unfairness to be papered over. Cohorts are pre-screened
-  once (outside timing) so every implementation fits the identical set.
+* Mack, two shapes: ``mack_fit_loop_*`` loops filter + ``fit_mack`` per cohort
+  against a chainladder loop (its ``MackChainladder`` cannot fit multi-index
+  triangles at all in 0.8.x); ``mack_fit_batch_*`` times ``fit_mack_many``
+  (one materialization, cohorts gridded from the shared frame) against
+  chainladder's only vectorized batch, the point-ultimate ``Chainladder`` -
+  which computes strictly less (no sigma^2). Cohorts are pre-screened once
+  (outside timing) so every implementation fits the identical set.
 * Timing: ``time.perf_counter``, 1 warmup + ``--repeat`` runs (repeats shrink
   automatically for ops whose warmup exceeds ``--budget`` seconds); the table
   reports the median, the CSV keeps min/median/mean.
@@ -60,7 +62,7 @@ import pandas as pd
 from ibis import _ as ix
 
 from ibnr import Triangle
-from ibnr.kernels.mack import fit_mack
+from ibnr.kernels.mack import fit_mack, fit_mack_many
 
 CORE = ("origin_period", "dev_lag", "eval_date", "field", "value")
 RESULTS_DIR = Path(__file__).resolve().parents[1] / "analysis" / "results"
@@ -352,13 +354,17 @@ def bench_dataset(
             if not np.allclose(ifit.full[:, -1].sum(), np.nansum(cfit.ultimate_.values), rtol=1e-6):
                 print(f"  WARN {name}: Mack ultimates diverge between ibnr and chainladder")
         else:
-            # Many cohorts. chainladder 0.8.x cannot fit MackChainladder on a
-            # multi-index triangle at all (ValueError in _get_full_std_err_, even
-            # on its own clrd sample), so the Mack comparison is loop vs loop;
-            # the vectorized 4D path is measured separately with the basic
-            # Chainladder point fit, which does support multi-index. Note the
-            # work asymmetry there: ibnr has no point-only fit, so its loop also
-            # estimates sigma^2 (the Mack variance parameters) every time.
+            # Many cohorts, three rows. chainladder 0.8.x cannot fit
+            # MackChainladder on a multi-index triangle at all (ValueError in
+            # _get_full_std_err_, even on its own clrd sample), so:
+            #   mack_fit_loop_*  - loop vs loop through each public API
+            #   mack_fit_batch_* - ibnr's fit_mack_many (one materialization,
+            #                      grids from the shared frame) vs chainladder's
+            #                      only vectorized batch, the point-ultimate
+            #                      Chainladder. Work asymmetry, in ibnr's favor
+            #                      to lose: fit_mack_many also estimates the
+            #                      sigma^2 variance parameters; Chainladder
+            #                      produces point ultimates only.
             sub_long = mack["sub_long"]
             sub_long = sub_long[sub_long[seg_col].isin(cohorts)].reset_index(drop=True)
             nsub = len(sub_long)
@@ -377,7 +383,7 @@ def bench_dataset(
                 for c in cohorts:
                     fit_mack(t.filter(ix[seg_col] == c), loss_field=loss_field, as_of=as_of)
 
-            op = f"mack_fit_{len(cohorts)}_cohorts"
+            op = f"mack_fit_loop_{len(cohorts)}_cohorts"
             for b in backends:
                 bench.run(name, op, f"ibnr[{b}]", lambda t=isub[b]: ibnr_loop(t), nsub)
 
@@ -387,10 +393,23 @@ def bench_dataset(
 
             bench.run(name, op, "chainladder", cl_loop, nsub)
 
-            op = f"point_ultimates_{len(cohorts)}_cohorts"
+            op = f"mack_fit_batch_{len(cohorts)}_cohorts"
             for b in backends:
-                bench.run(name, op, f"ibnr[{b}]", lambda t=isub[b]: ibnr_loop(t), nsub)
+                bench.run(
+                    name,
+                    op,
+                    f"ibnr[{b}]",
+                    lambda t=isub[b]: fit_mack_many(t, loss_field=loss_field, as_of=as_of),
+                    nsub,
+                )
             bench.run(name, op, "chainladder", lambda: cl.Chainladder().fit(csub), nsub)
+
+            # batch == loop == chainladder's point ultimates, on the same cohorts
+            panel = fit_mack_many(isub[backends[0]], loss_field=loss_field, as_of=as_of)
+            total = sum(f.ultimate.sum() for f in panel.fits.values())
+            cl_total = float(np.nansum(cl.Chainladder().fit(csub).ultimate_.values))
+            if not np.allclose(total, cl_total, rtol=1e-6):
+                print(f"  WARN {name}: batch ultimates diverge, ibnr {total} vs cl {cl_total}")
 
 
 # -- schedule_p extras -----------------------------------------------------------
@@ -612,6 +631,48 @@ def main() -> None:
                 "chainladder",
                 lambda: cl.MackChainladder().fit(cone[cone.valuation < pd.Timestamp("1998-01-01")]),
                 len(one),
+            )
+            # batch backtest fit across every screened WC company: fit_mack_many
+            # doubles as its own screen (on_error="skip"), run once untimed; the
+            # timed panel then holds only clean cohorts, identically for both
+            # libraries. chainladder's row is its point-ultimate Chainladder on
+            # the 1997 slice (its only multi-cohort batch; no sigma^2 - see the
+            # clrd note).
+            t_wc = ibnr_construct(wc.reset_index(drop=True), "duckdb", "Y", "Y", True)
+            screen = fit_mack_many(
+                t_wc, loss_field="paid_loss", as_of="1997-12-31", on_error="skip"
+            )
+            good_codes = sorted(k[0] for k in screen.fits)
+            print(
+                f"schedule_p WC batch screen: {len(screen.fits)} companies fit cleanly, "
+                f"{len(screen.errors)} rejected"
+            )
+            wc_good = wc[wc["company_code"].isin(good_codes)].reset_index(drop=True)
+            op = f"mack_fit_batch_{len(good_codes)}_wc_companies"
+            for b in backends:
+                t_b = ibnr_construct(wc_good, b, "Y", "Y", True)
+                bench.run(
+                    "schedule_p",
+                    op,
+                    f"ibnr[{b}]",
+                    lambda t=t_b: fit_mack_many(t, loss_field="paid_loss", as_of="1997-12-31"),
+                    len(wc_good),
+                )
+            cwc = cl_construct(
+                wide_frame(
+                    wc_good[wc_good["field"] == "paid_loss"],
+                    ["company_code", "company_name", "line_of_business"],
+                ),
+                ["paid_loss"],
+                ["company_code", "company_name", "line_of_business"],
+                True,
+            )
+            bench.run(
+                "schedule_p",
+                op,
+                "chainladder",
+                lambda: cl.Chainladder().fit(cwc[cwc.valuation < pd.Timestamp("1998-01-01")]),
+                len(wc_good),
             )
 
     # -- outputs ----------------------------------------------------------------

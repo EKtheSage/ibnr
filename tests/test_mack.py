@@ -22,7 +22,7 @@ import pytest
 
 from ibnr import Triangle
 from ibnr.kernels.contract import cohort_grid
-from ibnr.kernels.mack import _tail_sigma2, fit_mack, simulate_ultimates
+from ibnr.kernels.mack import _tail_sigma2, fit_mack, fit_mack_many, simulate_ultimates
 
 from .conftest import make_cohort_triangle
 
@@ -415,3 +415,81 @@ def test_raa_process_parameter_split_matches_chainladder(raa_triangle):
     assert np.sqrt(risk["parameter_total"]) == pytest.approx(
         float(np.asarray(ref.total_parameter_risk_).ravel()[-1]), rel=1e-9
     )
+
+
+# -- fit_mack_many: the batch entry point ---------------------------------------
+
+
+def test_fit_mack_many_matches_loop(backend_name):
+    """The batch fit IS the loop, minus the per-cohort engine round-trips: every
+    estimated quantity must match fit_mack on the filtered cohort exactly."""
+    import ibis
+
+    from .conftest import make_multiline_triangle
+
+    t = make_multiline_triangle(backend_name, {"wkcomp": SMALL, "comauto": SMALL * 1.2 + 5.0})
+    panel = fit_mack_many(t, loss_field="paid_loss")
+    assert panel.by == ("company_code", "line_of_business")
+    assert len(panel) == 2 and not panel.errors
+    for lob in ("wkcomp", "comauto"):
+        one = fit_mack(t.filter(ibis._.line_of_business == lob), loss_field="paid_loss")
+        batch = panel[("0001", lob)]
+        np.testing.assert_allclose(batch.f, one.f)
+        np.testing.assert_allclose(batch.sigma2, one.sigma2)
+        np.testing.assert_allclose(batch.s, one.s)
+        np.testing.assert_allclose(np.nan_to_num(batch.cum), np.nan_to_num(one.cum))
+        np.testing.assert_allclose(batch.ultimate, one.ultimate)
+        assert batch.origin_periods == one.origin_periods
+
+
+def test_fit_mack_many_as_of_matches_loop(backend_name):
+    """as_of slices once, before the grouping; each cohort must see the same
+    training staircase the per-cohort loop would."""
+    import ibis
+
+    from .conftest import make_multiline_triangle
+
+    t = make_multiline_triangle(backend_name, {"wkcomp": SMALL, "comauto": SMALL * 1.2 + 5.0})
+    panel = fit_mack_many(t, loss_field="paid_loss", as_of="2012-12-31")
+    for lob in ("wkcomp", "comauto"):
+        one = fit_mack(
+            t.filter(ibis._.line_of_business == lob), loss_field="paid_loss", as_of="2012-12-31"
+        )
+        np.testing.assert_allclose(panel[("0001", lob)].f, one.f)
+        np.testing.assert_allclose(panel[("0001", lob)].ultimate, one.ultimate)
+
+
+def test_fit_mack_many_without_segments(backend_name):
+    """A segment-less triangle is one anonymous cohort: key () and by ()."""
+    panel = fit_mack_many(make_cohort_triangle(backend_name, SMALL), loss_field="paid_loss")
+    assert panel.by == ()
+    one = fit_mack(make_cohort_triangle(backend_name, SMALL), loss_field="paid_loss")
+    np.testing.assert_allclose(panel[()].f, one.f)
+
+
+def test_fit_mack_many_on_error(backend_name):
+    """A broken cohort (interior hole) fails fast by default, naming the cohort;
+    on_error='skip' quarantines it in .errors and still fits the rest."""
+    from .conftest import make_multiline_triangle
+
+    holed = SMALL.copy()
+    holed[0, 1] = np.nan
+    t = make_multiline_triangle(backend_name, {"good": SMALL, "holed": holed})
+    with pytest.raises(ValueError, match="line_of_business"):
+        fit_mack_many(t, loss_field="paid_loss")
+    panel = fit_mack_many(t, loss_field="paid_loss", on_error="skip")
+    assert set(panel.fits) == {("0001", "good")}
+    assert ("0001", "holed") in panel.errors
+    assert "run-off" in panel.errors[("0001", "holed")]
+
+
+def test_fit_mack_many_summary(backend_name):
+    """summary() carries the segment keys and the per-cohort point quantities."""
+    from .conftest import make_multiline_triangle
+
+    t = make_multiline_triangle(backend_name, {"wkcomp": SMALL, "comauto": SMALL * 1.2 + 5.0})
+    panel = fit_mack_many(t, loss_field="paid_loss")
+    got = panel.summary().set_index("line_of_business")
+    for lob in ("wkcomp", "comauto"):
+        assert got.loc[lob, "ultimate"] == pytest.approx(panel[("0001", lob)].ultimate.sum())
+        assert got.loc[lob, "ibnr"] == pytest.approx(panel[("0001", lob)].reserve.sum())

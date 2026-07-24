@@ -28,6 +28,7 @@ import datetime as dt
 from typing import Any
 
 import numpy as np
+import pandas as pd
 
 from ibnr.triangle.core import GRAIN_MONTHS, Triangle
 
@@ -401,26 +402,53 @@ def cohort_grid(
         raise ValueError(
             f"triangle has multiple segment combinations on {segs}; filter to one cohort first"
         )
+    data = cohort_grid_frame(
+        df,
+        dev_grain_months=GRAIN_MONTHS[triangle.meta.dev_grain],
+        units=triangle.meta.units,
+        loss_field=loss_field,
+    )
+    if premium_field is not None:
+        data["premium"] = _premium_by_origin(triangle, premium_field, data["origin_periods"])
+    return data
 
-    df = df.copy()
-    df["origin_period"] = _as_date(df["origin_period"])
-    step = GRAIN_MONTHS[triangle.meta.dev_grain]
-    if (df["dev_lag"] % step != 0).any():
+
+def cohort_grid_frame(
+    df,
+    *,
+    dev_grain_months: int,
+    units: str | None = None,
+    loss_field: str | None = None,
+) -> dict[str, Any]:
+    """:func:`cohort_grid`'s frame half: one cohort's already-materialized rows
+    (``origin_period``, ``dev_lag``, ``value``) to the dense contract dict.
+
+    Split out so a batch caller (``kernels.mack.fit_mack_many``) can materialize
+    a multi-cohort triangle ONCE and grid each cohort from the shared frame;
+    the per-cohort engine round-trip is what dominates a filter+fit loop. All
+    contract guarantees (dev-grain multiples, one row per cell, run-off
+    staircase) are enforced here, identically for both entry points.
+    """
+    # Vectorized throughout: this runs once per cohort in fit_mack_many's batch
+    # loop, so per-row pandas iteration here would put the loop's cost right
+    # back after the engine round-trips were removed.
+    step = dev_grain_months
+    dev = df["dev_lag"].to_numpy(dtype=np.int64)
+    if (dev % step != 0).any():
         raise ValueError(f"dev_lag values are not multiples of the {step}-month dev grain")
-    df["d"] = (df["dev_lag"] // step).astype(int)
-    if (df["d"] < 1).any():
+    d = dev // step
+    if (d < 1).any():
         raise ValueError("dev_lag must be positive")
-    if df.duplicated(["origin_period", "d"]).any():
+    w_idx, origin_arr = pd.factorize(_as_date(df["origin_period"]), sort=True)
+    origins = list(origin_arr)
+    n_w, n_d = len(origins), int(d.max())
+    flat = w_idx.astype(np.int64) * n_d + (d - 1)
+    if np.unique(flat).size != flat.size:
         raise ValueError(
             "multiple rows per (origin, dev) cell; slice with as_of()/latest_diagonal() first"
         )
-
-    origins = sorted(df["origin_period"].unique())
-    n_w, n_d = len(origins), int(df["d"].max())
-    w_of = {o: i for i, o in enumerate(origins)}
     cum = np.full((n_w, n_d), np.nan)
-    for row in df.itertuples():
-        cum[w_of[row.origin_period], int(row.d) - 1] = float(row.value)
+    cum[w_idx, d - 1] = df["value"].to_numpy(dtype=float)
     obs_mask = ~np.isnan(cum)
 
     if not obs_mask[:, 0].all():
@@ -442,7 +470,7 @@ def cohort_grid(
             f"(origin, observed cells, expected depth) mismatches: {bad}"
         )
 
-    data: dict[str, Any] = {
+    return {
         "n_w": n_w,
         "n_d": n_d,
         "cum": cum,
@@ -450,12 +478,9 @@ def cohort_grid(
         "latest_dev": latest_dev.astype(int),
         "origin_periods": origins,
         "dev_grain_months": step,
-        "units": triangle.meta.units,
+        "units": units,
         "loss_field": loss_field,
     }
-    if premium_field is not None:
-        data["premium"] = _premium_by_origin(triangle, premium_field, origins)
-    return data
 
 
 def realized_values(

@@ -60,9 +60,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ibnr.kernels.contract import cohort_grid
+from ibnr.kernels.contract import cohort_grid, cohort_grid_frame
 from ibnr.kernels.predictive import PredictiveDistribution
-from ibnr.triangle.core import Triangle
+from ibnr.triangle.core import GRAIN_MONTHS, Triangle
 
 #: how the variance of the LAST development step is estimated. That step has a
 #: single observation, so it has no residual degrees of freedom of its own.
@@ -285,6 +285,92 @@ def fit_mack(
     """
     train = triangle.as_of(as_of) if as_of is not None else triangle
     return fit_mack_grid(cohort_grid(train, loss_field=loss_field), sigma_rule=sigma_rule)
+
+
+@dataclass(frozen=True)
+class MackFitPanel:
+    """Batch of per-cohort :class:`MackFit`\\ s from :func:`fit_mack_many`.
+
+    ``fits`` is keyed by the cohort's segment-value tuple, in ``by`` order
+    (``()`` for a segment-less triangle). ``errors`` holds cohorts that failed
+    the contract or estimator guards, only populated under ``on_error="skip"``.
+    """
+
+    fits: dict[tuple, MackFit]
+    errors: dict[tuple, str]
+    by: tuple[str, ...]
+
+    def __len__(self) -> int:
+        return len(self.fits)
+
+    def __getitem__(self, key) -> MackFit:
+        return self.fits[key if isinstance(key, tuple) else (key,)]
+
+    def summary(self) -> pd.DataFrame:
+        """One row per cohort: latest, ultimate, IBNR (point quantities only -
+        per-cohort variance is ``self[key].msep_runoff()``, kept off this path
+        because it needs the positive-open-diagonal guard cohort by cohort)."""
+        rows = [
+            {
+                **dict(zip(self.by, key, strict=True)),
+                "latest": fit.latest.sum(),
+                "ultimate": fit.ultimate.sum(),
+                "ibnr": fit.reserve.sum(),
+            }
+            for key, fit in self.fits.items()
+        ]
+        return pd.DataFrame(rows)
+
+
+def fit_mack_many(
+    triangle: Triangle,
+    *,
+    loss_field: str = "paid_loss",
+    as_of: dt.date | str | None = None,
+    sigma_rule: str = "mack",
+    on_error: str = "raise",
+) -> MackFitPanel:
+    """Fit the distribution-free chain ladder on every cohort in one pass.
+
+    Semantically identical to looping ``fit_mack`` over
+    ``triangle.filter(...)`` per segment combination - same grids, same
+    estimators, same guards - but the triangle is sliced and materialized
+    ONCE, and cohorts are gridded from the shared frame. The naive loop pays
+    one engine round-trip per cohort (~5-10 ms each on duckdb), which is the
+    dominant cost when fitting hundreds of Schedule P cohorts; this is the
+    batch-fit API that closes it.
+
+    ``on_error="raise"`` (default) fails fast naming the offending cohort;
+    ``"skip"`` records the reason in ``MackFitPanel.errors`` and keeps going -
+    real multi-company panels (e.g. clrd) routinely contain cohorts that are
+    not run-off staircases or have zero-volume steps.
+    """
+    if on_error not in ("raise", "skip"):
+        raise ValueError(f"on_error must be 'raise' or 'skip', got {on_error!r}")
+    if triangle.meta.measure != "cumulative":
+        raise ValueError("fit_mack_many requires a cumulative triangle")
+    train = triangle.as_of(as_of) if as_of is not None else triangle
+    df = train.select_fields(loss_field).execute()
+    if df.empty:
+        raise ValueError(f"no rows for loss field {loss_field!r}")
+    by = tuple(triangle.segments)
+    step = GRAIN_MONTHS[triangle.meta.dev_grain]
+
+    groups = df.groupby(list(by), dropna=False, sort=True) if by else [((), df)]
+    fits: dict[tuple, MackFit] = {}
+    errors: dict[tuple, str] = {}
+    for key, group in groups:
+        key = key if isinstance(key, tuple) else (key,)
+        try:
+            grid = cohort_grid_frame(
+                group, dev_grain_months=step, units=triangle.meta.units, loss_field=loss_field
+            )
+            fits[key] = fit_mack_grid(grid, sigma_rule=sigma_rule)
+        except ValueError as exc:
+            if on_error == "raise":
+                raise ValueError(f"cohort {dict(zip(by, key, strict=True))}: {exc}") from exc
+            errors[key] = str(exc)
+    return MackFitPanel(fits=fits, errors=errors, by=by)
 
 
 def fit_mack_grid(grid: dict[str, Any], *, sigma_rule: str = "mack") -> MackFit:
