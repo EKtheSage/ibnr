@@ -36,6 +36,14 @@ import pandas as pd
 #: interpretable quantities predict() consumes, not the raw nuisance draws.
 CCL_PARITY_VARS = ("logelr", "alpha", "beta", "rho", "sig")
 
+#: CSR's counterpart: same cross-classified core, with the across-accident-year
+#: correlation ``rho`` replaced by the settlement-rate trend ``gamma``. ``gamma``
+#: is the one parameter a port could get structurally wrong while still looking
+#: plausible (it enters multiplicatively, through ``beta[d] * speedup[w]``), so
+#: it must be in the compared set rather than left to the deterministic
+#: ``speedup`` it drives.
+CSR_PARITY_VARS = ("logelr", "alpha", "beta", "gamma", "sig")
+
 
 @dataclass
 class ParityReport:

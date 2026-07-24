@@ -1,11 +1,15 @@
 """Meyers Changing Settlement Rate (CSR) gallery entry.
 
-The paid-loss counterpart of ``meyers_ccl``: a cross-classified lognormal
-with a settlement-rate trend term, fit with the Stan reference sampler
-(``model.stan``). Consumes the identical ``kernels.contract`` data dict as
-the rest of the Meyers family (the ``prev_idx`` entry is simply unused -
-CSR has no across-origin correlation term). NumPyro/PyMC ports arrive with
-milestone 5; the ``backend`` argument already reserves the seam."""
+The paid-loss counterpart of ``meyers_ccl``: a cross-classified lognormal with
+a settlement-rate trend term. Three interchangeable posterior backends behind
+one entry - the Stan reference (``model.stan``), the NumPyro port
+(``model_numpyro.py``) and the PyMC port (``model_pymc.py``) - all consuming
+the identical ``kernels.contract`` data dict (the ``prev_idx`` entry is simply
+unused: CSR has no across-origin correlation term) and holding the same
+centered parameterization, so ``predict()`` reads off a common
+``arviz.InferenceData`` regardless of which sampler ran. See card.md for the
+cross-backend parity and convergence comparison, and ``kernels.parity`` for the
+posterior-agreement gate."""
 
 from __future__ import annotations
 
@@ -27,8 +31,9 @@ STAN_FILE = Path(__file__).parent / "model.stan"
 #: keys of the standardized contract dict that form the Stan data block
 STAN_DATA_KEYS = ("len_data", "n_w", "n_d", "w", "d", "logprem", "logloss")
 
-#: posterior backends this entry can dispatch to (ports land in milestone 5)
-BACKENDS = ("stan",)
+#: posterior backends this entry can dispatch to; all three target the same
+#: posterior, which ``kernels.parity`` gates before any convergence claim
+BACKENDS = ("stan", "numpyro", "pymc")
 
 
 def pooled(idata, name: str) -> np.ndarray:
@@ -72,6 +77,14 @@ class MeyersCSR(GalleryEntry):
     ) -> MeyersCSR:
         if backend not in BACKENDS:
             raise ValueError(f"backend must be one of {BACKENDS}, got {backend!r}")
+        # parallel_chains / max_treedepth are cmdstan-level controls the retro
+        # harness escalates on. Validated BEFORE any data prep: a port that
+        # accepted them silently would report an escalated fit that never ran.
+        if backend != "stan" and (parallel_chains != 1 or max_treedepth is not None):
+            raise ValueError(
+                "parallel_chains / max_treedepth are stan-backend controls; "
+                f"the {backend!r} port does not take them"
+            )
         # as_of slices the triangle to the training diagonal (backtest cutoff);
         # None trains on the whole triangle as given.
         train = triangle.as_of(as_of) if as_of is not None else triangle
@@ -81,15 +94,26 @@ class MeyersCSR(GalleryEntry):
         self.contract_ = stan_data(train, loss_field=loss_field, premium_field=premium_field)
         self._loss_field = loss_field
         self.backend_ = backend
-        self.idata_ = self._sample_stan(
+        sampler = {
+            "stan": self._sample_stan,
+            "numpyro": self._sample_numpyro,
+            "pymc": self._sample_pymc,
+        }[backend]
+        extra = (
+            {"parallel_chains": parallel_chains, "max_treedepth": max_treedepth}
+            if backend == "stan"
+            else {}
+        )
+        # All three return a comparable arviz.InferenceData, so predict(),
+        # convergence() and parity are backend-agnostic.
+        self.idata_ = sampler(
             chains=chains,
             iter_warmup=iter_warmup,
             iter_sampling=iter_sampling,
             seed=seed,
             target_accept=target_accept,
-            parallel_chains=parallel_chains,
-            max_treedepth=max_treedepth,
             show_progress=show_progress,
+            **extra,
         )
         return self
 
@@ -110,10 +134,15 @@ class MeyersCSR(GalleryEntry):
         iter_sampling,
         seed,
         target_accept,
-        parallel_chains,
-        max_treedepth,
         show_progress,
+        parallel_chains=1,
+        max_treedepth=None,
     ):
+        """Reference backend: cmdstanpy NUTS on ``model.stan``.
+
+        Ground truth for parity - the ports are checked against this posterior
+        before any convergence or runtime claim is made.
+        """
         import time
 
         import arviz as az
@@ -140,6 +169,43 @@ class MeyersCSR(GalleryEntry):
         idata.attrs["runtime_s"] = runtime_s
         idata.attrs["backend"] = "stan"
         return idata
+
+    def _sample_numpyro(
+        self, *, chains, iter_warmup, iter_sampling, seed, target_accept, show_progress
+    ):
+        """NumPyro (JAX) port. Same centered parameterization, same contract.
+
+        CSR needs no recurrence rewrite - unlike CCL, ``mu`` is already a plain
+        vectorized expression - so the port is a direct transcription of
+        ``model.stan``; ``kernels.parity`` gates that claim.
+        """
+        from ibnr.gallery.bayesian.meyers_csr import model_numpyro
+
+        return model_numpyro.sample(
+            self.contract_,
+            chains=chains,
+            iter_warmup=iter_warmup,
+            iter_sampling=iter_sampling,
+            seed=seed,
+            target_accept=target_accept,
+            progress_bar=show_progress,
+        )
+
+    def _sample_pymc(
+        self, *, chains, iter_warmup, iter_sampling, seed, target_accept, show_progress
+    ):
+        """PyMC port. Same centered parameterization, same contract."""
+        from ibnr.gallery.bayesian.meyers_csr import model_pymc
+
+        return model_pymc.sample(
+            self.contract_,
+            chains=chains,
+            iter_warmup=iter_warmup,
+            iter_sampling=iter_sampling,
+            seed=seed,
+            target_accept=target_accept,
+            progressbar=show_progress,
+        )
 
     def predict(self, seed: int | None = None) -> PredictiveDistribution:
         """Predictive distribution of ultimates (losses at the last dev period)

@@ -35,27 +35,52 @@ Priors (variance-10 normals, exactly as in the monograph):
 | gamma | normal(0, **0.05**) | settlement-rate trend; **sd 0.05**, not variance - Meyers' Stan code says `gamma ~ normal(0, 0.05)` while his prose convention elsewhere quotes variances |
 | sig2[d] | sum_{i=d}^{n_d} a_i, a_i ~ uniform(0,1) | forces sig2 decreasing in d |
 
-## Backends
+## Backends (three ports, one contract)
 
 | file | backend | sampler |
 |---|---|---|
 | `model.stan` | `stan` (reference, ground truth) | cmdstanpy NUTS |
+| `model_numpyro.py` | `numpyro` | NumPyro NUTS (JAX) |
+| `model_pymc.py` | `pymc` | PyMC NUTS (PyTensor; `nuts_sampler=` swaps in nutpie/numpyro/blackjax over the same graph) |
 
-NumPyro/PyMC ports and the `kernels.parity` gate arrive with milestone 5
-(the roadmap builds every gallery model in Stan first); `fit(backend=...)`
-already reserves the dispatch seam.
+All three consume the identical `kernels.contract.stan_data` dict and expose
+the same deterministic quantities, so `predict()`, `convergence()` and the
+evaluation harness are backend-agnostic. `kernels.parity.compare_posteriors`
+gates the ports against the Stan reference before any convergence claim is
+made; `scripts/parity_meyers.py --model meyers_csr` runs the full comparison.
 
-## Parameterization
+`parallel_chains` / `max_treedepth` are cmdstan-level controls (the retro
+harness escalates on them) and are **rejected** by the ports rather than
+silently ignored - an ignored escalation would be reported as a fit that never
+happened.
 
-- **Centered** parameterization throughout (as published).
+## Parameterization (held constant across backends for parity)
+
+- **Centered** parameterization throughout (as published), identical in all
+  three backends - "same model" across PPLs only holds when parameterization is
+  held constant, so convergence differences measure the samplers, not the code.
 - a_i ~ uniform(0,1) via the monograph's inverse-gamma trick:
   a_ig ~ inv_gamma(1,1) bounded to (0, 1e5), a_i = gamma_cdf(1/a_ig | 1, 1),
   sig2[d] = reverse cumsum → sig decreasing in dev lag. **Note:** Meyers'
   CSR.R indexes the loop increments as `a_ig[i]` where we (and our CCL) use
   `a_ig[n_d-i]`; the a_ig are iid, so this is a relabeling with an identical
-  joint distribution.
+  joint distribution. **Documented deviation:** Stan bounds a_ig to (0, 1e5);
+  the ports use an *unbounded* `InverseGamma(1,1)` (as in CCL). The truncated
+  mass is ~1e-5, far below MCMC noise, and parity confirms it.
 - `speedup` is the explicit recurrence `speedup[w] = speedup[w-1]*(1-gamma)`,
-  matching the published code (algebraically `(1-gamma)^(w-1)`).
+  matching the published code (algebraically `(1-gamma)^(w-1)`). The ports
+  build it as a **cumulative product**, not a power: `gamma` is unconstrained,
+  so a warmup excursion past 1 makes the base negative, and a float exponent on
+  a negative base is NaN - which would poison the chain rather than fail
+  loudly. `tests/test_parity_meyers_csr.py` pins the cumprod against the literal
+  Stan loop for gamma on both sides of 1.
+- **Init / adaptation** (documented, held equal): each backend uses its native
+  default init (Stan uniform(-2,2); NumPyro `init_to_uniform`; PyMC
+  `jitter+adapt_diag`) with a common `target_accept = 0.9`. Init affects the
+  warmup path, not the stationary posterior.
+- **Float precision:** JAX runs in float32 by default and x64 is deliberately
+  NOT enabled, matching the CCL ports. The resulting ~1e-7 relative error is
+  orders of magnitude below the MCSE that parity is measured in.
 - Generalized to `n_w` x `n_d` from the published hard-coded 10x10.
 - Sampling defaults: 4 chains x 2500 draws after 1000 warmup (the monograph
   uses a posterior sample of 10,000), `adapt_delta = 0.9`. Meyers ran
