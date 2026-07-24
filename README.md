@@ -52,6 +52,24 @@ and are compared head-to-head by `scripts/compare_gallery.py` (KS/PIT
 calibration + CRPS on the Meyers retrospective protocol). See
 `analysis/02_transformer_vs_statistical.ipynb` for the comparison analysis.
 
+**Gallery (deterministic) + one-year CDR**: `mack` - the distribution-free
+chain ladder (Mack 1993) computed natively over `Triangle`, with the
+**one-year claims development result** of Merz & Wuthrich (2008) on top: how
+far next year's re-estimate can move, which is the Solvency II reserve-risk
+view rather than the full run-off one. Core install, no extras.
+
+```python
+entry = gallery.fit("mack", triangle, loss_field="paid_loss")
+entry.summary()          # latest, ultimate, IBNR, Mack run-off S.E.
+entry.one_year_cdr().summary()   # + one-year S.E. and its share of run-off risk
+entry.cdr_distribution(n_draws=20_000)   # the same by re-reserving, with quantiles
+```
+
+The analytic msep ties out to R ChainLadder's published `CDR()` output on the
+`MW2014` triangle to seven decimals, and the closed form and the re-reserving
+simulation agree to Monte Carlo error. chainladder-python has no CDR at all,
+so nothing here is delegated to it.
+
 ## Installation
 
 ```sh

@@ -42,8 +42,9 @@ def test_all_families_registered():
     Subset (``<=``) rather than equality on purpose: the gallery grows, and this
     test should not need editing every time an entry lands.
     """
-    assert {"meyers_ccl", "sur", "copula_glm", "nn_transformer"} <= set(gallery.list())
+    assert {"meyers_ccl", "sur", "copula_glm", "nn_transformer", "mack"} <= set(gallery.list())
     assert gallery.get("nn_transformer").family == "nn"
+    assert gallery.get("mack").family == "deterministic"
 
 
 def test_gallery_import_does_not_require_torch():
