@@ -50,6 +50,13 @@ CSR_PARITY_VARS = ("logelr", "alpha", "beta", "gamma", "sig")
 #: the two zero-pinned effect vectors.
 ODP_PARITY_VARS = ("c", "alpha", "beta")
 
+#: Bayesian Clark growth curve. Only three parameters, and all three matter:
+#: ``logelr`` sets the Cape Cod level while ``omega``/``theta`` are the curve's
+#: shape and scale, which trade off along a ridge - so a port that got the
+#: curve subtly wrong would show up here as a shifted (omega, theta) pair even
+#: when the fitted development pattern looks similar.
+CLARK_PARITY_VARS = ("logelr", "omega", "theta")
+
 
 @dataclass
 class ParityReport:
