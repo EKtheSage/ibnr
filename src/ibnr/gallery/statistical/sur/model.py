@@ -202,7 +202,7 @@ class SUR(GalleryEntry):
             method = "pooled_corr"
         else:
             # No residual df left -> extrapolate the last two transitions' vars.
-            var = _mack_tail_variance(done, n_lob)  # (K,)
+            var = _mack_tail_variance(done)  # (K,)
             method = "tail"
         sd = np.sqrt(var)  # (K,)
         # Rebuild the K x K covariance as R_bar scaled by own sds: keep each
@@ -337,7 +337,7 @@ def _fgls(
     return beta, sigma, np.linalg.inv(a)
 
 
-def _mack_tail_variance(done: list[dict], n_lob: int) -> np.ndarray:
+def _mack_tail_variance(done: list[dict]) -> np.ndarray:
     """Mack's tail rule per line: sigma^2_d = min(sigma^4_{d-1}/sigma^2_{d-2},
     sigma^2_{d-1}, sigma^2_{d-2}), from the two most recent fitted transitions.
 

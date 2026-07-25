@@ -25,10 +25,10 @@ class TransformerMLConfig:
     """Hyperparameters for one ``nn_transformer_ml`` fit.
 
     Network block mirrors the single-line ``TransformerConfig`` (same regime,
-    same hand-tuned Schedule P defaults); the multi-line additions are the
-    line embedding and, above all, ``dependence``, which selects how cross-line
-    correlation enters the predictive draws. See card.md for the study these
-    defaults were fixed against.
+    same hand-tuned Schedule P defaults); the multi-line addition is
+    ``dependence``, which selects how cross-line correlation enters the
+    predictive draws. See card.md for the study these defaults were fixed
+    against.
     """
 
     # network
@@ -38,7 +38,9 @@ class TransformerMLConfig:
     ffn_dim: int = 128
     dropout: float = 0.15
     n_components: int = 3  # mixture components K (shared by both heads)
-    line_embedding_dim: int = 8  # per-line identity added to every token
+    # NOTE: no line_embedding_dim knob - unlike the single-line entry (which
+    # CONCATENATES its LOB embedding then projects), this network ADDS the line
+    # embedding to the token, so its width is necessarily d_model.
     # cross-line dependence mechanism (the entry's research knob):
     #   "ar"    -> univariate MDN per cell; dependence via line-by-line
     #              autoregressive sampling within each rollout diagonal.
