@@ -74,10 +74,19 @@ class ClarkGrowthCurve(GalleryEntry):
         target_accept: float = 0.8,
         parallel_chains: int = 1,
         max_treedepth: int | None = None,
+        nuts_sampler: str = "pymc",
         show_progress: bool = False,
     ) -> ClarkGrowthCurve:
         if backend not in BACKENDS:
             raise ValueError(f"backend must be one of {BACKENDS}, got {backend!r}")
+        # nuts_sampler selects the NUTS IMPLEMENTATION over the PyMC graph; it
+        # is meaningless for the other backends, so asking for one there is an
+        # error rather than a silently ignored argument.
+        if backend != "pymc" and nuts_sampler != "pymc":
+            raise ValueError(
+                f"nuts_sampler={nuts_sampler!r} is a pymc-backend control; "
+                f"the {backend!r} backend does not take it"
+            )
         # parallel_chains / max_treedepth are cmdstan-level controls the retro
         # harness escalates on. Validated BEFORE any data prep or MLE fit: a
         # port that accepted them silently would report an escalated fit that
@@ -145,6 +154,11 @@ class ClarkGrowthCurve(GalleryEntry):
             if backend == "stan"
             else {}
         )
+        # nuts_sampler is the pymc-side analogue and has to reach _sample_pymc:
+        # accepting it here and dropping it would sample with that method's own
+        # "pymc" default while the caller believed a foreign NUTS ran.
+        if backend == "pymc":
+            extra["nuts_sampler"] = nuts_sampler
         # All three return a comparable arviz.InferenceData, so predict(),
         # convergence() and parity are backend-agnostic.
         self.idata_ = sampler(
@@ -235,7 +249,16 @@ class ClarkGrowthCurve(GalleryEntry):
         )
 
     def _sample_pymc(
-        self, stan_data, *, chains, iter_warmup, iter_sampling, seed, target_accept, show_progress
+        self,
+        stan_data,
+        *,
+        chains,
+        iter_warmup,
+        iter_sampling,
+        seed,
+        target_accept,
+        show_progress,
+        nuts_sampler="pymc",
     ):
         """PyMC port. Same parameterization, same data block."""
         from ibnr.gallery.bayesian.clark_growth_curve import model_pymc
@@ -247,6 +270,7 @@ class ClarkGrowthCurve(GalleryEntry):
             iter_sampling=iter_sampling,
             seed=seed,
             target_accept=target_accept,
+            nuts_sampler=nuts_sampler,
             progressbar=show_progress,
         )
 
