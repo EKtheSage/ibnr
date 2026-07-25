@@ -73,10 +73,121 @@ import pandas as pd
 from ibnr.kernels.contract import _as_date as _dates_to_python
 from ibnr.triangle.core import GRAIN_MONTHS, Triangle
 
-__all__ = ["HoldoutCells", "next_diagonal"]
+__all__ = ["CellIndex", "HoldoutCells", "index_into", "next_diagonal", "training_index"]
 
 #: reasons a next-diagonal cell is not scorable, in the order they are tested
 EXCLUSION_REASONS: tuple[str, ...] = ("new_origin", "dev_beyond_trained", "no_predecessor")
+
+
+@dataclass(frozen=True)
+class CellIndex:
+    """Cells expressed in a fitted model's own index space.
+
+    A scorer needs ``(w, d)`` positions into the contract's ``alpha``/``beta``/
+    ``sig`` vectors, not dates. Both indices are **1-based**, matching the Stan
+    data block so the numpy scorers read like the ``.stan`` file beside them -
+    the conversion to 0-based happens once, inside each scorer.
+
+    The same type carries training cells and held-out cells, which is what makes
+    the agreement gate possible: score the training cells with the held-out code
+    path and the answer must reproduce the fit's own ``log_lik``.
+    """
+
+    w: np.ndarray  # 1-based origin index
+    d: np.ndarray  # 1-based development index
+    value: np.ndarray  # observed loss amount at the cell
+    prev_value: np.ndarray  # same cell one dev step back, from TRAINING data
+    premium: np.ndarray  # exposure at the cell's origin, from TRAINING data
+
+    def __post_init__(self) -> None:
+        n = len(self.w)
+        for name in ("d", "value", "prev_value", "premium"):
+            if len(getattr(self, name)) != n:
+                raise ValueError(f"{name} has {len(getattr(self, name))} entries, expected {n}")
+        if n and (self.w.min() < 1 or self.d.min() < 1):
+            raise ValueError("w and d are 1-based indices; got a value below 1")
+
+    @property
+    def n_cells(self) -> int:
+        return len(self.w)
+
+
+def training_index(contract: dict) -> CellIndex:
+    """The cells a fit was trained on, in the same shape a scorer takes.
+
+    Exists for the agreement gate: a scorer handed these must reproduce the
+    fit's own ``log_lik`` elementwise. Without that, a scorer can be wrong in
+    its index arithmetic and produce entirely plausible held-out numbers.
+    """
+    w = np.asarray(contract["w"], dtype=int)
+    d = np.asarray(contract["d"], dtype=int)
+    loss = np.asarray(contract["loss"], dtype=float)
+    prev_idx = np.asarray(contract.get("prev_idx", np.zeros(len(w), int)), dtype=int)
+    prev = np.where(prev_idx > 0, loss[np.clip(prev_idx - 1, 0, None)], 0.0)
+    premium = _contract_premium(contract, w)
+    return CellIndex(w=w, d=d, value=loss, prev_value=prev, premium=premium)
+
+
+def index_into(cells: HoldoutCells, contract: dict, *, field: str | None = None) -> CellIndex:
+    """Map held-out cells onto a fitted contract's ``(w, d)`` index space.
+
+    Origins come from ``contract["origin_periods"]`` and dev indices from the
+    contract's own grain, so a cell can only be scored at the position the model
+    actually fitted. An origin or dev the contract does not have is an error
+    here rather than a silent misindex - :func:`next_diagonal` already excludes
+    those cases, so reaching one means the cells and the fit disagree about
+    which cohort they describe.
+    """
+    frame = cells.frame
+    if field is not None:
+        frame = frame[frame["field"] == field]
+    if frame.empty:
+        raise ValueError(f"no held-out cells for field={field!r}")
+
+    origins = list(contract["origin_periods"])
+    w_of = {o: i + 1 for i, o in enumerate(origins)}
+    step = int(contract["dev_grain_months"])
+
+    unknown = sorted(set(frame["origin_period"]) - set(w_of))
+    if unknown:
+        raise ValueError(
+            f"origin(s) {unknown} are not in the fitted contract; the fit covers "
+            f"{origins[0]}..{origins[-1]}"
+        )
+    if (frame["dev_lag"] % step != 0).any():
+        raise ValueError(f"dev_lag values are not multiples of the fit's {step}-month grain")
+
+    w = frame["origin_period"].map(w_of).to_numpy(dtype=int)
+    d = (frame["dev_lag"] // step).to_numpy(dtype=int)
+    if d.max() > int(contract["n_d"]):
+        raise ValueError(
+            f"dev index {d.max()} exceeds the fit's n_d={contract['n_d']}; "
+            "next_diagonal() should have excluded this as dev_beyond_trained"
+        )
+    premium = (
+        frame["premium"].to_numpy(dtype=float)
+        if "premium" in frame.columns
+        else _contract_premium(contract, w)
+    )
+    return CellIndex(
+        w=w,
+        d=d,
+        value=frame["value"].to_numpy(dtype=float),
+        prev_value=frame["prev_value"].to_numpy(dtype=float),
+        premium=premium,
+    )
+
+
+def _contract_premium(contract: dict, w: np.ndarray) -> np.ndarray:
+    """Exposure per cell from the fitted contract, or NaN when it carries none.
+
+    NaN rather than 1.0: an entry whose measure needs premium must fail loudly,
+    and a silent 1.0 would leave a loss-ratio density unconverted while still
+    returning plausible numbers.
+    """
+    if "premium" not in contract:
+        return np.full(len(w), np.nan)
+    return np.asarray(contract["premium"], dtype=float)[w - 1]
 
 
 @dataclass(frozen=True)
