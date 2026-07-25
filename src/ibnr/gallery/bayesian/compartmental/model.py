@@ -67,7 +67,9 @@ STAN_FILES = {
 }
 
 #: posterior backends this entry can dispatch to (ports land in milestone 5)
-BACKENDS = ("stan",)
+#: posterior backends this entry can dispatch to; all three target the same
+#: posterior, which ``kernels.parity`` gates before any convergence claim
+BACKENDS = ("stan", "numpyro", "pymc")
 
 
 def os_curve(t, ker, kp, rlr):
@@ -160,6 +162,16 @@ class Compartmental(GalleryEntry):
             raise ValueError(f"backend must be one of {BACKENDS}, got {backend!r}")
         if variant not in STAN_FILES:
             raise ValueError(f"variant must be one of {tuple(STAN_FILES)}, got {variant!r}")
+        # parallel_chains is cmdstan-only (chain-level parallelism), so a port
+        # must reject it rather than silently ignore an escalation request.
+        # max_treedepth is NOT cmdstan-only - NUTS in all three backends takes
+        # it - so it is passed through, which is what lets a run be made
+        # affordable for PyMC (see the card's runtime note).
+        if backend != "stan" and parallel_chains != 1:
+            raise ValueError(
+                "parallel_chains is a stan-backend control; "
+                f"the {backend!r} port does not take it"
+            )
         train = triangle.as_of(as_of) if as_of is not None else triangle
         self.contract_ = compartmental_stan_data(
             train,
@@ -173,7 +185,12 @@ class Compartmental(GalleryEntry):
         stan_data = (
             self._gaussian_stan_data() if variant == "gaussian" else self._lognormal_stan_data()
         )
-        self.idata_ = self._sample_stan(
+        sampler = {
+            "stan": self._sample_stan,
+            "numpyro": self._sample_numpyro,
+            "pymc": self._sample_pymc,
+        }[backend]
+        self.idata_ = sampler(
             stan_data,
             chains=chains,
             iter_warmup=iter_warmup,
@@ -301,6 +318,67 @@ class Compartmental(GalleryEntry):
         idata.attrs["runtime_s"] = runtime_s
         idata.attrs["backend"] = "stan"
         return idata
+
+    def _sample_numpyro(
+        self,
+        stan_data,
+        *,
+        chains,
+        iter_warmup,
+        iter_sampling,
+        seed,
+        target_accept,
+        max_treedepth,
+        parallel_chains,
+        show_progress,
+    ):
+        """NumPyro (JAX) port of whichever variant is selected.
+
+        The half-Student-t scales use Stan's own constrained-parameter +
+        factor construction, because NumPyro's TruncatedDistribution needs a
+        Student-t CDF it cannot compute here; see ``model_numpyro``.
+        """
+        from ibnr.gallery.bayesian.compartmental import model_numpyro
+
+        return model_numpyro.sample(
+            stan_data,
+            variant=self.variant_,
+            chains=chains,
+            iter_warmup=iter_warmup,
+            iter_sampling=iter_sampling,
+            seed=seed,
+            target_accept=target_accept,
+            max_treedepth=max_treedepth,
+            progress_bar=show_progress,
+        )
+
+    def _sample_pymc(
+        self,
+        stan_data,
+        *,
+        chains,
+        iter_warmup,
+        iter_sampling,
+        seed,
+        target_accept,
+        max_treedepth,
+        parallel_chains,
+        show_progress,
+    ):
+        """PyMC port of whichever variant is selected."""
+        from ibnr.gallery.bayesian.compartmental import model_pymc
+
+        return model_pymc.sample(
+            stan_data,
+            variant=self.variant_,
+            chains=chains,
+            iter_warmup=iter_warmup,
+            iter_sampling=iter_sampling,
+            seed=seed,
+            target_accept=target_accept,
+            max_treedepth=max_treedepth,
+            progressbar=show_progress,
+        )
 
     def predict(self, seed: int | None = None) -> PredictiveDistribution:
         """Predictive distribution of cumulative paid at the triangle's final

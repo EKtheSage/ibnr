@@ -76,6 +76,7 @@ import pandas as pd
 from ibnr.kernels.parity import (
     CCL_PARITY_VARS,
     CLARK_PARITY_VARS,
+    COMPARTMENTAL_PARITY_VARS,
     CSR_PARITY_VARS,
     ODP_PARITY_VARS,
 )
@@ -348,6 +349,16 @@ def _synthetic_odp_triangle(seed: int):
 #: - ``stem``         output filename stem; CCL keeps the pre-``--model``
 #:                    filenames so published result paths stay valid
 MODELS = {
+    "compartmental": {
+        "loss_field": "paid_loss",
+        "parity_vars": COMPARTMENTAL_PARITY_VARS,
+        # the monograph's own adapt_delta; this is the stiffest posterior here
+        "target_accept": 0.99,
+        "stem": "compartmental",
+        # needs paid AND reported AND premium, so the generic synthetic
+        # generators do not serve it; run this model on the mart
+        "simulate": None,
+    },
     "clark_growth_curve": {
         "loss_field": "paid_loss",
         "parity_vars": CLARK_PARITY_VARS,
