@@ -73,7 +73,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from ibnr.kernels.parity import CCL_PARITY_VARS, CSR_PARITY_VARS, ODP_PARITY_VARS
+from ibnr.kernels.parity import (
+    CCL_PARITY_VARS,
+    CLARK_PARITY_VARS,
+    CSR_PARITY_VARS,
+    ODP_PARITY_VARS,
+)
 
 RESULTS = Path(__file__).parents[1] / "analysis" / "results"
 
@@ -343,6 +348,15 @@ def _synthetic_odp_triangle(seed: int):
 #: - ``stem``         output filename stem; CCL keeps the pre-``--model``
 #:                    filenames so published result paths stay valid
 MODELS = {
+    "clark_growth_curve": {
+        "loss_field": "paid_loss",
+        "parity_vars": CLARK_PARITY_VARS,
+        "target_accept": 0.9,
+        "stem": "clark",
+        # Clark shares ODP's incremental contract and likelihood, so it takes
+        # the same generative triangle; only the mean structure differs.
+        "simulate": _synthetic_odp_triangle,
+    },
     "england_verrall_odp": {
         "loss_field": "paid_loss",
         "parity_vars": ODP_PARITY_VARS,

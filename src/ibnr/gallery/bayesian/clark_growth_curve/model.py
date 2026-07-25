@@ -32,8 +32,9 @@ STAN_FILE = Path(__file__).parent / "model.stan"
 #: the port cannot drift on which curve it fits (Clark 2003, section 2).
 CURVE_CODES = {"loglogistic": 1, "weibull": 2}
 
-#: posterior backends this entry can dispatch to (ports land in milestone 5)
-BACKENDS = ("stan",)
+#: posterior backends this entry can dispatch to; all three target the same
+#: posterior, which ``kernels.parity`` gates before any convergence claim
+BACKENDS = ("stan", "numpyro", "pymc")
 
 
 def pooled(idata, name: str) -> np.ndarray:
@@ -77,6 +78,15 @@ class ClarkGrowthCurve(GalleryEntry):
     ) -> ClarkGrowthCurve:
         if backend not in BACKENDS:
             raise ValueError(f"backend must be one of {BACKENDS}, got {backend!r}")
+        # parallel_chains / max_treedepth are cmdstan-level controls the retro
+        # harness escalates on. Validated BEFORE any data prep or MLE fit: a
+        # port that accepted them silently would report an escalated fit that
+        # never ran.
+        if backend != "stan" and (parallel_chains != 1 or max_treedepth is not None):
+            raise ValueError(
+                "parallel_chains / max_treedepth are stan-backend controls; "
+                f"the {backend!r} port does not take them"
+            )
         if growth_curve not in CURVE_CODES:
             raise ValueError(f"growth_curve must be one of {tuple(CURVE_CODES)}")
         train = triangle.as_of(as_of) if as_of is not None else triangle
@@ -124,16 +134,28 @@ class ClarkGrowthCurve(GalleryEntry):
             # scale prior comparable across annual/quarterly triangles.
             "theta_prior_median": 4.0 * step,
         }
-        self.idata_ = self._sample_stan(
+        self.stan_data_ = stan_data  # the single data block every backend consumes
+        sampler = {
+            "stan": self._sample_stan,
+            "numpyro": self._sample_numpyro,
+            "pymc": self._sample_pymc,
+        }[backend]
+        extra = (
+            {"parallel_chains": parallel_chains, "max_treedepth": max_treedepth}
+            if backend == "stan"
+            else {}
+        )
+        # All three return a comparable arviz.InferenceData, so predict(),
+        # convergence() and parity are backend-agnostic.
+        self.idata_ = sampler(
             stan_data,
             chains=chains,
             iter_warmup=iter_warmup,
             iter_sampling=iter_sampling,
             seed=seed,
             target_accept=target_accept,
-            parallel_chains=parallel_chains,
-            max_treedepth=max_treedepth,
             show_progress=show_progress,
+            **extra,
         )
         return self
 
@@ -155,10 +177,15 @@ class ClarkGrowthCurve(GalleryEntry):
         iter_sampling,
         seed,
         target_accept,
-        parallel_chains,
-        max_treedepth,
         show_progress,
+        parallel_chains=1,
+        max_treedepth=None,
     ):
+        """Reference backend: cmdstanpy NUTS on ``model.stan``.
+
+        Ground truth for parity - the ports are checked against this posterior
+        before any convergence or runtime claim is made.
+        """
         import time
 
         import arviz as az
@@ -185,6 +212,43 @@ class ClarkGrowthCurve(GalleryEntry):
         idata.attrs["runtime_s"] = runtime_s
         idata.attrs["backend"] = "stan"
         return idata
+
+    def _sample_numpyro(
+        self, stan_data, *, chains, iter_warmup, iter_sampling, seed, target_accept, show_progress
+    ):
+        """NumPyro (JAX) port. Same parameterization, same data block.
+
+        The growth curve needs a gradient-safe zero-age branch; see
+        ``model_numpyro`` for why a bare ``where`` silently NaNs the gradient
+        on the loglogistic curve.
+        """
+        from ibnr.gallery.bayesian.clark_growth_curve import model_numpyro
+
+        return model_numpyro.sample(
+            stan_data,
+            chains=chains,
+            iter_warmup=iter_warmup,
+            iter_sampling=iter_sampling,
+            seed=seed,
+            target_accept=target_accept,
+            progress_bar=show_progress,
+        )
+
+    def _sample_pymc(
+        self, stan_data, *, chains, iter_warmup, iter_sampling, seed, target_accept, show_progress
+    ):
+        """PyMC port. Same parameterization, same data block."""
+        from ibnr.gallery.bayesian.clark_growth_curve import model_pymc
+
+        return model_pymc.sample(
+            stan_data,
+            chains=chains,
+            iter_warmup=iter_warmup,
+            iter_sampling=iter_sampling,
+            seed=seed,
+            target_accept=target_accept,
+            progressbar=show_progress,
+        )
 
     def predict(self, seed: int | None = None) -> PredictiveDistribution:
         """Ultimates per origin + total: paid-to-date plus simulated future
