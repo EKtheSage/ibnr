@@ -232,6 +232,89 @@ def test_held_out_cells_index_into_the_fitted_contract(contract):
     assert np.isfinite(out).all()
 
 
+def test_training_prev_value_is_the_previous_DEVELOPMENT_not_the_previous_ORIGIN(contract):
+    """The contract carries two different "previous cell" notions and they must
+    not be confused.
+
+    ``contract["prev_idx"]`` points at ``(w-1, d)`` - the previous ORIGIN at the
+    same development - because that is CCL's accident-year AR(1) link.
+    ``prev_value`` means ``(w, d-1)``, the previous DEVELOPMENT, because that is
+    what differencing a cumulative triangle needs. An earlier version of
+    ``training_index`` reused ``prev_idx`` for ``prev_value``.
+
+    ``meyers_csr`` never reads ``prev_value``, so no CSR test could see it; the
+    first scorer to difference cumulatives - ODP, Clark, compartmental - would
+    have silently subtracted a neighbouring accident year instead of the cell's
+    own history, on every cell but the first origin.
+    """
+    idx = training_index(contract)
+    loss = np.asarray(contract["loss"], dtype=float)
+    row_of = {
+        (int(w), int(d)): i
+        for i, (w, d) in enumerate(zip(contract["w"], contract["d"], strict=True))
+    }
+
+    for i in range(idx.n_cells):
+        w, d = int(idx.w[i]), int(idx.d[i])
+        if d == 1:
+            assert idx.prev_value[i] == 0.0
+            continue
+        assert idx.prev_value[i] == loss[row_of[(w, d - 1)]]
+
+    # and the two notions genuinely differ on this fixture, or the test is empty
+    differing = [
+        i
+        for i in range(idx.n_cells)
+        if int(idx.w[i]) > 1
+        and int(idx.d[i]) > 1
+        and (int(idx.w[i]) - 1, int(idx.d[i])) in row_of
+        and loss[row_of[(int(idx.w[i]) - 1, int(idx.d[i]))]] != idx.prev_value[i]
+    ]
+    assert differing, "fixture cannot distinguish previous-origin from previous-dev"
+
+
+def test_index_into_refuses_cells_from_more_than_one_cohort(contract):
+    """``(w, d)`` does not identify a cell - two companies or two lines share
+    origin dates and development lags exactly.
+
+    A contract is single-cohort by construction, so multi-cohort held-out cells
+    scored against one fit would produce a complete, plausible ELPD for a
+    mixture of cohorts. Nothing downstream could detect it.
+    """
+    rows = []
+    for lob in ("wc", "ca"):
+        for w in range(1, N_W + 1):
+            for d in range(1, N_D + 1):
+                if w + d - 1 > N_W + 1:
+                    continue
+                rows.append(
+                    {
+                        "lob": lob,
+                        "origin_period": dt.date(2010 + w - 1, 1, 1),
+                        "dev_lag": 12 * d,
+                        "eval_date": dt.date(2010 + w - 1 + d - 1, 12, 31),
+                        "field": "paid_loss",
+                        "value": float(PREMIUM * 0.6 * (1 - np.exp(-0.6 * d))),
+                    }
+                )
+    tri = Triangle.from_long(pd.DataFrame(rows), measure="cumulative")
+    cells = next_diagonal(tri, as_of="2015-12-31", fields="paid_loss")
+
+    assert set(cells.frame["lob"]) == {"wc", "ca"}
+    with pytest.raises(ValueError, match="span 2 cohorts"):
+        index_into(cells, contract, field="paid_loss")
+
+
+def test_index_into_refuses_cells_spanning_two_fields(contract):
+    """compartmental scores paid AND reported; every other entry scores one. A
+    fit handed both would score its single-field likelihood against a column
+    block that is half another quantity."""
+    full = _triangle(through=N_W + 1)
+    cells = next_diagonal(full, as_of="2015-12-31", fields=["paid_loss", "earned_premium"])
+    with pytest.raises(ValueError, match="span fields"):
+        index_into(cells, contract)
+
+
 def test_a_cell_outside_the_fitted_cohort_is_an_error(contract):
     """Scoring a fit against another cohort's cells would silently produce
     numbers, since the indices exist either way."""

@@ -103,14 +103,17 @@ def test_next_eval_date_is_read_from_the_data_not_computed(backend_name):
     (or everything, depending on the comparison). Reading the data skips the gap.
     """
     rows = staircase(4, 4, through=4)
-    # jump the 2014 diagonal entirely: the next observations are dated 2015
+    # Skip the 2014 diagonal entirely. dev_lag must stay consistent with
+    # eval_date: at 2015 the cell for origin w sits at dev index 2015-origin+1,
+    # i.e. dev_lag 12*(7-w). Labelling these 12*(6-w) - as an earlier version of
+    # this test did - describes cells at 2014 and quietly tests nothing.
     rows += [
         {
             "origin_period": dt.date(2010 + w - 1, 1, 1),
-            "dev_lag": 12 * (6 - w),
+            "dev_lag": 12 * (7 - w),
             "eval_date": dt.date(2015, 12, 31),
             "field": "paid_loss",
-            "value": float(100 * w + (6 - w)),
+            "value": float(100 * w + (7 - w)),
         }
         for w in range(2, 5)
     ]
@@ -118,9 +121,19 @@ def test_next_eval_date_is_read_from_the_data_not_computed(backend_name):
 
     cells = next_diagonal(tri, as_of="2013-12-31", fields="paid_loss")
 
-    assert cells.eval_date == dt.date(2015, 12, 31), "skipped the gap year"
-    assert cells.n_cells == 3
     assert dt.date(2014, 12, 31) not in tri.eval_dates
+    assert cells.eval_date == dt.date(2015, 12, 31), "skipped the gap year"
+
+    # And the honest consequence, which is the point of using a REAL gap: with a
+    # whole diagonal missing, every cell on the next observed one is two
+    # development steps from its last training value, so no increment can be
+    # formed and nothing is scorable. The module reports that with reasons
+    # rather than differencing against the wrong cell.
+    assert cells.n_cells == 0
+    counts = cells.exclusion_counts()
+    assert counts["no_predecessor"] == 2
+    assert counts["dev_beyond_trained"] == 1
+    assert not cells.frame["prev_value"].isna().any()  # vacuously - none survived
 
 
 def test_quarterly_triangle_steps_one_quarter(backend_name):
@@ -320,6 +333,96 @@ def test_origins_restricts_to_the_study_window(tri8):
     assert dt.date(2011, 1, 1) in set(full.frame["origin_period"]), (
         "the same cell IS scorable when the older origins are in training"
     )
+
+
+def test_a_premium_only_update_does_not_become_the_next_diagonal(backend_name):
+    """``D_next`` must be read from the eval dates of the LOSS rows being
+    scored, not from the triangle's dates as a whole.
+
+    Premium is restated on its own schedule. If an exposure-only update lands
+    between the cutoff and the next loss diagonal, taking the triangle-wide
+    minimum selects that date, holds out an empty diagonal, and skips the real
+    one - reporting "0 cells scored" for a model that had a perfectly good
+    diagonal waiting.
+    """
+    rows = staircase(4, 4, through=5)
+    rows += [
+        {
+            "origin_period": dt.date(2010 + w - 1, 1, 1),
+            "dev_lag": 12,
+            "eval_date": dt.date(2010 + w - 1, 12, 31),
+            "field": "earned_premium",
+            "value": 1000.0,
+        }
+        for w in range(1, 5)
+    ]
+    # an exposure-only restatement dated BETWEEN the cutoff and the loss diagonal
+    rows.append(
+        {
+            "origin_period": dt.date(2010, 1, 1),
+            "dev_lag": 12,
+            "eval_date": dt.date(2014, 6, 30),
+            "field": "earned_premium",
+            "value": 1100.0,
+        }
+    )
+    tri = Triangle.from_long(pd.DataFrame(rows), measure="cumulative", backend=backend_name)
+    assert dt.date(2014, 6, 30) in tri.eval_dates
+
+    cells = next_diagonal(
+        tri, as_of="2013-12-31", fields="paid_loss", premium_field="earned_premium"
+    )
+
+    assert cells.eval_date == dt.date(2014, 12, 31), "premium-only date became the diagonal"
+    assert cells.n_cells == 3
+
+
+def test_new_origin_is_decided_per_cohort_not_triangle_wide(backend_name):
+    """A cohort's first accident year is new to THAT cohort's fit, whatever the
+    other cohorts in the triangle wrote.
+
+    One company writing a line since 2010 must not make another company's 2010
+    look like trained history. The cell would be scored against an ``alpha[w]``
+    the second fit never estimated - and it is the oldest, largest-reserve
+    origin, so the error lands where it matters most.
+    """
+    rows = staircase(4, 4, through=5, segment={"lob": "wc"})
+    # 'ca' starts a year later, so 2010 is absent from it entirely
+    rows += [
+        r
+        for r in staircase(4, 4, through=5, start_year=2011, segment={"lob": "ca"})
+        if r["origin_period"].year >= 2011
+    ]
+    tri = Triangle.from_long(pd.DataFrame(rows), measure="cumulative", backend=backend_name)
+
+    cells = next_diagonal(tri, as_of="2013-12-31", fields="paid_loss")
+
+    scored = cells.frame
+    ca_origins = set(scored.loc[scored["lob"] == "ca", "origin_period"])
+    assert dt.date(2010, 1, 1) not in ca_origins
+    # wc did train on 2010, so ITS 2010 cell is unaffected by ca's absence
+    wc_origins = set(scored.loc[scored["lob"] == "wc", "origin_period"])
+    assert wc_origins != ca_origins
+
+
+def test_incremental_triangles_do_not_get_cumulative_treatment(backend_name):
+    """``prev_value`` and ``increments`` are cumulative-only concepts.
+
+    On an incremental triangle ``value`` IS the increment, so differencing again
+    is wrong - and wrong quietly, giving a smaller number of the right sign.
+    Equally, every cell would look like it had a missing predecessor and the
+    whole diagonal would vanish behind a spurious exclusion reason.
+    """
+    rows = staircase(4, 4, through=5)
+    tri = Triangle.from_long(pd.DataFrame(rows), measure="incremental", backend=backend_name)
+
+    cells = next_diagonal(tri, as_of="2013-12-31", fields="paid_loss")
+
+    assert cells.measure == "incremental"
+    assert cells.n_cells == 3, "cells must not be excluded for lacking a predecessor"
+    assert cells.exclusion_counts()["no_predecessor"] == 0
+    with pytest.raises(ValueError, match="for cumulative triangles"):
+        _ = cells.increments
 
 
 def test_no_next_diagonal_is_an_error_not_an_empty_frame(tri8):
