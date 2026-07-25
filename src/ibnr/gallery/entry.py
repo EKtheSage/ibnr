@@ -63,9 +63,20 @@ class ScoresHeldout(ABC):
     was not trained on.
 
     A **mixin**, not an addition to :class:`GalleryEntry`, so no existing entry
-    breaks and no entry has to pretend. Entries that cannot do this - the NN,
-    statistical and deterministic families today - simply do not subclass it,
-    and the leaderboard reports their ELPD as missing rather than as zero.
+    breaks and no entry has to pretend. Entries that cannot do this simply do
+    not subclass it, and the leaderboard reports their ELPD as missing rather
+    than as zero.
+
+    **Subclassing this is a claim that the entry has a normalized predictive
+    density, and that claim is the whole basis of its ELPD.** It is not a
+    Bayesian/non-Bayesian distinction - a distributional NN head or a GLM with a
+    declared observation model qualifies, and being fitted by MCMC does not. It
+    excludes ``england_verrall_odp`` and ``clark_growth_curve``, whose ODP
+    *quasi*-likelihood is Poisson only up to proportionality and is not a
+    density on any scale (see :ref:`odp-not-a-density`); they are scored by CRPS
+    and PIT until given a proper predictive law. It also excludes point and
+    quantile predictors, and ``deterministic/mack``, whose bootstrap has no
+    stated observation model.
 
     Two structural choices, both there to stop a whole class of silent error:
 
@@ -89,13 +100,6 @@ class ScoresHeldout(ABC):
     @abstractmethod
     def _log_lik_native(self, cells: CellIndex) -> np.ndarray:
         """``(n_draws, n_cells)`` log density on this entry's own measure."""
-
-    def heldout_dispersion(self) -> np.ndarray | float:
-        """Lattice spacing for ``odp_lattice`` entries. Unused otherwise."""
-        raise NotImplementedError(
-            f"{type(self).__name__} declares heldout_measure='odp_lattice' but does "
-            "not implement heldout_dispersion()"
-        )
 
     def log_lik_at(self, cells: HoldoutCells | CellIndex, *, field: str | None = None):
         """``(n_draws, n_cells)`` log density, carried to Lebesgue-on-amount.
@@ -139,11 +143,9 @@ class ScoresHeldout(ABC):
             return {"measure": measure}
         if measure == "log_amount":
             return {"measure": measure, "value": idx.value}
-        if measure == "loss_ratio":
-            if np.isnan(idx.premium).any():
-                raise ValueError(
-                    f"{type(self).__name__} scores on loss ratios but the fit carries no "
-                    "premium, so its density cannot be carried to the amount scale"
-                )
-            return {"measure": measure, "premium": idx.premium}
-        return {"measure": measure, "phi": self.heldout_dispersion()}
+        if np.isnan(idx.premium).any():
+            raise ValueError(
+                f"{type(self).__name__} scores on loss ratios but the fit carries no "
+                "premium, so its density cannot be carried to the amount scale"
+            )
+        return {"measure": measure, "premium": idx.premium}

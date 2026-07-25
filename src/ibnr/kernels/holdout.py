@@ -118,12 +118,32 @@ def training_index(contract: dict) -> CellIndex:
     Exists for the agreement gate: a scorer handed these must reproduce the
     fit's own ``log_lik`` elementwise. Without that, a scorer can be wrong in
     its index arithmetic and produce entirely plausible held-out numbers.
+
+    .. warning::
+
+       ``prev_value`` here is the previous **development** cell ``(w, d-1)``,
+       matching :class:`HoldoutCells`. It is emphatically **not** the contract's
+       ``prev_idx``, which points at the previous **origin** ``(w-1, d)`` -
+       that is CCL's accident-year AR(1) link (``contract.py``, ``row_of.get((w
+       - 1, d))``), a different quantity entirely. An earlier version of this
+       function reused ``prev_idx`` and was wrong; ``meyers_csr`` does not read
+       ``prev_value``, so its tests could not see it, and the first scorer that
+       differenced cumulatives would have silently subtracted the wrong cell.
     """
     w = np.asarray(contract["w"], dtype=int)
     d = np.asarray(contract["d"], dtype=int)
     loss = np.asarray(contract["loss"], dtype=float)
-    prev_idx = np.asarray(contract.get("prev_idx", np.zeros(len(w), int)), dtype=int)
-    prev = np.where(prev_idx > 0, loss[np.clip(prev_idx - 1, 0, None)], 0.0)
+    row_of = {(int(a), int(b)): i for i, (a, b) in enumerate(zip(w, d, strict=True))}
+
+    def predecessor(origin: int, dev: int) -> float:
+        back = row_of.get((origin, dev - 1))
+        if back is not None:
+            return float(loss[back])
+        # a cell at the first dev has no predecessor and its cumulative value IS
+        # its increment; a hole anywhere else is genuinely unknown
+        return 0.0 if dev == 1 else float("nan")
+
+    prev = np.array([predecessor(int(a), int(b)) for a, b in zip(w, d, strict=True)], dtype=float)
     premium = _contract_premium(contract, w)
     return CellIndex(w=w, d=d, value=loss, prev_value=prev, premium=premium)
 
@@ -137,12 +157,35 @@ def index_into(cells: HoldoutCells, contract: dict, *, field: str | None = None)
     here rather than a silent misindex - :func:`next_diagonal` already excludes
     those cases, so reaching one means the cells and the fit disagree about
     which cohort they describe.
+
+    **Segment and field identity are checked, not assumed.** ``(w, d)`` alone
+    does not identify a cell: two companies, or two lines of business, share
+    origin dates and development lags exactly. A contract is single-cohort by
+    construction (``stan_data`` refuses more), so held-out cells spanning
+    several cohorts, or several fields, would otherwise be silently scored
+    against one fit as though they all belonged to it - producing a full,
+    plausible ELPD for a mixture of cohorts.
     """
     frame = cells.frame
     if field is not None:
         frame = frame[frame["field"] == field]
     if frame.empty:
         raise ValueError(f"no held-out cells for field={field!r}")
+
+    fields = sorted(frame["field"].unique())
+    if len(fields) > 1:
+        raise ValueError(
+            f"held-out cells span fields {fields}; a fit scores one field at a time - "
+            "pass field= to choose"
+        )
+    if cells.segments:
+        combos = frame[list(cells.segments)].drop_duplicates()
+        if len(combos) > 1:
+            raise ValueError(
+                f"held-out cells span {len(combos)} cohorts on {list(cells.segments)}; "
+                "a contract is single-cohort, so scoring them against one fit would "
+                "silently mix cohorts. Filter to one cohort first"
+            )
 
     origins = list(contract["origin_periods"])
     w_of = {o: i + 1 for i, o in enumerate(origins)}
@@ -226,11 +269,18 @@ class HoldoutCells:
 
     @property
     def increments(self) -> np.ndarray:
-        """``value - prev_value``, in frame order.
+        """``value - prev_value``, in frame order. Cumulative triangles only.
 
-        Meaningful on a cumulative triangle; on an incremental one ``value`` is
-        already the increment and this is not what you want.
+        On an incremental triangle ``value`` is already the increment, so
+        differencing it again is simply wrong - and it would be wrong quietly,
+        producing a smaller number of the right sign on most cells. Hence the
+        error rather than a docstring caveat.
         """
+        if self.measure != "cumulative":
+            raise ValueError(
+                f"increments is for cumulative triangles; this one is {self.measure!r}, "
+                "where `values` already holds the increments"
+            )
         return self.values - self.frame["prev_value"].to_numpy(dtype=float)
 
     @property
@@ -292,17 +342,32 @@ def next_diagonal(
     if missing:
         raise ValueError(f"triangle has no field(s) {missing}; has {sorted(triangle.fields)}")
 
-    later = sorted(e for e in triangle.eval_dates if e > cutoff)
-    if not later:
-        raise ValueError(
-            f"no eval_date after {cutoff}: the triangle ends at {max(triangle.eval_dates)}, "
-            "so there is no next diagonal to hold out"
-        )
-    d_next = later[0]  # READ from the data; never cutoff + a grain step
-
     segments = tuple(triangle.segments)
     keys = [*segments, "field", "origin_period", "dev_lag"]
     step = GRAIN_MONTHS[triangle.meta.dev_grain]
+
+    # D_next is read from the eval dates of the LOSS ROWS BEING SCORED, after
+    # the origins restriction - not from the triangle's dates as a whole.
+    # Premium is typically restated on its own schedule, and an exposure-only
+    # update carries an eval_date with no loss cells behind it: taking the
+    # triangle-wide minimum would select that date, hold out an empty diagonal,
+    # and skip the real one entirely. Same for a date that only exists outside
+    # the requested origin window.
+    full = _normalize_dates(triangle.execute())
+    scope = full[full["field"].isin(wanted)]
+    if origins is not None:
+        keep = {_as_date(o) for o in origins}
+        scope = scope[scope["origin_period"].isin(keep)]
+    if scope.empty:
+        raise ValueError(f"no observations of {wanted} in the requested origins")
+
+    later = sorted(e for e in scope["eval_date"].unique() if e > cutoff)
+    if not later:
+        raise ValueError(
+            f"no eval_date after {cutoff} carrying any of {wanted}: they end at "
+            f"{max(scope['eval_date'])}, so there is no next diagonal to hold out"
+        )
+    d_next = later[0]  # READ from the data; never cutoff + a grain step
 
     # Both slices go through Triangle.as_of, so restatement collapsing is the
     # single implementation in transforms.py rather than a second one here.
@@ -329,9 +394,19 @@ def next_diagonal(
     # Per (segment, field): how deep did training go? Beyond that there is no
     # per-dev parameter to evaluate.
     max_dev = train.groupby([*segments, "field"], dropna=False)["dev_lag"].max()
+    # Per segment: which (cohort, origin) pairs did training actually contain? A
+    # company that writes a line from 1995 has no alpha[w] for 1994 even though
+    # another company in the same triangle does, so a triangle-wide origin set
+    # would wave that cell through to be scored against a parameter the fit
+    # never estimated. A merge rather than a groupby: it is vectorized and it
+    # degenerates correctly when the triangle has no segment columns at all.
+    trained_pairs = train[[*segments, "origin_period"]].drop_duplicates()
 
-    fresh["prev_value"] = _predecessor(fresh, train, keys, step)
-    fresh["reason"] = _exclusion_reason(fresh, set(train_origins), max_dev, segments)
+    cumulative = triangle.meta.measure == "cumulative"
+    fresh["prev_value"] = _predecessor(fresh, train, keys, step) if cumulative else np.nan
+    fresh["reason"] = _exclusion_reason(
+        fresh, trained_pairs, max_dev, segments, check_predecessor=cumulative
+    )
 
     if premium_field is not None:
         fresh["premium"] = _premium(fresh, before, segments, premium_field)
@@ -397,15 +472,24 @@ def _predecessor(fresh: pd.DataFrame, train: pd.DataFrame, keys: list[str], step
 
 def _exclusion_reason(
     fresh: pd.DataFrame,
-    train_origins: set,
+    trained_pairs: pd.DataFrame,
     max_dev: pd.Series,
     segments: tuple[str, ...],
+    *,
+    check_predecessor: bool,
 ) -> pd.Series:
     """First applicable reason per row, or NaN when the cell is scorable."""
     reason = pd.Series(pd.NA, index=fresh.index, dtype="object")
 
-    new_origin = ~fresh["origin_period"].isin(train_origins)
-    reason = reason.mask(reason.isna() & new_origin, "new_origin")
+    # PER (SEGMENT, ORIGIN). A triangle-wide origin set would treat a cohort's
+    # very first accident year as known merely because some other cohort in the
+    # same triangle wrote that year, and the cell would then be scored against
+    # an alpha[w] the fit never estimated.
+    origin_key = [*segments, "origin_period"]
+    marked = trained_pairs.assign(_trained=True)
+    seen = fresh[origin_key].merge(marked, on=origin_key, how="left")["_trained"].to_numpy()
+    seen = np.where(pd.isna(seen), False, seen).astype(bool)
+    reason = reason.mask(reason.isna() & ~pd.Series(seen, index=fresh.index), "new_origin")
 
     group_key = [*segments, "field"]
     trained_depth = fresh[group_key].merge(
@@ -415,8 +499,12 @@ def _exclusion_reason(
     too_deep = trained_depth.isna() | (fresh["dev_lag"] > trained_depth)
     reason = reason.mask(reason.isna() & too_deep, "dev_beyond_trained")
 
-    no_prev = fresh["prev_value"].isna()
-    reason = reason.mask(reason.isna() & no_prev, "no_predecessor")
+    # Only cumulative triangles difference against a predecessor; on an
+    # incremental one `value` is already the increment and there is nothing to
+    # look back at, so the reason would fire on every single cell.
+    if check_predecessor:
+        no_prev = fresh["prev_value"].isna()
+        reason = reason.mask(reason.isna() & no_prev, "no_predecessor")
     return reason
 
 

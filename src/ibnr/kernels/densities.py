@@ -21,11 +21,10 @@ compartmental (lognormal)    outstanding and incremental paid **ratios**
 
 So the numbers in each entry's ``log_likelihood`` group are not comparable
 across entries as they stand - the compartmental lognormal Stan file says so
-about its own two variants. Ethan's milestone-6 call is that the leaderboard
-publishes a **single global ELPD ranking**, which means every density has to be
-carried to one common measure first. :func:`to_amount_scale` is that carry, and
-it is deliberately the only place it happens: an entry that applied its own
-Jacobian would be a second implementation of a thing that must not disagree.
+about its own two variants. Carrying them to one common measure is what makes a
+cross-entry log score meaningful at all, and :func:`to_amount_scale` is
+deliberately the only place it happens: an entry applying its own Jacobian would
+be a second implementation of something that must not disagree.
 
 The common measure is **Lebesgue on the loss amount**. Getting there:
 
@@ -35,31 +34,67 @@ The common measure is **Lebesgue on the loss amount**. Getting there:
     ``y = exp(u)`` with a density on ``u``, so ``log p(y) = log p(u) - log y``.
 ``loss_ratio``
     ``y = r * premium`` with a density on ``r``, so subtract ``log premium``.
-``odp_lattice``
-    The ODP quasi-likelihood is a probability **mass** on ``{0, phi, 2phi, ...}``
-    - it is ``Poisson(mu/phi)`` evaluated at ``x/phi``. Mass to density is mass
-    divided by the lattice spacing, so subtract ``log phi``.
 
 The increment/cumulative step needs **no** Jacobian: ``X = C - C_prev`` with
 ``C_prev`` sitting on the training diagonal, so it is data and ``dC/dX = 1``.
 That is what lets an entry modelling cumulative loss and one modelling
 increments meet on this scale at all.
 
-**A caveat to carry into the model cards, because it is a real limitation
-rather than a rounding error.** The ODP conversion is a convention, not a
-theorem. Dividing a lattice mass by its spacing is the natural density
-approximation and it is what makes the units commensurable, but the ODP
-entries' likelihood remains a discretization, so their converted ELPD is not
-quite the same kind of object as a genuinely continuous one. The alternative
-considered was to give them their own comparability group and never sum across
-- rejected in favour of one global ranking.
+.. _odp-not-a-density:
 
-**On testing this.** A wrong Jacobian does not look like a wrong answer. It
-looks like a differently-shaped model: the ranking still ranks, the numbers
-still look like log densities, and every value-only comparison passes. The only
-thing that catches it is normalization - :func:`check_normalization` - so every
-measure in this module has a test that integrates its converted density to 1,
-and those tests are verified to fail when the conversion is removed.
+**Why there is no ``odp_lattice`` measure.** An earlier version of this module
+carried the ODP quasi-likelihood to the amount scale by subtracting
+``log phi``, on the reasoning that it is a probability mass on the lattice
+``{0, phi, 2phi, ...}`` and mass-to-density is mass divided by spacing. **That
+is wrong, and it was wrong in a way the first round of tests could not see.**
+
+``exp(odp_lpdf(x | mu, phi)) / phi`` does not integrate to 1 over ``x``.
+Substituting ``z = x/phi`` leaves ``\\int lambda^z e^{-lambda} / Gamma(z+1) dz``
+with ``lambda = mu/phi``, and that integral is not 1 - it is a function of
+``lambda``:
+
+======================  =========================================
+``lambda = mu / phi``   ``\\int`` of the carried "density"
+======================  =========================================
+0.5                     0.688
+1.0                     0.834
+2.0                     0.947
+5.0                     0.998
+20 and above            1.000 (to 6 dp)
+======================  =========================================
+
+Two things follow, and the second is the fatal one. First, it is not a density.
+Second, **the defect varies with** ``mu/phi``, so it is not even a constant
+offset that cancels when two models are compared on the same cells - it would
+tilt a ranking towards whichever model happens to put more mass in low-``mu``
+cells, which on a reserving triangle means the tail.
+
+The deeper reason is that ODP is a *quasi*-likelihood: with non-integer
+``x/phi`` it is Poisson only up to proportionality (England & Verrall, section
+2.3.5), so it never was a normalized predictive law and no change of variable
+can make it one. Giving it one means declaring an actual distribution -
+negative binomial or Tweedie are the usual choices - which is a modelling
+decision, not a units conversion.
+
+So ``odp_lpdf`` stays here as a **likelihood** (the entries need it, and its
+Stan-identical form is pinned by test), but ODP and Clark are **not
+ELPD-eligible** and are scored by CRPS and PIT only until they are given a
+proper predictive distribution.
+
+**On testing this - the lesson that produced the paragraph above.** A wrong
+Jacobian does not look like a wrong answer. It looks like a differently-shaped
+model: the ranking still ranks, the numbers still look like log densities, and
+every value-only comparison passes. Normalization is the only thing that sees
+it, so every measure here integrates to 1 in a test, and those tests are
+verified to fail when the carry is dropped or its sign flipped.
+
+The original ODP test *looked* like exactly that check and was not. It summed
+``exp(.) * phi`` over the lattice points, which recovers the Poisson pmf sum and
+is 1 by construction for every ``mu`` and ``phi``. It confirmed a true and
+irrelevant statement: real losses are not on the lattice, so the sum was never
+the quantity that had to be 1. When adding a measure, integrate over the
+**observation space the data actually lives in**, not over a grid chosen to make
+the arithmetic come out.
 """
 
 from __future__ import annotations
@@ -81,11 +116,28 @@ _LOG_2PI = float(np.log(2.0 * np.pi))
 
 #: every measure a gallery density may declare, and the covariate its carry to
 #: the amount scale needs. ``None`` means the density is already there.
+#:
+#: Only genuine changes of variable belong here. A family that is not a
+#: normalized density on ANY scale does not get an entry - see
+#: :ref:`odp-not-a-density`.
 MEASURES: dict[str, str | None] = {
     "amount": None,
     "log_amount": "value",
     "loss_ratio": "premium",
-    "odp_lattice": "phi",
+}
+
+#: measures that were tried and rejected, mapped to why. Named rather than
+#: deleted so the reasoning is discoverable from the error a caller gets.
+REJECTED_MEASURES: dict[str, str] = {
+    "odp_lattice": (
+        "the ODP quasi-likelihood is not a normalized density: exp(odp_lpdf)/phi "
+        "integrates to 0.69 at mu/phi=0.5 and 0.83 at mu/phi=1, and the defect "
+        "VARIES with mu/phi so it does not cancel between models. ODP is Poisson "
+        "only up to proportionality for non-integer x/phi (England & Verrall "
+        "2.3.5). Score ODP/Clark with CRPS and PIT, or give them a proper "
+        "predictive law (negative binomial, Tweedie) - which is a modelling "
+        "decision, not a change of variable"
+    ),
 }
 
 
@@ -124,9 +176,9 @@ def odp_lpdf(y, mu, phi) -> np.ndarray:
     because ``~``'s constant-dropping applies to built-in distributions, not to
     a user-defined ``_lpdf``.
 
-    This is a probability MASS on the lattice ``{0, phi, 2phi, ...}``. Use
-    ``to_amount_scale(..., measure="odp_lattice", phi=phi)`` before comparing it
-    with a continuous density.
+    **This is not a normalized density and cannot be made into one by a change
+    of variable** - see :ref:`odp-not-a-density`. It is here because the ODP
+    entries need their likelihood, not because their ELPD is computable.
     """
     y, mu, phi = np.asarray(y, float), np.asarray(mu, float), np.asarray(phi, float)
     if np.any(phi <= 0):
@@ -145,7 +197,6 @@ def to_amount_scale(
     measure: str,
     value=None,
     premium=None,
-    phi=None,
 ) -> np.ndarray:
     """Carry a log density to Lebesgue-on-the-loss-amount.
 
@@ -153,17 +204,20 @@ def to_amount_scale(
     measure:     one of :data:`MEASURES`.
     value:       the observed loss amount. Required by ``log_amount``.
     premium:     exposure at the cell. Required by ``loss_ratio``.
-    phi:         ODP dispersion, the lattice spacing. Required by ``odp_lattice``.
 
     The covariate a measure does not use may not be supplied. That is not
     pedantry: a covariate accepted and ignored is a parameter that looks
     connected and is not, and it would silently produce an unconverted density
     that still ranks.
     """
+    if measure in REJECTED_MEASURES:
+        raise ValueError(
+            f"measure={measure!r} is not a valid change of variable: {REJECTED_MEASURES[measure]}"
+        )
     if measure not in MEASURES:
         raise ValueError(f"measure must be one of {sorted(MEASURES)}, got {measure!r}")
 
-    supplied = {"value": value, "premium": premium, "phi": phi}
+    supplied = {"value": value, "premium": premium}
     needed = MEASURES[measure]
     for name, given in supplied.items():
         if given is not None and name != needed:
@@ -184,30 +238,26 @@ def to_amount_scale(
     return out - np.log(covariate)
 
 
-def check_normalization(
-    logpdf,
-    *,
-    lo: float,
-    hi: float,
-    tol: float = 1e-4,
-    lattice: float | None = None,
-) -> float:
-    """Integrate ``exp(logpdf)`` and check it is 1. Returns the mass found.
+def check_normalization(logpdf, *, lo: float, hi: float, tol: float = 1e-4) -> float:
+    """Integrate ``exp(logpdf)`` over ``[lo, hi]`` and check it is 1.
 
     ``logpdf`` takes an array of points and returns log densities at them.
-    ``lattice`` switches to a spacing-weighted sum for a converted lattice mass,
-    where the "integral" is ``sum(exp(logpdf) * spacing)``.
+    Returns the mass found, so a caller can report it.
 
-    This is the only check that catches a wrong change of variable. A missing or
+    This is the only check that catches a wrong change of variable: a missing or
     sign-flipped Jacobian leaves a function that is still smooth, still
     unimodal, still orders points the same way, and integrates to something
     other than 1.
+
+    It integrates over a **continuum**, deliberately, and there is no option to
+    sum over a grid instead. An earlier version had a ``lattice=`` mode, and it
+    is how the ODP defect in :ref:`odp-not-a-density` survived review: summing
+    ``exp(.) * spacing`` over lattice points recovers the underlying pmf sum and
+    returns 1.000000 for any parameters at all, whether or not the function is a
+    density anywhere the data actually lives. A check that cannot fail is worse
+    than no check, because it is quoted as evidence.
     """
-    if lattice is not None:
-        points = np.arange(lo, hi, lattice)
-        mass = float(np.sum(np.exp(logpdf(points)) * lattice))
-    else:
-        mass = float(integrate.quad(lambda x: float(np.exp(logpdf(np.array([x])))[0]), lo, hi)[0])
+    mass = float(integrate.quad(lambda x: float(np.exp(logpdf(np.array([x])))[0]), lo, hi)[0])
     if not abs(mass - 1.0) <= tol:
         raise AssertionError(f"density integrates to {mass:.6f}, not 1 (tol {tol})")
     return mass

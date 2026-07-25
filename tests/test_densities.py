@@ -1,23 +1,31 @@
 """``kernels/densities.py``: the catalogue, and the change of measure.
 
-The measure tests are the point of this file. Ethan's milestone-6 call is a
-single global ELPD ranking, so every entry's density has to be carried to one
-scale, and a wrong carry is invisible to any comparison of values: the result is
-still smooth, still unimodal, still ranks points identically, and is simply not
-a density. Normalization is the only thing that sees it, so every measure is
-integrated to 1 here - and ``test_normalization_catches_a_missing_jacobian``
-proves those integrals fail when the carry is removed.
+The measure tests are the point of this file. A cross-entry log score needs
+every density on one scale, and a wrong carry is invisible to any comparison of
+values: the result is still smooth, still unimodal, still ranks points
+identically, and is simply not a density. Normalization is the only thing that
+sees it, so every measure is integrated to 1 here, and
+``test_normalization_catches_a_missing_jacobian`` proves those integrals fail
+when the carry is removed.
+
+Two of these tests are about a defect that got through the first time.
+``test_odp_is_not_a_density_and_the_carry_is_refused`` pins the actual numbers,
+and ``test_the_lattice_sum_that_hid_the_defect_is_still_1`` keeps the check that
+wrongly passed, as a standing reminder of the shape of the mistake: it summed
+over a lattice the observed data never lands on, so it returned 1.000000 for any
+parameters and could not fail.
 """
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
-from scipy import stats
+from scipy import integrate, stats
 from scipy.special import gammaln
 
 from ibnr.kernels.densities import (
     MEASURES,
+    REJECTED_MEASURES,
     check_normalization,
     lognormal_lpdf,
     normal_lpdf,
@@ -122,24 +130,50 @@ def test_loss_ratio_carry_normalizes_on_the_amount_scale():
     check_normalization(on_amount, lo=1e-6, hi=5.0e4)
 
 
-def test_odp_lattice_carry_normalizes_as_a_spacing_weighted_sum():
-    """england_verrall_odp / clark: a probability MASS on spacing ``phi``.
+def test_odp_is_not_a_density_and_the_carry_is_refused():
+    """The ODP quasi-likelihood cannot be carried to the amount scale at all.
 
-    After ``- log phi`` the values are a density, so the mass check is
-    ``sum(exp(.) * phi)`` - which is the same as summing the original pmf, and
-    that is the sense in which the conversion is a convention rather than a
-    theorem.
+    An earlier version of this module subtracted ``log phi`` on the reasoning
+    that a mass on spacing ``phi`` becomes a density when divided by the
+    spacing. The result does not integrate to 1, and - the fatal part - **the
+    shortfall depends on** ``mu/phi``, so it is not a constant that cancels when
+    two models are scored on the same cells. It would tilt a ranking toward
+    whichever model puts more mass in low-``mu`` cells, i.e. the tail.
+
+    Measured below, and asserted rather than described, so that anyone tempted
+    to reinstate the carry has to delete a failing test to do it.
     """
-    phi, mu = 3.0, 90.0
+    for lam, expected in [(0.5, 0.688), (1.0, 0.834), (2.0, 0.947)]:
+        phi, mu = 2.0, 2.0 * lam  # any phi; only mu/phi matters
 
-    def on_amount(x):
-        return to_amount_scale(odp_lpdf(x, mu, phi), measure="odp_lattice", phi=phi)
+        def carried(x, mu=mu, phi=phi):
+            return odp_lpdf(x, mu, phi) - np.log(phi)
 
-    check_normalization(on_amount, lo=0.0, hi=phi * 400, lattice=phi)
-    # the raw pmf already sums to 1; the carry is exactly the spacing division
-    x = np.arange(0, 400) * phi
-    assert np.isclose(np.sum(np.exp(odp_lpdf(x, mu, phi))), 1.0, atol=1e-6)
-    assert np.allclose(on_amount(x), odp_lpdf(x, mu, phi) - np.log(phi))
+        mass = integrate.quad(lambda x: float(np.exp(carried(np.array([x]))[0])), 0, 4000)[0]
+        assert abs(mass - expected) < 5e-3, f"mu/phi={lam}: mass {mass:.4f}"
+        assert mass < 0.99, "if this ever integrates to 1 the rejection can be revisited"
+
+    # ... and it is NOT a fixed offset, which is what would make it survivable
+    assert abs(0.688 - 0.947) > 0.2
+
+    with pytest.raises(ValueError, match="not a valid change of variable"):
+        to_amount_scale([-1.0], measure="odp_lattice")
+
+
+def test_the_lattice_sum_that_hid_the_defect_is_still_1():
+    """Why the original test passed, kept as documentation.
+
+    Summing ``exp(odp_lpdf) * phi`` over the lattice ``{0, phi, 2phi, ...}``
+    recovers the Poisson pmf sum and is 1 for ANY parameters - true, and
+    irrelevant, because observed losses are arbitrary reals and never sit on
+    that lattice. The check could not fail, which is why it was quoted as
+    evidence that the carry was sound.
+    """
+    for lam in (0.5, 1.0, 2.0):
+        phi, mu = 2.0, 2.0 * lam
+        z = np.arange(0, 400) * phi
+        lattice_sum = float(np.sum(np.exp(odp_lpdf(z, mu, phi) - np.log(phi)) * phi))
+        assert abs(lattice_sum - 1.0) < 1e-9  # always, regardless of mu/phi
 
 
 def test_normalization_catches_a_missing_jacobian():
@@ -192,23 +226,32 @@ def test_increment_and_cumulative_are_the_same_measure():
 
 def test_every_catalogued_measure_is_covered_by_a_normalization_test():
     """A measure added without a normalization test is the failure mode this
-    module cannot otherwise detect, so the catalogue is pinned."""
-    assert set(MEASURES) == {"amount", "log_amount", "loss_ratio", "odp_lattice"}
+    module cannot otherwise detect, so the catalogue is pinned. Adding one here
+    without an integrates-to-1 test above should feel like the omission it is."""
+    assert set(MEASURES) == {"amount", "log_amount", "loss_ratio"}
+    assert set(REJECTED_MEASURES) == {"odp_lattice"}
+
+
+def test_a_rejected_measure_explains_itself_rather_than_just_failing():
+    """The next person to reach for ``odp_lattice`` should get the reason, not a
+    bare 'unknown measure' - it is a mathematically inviting mistake."""
+    with pytest.raises(ValueError, match="not a normalized density"):
+        to_amount_scale([-1.0], measure="odp_lattice")
 
 
 def test_missing_covariate_is_an_error():
     with pytest.raises(ValueError, match="needs 'value'"):
         to_amount_scale([-1.0], measure="log_amount")
-    with pytest.raises(ValueError, match="needs 'phi'"):
-        to_amount_scale([-1.0], measure="odp_lattice")
+    with pytest.raises(ValueError, match="needs 'premium'"):
+        to_amount_scale([-1.0], measure="loss_ratio")
 
 
 def test_an_unused_covariate_is_refused_rather_than_ignored():
     """A covariate accepted and ignored is a wire that looks connected and is
     not - and here it would leave the density silently unconverted while still
     returning plausible numbers."""
-    with pytest.raises(ValueError, match="does not use 'phi'"):
-        to_amount_scale([-1.0], measure="log_amount", value=100.0, phi=2.0)
+    with pytest.raises(ValueError, match="does not use 'premium'"):
+        to_amount_scale([-1.0], measure="log_amount", value=100.0, premium=1000.0)
     with pytest.raises(ValueError, match="needs no covariate"):
         to_amount_scale([-1.0], measure="amount", premium=1000.0)
 
