@@ -14,8 +14,20 @@ ragged Stan vectors. It is the single-cohort analogue of
 Conventions:
 - ``w``/``d`` are 1-based origin/dev indices (Stan style), sorted by (w, d).
 - ``prev_idx[i]`` is the 1-based row index of the observation at
-  (w[i]-1, d[i]), or 0 when w[i] == 1. Because rows are sorted by (w, d),
-  prev_idx[i] < i+1 always, so mu can be built in one forward pass.
+  (w[i]-1, d[i]) - the **previous ORIGIN at the same development**, which is
+  CCL's accident-year AR(1) link - or 0 when w[i] == 1. Because rows are sorted
+  by (w, d), prev_idx[i] < i+1 always, so mu can be built in one forward pass.
+  It is emphatically **not** the previous development cell (w[i], d[i]-1); that
+  is what differencing a cumulative triangle needs, and
+  ``kernels.holdout.training_index`` computes it separately. Reading one for the
+  other is a silent, plausible-looking error, and it has happened once. The name
+  is Stan's - ``model.stan`` declares ``prev_idx`` in its data block - so it
+  stays, and the ambiguity is answered here instead.
+- ``segment`` / ``fields`` record WHICH cohort and which field(s) the contract
+  was built from. Nothing in the Stan block uses them; they exist so that a
+  scorer handed cells cannot evaluate another company's, or another field's,
+  data against this fit. ``(w, d)`` alone does not identify a cell - two
+  companies share origin dates and development lags exactly.
 - ``logprem`` is per-observation; ``premium`` is per-origin (each origin's
   premium at its latest eval in the triangle, i.e. the booked value).
 - ``cohort_grid``'s matrix is 0-based on both axes: ``cum[i, j]`` is origin
@@ -31,6 +43,18 @@ import numpy as np
 import pandas as pd
 
 from ibnr.triangle.core import GRAIN_MONTHS, Triangle
+
+
+def _cohort_identity(triangle: Triangle, df: pd.DataFrame, fields: tuple[str, ...]) -> dict:
+    """Which cohort and which field(s) this contract describes.
+
+    Carried on every contract so a scorer can refuse cells that are not this
+    fit's. The single-cohort check above guarantees one combination, so taking
+    the first row is exact rather than a sample.
+    """
+    segs = triangle.segments
+    segment = {s: df[s].iloc[0] for s in segs} if segs and len(df) else {}
+    return {"segment": segment, "fields": tuple(fields)}
 
 
 def stan_data(
@@ -99,6 +123,7 @@ def stan_data(
         "prev_idx": prev_idx,
         "logloss": np.log(df["value"].to_numpy(dtype=float)),
         # metadata (not part of the Stan data block proper)
+        **_cohort_identity(triangle, df, (loss_field,)),
         "origin_periods": origins,
         "dev_grain_months": step,
         "loss": df["value"].to_numpy(dtype=float),
@@ -202,6 +227,7 @@ def odp_stan_data(
         "d": df["d"].to_numpy(dtype=int),
         "inc_loss": inc,
         # metadata (not part of the Stan data block proper)
+        **_cohort_identity(triangle, df, (loss_field,)),
         "origin_periods": origins,
         "dev_grain_months": step,
         "loss": df["value"].to_numpy(dtype=float),
@@ -313,6 +339,7 @@ def compartmental_stan_data(
         "delta": np.concatenate([np.zeros(len(wide), dtype=int), np.ones(len(wide), dtype=int)]),
         "loss": np.concatenate([outstanding, paid]),
         # metadata (not part of the Stan data block proper)
+        **_cohort_identity(triangle, wide, (paid_field, reported_field)),
         "origin_periods": origins,
         "dev_grain_months": step,
         "paid_to_date": latest[paid_field].to_numpy(dtype=float),

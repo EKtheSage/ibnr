@@ -44,8 +44,26 @@ PREMIUM = 1000.0
 
 
 def _triangle(*, through: int, backend=None) -> Triangle:
-    """Cumulative lognormal-ish staircase with premium, big enough to have a
-    next diagonal with several scorable cells."""
+    """The fitted cohort: ``FIT_CO``, paid loss, with premium.
+
+    It carries a segment column deliberately. A fixture with no cohort label
+    cannot exercise the identity checks at all - and an unlabelled triangle is
+    not what the mart looks like.
+    """
+    return _segmented_triangle("FIT_CO", through=through, with_premium=True, backend=backend)
+
+
+def _segmented_triangle(
+    lob,
+    *,
+    through: int,
+    field: str = "paid_loss",
+    with_premium: bool = False,
+    backend=None,
+) -> Triangle:
+    """Same staircase, optionally carrying an ``lob`` column and/or a different
+    loss field - for the identity checks, where the numbers are irrelevant and
+    only the labels matter."""
     rows = []
     for w in range(1, N_W + 1):
         for d in range(1, N_D + 1):
@@ -53,32 +71,27 @@ def _triangle(*, through: int, backend=None) -> Triangle:
                 continue
             cum = PREMIUM * 0.65 * (1.0 - np.exp(-0.6 * d)) * (1.0 + 0.03 * w)
             eval_date = dt.date(2010 + w - 1 + d - 1, 12, 31)
-            rows.append(
-                {
+            entries = [(field, float(cum))]
+            if with_premium:
+                entries.append(("earned_premium", PREMIUM))
+            for f, v in entries:
+                row = {
                     "origin_period": dt.date(2010 + w - 1, 1, 1),
                     "dev_lag": 12 * d,
                     "eval_date": eval_date,
-                    "field": "paid_loss",
-                    "value": float(cum),
+                    "field": f,
+                    "value": v,
                 }
-            )
-            rows.append(
-                {
-                    "origin_period": dt.date(2010 + w - 1, 1, 1),
-                    "dev_lag": 12 * d,
-                    "eval_date": eval_date,
-                    "field": "earned_premium",
-                    "value": PREMIUM,
-                }
-            )
+                rows.append({"lob": lob, **row} if lob is not None else row)
     kwargs = {} if backend is None else {"backend": backend}
     return Triangle.from_long(pd.DataFrame(rows), measure="cumulative", **kwargs)
 
 
 @pytest.fixture(scope="module")
 def contract() -> dict:
-    tri = _triangle(through=N_W)
-    return stan_data(tri, loss_field="paid_loss", premium_field="earned_premium")
+    """A fit on cohort ``FIT_CO``, paid loss. The segment column is present so
+    the identity checks have something real to compare against."""
+    return stan_data(_triangle(through=N_W), loss_field="paid_loss", premium_field="earned_premium")
 
 
 def fake_posterior(contract: dict, n_draws: int = 7, seed: int = 0) -> dict:
@@ -273,6 +286,45 @@ def test_training_prev_value_is_the_previous_DEVELOPMENT_not_the_previous_ORIGIN
     assert differing, "fixture cannot distinguish previous-origin from previous-dev"
 
 
+def test_index_into_refuses_a_single_WRONG_cohort(contract):
+    """The sharp version of the cohort check, and the one that matters.
+
+    Requiring the cells to agree with *each other* is not enough: one entirely
+    wrong company agrees with itself perfectly, its origin dates and dev lags
+    match exactly, it indexes cleanly, and it produces a complete, plausible
+    ELPD for a cohort the fit never saw. Nothing downstream could tell.
+
+    Only comparing against the contract's own recorded identity catches it,
+    which is why ``kernels.contract`` stores ``segment``/``fields`` at all.
+    """
+    other = _segmented_triangle("OTHER_CO", through=N_W + 1)
+    cells = next_diagonal(other, as_of="2015-12-31", fields="paid_loss")
+
+    assert set(cells.frame["lob"]) == {"OTHER_CO"}  # internally consistent...
+    with pytest.raises(ValueError, match="was trained on"):  # ... and still refused
+        index_into(cells, contract)
+
+
+def test_index_into_refuses_a_field_the_fit_was_not_trained_on(contract):
+    """A paid-loss fit handed reported-loss cells would evaluate one quantity's
+    likelihood against another's data - same shape, same indices, wrong data."""
+    reported = _segmented_triangle(None, through=N_W + 1, field="reported_loss")
+    cells = next_diagonal(reported, as_of="2015-12-31", fields="reported_loss")
+    with pytest.raises(ValueError, match="not what this fit was trained on"):
+        index_into(cells, contract, field="reported_loss")
+
+
+def test_field_defaults_to_the_one_the_fit_was_trained_on(contract):
+    """The caller should not have to repeat what the contract already knows -
+    and a caller who can pass the field is a caller who can pass the wrong one."""
+    full = _triangle(through=N_W + 1)
+    cells = next_diagonal(full, as_of="2015-12-31", fields="paid_loss")
+    assert (
+        index_into(cells, contract).n_cells
+        == index_into(cells, contract, field="paid_loss").n_cells
+    )
+
+
 def test_index_into_refuses_cells_from_more_than_one_cohort(contract):
     """``(w, d)`` does not identify a cell - two companies or two lines share
     origin dates and development lags exactly.
@@ -301,18 +353,29 @@ def test_index_into_refuses_cells_from_more_than_one_cohort(contract):
     cells = next_diagonal(tri, as_of="2015-12-31", fields="paid_loss")
 
     assert set(cells.frame["lob"]) == {"wc", "ca"}
-    with pytest.raises(ValueError, match="span 2 cohorts"):
+    # subsumed by the identity check: neither cohort is the fitted one, so the
+    # error names what the fit actually expects rather than just "too many"
+    with pytest.raises(ValueError, match="was trained on"):
         index_into(cells, contract, field="paid_loss")
 
 
-def test_index_into_refuses_cells_spanning_two_fields(contract):
-    """compartmental scores paid AND reported; every other entry scores one. A
-    fit handed both would score its single-field likelihood against a column
-    block that is half another quantity."""
+def test_cells_carrying_extra_fields_are_narrowed_not_refused(contract):
+    """A single-field fit handed a multi-field panel scores its own field only.
+
+    This is the safe half of the field contract, and worth pinning next to the
+    refusals: the panel legitimately carries premium (and, for a compartmental
+    run, reported loss) alongside paid. Narrowing is right; what must never
+    happen is scoring the other field's numbers, which
+    ``test_index_into_refuses_a_field_the_fit_was_not_trained_on`` covers.
+    """
     full = _triangle(through=N_W + 1)
     cells = next_diagonal(full, as_of="2015-12-31", fields=["paid_loss", "earned_premium"])
-    with pytest.raises(ValueError, match="span fields"):
-        index_into(cells, contract)
+    assert set(cells.frame["field"]) == {"paid_loss", "earned_premium"}
+
+    idx = index_into(cells, contract)
+    paid_only = cells.frame[cells.frame["field"] == "paid_loss"]
+    assert idx.n_cells == len(paid_only)
+    assert np.allclose(idx.value, paid_only["value"].to_numpy())
 
 
 def test_a_cell_outside_the_fitted_cohort_is_an_error(contract):

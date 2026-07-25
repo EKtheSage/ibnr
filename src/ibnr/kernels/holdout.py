@@ -158,33 +158,72 @@ def index_into(cells: HoldoutCells, contract: dict, *, field: str | None = None)
     those cases, so reaching one means the cells and the fit disagree about
     which cohort they describe.
 
-    **Segment and field identity are checked, not assumed.** ``(w, d)`` alone
-    does not identify a cell: two companies, or two lines of business, share
-    origin dates and development lags exactly. A contract is single-cohort by
-    construction (``stan_data`` refuses more), so held-out cells spanning
-    several cohorts, or several fields, would otherwise be silently scored
-    against one fit as though they all belonged to it - producing a full,
-    plausible ELPD for a mixture of cohorts.
+    **Identity is checked against the CONTRACT, not merely for internal
+    consistency.** ``(w, d)`` alone does not identify a cell: two companies, or
+    two lines of business, share origin dates and development lags exactly. It
+    is not enough to require that the cells agree with each other - a single,
+    entirely wrong cohort agrees with itself perfectly, indexes cleanly, and
+    yields a complete, plausible ELPD for a company the fit never saw. So the
+    cells' cohort and field must equal the ones the contract was built from,
+    which is why ``kernels.contract`` records ``segment`` and ``fields``.
     """
+    if "segment" not in contract or "fields" not in contract:
+        raise ValueError(
+            "contract carries no cohort identity ('segment'/'fields'), so held-out cells "
+            "cannot be shown to belong to it. Rebuild it with stan_data / odp_stan_data / "
+            "compartmental_stan_data"
+        )
+
     frame = cells.frame
+    fitted_fields = tuple(contract["fields"])
+    if field is None and len(fitted_fields) == 1:
+        field = fitted_fields[0]  # the fit knows its own field; do not make the caller repeat it
     if field is not None:
+        if field not in fitted_fields:
+            raise ValueError(
+                f"field={field!r} is not what this fit was trained on ({list(fitted_fields)}); "
+                "scoring it would evaluate one quantity's likelihood against another's data"
+            )
         frame = frame[frame["field"] == field]
     if frame.empty:
         raise ValueError(f"no held-out cells for field={field!r}")
 
-    fields = sorted(frame["field"].unique())
-    if len(fields) > 1:
+    present = sorted(frame["field"].unique())
+    stray = [f for f in present if f not in fitted_fields]
+    if stray:
+        raise ValueError(f"held-out cells carry field(s) {stray}, not in {list(fitted_fields)}")
+    if len(present) > 1:
         raise ValueError(
-            f"held-out cells span fields {fields}; a fit scores one field at a time - "
-            "pass field= to choose"
+            f"held-out cells span fields {present}; pass field= to choose one of "
+            f"{list(fitted_fields)}"
         )
-    if cells.segments:
+
+    fitted_segment = dict(contract["segment"])
+    if fitted_segment:
+        missing = [s for s in fitted_segment if s not in frame.columns]
+        if missing:
+            raise ValueError(
+                f"held-out cells have no {missing} column(s), so they cannot be shown to "
+                f"belong to the fitted cohort {fitted_segment}"
+            )
+        actual = frame[list(fitted_segment)].drop_duplicates()
+        matches = len(actual) == 1 and all(
+            actual.iloc[0][k] == v for k, v in fitted_segment.items()
+        )
+        if not matches:
+            raise ValueError(
+                f"held-out cells belong to cohort(s) {actual.to_dict('records')}, but this fit "
+                f"was trained on {fitted_segment}. Origin dates and dev lags are shared across "
+                "cohorts, so these would index cleanly and score the wrong one"
+            )
+    elif cells.segments:
+        # the fit has no segment columns but the cells do - the same mistake one
+        # level up, and there is nothing on the contract to check against
         combos = frame[list(cells.segments)].drop_duplicates()
         if len(combos) > 1:
             raise ValueError(
-                f"held-out cells span {len(combos)} cohorts on {list(cells.segments)}; "
-                "a contract is single-cohort, so scoring them against one fit would "
-                "silently mix cohorts. Filter to one cohort first"
+                f"held-out cells span {len(combos)} cohorts on {list(cells.segments)} but the "
+                "contract carries no segment identity to check them against"
             )
 
     origins = list(contract["origin_periods"])
