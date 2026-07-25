@@ -20,9 +20,11 @@ import numpy as np
 import pandas as pd
 
 from ibnr.gallery.bayesian._toolchain import ensure_stan_toolchain
-from ibnr.gallery.entry import GalleryEntry
+from ibnr.gallery.bayesian.meyers_csr import scorer
+from ibnr.gallery.entry import GalleryEntry, ScoresHeldout
 from ibnr.gallery.registry import register
 from ibnr.kernels.contract import realized_values, stan_data
+from ibnr.kernels.holdout import CellIndex
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.triangle.core import Triangle
 
@@ -44,9 +46,14 @@ def pooled(idata, name: str) -> np.ndarray:
 
 
 @register
-class MeyersCSR(GalleryEntry):
+class MeyersCSR(GalleryEntry, ScoresHeldout):
     name = "meyers_csr"
     family = "bayesian"
+
+    #: ``model.stan`` puts a normal on ``log`` cumulative loss, so its density is
+    #: on the log scale and needs the ``-log C`` carry before it can be summed
+    #: with an entry that models amounts. ``ScoresHeldout`` applies that.
+    heldout_measure = "log_amount"
 
     def __init__(self) -> None:
         self.contract_: dict | None = None
@@ -301,6 +308,18 @@ class MeyersCSR(GalleryEntry):
             origins=c["origin_periods"],
         )
         return np.append(per_origin, per_origin.sum())
+
+    def _log_lik_native(self, cells: CellIndex) -> np.ndarray:
+        """``(n_draws, n_cells)`` on CSR's own measure, the log-loss scale.
+
+        Three lines of glue over ``scorer.log_lik_cells``: the arithmetic lives
+        beside ``model.stan`` where it can be read against it, and takes plain
+        arrays so it is testable without a sampler.
+        """
+        if self.idata_ is None:
+            raise RuntimeError("call fit() first")
+        post = {name: pooled(self.idata_, name) for name in scorer.REQUIRED_DRAWS}
+        return scorer.log_lik_cells(self.contract_, post, cells)
 
     def convergence(self, var_names: list[str] | None = None) -> dict:
         """Convergence diagnostics from the fitted posterior: max R-hat, min
