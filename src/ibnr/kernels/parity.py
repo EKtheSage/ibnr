@@ -57,6 +57,25 @@ ODP_PARITY_VARS = ("c", "alpha", "beta")
 #: when the fitted development pattern looks similar.
 CLARK_PARITY_VARS = ("logelr", "omega", "theta")
 
+#: Hierarchical compartmental. Deliberately the POPULATION-level scalars plus
+#: the two residual scales and the reserving-cycle correlation - the set both
+#: variants expose under the same names, in all three backends. The per-accident
+#: -year RLR/RRF and the rates are NOT compared: Model 1 carries one set per
+#: accident year while Model 2 resolves them per cell, so they are not the same
+#: quantity across variants. PyMC also bundles ``sd_ay``/``L_ay`` into a single
+#: ``LKJCholeskyCov`` variable where Stan keeps them separate, so those raw
+#: nuisance draws have no common name to compare on either - ``rho_ay`` is the
+#: interpretable summary of exactly that block and stands in for it.
+COMPARTMENTAL_PARITY_VARS = (
+    "b_oRLR",
+    "b_oRRF",
+    "b_oker",
+    "b_okp",
+    "sigma_os",
+    "sigma_paid",
+    "rho_ay",
+)
+
 
 @dataclass
 class ParityReport:

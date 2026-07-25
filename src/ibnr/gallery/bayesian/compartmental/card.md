@@ -167,3 +167,102 @@ premium_field)`: stacked (delta=0 outstanding, delta=1 paid) cells with
 `w`, `d`, `t`, per-origin premium and paid-to-date anchors. Paid and
 reported must be present on identical cells; dev lags contiguous per
 origin. No positivity enforced at the contract level.
+
+## Backends (three ports, one data block)
+
+| file | backend | sampler |
+|---|---|---|
+| `model.stan` / `model_lognormal.stan` | `stan` (reference, ground truth) | cmdstanpy NUTS |
+| `model_numpyro.py` | `numpyro` | NumPyro NUTS (JAX) |
+| `model_pymc.py` | `pymc` | PyMC NUTS (PyTensor, or `nuts_sampler="numpyro"` over the same graph) |
+
+Both variants are ported to both PPLs and consume the identical Stan `data`
+block the entry assembles. `parallel_chains` is cmdstan-only and is rejected by
+the ports; `max_treedepth` is a genuine NUTS control in all three and is passed
+through.
+
+### Three constructs that had to be reproduced exactly
+
+**Half-Student-t scales.** Stan's `vector<lower=0>[2] sd_ay` +
+`student_t(10, 0, 0.2)` is a *half* Student-t (the constraint truncates; Stan
+does not renormalize, and it does not need to - the missing factor is the
+constant 1/2). PyMC's `pm.HalfStudentT(nu, sigma)` matches directly. NumPyro
+has no half-Student-t, and the obvious `TruncatedDistribution(StudentT, low=0)`
+**fails outright here** - it needs the Student-t CDF and raises
+`ImportError: install tensorflow_probability`. The port therefore uses Stan's
+own construction: a positive-constrained `ImproperUniform` site plus the
+density as a `numpyro.factor`. Checked against the analytic half-t quantiles
+(scale 0.2: median 0.138 vs 0.140, q90 0.358 vs 0.363).
+
+**The positivity of `sd_ay` is load-bearing, not decoration.** Drop the
+constraint and the model gains an exact sign symmetry: with `u = diag(sd) L z`
+and `L[0,0] = 1`, the map `(sd_0, z[0,:], L[1,0]) -> (-sd_0, -z[0,:], -L[1,0])`
+leaves `u_ay` and hence the entire likelihood invariant. The posterior becomes
+bimodal and symmetric in rho, so `rho_ay` - the reserving-cycle correlation
+that is this model's headline actuarial output - averages to ~0. **Nothing
+raises.** Same failure family as the `a_ig` bound in the Meyers family, and
+`tests/test_parity_compartmental.py` guards it in both PPLs.
+
+**LKJ on a 2x2 Cholesky factor.** `lkj_corr_cholesky(1)` contributes *literally
+zero* to Stan's target (its kernel is `L[1,1]^0 = 1`); all the geometry lives in
+the `cholesky_factor_corr` constraint transform's Jacobian. A port can get the
+density term right, get the transform wrong, and look correct on inspection -
+so the prior is checked by sampling: rho comes back with sd 0.5774 in both
+PPLs, i.e. exactly uniform on (-1, 1), as LKJ(1) implies in two dimensions.
+PyMC's `LKJCholeskyCov(sd_dist=HalfStudentT(...))` reproduces Stan's *separate*
+`sd_ay` + `L_ay` priors (scales' medians 0.1398 / 0.0703 against the analytic
+0.1400 / 0.0700), and its `chol` output **is** `diag_pre_multiply(sd_ay, L_ay)`,
+so the non-centered line transcribes verbatim.
+
+## Cross-backend parity & convergence (milestone 5)
+
+Compared parameters are `COMPARTMENTAL_PARITY_VARS` - the population-level
+scalars both variants expose under identical names (`b_oRLR`, `b_oRRF`,
+`b_oker`, `b_okp`, `sigma_os`, `sigma_paid`, `rho_ay`). The per-accident-year
+`RLR`/`RRF` are excluded because Model 1 carries one set per accident year while
+Model 2 resolves them per cell - not the same quantity across variants - and the
+raw `(sd_ay, L_ay)` block has no common name, since PyMC bundles it into one
+`LKJCholeskyCov` variable. `rho_ay` is the interpretable summary of that block
+and stands in for it.
+
+**Result vs the Stan reference** (WC company 11347 as of 1997-12-31, gaussian,
+4 chains x 2500 draws after 1000 warmup, monograph settings `adapt_delta = 0.99`
+/ `max_treedepth = 15`; `analysis/results/{parity,convergence}_compartmental.csv`):
+
+| backend | runtime | max R-hat | min ESS-bulk | div /10000 | max &#124;z_mean&#124; | max &#124;z_sd&#124; | max KS |
+|---|---|---|---|---|---|---|---|
+| stan | 229.0s | 1.00 | 2697 | 0 | reference | | |
+| numpyro | **59.4s** | 1.00 | 2570 | 0 | **0.67** | **0.84** | **0.011** |
+
+**The tightest agreement anywhere in the gallery**, and the first entry where a
+port decisively BEATS Stan on wall clock - NumPyro is 3.9x faster here. That is
+the opposite of the Meyers family's ordering and it is `max_treedepth = 15` that
+does it: long trajectories mean many gradient evaluations per iteration, which
+is exactly where JAX's fused graph amortizes and Stan's per-leapfrog cost does
+not. On the small synthetic triangles used in the unit tests the ordering is
+reversed again (NumPyro ~2x Stan), so quote this comparison at production size
+or not at all.
+
+**PyMC: correct, but not runnable natively at this size.** Both variants pass
+parity against the NumPyro port on a real-shaped problem (gaussian
+z_mean 1.28 / z_sd 2.29 / KS 0.029; lognormal 2.53 / 1.47 / 0.039), which
+establishes that the PyMC graph defines the same posterior. But PyTensor's
+sampler costs ~0.57-0.94 s per iteration on this model against NumPyro's
+~0.007 s - a ~60-80x gap that does NOT come from the model:
+
+| the SAME PyMC graph | sampler | 2 chains x 3000 iters |
+|---|---|---|
+| `nuts_sampler="numpyro"` | JAX | **34.5s** |
+| `nuts_sampler="pymc"` (default) | PyTensor | **>2000s, did not finish** |
+
+Nor is it `max_treedepth`: capping at 10 instead of 15 barely helped, because
+trajectories run ~35-60 leapfrog steps and never approach either cap. It is
+per-gradient cost on a BLAS-less pip PyTensor - the effect the meyers_ccl card
+already documents, amplified by this model's larger gradient graph (LKJ Cholesky
+transform, matrix products, exp/where over stacked rows).
+
+**Practical recommendation: run this entry's PyMC graph with
+`nuts_sampler="numpyro"`.** It is the same model at the same cost as the
+NumPyro port. The native PyTensor path is retained because it is the parity
+reference for the graph itself, not because anyone should sample production
+fits with it here.

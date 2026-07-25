@@ -1,0 +1,3 @@
+backend,runtime_s,n_draws,max_rhat,min_ess_bulk,min_ess_tail,divergences,divergence_frac,label
+stan,228.97384109999985,10000,1.0,2697.0,4382.0,0,0.0,workers_compensation:11347
+numpyro,59.378530000001774,10000,1.0,2570.0,4807.0,0,0.0,workers_compensation:11347
