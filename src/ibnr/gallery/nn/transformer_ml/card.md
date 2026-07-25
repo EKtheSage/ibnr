@@ -27,6 +27,12 @@ conditioning cutoff) + per-line normalized log premium. Encoder: 2 pre-LN
 transformer layers, d_model 64, 4 heads, FFN 128, dropout 0.15, GELU.
 Sequence length L*W*D (400 for four Schedule P lines).
 
+The line embedding is ADDED to the token, so its width is necessarily
+`d_model` and there is deliberately no `line_embedding_dim` config knob. This
+differs from the single-line entry, which CONCATENATES its LOB embedding with
+the conditioning scalar and projects the result, and so can size that
+embedding independently (`TransformerConfig.lob_embedding_dim`).
+
 **Two dependence heads** (`config.dependence`) - the research question is
 which mechanism carries cross-line dependence better:
 

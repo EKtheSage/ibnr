@@ -55,7 +55,6 @@ def tiny(dependence: str) -> TransformerMLConfig:
         ffn_dim=32,
         dropout=0.0,
         n_components=2,
-        line_embedding_dim=4,
         dependence=dependence,
         batch_size=8,
         max_epochs=3,
