@@ -199,6 +199,11 @@ class Compartmental(GalleryEntry):
             "numpyro": self._sample_numpyro,
             "pymc": self._sample_pymc,
         }[backend]
+        # nuts_sampler has to reach _sample_pymc: accepting it here and dropping
+        # it would sample with that method's own "pymc" default -- the native
+        # PyTensor path that is effectively unrunnable for this entry -- while
+        # the caller believed a foreign NUTS ran.
+        extra = {"nuts_sampler": nuts_sampler} if backend == "pymc" else {}
         self.idata_ = sampler(
             stan_data,
             chains=chains,
@@ -209,6 +214,7 @@ class Compartmental(GalleryEntry):
             max_treedepth=max_treedepth,
             parallel_chains=parallel_chains,
             show_progress=show_progress,
+            **extra,
         )
         return self
 

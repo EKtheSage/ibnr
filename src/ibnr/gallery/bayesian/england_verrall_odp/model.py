@@ -171,6 +171,11 @@ class EnglandVerrallODP(GalleryEntry):
             if backend == "stan"
             else {}
         )
+        # nuts_sampler is the pymc-side analogue and has to reach _sample_pymc:
+        # accepting it here and dropping it would sample with that method's own
+        # "pymc" default while the caller believed a foreign NUTS ran.
+        if backend == "pymc":
+            extra["nuts_sampler"] = nuts_sampler
         # All three return a comparable arviz.InferenceData, so predict(),
         # convergence() and parity are backend-agnostic.
         self.idata_ = sampler(
@@ -259,7 +264,14 @@ class EnglandVerrallODP(GalleryEntry):
         )
 
     def _sample_pymc(
-        self, *, chains, iter_warmup, iter_sampling, seed, target_accept, show_progress,
+        self,
+        *,
+        chains,
+        iter_warmup,
+        iter_sampling,
+        seed,
+        target_accept,
+        show_progress,
         nuts_sampler="pymc",
     ):
         """PyMC port. Same parameterization, same contract."""

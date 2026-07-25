@@ -154,6 +154,11 @@ class ClarkGrowthCurve(GalleryEntry):
             if backend == "stan"
             else {}
         )
+        # nuts_sampler is the pymc-side analogue and has to reach _sample_pymc:
+        # accepting it here and dropping it would sample with that method's own
+        # "pymc" default while the caller believed a foreign NUTS ran.
+        if backend == "pymc":
+            extra["nuts_sampler"] = nuts_sampler
         # All three return a comparable arviz.InferenceData, so predict(),
         # convergence() and parity are backend-agnostic.
         self.idata_ = sampler(
