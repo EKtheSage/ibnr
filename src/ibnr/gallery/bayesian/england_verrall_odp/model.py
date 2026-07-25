@@ -129,10 +129,19 @@ class EnglandVerrallODP(GalleryEntry):
         target_accept: float = 0.8,
         parallel_chains: int = 1,
         max_treedepth: int | None = None,
+        nuts_sampler: str = "pymc",
         show_progress: bool = False,
     ) -> EnglandVerrallODP:
         if backend not in BACKENDS:
             raise ValueError(f"backend must be one of {BACKENDS}, got {backend!r}")
+        # nuts_sampler selects the NUTS IMPLEMENTATION over the PyMC graph; it
+        # is meaningless for the other backends, so asking for one there is an
+        # error rather than a silently ignored argument.
+        if backend != "pymc" and nuts_sampler != "pymc":
+            raise ValueError(
+                f"nuts_sampler={nuts_sampler!r} is a pymc-backend control; "
+                f"the {backend!r} backend does not take it"
+            )
         # parallel_chains / max_treedepth are cmdstan-level controls the retro
         # harness escalates on. Validated BEFORE any data prep: a port that
         # accepted them silently would report an escalated fit that never ran.
@@ -250,7 +259,8 @@ class EnglandVerrallODP(GalleryEntry):
         )
 
     def _sample_pymc(
-        self, *, chains, iter_warmup, iter_sampling, seed, target_accept, show_progress
+        self, *, chains, iter_warmup, iter_sampling, seed, target_accept, show_progress,
+        nuts_sampler="pymc",
     ):
         """PyMC port. Same parameterization, same contract."""
         from ibnr.gallery.bayesian.england_verrall_odp import model_pymc
@@ -262,6 +272,7 @@ class EnglandVerrallODP(GalleryEntry):
             iter_sampling=iter_sampling,
             seed=seed,
             target_accept=target_accept,
+            nuts_sampler=nuts_sampler,
             progressbar=show_progress,
         )
 

@@ -141,6 +141,7 @@ class Compartmental(GalleryEntry):
         target_accept: float = 0.99,
         max_treedepth: int = 15,
         parallel_chains: int = 1,
+        nuts_sampler: str = "pymc",
         show_progress: bool = False,
     ) -> Compartmental:
         """Fit one cohort (single company x line) as of a training diagonal.
@@ -160,6 +161,14 @@ class Compartmental(GalleryEntry):
         """
         if backend not in BACKENDS:
             raise ValueError(f"backend must be one of {BACKENDS}, got {backend!r}")
+        # nuts_sampler selects the NUTS IMPLEMENTATION over the PyMC graph; it
+        # is meaningless for the other backends, so asking for one there is an
+        # error rather than a silently ignored argument.
+        if backend != "pymc" and nuts_sampler != "pymc":
+            raise ValueError(
+                f"nuts_sampler={nuts_sampler!r} is a pymc-backend control; "
+                f"the {backend!r} backend does not take it"
+            )
         if variant not in STAN_FILES:
             raise ValueError(f"variant must be one of {tuple(STAN_FILES)}, got {variant!r}")
         # parallel_chains is cmdstan-only (chain-level parallelism), so a port
@@ -364,6 +373,7 @@ class Compartmental(GalleryEntry):
         max_treedepth,
         parallel_chains,
         show_progress,
+        nuts_sampler="pymc",
     ):
         """PyMC port of whichever variant is selected."""
         from ibnr.gallery.bayesian.compartmental import model_pymc
@@ -377,6 +387,7 @@ class Compartmental(GalleryEntry):
             seed=seed,
             target_accept=target_accept,
             max_treedepth=max_treedepth,
+            nuts_sampler=nuts_sampler,
             progressbar=show_progress,
         )
 

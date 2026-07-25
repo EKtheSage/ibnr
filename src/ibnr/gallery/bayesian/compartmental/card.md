@@ -263,6 +263,19 @@ transform, matrix products, exp/where over stacked rows).
 
 **Practical recommendation: run this entry's PyMC graph with
 `nuts_sampler="numpyro"`.** It is the same model at the same cost as the
-NumPyro port. The native PyTensor path is retained because it is the parity
-reference for the graph itself, not because anyone should sample production
-fits with it here.
+NumPyro port, and it is reachable straight from the gallery:
+
+```python
+gallery.fit("compartmental", triangle, backend="pymc", nuts_sampler="numpyro")
+```
+
+The default remains `"pymc"` deliberately. Defaulting to a faster foreign
+sampler would turn the cross-backend convergence comparison - the entire point
+of milestone 5 - into NumPyro measured against NumPyro over two graph
+representations, and would bury a real, fixable environment problem (the
+BLAS-less pip PyTensor documented on the meyers_ccl card, whose actual fix is a
+conda/MKL PyTensor). The swapped run is also labelled distinctly,
+`backend = "pymc:numpyro"` rather than `"pymc"`, so it can never masquerade as
+a native fit in a results CSV. The native PyTensor path is retained because it
+is the parity reference for the graph itself, not because anyone should sample
+production fits with it here.

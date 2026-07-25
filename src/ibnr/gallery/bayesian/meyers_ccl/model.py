@@ -90,6 +90,7 @@ class MeyersCCL(GalleryEntry):
         target_accept: float = 0.8,
         parallel_chains: int = 1,
         max_treedepth: int | None = None,
+        nuts_sampler: str = "pymc",
         show_progress: bool = False,
     ) -> MeyersCCL:
         """Sample the CCL posterior for one cohort's training triangle.
@@ -106,6 +107,14 @@ class MeyersCCL(GalleryEntry):
         """
         if backend not in BACKENDS:
             raise ValueError(f"backend must be one of {BACKENDS}, got {backend!r}")
+        # nuts_sampler selects the NUTS IMPLEMENTATION over the PyMC graph; it
+        # is meaningless for the other backends, so asking for one there is an
+        # error rather than a silently ignored argument.
+        if backend != "pymc" and nuts_sampler != "pymc":
+            raise ValueError(
+                f"nuts_sampler={nuts_sampler!r} is a pymc-backend control; "
+                f"the {backend!r} backend does not take it"
+            )
         train = triangle.as_of(as_of) if as_of is not None else triangle
         # One contract dict for all three backends (CLAUDE.md #3): no backend
         # is allowed to grow its own data prep. stan_data() also validates the
@@ -226,7 +235,8 @@ class MeyersCCL(GalleryEntry):
         )
 
     def _sample_pymc(
-        self, *, chains, iter_warmup, iter_sampling, seed, target_accept, show_progress
+        self, *, chains, iter_warmup, iter_sampling, seed, target_accept, show_progress,
+        nuts_sampler="pymc",
     ):
         """PyMC (PyTensor) port - the readable reference implementation.
 
@@ -245,6 +255,7 @@ class MeyersCCL(GalleryEntry):
             iter_sampling=iter_sampling,
             seed=seed,
             target_accept=target_accept,
+            nuts_sampler=nuts_sampler,
             progressbar=show_progress,
         )
 
