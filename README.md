@@ -21,8 +21,8 @@ from ibnr import Triangle
 
 t = Triangle.from_chainladder(cl.load_sample("raa"))
 t.to_incremental().to_wide()
-t.as_of("1985-12-31")          # the triangle as known at year-end 1985
-t.to_chainladder()             # lossless round-trip
+t.as_of("1985-12-31")  # the triangle as known at year-end 1985
+t.to_chainladder()  # lossless round-trip
 ```
 
 **Gallery (Bayesian)**: `meyers_ccl` - Meyers' Correlated Chain Ladder in
@@ -34,9 +34,9 @@ extra and a cmdstan installation.
 from ibnr import gallery
 
 entry = gallery.fit("meyers_ccl", triangle, as_of="1997-12-31")
-pred = entry.predict()                       # ultimates by origin + total
+pred = entry.predict()  # ultimates by origin + total
 pred.summary(observed=entry.realized_ultimates(triangle))  # Meyers-style table
-print(gallery.get("meyers_ccl").card())     # the model card
+print(gallery.get("meyers_ccl").card())  # the model card
 
 # the monograph's retrospective validation (PIT uniformity across insurers)
 # uv run python scripts/meyers_validation.py --per-line 50
@@ -60,11 +60,12 @@ view rather than the full run-off one. Core install, no extras.
 
 ```python
 entry = gallery.fit("mack", triangle, loss_field="paid_loss")
-entry.summary()          # latest, ultimate, IBNR, Mack run-off S.E.
-entry.one_year_cdr().summary()   # + one-year S.E. and its share of run-off risk
-entry.cdr_distribution(n_draws=20_000)   # the same by re-reserving, with quantiles
+entry.summary()  # latest, ultimate, IBNR, Mack run-off S.E.
+entry.one_year_cdr().summary()  # + one-year S.E. and its share of run-off risk
+entry.cdr_distribution(n_draws=20_000)  # the same by re-reserving, with quantiles
 
 from ibnr.kernels.cdr import cdr_risk_measures
+
 cdr_risk_measures(entry.cdr_distribution(n_draws=100_000, seed=1))  # VaR/TVaR 99.5
 ```
 

@@ -62,7 +62,12 @@ Issues = "https://github.com/EKtheSage/ibnr/issues"
 [dependency-groups]
 dev = [
     "pytest>=8",
-    "ruff>=0.8",
+    # 0.16 is the floor because its formatter is the first to reach the python
+    # code blocks inside markdown (README, model cards), which the CI lint job
+    # now checks. An older ruff would leave those blocks unformatted and then
+    # disagree with CI. tests/test_lint_pins.py keeps this floor, the lockfile
+    # and the version CI runs in agreement.
+    "ruff>=0.16",
     # polars is optional for users but REQUIRED for development: the transform
     # suite runs against both backends, and that matrix is what keeps the
     # polars-compatible formulations honest (CLAUDE.md #2).

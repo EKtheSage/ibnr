@@ -14,7 +14,7 @@ uv sync --extra bayesian                  # + cmdstanpy/numpyro/pymc/arviz/bayes
 uv run pytest                             # fast suite (slow excluded via addopts); transforms run on BOTH backends
 uv run pytest -m slow                     # cmdstan tests (compile + sample); needs cmdstan installed
 uv run pytest "tests/test_transforms.py::test_as_of[polars]"   # single test, one backend
-uv run ruff check . && uv run ruff format .
+uv run ruff check . && uv run ruff format .                    # format also rewrites python blocks in *.md
 uv run python scripts/meyers_validation.py --per-line 50       # Meyers retrospective validation
 ```
 
@@ -56,6 +56,7 @@ Each gallery model dir contains: `card.md`, `model.stan`, `model_numpyro.py`, `m
 ## Tooling & conventions
 
 * `src/` layout, `uv` for env + packaging, `ruff` for lint/format, `pytest`.
+* **Lint, as of 2026-07-26: ruff >= 0.16, and the version lives in `uv.lock` only.** CI reads it from there rather than running `uvx ruff` (which floats to the newest release and can turn a green branch red on its own). The lint job runs `ruff check` and `ruff format --check`. The floor is 0.16 because that is the first release whose formatter reaches python code blocks inside markdown - README and model cards are now formatted like source (this cost the aligned trailing comments in the README samples). Pins are guarded by `tests/test_lint_pins.py`.
 * Optional extras keep the core light: `[polars]` (the second ibis backend), `[interop]` (chainladder, bermuda-ledger, for the `to_*` converters), `[bayesian]` (cmdstanpy, numpyro, pymc, arviz, bayesblend), `[nn]` (torch), `[viz]` (altair, quarto tooling). Core deps ≈ ibis-framework[duckdb] + scipy (scipy added 2026-07-06 for the statistical family; deliberate exception to "ibis only"; polars split out 2026-07-23, see decision 2). Torch must never be imported at module level - `ibnr.gallery` imports (and nn entries register) without the `[nn]` extra; `tests/test_gallery.py` enforces this in a subprocess.
 * Test markers: `-m tieout` (results match an external reference: chainladder-python on raa/clrd, or R ChainLadder's published `CDR()` output on MW2014), `-m parity` (cross-backend posterior matching), `-m slow` (cmdstan compilation; separate CI job).
 * CI matrix runs core and each extra in isolation to catch hidden imports.
