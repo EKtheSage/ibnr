@@ -58,7 +58,7 @@ def _require_interop(module: str, feature: str):
         raise ModuleNotFoundError(
             f"{feature} requires the optional '{module}' package, which is not installed. "
             f'Install the interop extra:  pip install "ibnr[interop]"  '
-            f"(or: uv add \"ibnr[interop]\")"
+            f'(or: uv add "ibnr[interop]")'
         ) from exc
 
 

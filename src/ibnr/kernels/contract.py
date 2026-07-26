@@ -45,16 +45,38 @@ import pandas as pd
 from ibnr.triangle.core import GRAIN_MONTHS, Triangle
 
 
-def _cohort_identity(triangle: Triangle, df: pd.DataFrame, fields: tuple[str, ...]) -> dict:
-    """Which cohort and which field(s) this contract describes.
+def _cohort_identity(
+    triangle: Triangle,
+    df: pd.DataFrame,
+    fields: tuple[str, ...],
+    *,
+    models: tuple[str, ...] | None = None,
+) -> dict:
+    """Which cohort, which field(s) and which measure this contract describes.
 
     Carried on every contract so a scorer can refuse cells that are not this
     fit's. The single-cohort check above guarantees one combination, so taking
     the first row is exact rather than a sample.
+
+    ``fields`` are the SOURCE fields read from the triangle. ``models`` is what
+    the entry actually puts a likelihood on, when that differs - compartmental
+    reads ``paid`` and ``reported`` but models paid and *outstanding*
+    (reported - paid), so raw reported-loss cells are not something it can
+    score even though ``reported_loss`` appears in ``fields``.
+
+    ``measure`` matters because a cumulative fit handed incremental cells scores
+    them at the identical ``(w, d)`` positions and returns finite, plausible,
+    entirely wrong log densities - measured at a total of -3383 against a
+    correct -35.
     """
     segs = triangle.segments
     segment = {s: df[s].iloc[0] for s in segs} if segs and len(df) else {}
-    return {"segment": segment, "fields": tuple(fields)}
+    return {
+        "segment": segment,
+        "fields": tuple(fields),
+        "models": tuple(models if models is not None else fields),
+        "measure": triangle.meta.measure,
+    }
 
 
 def stan_data(
@@ -137,16 +159,42 @@ def stan_data(
 
 
 def _premium_by_origin(triangle: Triangle, premium_field: str, origins: list) -> np.ndarray:
+    """One exposure per origin, from this cohort only.
+
+    The single-cohort guards above are applied to the LOSS rows, because that is
+    the frame they build from. Premium is a different field and was never
+    checked, so a triangle carrying one company's losses and two companies'
+    premium passed every guard and then picked up whichever premium row sorted
+    first - measured, half the origins scored against another line's exposure,
+    7.8x out, with the contract's own ``segment`` still reporting the right
+    cohort. Wrong premium is wrong ``mu`` for every entry in the lognormal
+    family, and a wrong Jacobian for anything on a loss-ratio measure.
+    """
     pdf = triangle.select_fields(premium_field).latest_diagonal().execute()
     if pdf.empty:
         raise ValueError(f"no rows for premium field {premium_field!r}")
+    segs = triangle.segments
+    if segs and len(pdf.drop_duplicates(segs)) > 1:
+        raise ValueError(
+            f"premium field {premium_field!r} spans multiple segment combinations on "
+            f"{segs}; filter to one cohort first (the loss field is already single-cohort, "
+            "so this is exposure from another cohort)"
+        )
     pdf = pdf.copy()
     pdf["origin_period"] = _as_date(pdf["origin_period"])
+    if pdf["origin_period"].duplicated().any():
+        dupes = sorted(pdf.loc[pdf["origin_period"].duplicated(), "origin_period"].unique())
+        raise ValueError(
+            f"premium field {premium_field!r} has multiple rows for origin(s) {dupes} after "
+            "collapsing to the latest diagonal; exposure must be one value per origin"
+        )
     by_origin = pdf.set_index("origin_period")["value"]
     missing = [o for o in origins if o not in by_origin.index]
     if missing:
         raise ValueError(f"premium missing for origins {missing}")
     premium = by_origin.loc[origins].to_numpy(dtype=float)
+    if len(premium) != len(origins):
+        raise ValueError(f"premium has {len(premium)} values for {len(origins)} origins")
     if (premium <= 0).any():
         raise ValueError("non-positive premium; lognormal exposure models need positive premium")
     return premium
@@ -341,7 +389,14 @@ def compartmental_stan_data(
         # metadata (not part of the Stan data block proper)
         # `df`, not `wide`: the pivot indexes on (origin_period, dev_lag) only,
         # so it has already dropped the segment columns identity is read from.
-        **_cohort_identity(triangle, df, (paid_field, reported_field)),
+        # `models` is paid + OUTSTANDING: reported_loss is read but never
+        # modelled directly, so a raw reported-loss cell is not scorable here.
+        **_cohort_identity(
+            triangle,
+            df,
+            (paid_field, reported_field),
+            models=(paid_field, "outstanding"),
+        ),
         "origin_periods": origins,
         "dev_grain_months": step,
         "paid_to_date": latest[paid_field].to_numpy(dtype=float),

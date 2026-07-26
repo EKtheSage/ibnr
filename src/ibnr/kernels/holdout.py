@@ -7,22 +7,34 @@ computed until the run-off is complete. Milestone 6 adds the complementary view:
 score the cells the model did **not** see on the very next diagonal, which is
 available immediately and gives one outcome per cell.
 
-The definition, and it is the whole module::
+**One cohort at a time**, the same rule every contract builder applies. The
+definition then reads::
 
-    D       = as_of                                   training cutoff
-    D_next  = min{ e in triangle.eval_dates : e > D }  READ FROM THE DATA
+    D       = as_of                                    training cutoff
+    D_next  = first date after D that introduces a NEW CELL of a scored field
     before  = triangle.as_of(D)
     after   = triangle.as_of(D_next)
     heldout = after ANTI-JOIN before on (segments..., field, origin_period, dev_lag)
 
-Three things in that are load-bearing, and each is a way to get this quietly
-wrong:
+Four things in that are load-bearing, and each is a way to get it quietly wrong:
 
-1. **``D_next`` is read from the data, never computed as ``D + 12 months``.**
+1. **One cohort.** "The next diagonal" is a single date, and cohorts on
+   different reporting calendars do not share one. Scoring several at once takes
+   the earliest, which silently omits every cohort that reports later - with no
+   cells AND no exclusion rows, so the panel looks complete while covering a
+   fraction of the data. Measured before the guard: 20 January-origin cohorts
+   plus one July-origin cohort gave 2 cells instead of 62. Build a panel by
+   looping, which is what the retro scripts already do.
+
+2. **``D_next`` is read from the data, never computed as ``D + 12 months``.**
    Schedule P is annual, so the arithmetic version passes every test written
    against it and then breaks on a quarterly triangle or a mart with a gap.
+   It must also introduce a **new cell**, not merely carry a row: premium is
+   restated on its own schedule, and a restatement of an already-trained loss
+   cell passes a field filter and is then removed by the anti-join, leaving an
+   empty hold-out while the real diagonal sits one date later.
 
-2. **The anti-join is on the full cell key, including ``dev_lag``.** A cell that
+3. **The anti-join is on the full cell key, including ``dev_lag``.** A cell that
    was merely *restated* between D and D_next lands in ``after`` under the same
    key (``Triangle.as_of`` already collapses restatements to the latest
    surviving one), so it is joined away and is not scored. It is not new
@@ -30,7 +42,7 @@ wrong:
    and scoring it would credit the model for predicting something it was
    trained on.
 
-3. **Exposure is attached from ``before``.** Premium is usually restated
+4. **Exposure is attached from ``before``.** Premium is usually restated
    alongside losses; reading it from ``after`` would leak a value the model
    could not have had.
 
@@ -133,6 +145,24 @@ def training_index(contract: dict) -> CellIndex:
     w = np.asarray(contract["w"], dtype=int)
     d = np.asarray(contract["d"], dtype=int)
     loss = np.asarray(contract["loss"], dtype=float)
+
+    # compartmental stacks TWO observation blocks - outstanding (delta=0) then
+    # paid (delta=1) - over identical (w, d). A dict keyed on (w, d) alone keeps
+    # whichever came last, so every outstanding cell would be handed the PAID
+    # predecessor: same sign, same order of magnitude, silently wrong. CellIndex
+    # has no delta axis to tell the halves apart either, so rather than return
+    # something that cannot be right, refuse.
+    if "delta" in contract:
+        raise NotImplementedError(
+            "training_index does not support the delta-stacked compartmental contract: its "
+            "outstanding and paid blocks share (w, d), so predecessors and cell identity are "
+            "ambiguous. compartmental needs its own index carrying delta"
+        )
+    pairs = list(zip(w.tolist(), d.tolist(), strict=True))
+    if len(set(pairs)) != len(pairs):
+        raise ValueError(
+            "contract has duplicate (w, d) cells, so a predecessor lookup is ambiguous"
+        )
     row_of = {(int(a), int(b)): i for i, (a, b) in enumerate(zip(w, d, strict=True))}
 
     def predecessor(origin: int, dev: int) -> float:
@@ -167,21 +197,51 @@ def index_into(cells: HoldoutCells, contract: dict, *, field: str | None = None)
     cells' cohort and field must equal the ones the contract was built from,
     which is why ``kernels.contract`` records ``segment`` and ``fields``.
     """
-    if "segment" not in contract or "fields" not in contract:
+    required = ("segment", "fields", "models", "measure")
+    absent = [k for k in required if k not in contract]
+    if absent:
         raise ValueError(
-            "contract carries no cohort identity ('segment'/'fields'), so held-out cells "
-            "cannot be shown to belong to it. Rebuild it with stan_data / odp_stan_data / "
+            f"contract carries no {absent} identity, so held-out cells cannot be shown to "
+            "belong to it. Rebuild it with stan_data / odp_stan_data / "
             "compartmental_stan_data"
         )
 
+    # Cumulative and incremental cells sit at the SAME (w, d) positions and both
+    # index cleanly. A cumulative fit handed increments returns finite,
+    # plausible, entirely wrong densities - measured at a total of -3383 against
+    # a correct -35, with the deep-dev cell individually indistinguishable from
+    # a legitimate score.
+    if cells.measure != contract["measure"]:
+        raise ValueError(
+            f"held-out cells are {cells.measure!r} but this fit was built on "
+            f"{contract['measure']!r}. Both index at the same (w, d), so this would score "
+            "silently rather than fail"
+        )
+
     frame = cells.frame
+    # `models` is what the entry puts a likelihood on; `fields` is what it read.
+    # They differ for compartmental, which reads paid and reported but models
+    # paid and OUTSTANDING (reported - paid) - so a raw reported-loss cell is
+    # not scorable even though reported_loss is a source field.
     fitted_fields = tuple(contract["fields"])
-    if field is None and len(fitted_fields) == 1:
-        field = fitted_fields[0]  # the fit knows its own field; do not make the caller repeat it
+    scorable = tuple(f for f in contract["models"] if f in fitted_fields)
+    if not scorable:
+        raise ValueError(
+            f"this fit models {list(contract['models'])}, none of which is a raw field it "
+            f"read ({list(fitted_fields)}); its cells must be built by the entry, not indexed "
+            "from the triangle directly"
+        )
+    if field is None and len(scorable) == 1:
+        field = scorable[0]  # the fit knows its own field; do not make the caller repeat it
     if field is not None:
-        if field not in fitted_fields:
+        if field not in scorable:
+            hint = (
+                f" (it reads {list(fitted_fields)} but models {list(contract['models'])})"
+                if set(fitted_fields) != set(contract["models"])
+                else ""
+            )
             raise ValueError(
-                f"field={field!r} is not what this fit was trained on ({list(fitted_fields)}); "
+                f"field={field!r} is not what this fit models ({list(scorable)}){hint}; "
                 "scoring it would evaluate one quantity's likelihood against another's data"
             )
         frame = frame[frame["field"] == field]
@@ -189,13 +249,12 @@ def index_into(cells: HoldoutCells, contract: dict, *, field: str | None = None)
         raise ValueError(f"no held-out cells for field={field!r}")
 
     present = sorted(frame["field"].unique())
-    stray = [f for f in present if f not in fitted_fields]
+    stray = [f for f in present if f not in scorable]
     if stray:
-        raise ValueError(f"held-out cells carry field(s) {stray}, not in {list(fitted_fields)}")
+        raise ValueError(f"held-out cells carry field(s) {stray}, not in {list(scorable)}")
     if len(present) > 1:
         raise ValueError(
-            f"held-out cells span fields {present}; pass field= to choose one of "
-            f"{list(fitted_fields)}"
+            f"held-out cells span fields {present}; pass field= to choose one of {list(scorable)}"
         )
 
     # The SCHEMA must match, not just the values that happen to be present.
@@ -249,6 +308,27 @@ def index_into(cells: HoldoutCells, contract: dict, *, field: str | None = None)
         raise ValueError(
             f"dev index {d.max()} exceeds the fit's n_d={contract['n_d']}; "
             "next_diagonal() should have excluded this as dev_beyond_trained"
+        )
+
+    # The cells must be held out WITH RESPECT TO THIS FIT. Everything above
+    # checks they COULD be scored - right cohort, right field, right measure,
+    # indices in range. None of it checks they are not simply training data.
+    # A held-out score computed on cells the model was fitted on is not a
+    # mistake the number reveals: it is systematically too good, in the
+    # direction that looks like success.
+    trained = set(
+        zip(
+            np.asarray(contract["w"], dtype=int).tolist(),
+            np.asarray(contract["d"], dtype=int).tolist(),
+            strict=True,
+        )
+    )
+    overlap = sorted({(int(a), int(b)) for a, b in zip(w, d, strict=True)} & trained)
+    if overlap:
+        raise ValueError(
+            f"{len(overlap)} cell(s) at (w, d) {overlap[:5]}"
+            f"{' ...' if len(overlap) > 5 else ''} are in this fit's TRAINING data, so "
+            "scoring them would report in-sample fit as held-out performance"
         )
     premium = (
         frame["premium"].to_numpy(dtype=float)
@@ -388,6 +468,30 @@ def next_diagonal(
     segments = tuple(triangle.segments)
     keys = [*segments, "field", "origin_period", "dev_lag"]
     step = GRAIN_MONTHS[triangle.meta.dev_grain]
+
+    # ONE COHORT, the same rule every contract builder applies (stan_data,
+    # odp_stan_data, compartmental_stan_data all refuse more).
+    #
+    # This is not a limitation, it is what makes the held-out diagonal
+    # well-defined. "The next diagonal" is a single date, and cohorts on
+    # different reporting calendars do not share one: taking the earliest scores
+    # whichever cohort reports first and silently omits the rest - no cells, and
+    # `exclusion_counts()` reporting zero for them, so the panel looks complete
+    # while covering a fraction of the data. Measured on a mixed-calendar
+    # triangle: 20 January-origin cohorts plus one July-origin cohort returned 2
+    # cells instead of 62, with every exclusion count at zero.
+    #
+    # A per-cohort panel is built by looping, which is what the retro scripts
+    # already do - and each cohort then gets its own diagonal for free.
+    if segments:
+        combos = triangle.expr.select(*segments).distinct().to_pandas()
+        if len(combos) > 1:
+            raise ValueError(
+                f"triangle has {len(combos)} segment combinations on {list(segments)}; "
+                "next_diagonal scores one cohort at a time, like stan_data. Cohorts can "
+                "report on different calendars, so there is no single next diagonal for "
+                "several at once - filter to one cohort and loop"
+            )
 
     # D_next is the first date after the cutoff that introduces a NEW CELL of a
     # scored field - not merely the first date carrying a row of one.

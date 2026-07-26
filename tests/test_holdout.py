@@ -292,22 +292,47 @@ def test_ragged_triangle_excludes_cells_with_no_predecessor(backend_name):
     assert not cells.frame["prev_value"].isna().any()
 
 
-def test_multiple_fields_and_segments_are_keyed_independently(backend_name):
-    """compartmental scores paid AND reported jointly, and the mart is
-    multi-cohort. The cell key has to carry both, or two lines' cells collide."""
+def test_multiple_fields_are_keyed_independently(backend_name):
+    """compartmental scores paid AND reported jointly, so the cell key has to
+    carry the field or the two collide at the same (origin, dev)."""
     rows = []
-    for lob in ("wc", "ca"):
-        for fld in ("paid_loss", "reported_loss"):
-            rows += staircase(4, 4, through=5, field=fld, segment={"lob": lob})
+    for fld in ("paid_loss", "reported_loss"):
+        rows += staircase(4, 4, through=5, field=fld, segment={"lob": "wc"})
     tri = Triangle.from_long(pd.DataFrame(rows), measure="cumulative", backend=backend_name)
 
     cells = next_diagonal(tri, as_of="2013-12-31", fields=["paid_loss", "reported_loss"])
 
     assert cells.segments == ("lob",)
-    assert cells.n_cells == 3 * 2 * 2  # 3 scorable cells x 2 fields x 2 lobs
+    assert cells.n_cells == 3 * 2  # 3 scorable cells x 2 fields
     assert cells.key().nunique() == cells.n_cells, "cell keys must be unique"
-    assert set(cells.frame["lob"]) == {"wc", "ca"}
     assert set(cells.frame["field"]) == {"paid_loss", "reported_loss"}
+
+
+def test_a_multi_cohort_triangle_is_refused(backend_name):
+    """One cohort at a time, the same rule every contract builder applies.
+
+    "The next diagonal" is a single date, and cohorts on different reporting
+    calendars do not share one. Taking the earliest scores whichever cohort
+    reports first and drops the others - with no cells AND no exclusion rows, so
+    ``exclusion_counts()`` reports zero and the panel looks complete while
+    covering a fraction of the data. Measured before this guard: 20
+    January-origin cohorts plus one July-origin cohort returned 2 cells instead
+    of 62, and which cohort survived depended on an unrelated argument.
+
+    Refusing makes the whole class of error unreachable rather than patched, and
+    a per-cohort panel is a loop - which is what the retro scripts already do.
+    """
+    rows = staircase(4, 4, through=5, segment={"lob": "wc"})
+    rows += staircase(4, 4, through=5, segment={"lob": "ca"})
+    tri = Triangle.from_long(pd.DataFrame(rows), measure="cumulative", backend=backend_name)
+
+    with pytest.raises(ValueError, match="one cohort at a time"):
+        next_diagonal(tri, as_of="2013-12-31", fields="paid_loss")
+
+    # each cohort alone is scorable, and that is the supported shape
+    one = next_diagonal(tri.filter(tri.expr.lob == "wc"), as_of="2013-12-31", fields="paid_loss")
+    assert one.n_cells == 3
+    assert set(one.frame["lob"]) == {"wc"}
 
 
 def test_origins_restricts_to_the_study_window(tri8):
@@ -431,32 +456,25 @@ def test_a_diagonal_of_pure_restatements_is_an_error_not_an_empty_panel(backend_
         next_diagonal(tri, as_of="2013-12-31", fields="paid_loss")
 
 
-def test_new_origin_is_decided_per_cohort_not_triangle_wide(backend_name):
-    """A cohort's first accident year is new to THAT cohort's fit, whatever the
-    other cohorts in the triangle wrote.
+def test_a_late_starting_cohort_gets_its_own_first_origin_flagged(backend_name):
+    """A cohort's first accident year is new to THAT cohort's fit.
 
-    One company writing a line since 2010 must not make another company's 2010
-    look like trained history. The cell would be scored against an ``alpha[w]``
-    the second fit never estimated - and it is the oldest, largest-reserve
-    origin, so the error lands where it matters most.
+    With one cohort per call this is decided from that cohort's own training
+    history and nothing else, which is the property worth keeping: the cell
+    would otherwise be scored against an ``alpha[w]`` the fit never estimated,
+    at the oldest and largest-reserve origin.
     """
-    rows = staircase(4, 4, through=5, segment={"lob": "wc"})
-    # 'ca' starts a year later, so 2010 is absent from it entirely
-    rows += [
+    rows = [
         r
-        for r in staircase(4, 4, through=5, start_year=2011, segment={"lob": "ca"})
-        if r["origin_period"].year >= 2011
+        for r in staircase(5, 5, through=6, segment={"lob": "ca"})
+        if r["origin_period"].year >= 2011  # the cohort simply did not write 2010
     ]
     tri = Triangle.from_long(pd.DataFrame(rows), measure="cumulative", backend=backend_name)
 
     cells = next_diagonal(tri, as_of="2013-12-31", fields="paid_loss")
 
-    scored = cells.frame
-    ca_origins = set(scored.loc[scored["lob"] == "ca", "origin_period"])
-    assert dt.date(2010, 1, 1) not in ca_origins
-    # wc did train on 2010, so ITS 2010 cell is unaffected by ca's absence
-    wc_origins = set(scored.loc[scored["lob"] == "wc", "origin_period"])
-    assert wc_origins != ca_origins
+    assert dt.date(2010, 1, 1) not in set(cells.frame["origin_period"])
+    assert dt.date(2010, 1, 1) not in set(cells.train_origins)
 
 
 def test_incremental_triangles_do_not_get_cumulative_treatment(backend_name):
