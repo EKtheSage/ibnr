@@ -52,6 +52,44 @@ def null_values(t: Triangle) -> list[str]:
     return [f"{n} rows with null core keys"] if n else []
 
 
+def null_segments(t: Triangle) -> list[str]:
+    """Segment columns must be non-null: a null segment key names no cohort.
+
+    This is not a cosmetic finding. Every transform that equi-joins on the
+    segment columns - ``as_of``, ``latest_diagonal``, ``to_cumulative``,
+    ``to_incremental`` - drops such rows silently, because SQL join equality is
+    false for NULL = NULL, so the cohort disappears with no error and no warning.
+    ``Triangle.from_long`` refuses them at ingestion; this check is the net under
+    a triangle built directly from an ibis expression, which bypasses that door.
+    """
+    total, per_column = null_segment_counts(t.expr, t.segments)
+    if not total:
+        return []
+    detail = ", ".join(f"{s}={n}" for s, n in sorted(per_column.items()))
+    return [f"{total} rows with a null segment key ({detail})"]
+
+
+def null_segment_counts(expr, segments: list[str]) -> tuple[int, dict[str, int]]:
+    """Rows with a null in any segment column, plus the per-column breakdown.
+
+    Shared with ``io.from_long``, which refuses such rows outright at ingestion.
+
+    The row count is taken first and on its own because ``count()`` answers 0 on
+    an empty table, whereas the per-column ``sum()`` answers SQL NULL on duckdb
+    and NaN on polars - an empty triangle is legitimate (every value null, or a
+    filter that matched nothing) and must not be turned into a crash by the
+    check meant to protect it. Computing the breakdown only when there is
+    something to break down also keeps the clean case to a single query.
+    """
+    if not segments:
+        return 0, {}
+    total = int(expr.filter(ibis_or(*(expr[s].isnull() for s in segments))).count().execute())
+    if not total:
+        return 0, {}
+    counts = expr.aggregate(**{s: expr[s].isnull().cast("int64").sum() for s in segments}).execute()
+    return total, {s: int(counts[s].iloc[0]) for s in segments if int(counts[s].iloc[0])}
+
+
 def ibis_or(*preds):
     out = preds[0]
     for p in preds[1:]:
@@ -59,7 +97,14 @@ def ibis_or(*preds):
     return out
 
 
-ALL_CHECKS = (null_values, duplicate_cells, restated_cells, eval_alignment, dev_lag_on_grain)
+ALL_CHECKS = (
+    null_values,
+    null_segments,
+    duplicate_cells,
+    restated_cells,
+    eval_alignment,
+    dev_lag_on_grain,
+)
 
 
 def validate(t: Triangle, strict: bool = True) -> list[str]:

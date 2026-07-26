@@ -38,7 +38,8 @@ from ibis import selectors as s
 from ibis.backends import BaseBackend
 from ibis.expr.types import Table as IbisTable
 
-from ibnr.triangle.core import GRAIN_MONTHS, Triangle, TriangleMeta
+from ibnr.triangle.core import CORE_COLUMNS, GRAIN_MONTHS, Triangle, TriangleMeta
+from ibnr.triangle.validate import null_segment_counts
 
 
 def _require_interop(module: str, feature: str):
@@ -182,10 +183,45 @@ def from_long(
     # padding, or a field missing for one segment) are dropped rather than
     # stored, so the triangle never carries fabricated cells.
     t = t.filter(t.value.notnull())
+    # Segment nulls are checked only after that filter: a padding cell carries no
+    # observation, so it must not be able to condemn an otherwise clean load.
+    _reject_null_segments(t)
     meta = TriangleMeta(
         origin_grain=origin_grain, dev_grain=dev_grain, measure=measure, units=units
     )
     return Triangle(t, meta)
+
+
+def _reject_null_segments(t: IbisTable) -> None:
+    """Refuse rows whose segment (cohort key) columns are null.
+
+    A segment tuple names the cohort - company, line of business. A null in it
+    names no cohort, and it does not sit there inertly: every transform that
+    equi-joins on the segment columns (``as_of``, ``latest_diagonal``,
+    ``to_cumulative``, ``to_incremental``) drops those rows silently, because SQL
+    join equality is false for NULL = NULL. The cohort would vanish from a
+    retrospective with no error, no warning and a clean ``validate()`` - a
+    result that looks fine and is short a company. Ingestion is the last point
+    where the problem is still attributable to the data that caused it, so it is
+    refused here rather than diagnosed downstream.
+
+    Reachable from the mart of record, not just hand-built frames: the data
+    model's ``dim_company`` derives ``company_name`` through a LEFT JOIN onto
+    ``sat_company_details``, and ``company_name`` is one of the three Schedule P
+    segment columns, so a hub company missing its satellite row arrives null.
+    """
+    segs = [c for c in t.columns if c not in CORE_COLUMNS]
+    total, per_column = null_segment_counts(t, segs)
+    if not total:
+        return
+    detail = ", ".join(f"{s} ({n} rows)" for s, n in sorted(per_column.items()))
+    raise ValueError(
+        f"null segment key in {detail}. Segment columns identify the cohort, so a null "
+        "in one names no cohort and is silently dropped by every transform that joins "
+        "on it (as_of, latest_diagonal, to_cumulative, to_incremental) - the cohort "
+        "would disappear from results with no error. Give those rows an explicit value "
+        "(e.g. 'unknown'), drop them, or omit the column via segments=[...]."
+    )
 
 
 # -- chainladder ---------------------------------------------------------------
