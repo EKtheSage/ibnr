@@ -377,6 +377,60 @@ def test_a_premium_only_update_does_not_become_the_next_diagonal(backend_name):
     assert cells.n_cells == 3
 
 
+def test_a_loss_field_restatement_does_not_become_the_next_diagonal(backend_name):
+    """Filtering to the scored fields is not enough on its own.
+
+    A restatement of an ALREADY-TRAINED paid-loss cell carries a real paid_loss
+    row, so it survives any field filter and looks like the next diagonal. The
+    anti-join then correctly removes it and nothing is left - an empty hold-out
+    reported as "0 cells scored" while the actual new diagonal sits one date
+    later, untouched.
+
+    So a date counts only if it introduces a cell key training did not have.
+    """
+    rows = staircase(4, 4, through=5)
+    rows.append(
+        {
+            "origin_period": dt.date(2010, 1, 1),
+            "dev_lag": 24,  # observed at the 2011 diagonal: inside training
+            "eval_date": dt.date(2014, 6, 30),  # restated between cutoff and diagonal
+            "field": "paid_loss",
+            "value": 999.0,
+        }
+    )
+    tri = Triangle.from_long(pd.DataFrame(rows), measure="cumulative", backend=backend_name)
+    assert dt.date(2014, 6, 30) in tri.eval_dates
+
+    cells = next_diagonal(tri, as_of="2013-12-31", fields="paid_loss")
+
+    assert cells.eval_date == dt.date(2014, 12, 31), "a restatement became the diagonal"
+    assert cells.n_cells == 3
+    assert 999.0 not in cells.frame["value"].tolist()
+
+
+def test_a_diagonal_of_pure_restatements_is_an_error_not_an_empty_panel(backend_name):
+    """If NOTHING after the cutoff is new, say so.
+
+    Returning an empty panel would read downstream as "this model scored
+    nothing", which is a statement about the model rather than about the data.
+    """
+    rows = staircase(4, 4, through=4)
+    rows += [
+        {
+            "origin_period": dt.date(2010, 1, 1),
+            "dev_lag": 12 * d,
+            "eval_date": dt.date(2015, 12, 31),
+            "field": "paid_loss",
+            "value": 900.0 + d,
+        }
+        for d in (1, 2)  # both already in training
+    ]
+    tri = Triangle.from_long(pd.DataFrame(rows), measure="cumulative", backend=backend_name)
+
+    with pytest.raises(ValueError, match="only restatements"):
+        next_diagonal(tri, as_of="2013-12-31", fields="paid_loss")
+
+
 def test_new_origin_is_decided_per_cohort_not_triangle_wide(backend_name):
     """A cohort's first accident year is new to THAT cohort's fit, whatever the
     other cohorts in the triangle wrote.

@@ -132,9 +132,7 @@ def test_growth_curve_matches_stans_closed_form(name, curve):
     got = np.asarray(growth_curve(AGES, OMEGA, THETA, curve))
     x = AGES[1:]
     ref = (
-        1.0 / (1.0 + (THETA / x) ** OMEGA)
-        if curve == 1
-        else 1.0 - np.exp(-((x / THETA) ** OMEGA))
+        1.0 / (1.0 + (THETA / x) ** OMEGA) if curve == 1 else 1.0 - np.exp(-((x / THETA) ** OMEGA))
     )
     assert got[0] == 0.0, "G(0) must be exactly 0"
     np.testing.assert_allclose(got[1:], ref, rtol=1e-5)

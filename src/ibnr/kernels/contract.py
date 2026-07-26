@@ -339,7 +339,9 @@ def compartmental_stan_data(
         "delta": np.concatenate([np.zeros(len(wide), dtype=int), np.ones(len(wide), dtype=int)]),
         "loss": np.concatenate([outstanding, paid]),
         # metadata (not part of the Stan data block proper)
-        **_cohort_identity(triangle, wide, (paid_field, reported_field)),
+        # `df`, not `wide`: the pivot indexes on (origin_period, dev_lag) only,
+        # so it has already dropped the segment columns identity is read from.
+        **_cohort_identity(triangle, df, (paid_field, reported_field)),
         "origin_periods": origins,
         "dev_grain_months": step,
         "paid_to_date": latest[paid_field].to_numpy(dtype=float),

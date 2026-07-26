@@ -305,6 +305,44 @@ def test_index_into_refuses_a_single_WRONG_cohort(contract):
         index_into(cells, contract)
 
 
+def test_segment_schema_must_match_not_merely_be_consistent(contract):
+    """An unsegmented fit cannot be scored on one cohort's cells.
+
+    This is the quiet half of the identity problem. A single segmented cohort is
+    internally consistent - one company, nothing contradictory - so a check that
+    only rejects MIXED panels waves it through. But an unsegmented fit is an
+    aggregate over everything, and scoring it against one company's cells
+    compares two different quantities that happen to share indices.
+
+    The reverse direction matters too: a fit keyed on ``lob`` alone cannot tell
+    two companies apart within that lob, so cells carrying an extra segment
+    dimension must be refused rather than silently matched on the subset.
+    """
+    unsegmented = stan_data(
+        _segmented_triangle(None, through=N_W, with_premium=True),
+        loss_field="paid_loss",
+        premium_field="earned_premium",
+    )
+    assert unsegmented["segment"] == {}
+
+    segmented_cells = next_diagonal(
+        _segmented_triangle("FIT_CO", through=N_W + 1, with_premium=True),
+        as_of="2015-12-31",
+        fields="paid_loss",
+    )
+    with pytest.raises(ValueError, match="keyed on"):
+        index_into(segmented_cells, unsegmented)
+
+    # and the mirror: a segmented fit given unsegmented (aggregate) cells
+    plain_cells = next_diagonal(
+        _segmented_triangle(None, through=N_W + 1, with_premium=True),
+        as_of="2015-12-31",
+        fields="paid_loss",
+    )
+    with pytest.raises(ValueError, match="keyed on"):
+        index_into(plain_cells, contract)
+
+
 def test_index_into_refuses_a_field_the_fit_was_not_trained_on(contract):
     """A paid-loss fit handed reported-loss cells would evaluate one quantity's
     likelihood against another's data - same shape, same indices, wrong data."""

@@ -105,6 +105,45 @@ def test_stan_data_rejects_incremental():
         stan_data(t, loss_field="paid_loss")
 
 
+def test_every_contract_records_the_cohort_and_fields_it_was_built_from():
+    """``segment``/``fields`` are what let a scorer refuse another company's
+    cells. ``(w, d)`` alone does not identify a cell, so a contract that cannot
+    say which cohort it describes cannot be defended against one.
+
+    All three builders are checked together on purpose. The compartmental one
+    read its identity off the PIVOTED frame, which indexes on (origin_period,
+    dev_lag) and has therefore already dropped the segment columns - so every
+    segmented compartmental fit raised ``KeyError: 'company'``, and a test
+    covering only ``stan_data`` would never have found it.
+    """
+    from ibnr.kernels.contract import compartmental_stan_data, odp_stan_data
+
+    tri = _cohort_triangle()
+    paid = stan_data(tri, loss_field="paid_loss", premium_field="earned_premium")
+    assert paid["segment"] == {"company": "co1"}
+    assert paid["fields"] == ("paid_loss",)
+
+    odp = odp_stan_data(tri, loss_field="paid_loss", premium_field="earned_premium")
+    assert odp["segment"] == {"company": "co1"}
+    assert odp["fields"] == ("paid_loss",)
+
+    # compartmental needs a second field on the identical cells
+    df = tri.execute()
+    reported = df[df["field"] == "paid_loss"].copy()
+    reported["field"] = "reported_loss"
+    reported["value"] = reported["value"] * 1.25
+    joint = Triangle.from_long(pd.concat([df, reported], ignore_index=True))
+
+    comp = compartmental_stan_data(
+        joint,
+        paid_field="paid_loss",
+        reported_field="reported_loss",
+        premium_field="earned_premium",
+    )
+    assert comp["segment"] == {"company": "co1"}
+    assert comp["fields"] == ("paid_loss", "reported_loss")
+
+
 def test_realized_values():
     """Scoring outcomes align to the training grid by origin, with NaN where the
     outcome has not emerged yet.
