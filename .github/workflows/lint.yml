@@ -3,10 +3,12 @@ name: Lint
 # There was no lint job until now, which is how an I001 (unsorted imports) error
 # reached main in 40fb1d6. `ruff check` is the gate that would have caught it.
 #
-# `ruff format --check` is deliberately NOT run yet: it currently wants to
-# reformat README.md, collapsing the aligned trailing comments in its code
-# samples. That is a separate call to make; adding the check first would just
-# pin CI red.
+# `ruff format --check` used to be left out because it wanted to reformat
+# README.md. It is ON now: that reformat has landed, and from ruff 0.16 the
+# formatter reaches the python code blocks inside markdown, so the check covers
+# the README and the model cards as well as the source. The price was the
+# aligned trailing comments in the README samples, which ruff normalises to a
+# single space.
 
 on:
   push:
@@ -16,7 +18,7 @@ on:
 
 jobs:
   ruff:
-    name: ruff check
+    name: ruff
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -26,5 +28,23 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Lint with the ruff the lockfile pins, never with whatever is newest.
+      # Plain `uvx ruff` floats: a formatter release then turns a green branch
+      # red with no change to the branch, and disagrees with the `uv run ruff`
+      # the contributor ran locally. uv.lock is where the version lives.
+      - name: Resolve the locked ruff version
+        run: |
+          version=$(uv run --no-project python -c "
+          import tomllib
+          with open('uv.lock', 'rb') as fh:
+              lock = tomllib.load(fh)
+          print(next(p['version'] for p in lock['package'] if p['name'] == 'ruff'))
+          ")
+          echo "linting with ruff $version (from uv.lock)"
+          echo "RUFF_SPEC=$version" >> "$GITHUB_ENV"
+
       - name: Lint
-        run: uvx ruff check --output-format=github .
+        run: uvx "ruff@$RUFF_SPEC" check --output-format=github .
+
+      - name: Format
+        run: uvx "ruff@$RUFF_SPEC" format --check .

@@ -151,6 +151,7 @@ basis:
 
 ```python
 from ibnr.kernels.cdr import cdr_risk_measures
+
 cdr_risk_measures(entry.cdr_distribution(n_draws=100_000, seed=1))
 ```
 
