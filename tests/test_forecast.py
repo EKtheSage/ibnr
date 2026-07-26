@@ -102,15 +102,31 @@ def _draws(cells: HoldoutCells, *, rng, sd=0.25, n_draws=N_DRAWS) -> np.ndarray:
     return np.exp(rng.normal(np.log(cells.values), sd, size=(n_draws, cells.n_cells)))
 
 
-def _forecast(model, cells, *, rng, shift=0.0, sd=0.25, density=True, draws=True):
+def _forecast(model, cells, *, rng, shift=0.0, sd=0.25, density=True, draws=True, n_draws=N_DRAWS):
     kw = {}
-    kw["log_density"] = _density(cells, rng=rng, shift=shift) if density else None
-    kw["draws"] = _draws(cells, rng=rng, sd=sd) if draws else None
+    kw["log_density"] = _density(cells, rng=rng, shift=shift, n_draws=n_draws) if density else None
+    kw["draws"] = _draws(cells, rng=rng, sd=sd, n_draws=n_draws) if draws else None
     if not density:
         kw["density_absence"] = Absence("no_predictive_density", "test")
     if not draws:
         kw["draws_absence"] = Absence("no_cell_sampler", "test")
     return CohortForecast(model=model, task=TASK, cells=cells, field="paid_loss", **kw)
+
+
+def _cells_with_premium(company="CO_A", *, premium=1000.0, as_of="2014-12-31") -> HoldoutCells:
+    """The same cohort, with an exposure field attached at a chosen level.
+
+    Two of these at different premiums have identical keys, identical outcomes
+    and identical eval_dates - so only a premium check can tell them apart.
+    """
+    rows = _rows(company)
+    rows += [
+        {**r, "field": "earned_premium", "value": float(premium)}
+        for r in _rows(company)
+        if r["dev_lag"] == 12
+    ]
+    tri = Triangle.from_long(pd.DataFrame(rows), measure="cumulative")
+    return next_diagonal(tri, as_of=as_of, fields="paid_loss", premium_field="earned_premium")
 
 
 @pytest.fixture
@@ -634,6 +650,137 @@ def test_disagreeing_train_origins_are_refused(cells_a, rng):
 
     with pytest.raises(ValueError, match="train_origins"):
         align_panel([_forecast("m", wide, rng=rng), _forecast("n", narrow, rng=rng)])
+
+
+def test_a_disagreeing_premium_is_refused(rng):
+    """PR #33 review, P1. Exposure is a covariate of the measure carry, not
+    decoration: a loss-ratio density reaches the amount scale by subtracting
+    ``log(premium)``, so 1000 against 2000 shifts that entry's ELPD by ``log(2)``
+    per cell with nothing else on the board moving - and the panel would keep
+    whichever premium it saw first.
+
+    Mutation: drop ``premium`` from the agreement loop. Nothing else catches it -
+    the keys, the outcomes and the eval_dates are all identical here.
+    """
+    lo = _cells_with_premium("CO_A", premium=1000.0)
+    hi = _cells_with_premium("CO_A", premium=2000.0)
+    assert lo.frame["value"].tolist() == hi.frame["value"].tolist(), (
+        "the outcomes must agree, or the value check fires instead of the premium one"
+    )
+    with pytest.raises(ValueError, match="disagreeing premium"):
+        align_panel([_forecast("m", lo, rng=rng), _forecast("n", hi, rng=rng)])
+
+
+def test_a_model_that_carries_no_premium_is_not_a_disagreement(cells_a, rng):
+    """Only entries whose density is on loss ratios need exposure, so an absent
+    premium is a model not asking rather than a conflict. Nulls are skipped and
+    only the models actually carrying one have to agree.
+
+    Mutation: ``dropna=False`` for the premium column. This fixture then raises,
+    which would force every entry to request exposure it does not use.
+    """
+    with_prem = _cells_with_premium("CO_A", premium=1000.0)
+    assert with_prem.frame["value"].tolist() == cells_a.frame["value"].tolist()
+    assert "premium" not in cells_a.frame.columns
+
+    panel = align_panel(
+        [_forecast("needs_it", with_prem, rng=rng), _forecast("does_not", cells_a, rng=rng)]
+    )
+    assert panel.n_cells_for("elpd") == cells_a.n_cells
+
+
+def test_a_diagnostic_never_describes_the_other_score_s_panel(cells_a, cells_b, rng):
+    """PR #33 review, P2. ``pointwise`` spans the UNION of the two panels, so a
+    per-score readout taken from it can describe cells that score is not computed
+    over.
+
+    Here the ELPD panel is cohort A alone, while cohort B survives on the CRPS
+    panel carrying a deliberately thinned density. ``n_draws_density_min`` and
+    ``min_ess_kish`` must report cohort A's numbers.
+
+    Mutation: read the diagnostics from ``mine`` instead of ``on_elpd``. The
+    board then reports the thinned cohort's draw count beside an ELPD that does
+    not include a single one of its cells.
+    """
+    rich = [_forecast("rich", c, rng=rng, n_draws=200) for c in (cells_a, cells_b)]
+    # `thin` is an ELPD member only on cohort A, so cohort B leaves the ELPD
+    # panel - but both cohorts stay on the CRPS panel
+    thin = [
+        _forecast("thin", cells_a, rng=rng, n_draws=200),
+        CohortForecast(
+            model="thin",
+            task=TASK,
+            cells=cells_b,
+            field="paid_loss",
+            draws=_draws(cells_b, rng=rng),
+            density_absence=Absence("scoring_refused", "refused here"),
+        ),
+    ]
+    # a third model keeps a density on BOTH cohorts, thinned to 4 draws on B only
+    mixed = [
+        _forecast("mixed", cells_a, rng=rng, n_draws=200),
+        _forecast("mixed", cells_b, rng=rng, n_draws=4),
+    ]
+    panel = align_panel([*rich, *thin, *mixed])
+    assert panel.n_cells_for("elpd") == cells_a.n_cells, "cohort B is off the ELPD panel"
+    assert panel.n_cells_for("crps") == cells_a.n_cells + cells_b.n_cells
+
+    board = leaderboard(panel)
+    row = board[board["model"] == "mixed"].iloc[0]
+    assert row["n_draws_density_min"] == 200, (
+        "cohort B's 4-draw density is not on the ELPD panel and must not be reported"
+    )
+    assert row["min_ess_kish"] > 4
+
+
+def test_a_model_level_absence_cannot_be_mixed_with_a_cohort_level_one(cells_a, cells_b, rng):
+    """PR #33 review, P2. ``no_predictive_density`` on one cohort and
+    ``scoring_refused`` on another was accepted, and the board then called the
+    whole model permanently N/A while ``panel.absences`` recorded a transient
+    refusal for one of its cohorts. The board and its own census disagreed.
+
+    Mutation: drop the ``len(declared) != len(mine)`` check. The old code passed
+    because it only compared model-level reasons TO EACH OTHER and checked that
+    no cohort was scored - neither of which this fixture violates.
+    """
+    mixed = [
+        CohortForecast(
+            model="m",
+            task=TASK,
+            cells=cells_a,
+            field="paid_loss",
+            draws=_draws(cells_a, rng=rng),
+            density_absence=Absence("no_predictive_density", "structural"),
+        ),
+        CohortForecast(
+            model="m",
+            task=TASK,
+            cells=cells_b,
+            field="paid_loss",
+            draws=_draws(cells_b, rng=rng),
+            density_absence=Absence("scoring_refused", "a zero-paid cell"),
+        ),
+    ]
+    with pytest.raises(ValueError, match="of its 2 cohorts"):
+        align_panel([*mixed, *[_forecast("other", c, rng=rng) for c in (cells_a, cells_b)]])
+
+
+def test_a_uniform_model_level_absence_is_still_accepted(cells_a, cells_b, rng):
+    """The guard above must not outlaw the ordinary case."""
+    uniform = [
+        CohortForecast(
+            model="odp",
+            task=TASK,
+            cells=c,
+            field="paid_loss",
+            draws=_draws(c, rng=rng),
+            density_absence=Absence("no_predictive_density", "quasi-likelihood"),
+        )
+        for c in (cells_a, cells_b)
+    ]
+    panel = align_panel([*uniform, *[_forecast("csr", c, rng=rng) for c in (cells_a, cells_b)]])
+    assert panel.elpd_members == ("csr",)
+    assert set(panel.crps_members) == {"csr", "odp"}
 
 
 def test_a_mixed_task_is_refused(cells_a, rng):

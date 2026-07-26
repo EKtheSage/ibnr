@@ -1024,20 +1024,38 @@ def align_panel(forecasts: Iterable[CohortForecast], *, units: str | None = None
     long = pd.concat(records, ignore_index=True)
 
     # -- cross-model agreement on the things a key does not carry -------------
-    for column, hint in (
+    #
+    # ``dropna`` is per column and it is not a detail. An absent OUTCOME would be
+    # a broken cell, so a null there is itself a disagreement. An absent PREMIUM
+    # just means that model never asked for exposure, which is legitimate - only
+    # entries whose density is on loss ratios need it - so nulls are skipped and
+    # only the models that actually carry a premium have to agree with each other.
+    for column, dropna, hint in (
         (
             "value",
+            False,
             "the outcome itself differs at the same key - check the paid clamp "
             "(harness RetroTask.clamp_paid applies pmax(paid, 1) for the lognormal "
             "entries only) and the triangle's units",
         ),
         (
             "eval_date",
+            False,
             "the models were handed different training slices, so their 'next diagonal' "
             "is not the same diagonal",
         ),
+        (
+            "premium",
+            True,
+            "the models were handed different EXPOSURE for the same cell. A loss-ratio "
+            "density is carried to the amount scale by subtracting log(premium), so a "
+            "premium of 1000 against 2000 shifts that entry's ELPD by log(2) per cell "
+            "with nothing else on the board moving - and the panel would keep whichever "
+            "premium it saw first. Reachable through a restated exposure or a "
+            "direct-versus-net premium field",
+        ),
     ):
-        spread = long.groupby("key", sort=False)[column].nunique(dropna=False)
+        spread = long.groupby("key", sort=False)[column].nunique(dropna=dropna)
         bad = spread[spread > 1]
         if len(bad):
             example = long[long["key"] == bad.index[0]][["model", column]]
@@ -1100,6 +1118,29 @@ def align_panel(forecasts: Iterable[CohortForecast], *, units: str | None = None
                     f"{model} declares the model-level {axis} absence "
                     f"{sorted(reasons)[0]!r} on some cohorts and offers {axis} on others. "
                     "Either the entry has that capability or it does not"
+                )
+            # Uniform means uniform: declared on EVERY cohort, not merely never
+            # contradicted by a scored one. Mixing a model-level reason with a
+            # cohort-level one on the same axis reads as "this entry has no
+            # density" for the whole model, while `panel.absences` simultaneously
+            # records a transient refusal for one cohort - the board and its own
+            # census then disagree, and the board is the thing people read.
+            if len(declared) != len(mine):
+                others = sorted(
+                    {
+                        f.absence_for(axis).reason
+                        for f in mine
+                        if f.absence_for(axis) is not None
+                        and not f.absence_for(axis).is_model_level
+                    }
+                )
+                raise ValueError(
+                    f"{model} declares the model-level {axis} absence "
+                    f"{sorted(reasons)[0]!r} on {len(declared)} of its {len(mine)} cohorts, "
+                    f"and the cohort-level reason(s) {others} on the rest. A model-level "
+                    "reason is a claim about the ENTRY, so it holds for every cohort or for "
+                    "none - otherwise the board reports a permanent N/A that its own absence "
+                    "census contradicts"
                 )
             level[model] = declared[0]
         model_level[axis] = level
@@ -1344,6 +1385,10 @@ def leaderboard(panel: ForecastPanel) -> pd.DataFrame:
                                   row, or the total reads as a bug rather than a
                                   verdict
     ``min_ess_kish``              smallest effective draw count behind any cell
+                                  **on the ELPD panel**. Every per-score readout
+                                  is taken from that score's own slice, never
+                                  from the union - a cell on the CRPS panel only
+                                  would otherwise describe a column it is not in
     ``crps_members``,
     ``crps_fingerprint``,
     ``n_cells_crps``              the same three for the CRPS panel, which is a
@@ -1395,13 +1440,18 @@ def leaderboard(panel: ForecastPanel) -> pd.DataFrame:
     for row in panel.coverage.to_dict("records"):
         model = row["model"]
         mine = panel.pointwise[panel.pointwise["model"] == model]
+        # ``mine`` spans the UNION of the two panels, so every per-score readout
+        # below - the totals AND the diagnostics - is taken from that score's own
+        # slice. Reading a diagnostic off the union describes cells the column is
+        # not computed over: a cell on the CRPS panel only, thinned to 2 draws,
+        # would report n_draws_min = 2 beside an ELPD that rests on 100.
+        on_elpd = mine[mine["on_elpd_panel"]]
+        on_crps = mine[mine["on_crps_panel"]]
 
-        elpd_cells = mine.loc[mine["on_elpd_panel"] & mine["elpd"].notna(), "elpd"]
-        elpd_vals = elpd_cells.to_numpy(dtype=float)
+        elpd_vals = on_elpd.loc[on_elpd["elpd"].notna(), "elpd"].to_numpy(dtype=float)
         has_elpd = row["is_elpd_member"] and len(elpd_vals) == n_elpd and n_elpd > 0
 
-        crps_cells = mine.loc[mine["on_crps_panel"] & mine["crps"].notna(), "crps"]
-        crps_vals = crps_cells.to_numpy(dtype=float)
+        crps_vals = on_crps.loc[on_crps["crps"].notna(), "crps"].to_numpy(dtype=float)
         has_crps = row["is_crps_member"] and len(crps_vals) == n_crps and n_crps > 0
 
         board.append(
@@ -1419,8 +1469,8 @@ def leaderboard(panel: ForecastPanel) -> pd.DataFrame:
                 "elpd_status": row["elpd_status"],
                 "n_cells_zero_density": int(np.isneginf(elpd_vals).sum()) if has_elpd else pd.NA,
                 "min_ess_kish": (
-                    float(mine["ess_kish"].dropna().min())
-                    if has_elpd and mine["ess_kish"].notna().any()
+                    float(on_elpd["ess_kish"].dropna().min())
+                    if has_elpd and on_elpd["ess_kish"].notna().any()
                     else pd.NA
                 ),
                 # -- CRPS, on ITS own panel, which is not the same one -----------
@@ -1431,8 +1481,8 @@ def leaderboard(panel: ForecastPanel) -> pd.DataFrame:
                 "crps_per_cell": float(crps_vals.sum() / n_crps) if has_crps else pd.NA,
                 "crps_status": row["crps_status"],
                 # -- draw counts and this model's own coverage -------------------
-                "n_draws_density_min": _least(mine["n_draws_density"], has_elpd),
-                "n_draws_sample_min": _least(mine["n_draws_sample"], has_crps),
+                "n_draws_density_min": _least(on_elpd["n_draws_density"], has_elpd),
+                "n_draws_sample_min": _least(on_crps["n_draws_sample"], has_crps),
                 "n_cells_elpd_own": row["n_cells_elpd_own"],
                 "n_cells_elpd_dropped": row["n_cells_elpd_dropped"],
                 "n_cells_crps_own": row["n_cells_crps_own"],
