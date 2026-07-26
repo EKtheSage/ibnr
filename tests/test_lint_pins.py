@@ -67,8 +67,10 @@ def test_the_lint_workflow_takes_its_version_from_the_lockfile():
     assert "uv.lock" in workflow
 
 
-def test_the_lint_workflow_checks_formatting():
-    """`ruff check` alone was the state that let unformatted files land."""
+def test_the_lint_workflow_checks_formatting_and_markdown():
+    """The three gates the lint job is supposed to run. `ruff check` alone was
+    the state that let unformatted files - and unlinted doc snippets - land."""
     workflow = (REPO / ".github" / "workflows" / "lint.yml").read_text(encoding="utf-8")
     assert "check --output-format=github ." in workflow
     assert "format --check ." in workflow
+    assert "scripts/lint_md_snippets.py" in workflow

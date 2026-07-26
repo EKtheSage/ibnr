@@ -15,6 +15,7 @@ uv run pytest                             # fast suite (slow excluded via addopt
 uv run pytest -m slow                     # cmdstan tests (compile + sample); needs cmdstan installed
 uv run pytest "tests/test_transforms.py::test_as_of[polars]"   # single test, one backend
 uv run ruff check . && uv run ruff format .                    # format also rewrites python blocks in *.md
+uv run python scripts/lint_md_snippets.py                      # lint those blocks (ruff check ignores markdown)
 uv run python scripts/meyers_validation.py --per-line 50       # Meyers retrospective validation
 ```
 
@@ -56,7 +57,7 @@ Each gallery model dir contains: `card.md`, `model.stan`, `model_numpyro.py`, `m
 ## Tooling & conventions
 
 * `src/` layout, `uv` for env + packaging, `ruff` for lint/format, `pytest`.
-* **Lint, as of 2026-07-26: ruff >= 0.16, and the version lives in `uv.lock` only.** CI reads it from there rather than running `uvx ruff` (which floats to the newest release and can turn a green branch red on its own). The lint job runs `ruff check` and `ruff format --check`. The floor is 0.16 because that is the first release whose formatter reaches python code blocks inside markdown - README and model cards are now formatted like source (this cost the aligned trailing comments in the README samples). Pins are guarded by `tests/test_lint_pins.py`.
+* **Lint, as of 2026-07-26: ruff >= 0.16, and the version lives in `uv.lock` only.** CI reads it from there rather than running `uvx ruff` (which floats to the newest release and can turn a green branch red on its own). The lint job runs three gates: `ruff check`, `ruff format --check`, and `scripts/lint_md_snippets.py`. The floor is 0.16 because that is the first release whose formatter reaches python code blocks inside markdown - README and model cards are now formatted like source (this cost the aligned trailing comments in the README samples). `ruff check`, by contrast, ignores markdown entirely with no setting to change that, so the script extracts each fenced `python` block and lints it under the project's own config, ignoring `F821`/`E402`/`I001` because those fire on the shape of an excerpt rather than a defect in it. It also rejects blocks that do not parse - the formatter passes those in silence, so nothing else catches a doc sample that is broken Python. Tests: `tests/test_markdown_snippets.py`, `tests/test_lint_pins.py`.
 * Optional extras keep the core light: `[polars]` (the second ibis backend), `[interop]` (chainladder, bermuda-ledger, for the `to_*` converters), `[bayesian]` (cmdstanpy, numpyro, pymc, arviz, bayesblend), `[nn]` (torch), `[viz]` (altair, quarto tooling). Core deps ≈ ibis-framework[duckdb] + scipy (scipy added 2026-07-06 for the statistical family; deliberate exception to "ibis only"; polars split out 2026-07-23, see decision 2). Torch must never be imported at module level - `ibnr.gallery` imports (and nn entries register) without the `[nn]` extra; `tests/test_gallery.py` enforces this in a subprocess.
 * Test markers: `-m tieout` (results match an external reference: chainladder-python on raa/clrd, or R ChainLadder's published `CDR()` output on MW2014), `-m parity` (cross-backend posterior matching), `-m slow` (cmdstan compilation; separate CI job).
 * CI matrix runs core and each extra in isolation to catch hidden imports.

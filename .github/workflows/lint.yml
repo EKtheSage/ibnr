@@ -9,6 +9,10 @@ name: Lint
 # the README and the model cards as well as the source. The price was the
 # aligned trailing comments in the README samples, which ruff normalises to a
 # single space.
+#
+# `ruff check` does NOT look at markdown at all, and no setting turns that on,
+# so the lint rules would still stop at the docs. scripts/lint_md_snippets.py
+# carries them the rest of the way - see its docstring for what it catches.
 
 on:
   push:
@@ -48,3 +52,7 @@ jobs:
 
       - name: Format
         run: uvx "ruff@$RUFF_SPEC" format --check .
+
+      # stdlib-only script; --with puts the same pinned ruff on its PATH
+      - name: Lint the python code blocks in markdown
+        run: uv run --no-project --with "ruff==$RUFF_SPEC" python scripts/lint_md_snippets.py
