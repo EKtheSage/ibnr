@@ -65,12 +65,7 @@ def paid_curve(t, ker, kp, rlr, rrf):
     """
     import jax.numpy as jnp
 
-    return (
-        rlr
-        * rrf
-        / (ker - kp)
-        * (ker * (1 - jnp.exp(-kp * t)) - kp * (1 - jnp.exp(-ker * t)))
-    )
+    return rlr * rrf / (ker - kp) * (ker * (1 - jnp.exp(-kp * t)) - kp * (1 - jnp.exp(-ker * t)))
 
 
 def _half_student_t(name: str, nu: float, scale, shape: tuple[int, ...]):
@@ -228,9 +223,7 @@ def lognormal_model(data: dict[str, Any]) -> None:
     # exactly, and it keeps the expression branch-free.
     prev_age = jnp.maximum(t - devfreq, 0.0)
     paid_incr = paid_curve(t, ker, kp, rlr, rrf) - paid_curve(prev_age, ker, kp, rlr, rrf)
-    mu = numpyro.deterministic(
-        "mu", jnp.where(delta == 0, os_curve(t, ker, kp, rlr), paid_incr)
-    )
+    mu = numpyro.deterministic("mu", jnp.where(delta == 0, os_curve(t, ker, kp, rlr), paid_incr))
     sigma = jnp.where(delta == 0, jnp.exp(log_sigma_os), jnp.exp(log_sigma_paid))
     numpyro.sample("obs", dist.LogNormal(jnp.log(mu), sigma), obs=y)
 

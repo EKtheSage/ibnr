@@ -48,9 +48,7 @@ def paid_curve(t, ker, kp, rlr, rrf):
     Exactly 0 at t = 0, which the incremental differencing below relies on."""
     import pytensor.tensor as pt
 
-    return (
-        rlr * rrf / (ker - kp) * (ker * (1 - pt.exp(-kp * t)) - kp * (1 - pt.exp(-ker * t)))
-    )
+    return rlr * rrf / (ker - kp) * (ker * (1 - pt.exp(-kp * t)) - kp * (1 - pt.exp(-ker * t)))
 
 
 def _correlated_ay_effects(n_w: int, sd_scales, nu: float = 10.0):

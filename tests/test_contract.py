@@ -143,6 +143,68 @@ def test_every_contract_records_the_cohort_and_fields_it_was_built_from():
     assert comp["segment"] == {"company": "co1"}
     assert comp["fields"] == ("paid_loss", "reported_loss")
 
+    # `fields` is what was READ; `models` is what carries a likelihood. They
+    # differ here because compartmental models outstanding = reported - paid, so
+    # a raw reported-loss cell is not something this fit can score even though
+    # reported_loss is one of its source fields.
+    assert comp["models"] == ("paid_loss", "outstanding")
+    assert paid["models"] == ("paid_loss",)
+    for c in (paid, odp, comp):
+        assert c["measure"] == "cumulative"
+
+
+def test_training_index_refuses_the_delta_stacked_compartmental_contract():
+    """compartmental stacks outstanding (delta=0) and paid (delta=1) over
+    IDENTICAL (w, d), so a predecessor lookup keyed on (w, d) keeps whichever
+    block came last and hands every outstanding cell a PAID predecessor - same
+    sign, same order of magnitude, silently wrong. ``CellIndex`` has no delta
+    axis to tell the halves apart, so the honest answer is to refuse rather than
+    return something that cannot be right."""
+    from ibnr.kernels.contract import compartmental_stan_data
+    from ibnr.kernels.holdout import training_index
+
+    df = _cohort_triangle().execute()
+    reported = df[df["field"] == "paid_loss"].copy()
+    reported["field"] = "reported_loss"
+    reported["value"] = reported["value"] * 1.25
+    joint = Triangle.from_long(pd.concat([df, reported], ignore_index=True))
+    comp = compartmental_stan_data(
+        joint,
+        paid_field="paid_loss",
+        reported_field="reported_loss",
+        premium_field="earned_premium",
+    )
+
+    # the duplication is real: every (w, d) appears twice
+    pairs = list(zip(comp["w"].tolist(), comp["d"].tolist(), strict=True))
+    assert len(pairs) == 2 * len(set(pairs))
+
+    with pytest.raises(NotImplementedError, match="delta-stacked"):
+        training_index(comp)
+
+
+def test_premium_from_another_cohort_is_refused():
+    """The single-cohort guards run on the LOSS rows, because that is the frame
+    they are built from. Premium is a different field and was unchecked.
+
+    A triangle with one company's losses and two companies' premium therefore
+    passed every guard, and then picked up whichever premium row sorted first -
+    measured, half the origins scored against another cohort's exposure, 7.8x
+    out, while ``contract["segment"]`` still named the right cohort. Wrong
+    premium is wrong ``mu`` for the whole lognormal family.
+    """
+    df = _cohort_triangle().execute()
+    intruder = df[(df["field"] == "earned_premium") & (df["dev_lag"] == 12)].copy()
+    intruder["company"] = "co2"
+    intruder["value"] = 7777.0
+    tri = Triangle.from_long(pd.concat([df, intruder], ignore_index=True))
+
+    # the loss rows are still single-cohort, so the existing guard says nothing
+    assert len(tri.select_fields("paid_loss").execute().drop_duplicates(["company"])) == 1
+
+    with pytest.raises(ValueError, match="spans multiple segment combinations"):
+        stan_data(tri, loss_field="paid_loss", premium_field="earned_premium")
+
 
 def test_realized_values():
     """Scoring outcomes align to the training grid by origin, with NaN where the

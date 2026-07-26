@@ -104,9 +104,7 @@ def clark_model(data: dict[str, Any]) -> None:
 
     # Cape Cod mean: an origin's ultimate is elr * premium, and the cell claims
     # the slice of the growth curve its age interval spans.
-    emerged = growth_curve(age_hi, omega, theta, curve) - growth_curve(
-        age_lo, omega, theta, curve
-    )
+    emerged = growth_curve(age_hi, omega, theta, curve) - growth_curve(age_lo, omega, theta, curve)
     mu = numpyro.deterministic("mu", jnp.exp(logprem_w[w0] + logelr) * emerged)
 
     # Stan's odp_lpdf, term for term (see the module docstring on duplication).

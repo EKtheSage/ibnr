@@ -178,8 +178,7 @@ class Compartmental(GalleryEntry):
         # affordable for PyMC (see the card's runtime note).
         if backend != "stan" and parallel_chains != 1:
             raise ValueError(
-                "parallel_chains is a stan-backend control; "
-                f"the {backend!r} port does not take it"
+                f"parallel_chains is a stan-backend control; the {backend!r} port does not take it"
             )
         train = triangle.as_of(as_of) if as_of is not None else triangle
         self.contract_ = compartmental_stan_data(

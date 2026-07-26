@@ -343,12 +343,68 @@ def test_segment_schema_must_match_not_merely_be_consistent(contract):
         index_into(plain_cells, contract)
 
 
+def test_index_into_refuses_cells_the_model_actually_trained_on(contract):
+    """Everything else checks the cells COULD be scored. This checks they are
+    not simply training data.
+
+    A held-out score computed on cells the model was fitted on is not a mistake
+    the number reveals: it is systematically too good, in the direction that
+    looks like success. Nothing about the cell's cohort, field, measure or
+    indices distinguishes it - only membership of the fit's own training set.
+    """
+    cells = next_diagonal(_triangle(through=N_W + 1), as_of="2015-12-31", fields="paid_loss")
+    idx = index_into(cells, contract)  # genuinely held out: fine
+
+    trained = training_index(contract)
+    smuggled = CellIndex(
+        w=np.concatenate([idx.w, trained.w[:2]]),
+        d=np.concatenate([idx.d, trained.d[:2]]),
+        value=np.concatenate([idx.value, trained.value[:2]]),
+        prev_value=np.concatenate([idx.prev_value, trained.prev_value[:2]]),
+        premium=np.concatenate([idx.premium, trained.premium[:2]]),
+    )
+    # a CellIndex built by hand bypasses the guard, which is why the guard lives
+    # in index_into - rebuild the frame instead and it is caught
+    assert smuggled.n_cells == idx.n_cells + 2
+
+    overlapping = cells.frame.copy()
+    train_row = overlapping.iloc[[0]].copy()
+    train_row["dev_lag"] = int(contract["d"][0]) * int(contract["dev_grain_months"])
+    train_row["origin_period"] = contract["origin_periods"][int(contract["w"][0]) - 1]
+    mixed = type(cells)(
+        frame=pd.concat([overlapping, train_row], ignore_index=True),
+        as_of=cells.as_of,
+        eval_date=cells.eval_date,
+        excluded=cells.excluded,
+        train_origins=cells.train_origins,
+        segments=cells.segments,
+        measure=cells.measure,
+        premium_field=cells.premium_field,
+    )
+    with pytest.raises(ValueError, match="TRAINING data"):
+        index_into(mixed, contract)
+
+
+def test_index_into_refuses_a_different_measure(contract):
+    """Cumulative and incremental cells sit at the SAME (w, d) and both index
+    cleanly, so a mismatch scores silently rather than failing. Measured: a
+    total log density of -3383 against a correct -35, with the deep-dev cell
+    individually indistinguishable from a legitimate score."""
+    incremental = _triangle(through=N_W + 1).select_fields("paid_loss").to_incremental()
+    cells = next_diagonal(incremental, as_of="2015-12-31", fields="paid_loss")
+
+    assert cells.measure == "incremental"
+    assert contract["measure"] == "cumulative"
+    with pytest.raises(ValueError, match="but this fit was built on"):
+        index_into(cells, contract)
+
+
 def test_index_into_refuses_a_field_the_fit_was_not_trained_on(contract):
     """A paid-loss fit handed reported-loss cells would evaluate one quantity's
     likelihood against another's data - same shape, same indices, wrong data."""
     reported = _segmented_triangle(None, through=N_W + 1, field="reported_loss")
     cells = next_diagonal(reported, as_of="2015-12-31", fields="reported_loss")
-    with pytest.raises(ValueError, match="not what this fit was trained on"):
+    with pytest.raises(ValueError, match="not what this fit models"):
         index_into(cells, contract, field="reported_loss")
 
 
@@ -363,13 +419,12 @@ def test_field_defaults_to_the_one_the_fit_was_trained_on(contract):
     )
 
 
-def test_index_into_refuses_cells_from_more_than_one_cohort(contract):
-    """``(w, d)`` does not identify a cell - two companies or two lines share
-    origin dates and development lags exactly.
+def test_a_multi_cohort_panel_cannot_reach_index_into_at_all(contract):
+    """The multi-cohort case is now stopped one layer earlier.
 
-    A contract is single-cohort by construction, so multi-cohort held-out cells
-    scored against one fit would produce a complete, plausible ELPD for a
-    mixture of cohorts. Nothing downstream could detect it.
+    ``next_diagonal`` refuses a triangle with several cohorts, so a mixed panel
+    can never be built and handed to a single-cohort fit. That is a stronger
+    guarantee than catching it at ``index_into``: there is no object to misuse.
     """
     rows = []
     for lob in ("wc", "ca"):
@@ -388,13 +443,14 @@ def test_index_into_refuses_cells_from_more_than_one_cohort(contract):
                     }
                 )
     tri = Triangle.from_long(pd.DataFrame(rows), measure="cumulative")
-    cells = next_diagonal(tri, as_of="2015-12-31", fields="paid_loss")
 
-    assert set(cells.frame["lob"]) == {"wc", "ca"}
-    # subsumed by the identity check: neither cohort is the fitted one, so the
-    # error names what the fit actually expects rather than just "too many"
+    with pytest.raises(ValueError, match="one cohort at a time"):
+        next_diagonal(tri, as_of="2015-12-31", fields="paid_loss")
+
+    # and a single WRONG cohort - which can still be built - is still refused
+    wrong = next_diagonal(tri.filter(tri.expr.lob == "wc"), as_of="2015-12-31", fields="paid_loss")
     with pytest.raises(ValueError, match="was trained on"):
-        index_into(cells, contract, field="paid_loss")
+        index_into(wrong, contract, field="paid_loss")
 
 
 def test_cells_carrying_extra_fields_are_narrowed_not_refused(contract):

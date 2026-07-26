@@ -25,7 +25,6 @@ import numpy as np
 A_IG_MAX = 1e5
 
 
-
 def build_model(data: dict[str, Any]):
     """Construct the CCL ``pm.Model`` from the standardized Stan data dict."""
     import pymc as pm
