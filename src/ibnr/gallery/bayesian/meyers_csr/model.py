@@ -21,7 +21,7 @@ import pandas as pd
 
 from ibnr.gallery.bayesian._toolchain import ensure_stan_toolchain
 from ibnr.gallery.bayesian.meyers_csr import scorer
-from ibnr.gallery.entry import GalleryEntry, ScoresHeldout
+from ibnr.gallery.entry import GalleryEntry, PredictsHeldout, ScoresHeldout
 from ibnr.gallery.registry import register
 from ibnr.kernels.contract import realized_values, stan_data
 from ibnr.kernels.holdout import CellIndex
@@ -46,7 +46,7 @@ def pooled(idata, name: str) -> np.ndarray:
 
 
 @register
-class MeyersCSR(GalleryEntry, ScoresHeldout):
+class MeyersCSR(GalleryEntry, ScoresHeldout, PredictsHeldout):
     name = "meyers_csr"
     family = "bayesian"
 
@@ -54,6 +54,13 @@ class MeyersCSR(GalleryEntry, ScoresHeldout):
     #: on the log scale and needs the ``-log C`` carry before it can be summed
     #: with an entry that models amounts. ``ScoresHeldout`` applies that.
     heldout_measure = "log_amount"
+
+    #: ``logloss`` is ``log`` of the CUMULATIVE paid loss, so a draw is a
+    #: cumulative amount. Declared rather than assumed: on a cumulative triangle
+    #: this makes ``predict_at`` a pass-through, but an entry modelling
+    #: increments needs the training-diagonal anchor added, and a silent mismatch
+    #: is off by that anchor while staying finite and plausible.
+    heldout_draw_scale = "cumulative"
 
     def __init__(self) -> None:
         self.contract_: dict | None = None
@@ -318,8 +325,27 @@ class MeyersCSR(GalleryEntry, ScoresHeldout):
         """
         if self.idata_ is None:
             raise RuntimeError("call fit() first")
-        post = {name: pooled(self.idata_, name) for name in scorer.REQUIRED_DRAWS}
-        return scorer.log_lik_cells(self.contract_, post, cells)
+        return scorer.log_lik_cells(self.contract_, self._posterior(), cells)
+
+    def _draws_native(self, cells: CellIndex, *, rng: np.random.Generator) -> np.ndarray:
+        """``(n_draws, n_cells)`` cumulative-loss draws. See ``scorer.draw_cells``.
+
+        The same glue as :meth:`_log_lik_native` over the same posterior, so the
+        density and the draws cannot end up describing different distributions -
+        both read ``mu_cells`` and ``_sig_cells``.
+        """
+        if self.idata_ is None:
+            raise RuntimeError("call fit() first")
+        return scorer.draw_cells(self.contract_, self._posterior(), cells, rng=rng)
+
+    def _posterior(self) -> dict[str, np.ndarray]:
+        """Pooled draws of the variables both cell-level scorers read.
+
+        ``posterior``, never ``log_likelihood``: that group is named ``log_lik``
+        by Stan and ``obs`` by both ports, NumPyro adds scalar ``*_prior`` factor
+        sites to it, and it holds the TRAINING cells in any case.
+        """
+        return {name: pooled(self.idata_, name) for name in scorer.REQUIRED_DRAWS}
 
     def convergence(self, var_names: list[str] | None = None) -> dict:
         """Convergence diagnostics from the fitted posterior: max R-hat, min

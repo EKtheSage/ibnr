@@ -149,3 +149,116 @@ class ScoresHeldout(ABC):
                 "premium, so its density cannot be carried to the amount scale"
             )
         return {"measure": measure, "premium": idx.premium}
+
+
+#: the bases a held-out draw can be on. The TRIANGLE's vocabulary
+#: (``TriangleMeta.measure``), deliberately - not ``densities.MEASURES``, which
+#: is the density's scale. Two different words spelled "measure"; see
+#: :class:`PredictsHeldout`.
+DRAW_SCALES: tuple[str, ...] = ("cumulative", "incremental")
+
+
+class PredictsHeldout(ABC):
+    """Opt-in capability: this entry can **draw the outcome** at cells it was not
+    trained on.
+
+    The sibling of :class:`ScoresHeldout`, and deliberately a separate mixin
+    because the two capabilities are genuinely independent. A density gives ELPD;
+    draws give CRPS and PIT. ``england_verrall_odp`` has draws but no usable
+    density (its quasi-likelihood is not normalized, see
+    :ref:`odp-not-a-density`), so it belongs on the CRPS board and not the ELPD
+    one; a Gaussian-head NN could be the reverse. Folding them into one mixin
+    would force every entry to claim both or neither.
+
+    **What the declaration is for.** ``heldout_draw_scale`` says whether
+    :meth:`_draws_native` draws a **cumulative** loss or an **incremental** one.
+    That is not bookkeeping. Three of the five Bayesian entries model increments
+    while the Schedule P triangles are cumulative, so undeclared increment draws
+    scored against ``HoldoutCells.values`` are wrong by the whole training-diagonal
+    anchor - measured on a synthetic cell with anchor 1000: CRPS 996 where the
+    truth is 3.4, both finite, both smooth, both entirely plausible on a board.
+    It is exactly the bug class an unconverted Jacobian is for a density, which
+    is why the conversion lives here, in the base, and not in any entry.
+
+    **Why the conversion is free of leakage.** ``C = X + C_prev`` with ``C_prev``
+    on the *training* diagonal, so it is data the model already had, not a
+    prediction. That is the same fact that makes the increment/cumulative
+    Jacobian 1 for a density (``kernels/densities.py``).
+
+    **Why comparing across scales is legitimate at all.** CRPS is
+    translation-equivariant - ``CRPS(F + c, y + c) == CRPS(F, y)`` - so once each
+    entry's draws are put on the triangle's own basis against the matching
+    outcome, an increment-drawing entry and a cumulative-drawing one produce
+    directly comparable numbers. Verified to 5.5e-12 on lognormal draws.
+
+    :meth:`predict_at` takes a :class:`~ibnr.kernels.holdout.HoldoutCells` and
+    not a bare ``CellIndex``, unlike :meth:`ScoresHeldout.log_lik_at`. The target
+    basis is a property of the *triangle* and only ``HoldoutCells`` carries it; a
+    ``target_scale=`` argument would be a knob whose wrong setting is precisely
+    the 996-versus-3.4 error above.
+    """
+
+    #: the basis :meth:`_draws_native` returns. One of :data:`DRAW_SCALES`.
+    heldout_draw_scale: ClassVar[str]
+
+    @abstractmethod
+    def _draws_native(self, cells: CellIndex, *, rng: np.random.Generator) -> np.ndarray:
+        """``(n_draws, n_cells)`` predictive draws on this entry's own scale.
+
+        One draw per posterior draw - the posterior predictive, not a plug-in at
+        the posterior mean. ``rng`` is supplied so the caller controls the seed.
+        """
+
+    def predict_at(
+        self,
+        cells: HoldoutCells,
+        *,
+        field: str | None = None,
+        seed: int | None = None,
+    ) -> np.ndarray:
+        """``(n_draws, n_cells)`` draws on the TRIANGLE's basis, in cell order.
+
+        Aligned with :attr:`~ibnr.kernels.holdout.HoldoutCells.values`, so the
+        caller scores against those and never has to know what the entry drew.
+        """
+        if not isinstance(cells, HoldoutCells):
+            raise TypeError(
+                "predict_at needs a HoldoutCells: the draws must be carried to the "
+                "TRIANGLE's basis and only HoldoutCells records which that is. A bare "
+                f"CellIndex cannot say; got {type(cells).__name__}"
+            )
+        scale = getattr(self, "heldout_draw_scale", None)
+        if scale not in DRAW_SCALES:
+            raise ValueError(
+                f"{type(self).__name__}.heldout_draw_scale must be one of "
+                f"{list(DRAW_SCALES)}, got {scale!r}"
+            )
+
+        idx = index_into(cells, self.contract_, field=field)
+        rng = np.random.default_rng(seed)
+        draws = np.asarray(self._draws_native(idx, rng=rng), dtype=float)
+        if draws.ndim != 2 or draws.shape[1] != idx.n_cells:
+            raise ValueError(
+                f"{type(self).__name__}._draws_native returned {draws.shape} for "
+                f"{idx.n_cells} cells; expected (n_draws, {idx.n_cells})"
+            )
+        if draws.shape[0] < 2:
+            raise ValueError(
+                f"{type(self).__name__}._draws_native returned {draws.shape[0]} draw(s); "
+                "CRPS needs at least 2, and one draw is a plug-in estimate rather than a "
+                "predictive distribution"
+            )
+        if scale == cells.measure:
+            return draws
+
+        # The only conversion either direction is the training-diagonal anchor.
+        anchor = np.asarray(idx.prev_value, dtype=float)
+        if np.isnan(anchor).any():
+            raise ValueError(
+                f"{type(self).__name__} draws {scale} values but these cells are "
+                f"{cells.measure!r}, and the conversion needs each cell's predecessor - "
+                f"{int(np.isnan(anchor).sum())} of {len(anchor)} are missing. On an "
+                "incremental triangle there is no predecessor to add at all, so an entry "
+                "drawing cumulatives cannot be scored on one"
+            )
+        return draws + anchor if cells.measure == "cumulative" else draws - anchor
