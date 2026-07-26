@@ -206,6 +206,32 @@ def test_premium_from_another_cohort_is_refused():
         stan_data(tri, loss_field="paid_loss", premium_field="earned_premium")
 
 
+def test_premium_that_is_entirely_the_wrong_cohort_is_refused():
+    """The harder half, and the one a uniqueness check cannot see.
+
+    A premium set that is ENTIRELY another company's is perfectly consistent
+    with itself: one cohort, one row per origin, nothing contradictory. It
+    passes every "is this internally coherent" test and is completely wrong.
+    Measured before the fix: a contract recording ``segment={'company': 'co1'}``
+    while carrying co2's premium of 7777 on every origin.
+
+    The check has to be that the premium cohort MATCHES the loss cohort. This is
+    the same lesson as the held-out cells - consistency is not identity.
+    """
+    df = _cohort_triangle().execute()
+    losses = df[df["field"] == "paid_loss"]
+    premium = df[df["field"] == "earned_premium"].copy()
+    premium["company"] = "co2"  # ALL the premium belongs to another company
+    tri = Triangle.from_long(pd.concat([losses, premium], ignore_index=True))
+
+    # internally consistent: exactly one premium cohort, one row per origin
+    prem_rows = tri.select_fields("earned_premium").execute()
+    assert set(prem_rows["company"]) == {"co2"}
+
+    with pytest.raises(ValueError, match="belongs to cohort"):
+        stan_data(tri, loss_field="paid_loss", premium_field="earned_premium")
+
+
 def test_realized_values():
     """Scoring outcomes align to the training grid by origin, with NaN where the
     outcome has not emerged yet.

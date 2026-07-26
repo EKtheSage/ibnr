@@ -456,6 +456,58 @@ def test_a_diagonal_of_pure_restatements_is_an_error_not_an_empty_panel(backend_
         next_diagonal(tri, as_of="2013-12-31", fields="paid_loss")
 
 
+def test_fields_on_different_calendars_are_refused(backend_name):
+    """The multi-cohort mistake, on the other axis.
+
+    If reported loss updates in June and paid in December, one shared ``D_next``
+    takes the earliest: only reported cells come back, the paid diagonal
+    disappears, and every exclusion count is zero. Downstream, ``index_into``
+    then fails with "no held-out cells for field='paid_loss'" - a message about
+    the wrong problem entirely.
+
+    Requiring agreement is the honest reading rather than scoring each field at
+    its own date: compartmental is the only entry that scores two fields, and
+    its contract already demands paid and reported on IDENTICAL cells, so a
+    panel whose fields sit on different diagonals is unusable by the one model
+    that would ask for it.
+    """
+    rows = []
+    for fld, mult in (("paid_loss", 1.0), ("reported_loss", 1.3)):
+        for r in staircase(4, 4, through=4, field=fld):
+            rows.append({**r, "value": r["value"] * mult})
+    # reported gains its new diagonal in JUNE, paid in DECEMBER
+    for w in range(2, 5):
+        rows.append(
+            {
+                "origin_period": dt.date(2010 + w - 1, 1, 1),
+                "dev_lag": 12 * (6 - w),
+                "eval_date": dt.date(2014, 6, 30),
+                "field": "reported_loss",
+                "value": 900.0 + w,
+            }
+        )
+        rows.append(
+            {
+                "origin_period": dt.date(2010 + w - 1, 1, 1),
+                "dev_lag": 12 * (6 - w),
+                "eval_date": dt.date(2014, 12, 31),
+                "field": "paid_loss",
+                "value": 800.0 + w,
+            }
+        )
+    tri = Triangle.from_long(pd.DataFrame(rows), measure="cumulative", backend=backend_name)
+
+    with pytest.raises(ValueError, match="do not share a next diagonal"):
+        next_diagonal(tri, as_of="2013-12-31", fields=["paid_loss", "reported_loss"])
+
+    # each field alone lands on its own diagonal, which is the supported shape
+    paid = next_diagonal(tri, as_of="2013-12-31", fields="paid_loss")
+    assert paid.eval_date == dt.date(2014, 12, 31)
+    assert paid.n_cells == 3
+    reported = next_diagonal(tri, as_of="2013-12-31", fields="reported_loss")
+    assert reported.eval_date == dt.date(2014, 6, 30)
+
+
 def test_a_late_starting_cohort_gets_its_own_first_origin_flagged(backend_name):
     """A cohort's first accident year is new to THAT cohort's fit.
 
