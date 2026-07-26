@@ -232,10 +232,14 @@ def test_numpyro_graph_matches_stan(variant):
     model = getattr(model_numpyro, f"{variant}_model")
     subs = {"sd_ay": np.array([0.2, 0.1])}
     if variant == "lognormal":
-        subs |= {"sd_dev": np.array([0.7, 0.5]), "sd_ker": np.array([0.3, 0.3]),
-                 "sd_kp": np.array([0.3, 0.3])}
-    tr = handlers.trace(handlers.seed(handlers.substitute(model, subs), jax.random.PRNGKey(0))
-                        ).get_trace(data)
+        subs |= {
+            "sd_dev": np.array([0.7, 0.5]),
+            "sd_ker": np.array([0.3, 0.3]),
+            "sd_kp": np.array([0.3, 0.3]),
+        }
+    tr = handlers.trace(
+        handlers.seed(handlers.substitute(model, subs), jax.random.PRNGKey(0))
+    ).get_trace(data)
     assert np.asarray(tr["u_ay"]["value"]).shape == (2, data["n_w"])
     assert -1.0 <= float(np.asarray(tr["rho_ay"]["value"])) <= 1.0
     mu = np.asarray(tr["mu"]["value"])
@@ -273,7 +277,9 @@ def test_pymc_chol_is_diag_pre_multiply():
 
     with pm.Model():
         chol, corr, sds = pm.LKJCholeskyCov(
-            "x", n=2, eta=1.0,
+            "x",
+            n=2,
+            eta=1.0,
             sd_dist=pm.HalfStudentT.dist(nu=10, sigma=np.array([0.2, 0.1])),
             compute_corr=True,
         )

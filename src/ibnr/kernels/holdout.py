@@ -198,7 +198,20 @@ def index_into(cells: HoldoutCells, contract: dict, *, field: str | None = None)
             f"{list(fitted_fields)}"
         )
 
+    # The SCHEMA must match, not just the values that happen to be present.
+    # An unsegmented fit is an aggregate: handing it one company's cells is a
+    # category error even though there is only one cohort in the panel and
+    # nothing looks inconsistent. Likewise a fit keyed on `lob` alone cannot
+    # vouch for cells keyed on (lob, company) - the extra dimension is simply
+    # not checked, so a second company's cells would pass on a matching lob.
     fitted_segment = dict(contract["segment"])
+    if set(fitted_segment) != set(cells.segments):
+        raise ValueError(
+            f"held-out cells are keyed on {sorted(cells.segments)} but this fit was built on "
+            f"{sorted(fitted_segment)}. The schemas must match exactly: an unsegmented fit is "
+            "an aggregate and cannot be scored on one cohort's cells, and a fit missing a "
+            "segment dimension cannot tell two cohorts apart along it"
+        )
     if fitted_segment:
         missing = [s for s in fitted_segment if s not in frame.columns]
         if missing:
@@ -215,15 +228,6 @@ def index_into(cells: HoldoutCells, contract: dict, *, field: str | None = None)
                 f"held-out cells belong to cohort(s) {actual.to_dict('records')}, but this fit "
                 f"was trained on {fitted_segment}. Origin dates and dev lags are shared across "
                 "cohorts, so these would index cleanly and score the wrong one"
-            )
-    elif cells.segments:
-        # the fit has no segment columns but the cells do - the same mistake one
-        # level up, and there is nothing on the contract to check against
-        combos = frame[list(cells.segments)].drop_duplicates()
-        if len(combos) > 1:
-            raise ValueError(
-                f"held-out cells span {len(combos)} cohorts on {list(cells.segments)} but the "
-                "contract carries no segment identity to check them against"
             )
 
     origins = list(contract["origin_periods"])
@@ -385,13 +389,16 @@ def next_diagonal(
     keys = [*segments, "field", "origin_period", "dev_lag"]
     step = GRAIN_MONTHS[triangle.meta.dev_grain]
 
-    # D_next is read from the eval dates of the LOSS ROWS BEING SCORED, after
-    # the origins restriction - not from the triangle's dates as a whole.
-    # Premium is typically restated on its own schedule, and an exposure-only
-    # update carries an eval_date with no loss cells behind it: taking the
-    # triangle-wide minimum would select that date, hold out an empty diagonal,
-    # and skip the real one entirely. Same for a date that only exists outside
-    # the requested origin window.
+    # D_next is the first date after the cutoff that introduces a NEW CELL of a
+    # scored field - not merely the first date carrying a row of one.
+    #
+    # Two ways to get this wrong, and both produce an empty hold-out while the
+    # real diagonal sits one date later. Premium is restated on its own
+    # schedule, so an exposure-only update has an eval_date with no loss rows at
+    # all. And a LOSS-field restatement of an already-trained cell does carry a
+    # loss row, passes any field filter, and is then removed by the anti-join
+    # below - leaving nothing. A date only counts if it tells us something we
+    # did not train on.
     full = _normalize_dates(triangle.execute())
     scope = full[full["field"].isin(wanted)]
     if origins is not None:
@@ -400,24 +407,43 @@ def next_diagonal(
     if scope.empty:
         raise ValueError(f"no observations of {wanted} in the requested origins")
 
-    later = sorted(e for e in scope["eval_date"].unique() if e > cutoff)
-    if not later:
-        raise ValueError(
-            f"no eval_date after {cutoff} carrying any of {wanted}: they end at "
-            f"{max(scope['eval_date'])}, so there is no next diagonal to hold out"
-        )
-    d_next = later[0]  # READ from the data; never cutoff + a grain step
-
-    # Both slices go through Triangle.as_of, so restatement collapsing is the
-    # single implementation in transforms.py rather than a second one here.
     before = _normalize_dates(triangle.as_of(cutoff).execute())
-    after = _normalize_dates(triangle.as_of(d_next).execute())
     if origins is not None:
         keep = {_as_date(o) for o in origins}
         before = before[before["origin_period"].isin(keep)]
-        after = after[after["origin_period"].isin(keep)]
         if before.empty:
             raise ValueError("origins selected no training observations")
+    trained_keys = set(map(tuple, before.loc[before["field"].isin(wanted), keys].to_numpy()))
+
+    later = sorted(e for e in scope["eval_date"].unique() if e > cutoff)
+    d_next = next(
+        (
+            e
+            for e in later
+            if any(
+                tuple(row) not in trained_keys
+                for row in scope.loc[scope["eval_date"] == e, keys].to_numpy()
+            )
+        ),
+        None,
+    )
+    if d_next is None:
+        raise ValueError(
+            f"no eval_date after {cutoff} introduces a new {wanted} cell"
+            + (
+                f" (dates after it exist, up to {max(later)}, but carry only restatements "
+                "of cells already in training)"
+                if later
+                else f": they end at {max(scope['eval_date'])}"
+            )
+            + ", so there is no next diagonal to hold out"
+        )
+
+    # Both slices go through Triangle.as_of, so restatement collapsing is the
+    # single implementation in transforms.py rather than a second one here.
+    after = _normalize_dates(triangle.as_of(d_next).execute())
+    if origins is not None:
+        after = after[after["origin_period"].isin(keep)]
 
     train = before[before["field"].isin(wanted)]
     scored = after[after["field"].isin(wanted)]
