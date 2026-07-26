@@ -122,9 +122,7 @@ def _load_company_contracts(
     else:
         mart = active_mart_path(warehouse)
         codes = list(select_companies(mart, line, n_companies)["company_code"])
-    return [
-        (f"{line}:{code}", tri_line.filter(ibis._.company_code == code)) for code in codes
-    ]
+    return [(f"{line}:{code}", tri_line.filter(ibis._.company_code == code)) for code in codes]
 
 
 def _fit_backends(triangle, backends, args):
