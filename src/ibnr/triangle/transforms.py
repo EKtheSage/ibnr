@@ -9,6 +9,13 @@ Cell identity is (segments..., field, origin_period, dev_lag). Triangles are
 assumed to hold at most one row per cell per eval_date; cum<->incr conversions
 additionally assume one row per cell (slice with as_of()/latest_diagonal()
 first if the table holds restated history).
+
+Every join below is a plain equi-join on those keys, which is only safe because
+segment values are guaranteed non-null: SQL join equality is false for
+NULL = NULL, so one null segment value would silently delete a whole cohort
+here. That guarantee is enforced at the door by ``io.from_long`` and checked by
+``validate.null_segments``; do not weaken either without making these joins
+null-safe on BOTH backends first.
 """
 
 from __future__ import annotations
@@ -97,6 +104,9 @@ def latest_diagonal(t: Triangle) -> Triangle:
 
 
 def _keep_latest_eval(expr, keys: list[str]):
+    # keys include the segment columns, so this inner join relies on the
+    # non-null-segment guarantee documented at the top of the module: a null
+    # there matches nothing and the cohort is dropped without a trace.
     latest = expr.group_by(keys).agg(eval_date=_.eval_date.max())
     return expr.join(latest, [*keys, "eval_date"], how="inner")
 
