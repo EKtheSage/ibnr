@@ -519,29 +519,57 @@ def next_diagonal(
             raise ValueError("origins selected no training observations")
     trained_keys = set(map(tuple, before.loc[before["field"].isin(wanted), keys].to_numpy()))
 
-    later = sorted(e for e in scope["eval_date"].unique() if e > cutoff)
-    d_next = next(
-        (
-            e
-            for e in later
-            if any(
-                tuple(row) not in trained_keys
-                for row in scope.loc[scope["eval_date"] == e, keys].to_numpy()
-            )
-        ),
-        None,
-    )
-    if d_next is None:
+    # PER FIELD, then require agreement. One date for several fields repeats the
+    # multi-cohort mistake on the other axis: if reported loss updates in June
+    # and paid in December, the earliest wins, only reported cells come back, and
+    # the paid diagonal disappears with every exclusion count at zero. Measured
+    # exactly that - eval_date 2014-06-30, fields ['reported_loss'], 3 cells,
+    # zero exclusions - and index_into then fails downstream with "no held-out
+    # cells for field='paid_loss'", which describes the wrong problem.
+    #
+    # Requiring agreement rather than scoring each field at its own date is the
+    # honest reading: compartmental is the only entry that scores two fields, and
+    # its contract already demands paid and reported on IDENTICAL cells, so a
+    # panel whose fields sit on different diagonals is unusable by the one model
+    # that would ask for it.
+    per_field: dict[str, dt.date | None] = {}
+    for name in wanted:
+        rows = scope[scope["field"] == name]
+        dates = sorted(e for e in rows["eval_date"].unique() if e > cutoff)
+        per_field[name] = next(
+            (
+                e
+                for e in dates
+                if any(
+                    tuple(row) not in trained_keys
+                    for row in rows.loc[rows["eval_date"] == e, keys].to_numpy()
+                )
+            ),
+            None,
+        )
+
+    barren = sorted(f for f, e in per_field.items() if e is None)
+    if barren:
+        later = sorted(e for e in scope["eval_date"].unique() if e > cutoff)
         raise ValueError(
-            f"no eval_date after {cutoff} introduces a new {wanted} cell"
+            f"no eval_date after {cutoff} introduces a new cell of {barren}"
             + (
-                f" (dates after it exist, up to {max(later)}, but carry only restatements "
-                "of cells already in training)"
+                f" (later dates exist, up to {max(later)}, but carry only restatements of "
+                "cells already in training)"
                 if later
-                else f": they end at {max(scope['eval_date'])}"
+                else f": observations end at {max(scope['eval_date'])}"
             )
             + ", so there is no next diagonal to hold out"
         )
+
+    distinct = sorted(set(per_field.values()))
+    if len(distinct) > 1:
+        raise ValueError(
+            f"the scored fields do not share a next diagonal: {per_field}. Scoring them "
+            "together would take the earliest and silently drop the others - score them "
+            "in separate calls, or align the reporting calendars first"
+        )
+    d_next = distinct[0]
 
     # Both slices go through Triangle.as_of, so restatement collapsing is the
     # single implementation in transforms.py rather than a second one here.

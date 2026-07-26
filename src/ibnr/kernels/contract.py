@@ -152,23 +152,38 @@ def stan_data(
     }
 
     if premium_field is not None:
-        premium = _premium_by_origin(triangle, premium_field, origins)
+        premium = _premium_by_origin(
+            triangle, premium_field, origins, segment=_cohort_identity(triangle, df, ())["segment"]
+        )
         data["premium"] = premium
         data["logprem"] = np.log(premium)[data["w"] - 1]
     return data
 
 
-def _premium_by_origin(triangle: Triangle, premium_field: str, origins: list) -> np.ndarray:
-    """One exposure per origin, from this cohort only.
+def _premium_by_origin(
+    triangle: Triangle,
+    premium_field: str,
+    origins: list,
+    *,
+    segment: dict | None = None,
+) -> np.ndarray:
+    """One exposure per origin, from THIS cohort.
 
     The single-cohort guards above are applied to the LOSS rows, because that is
-    the frame they build from. Premium is a different field and was never
-    checked, so a triangle carrying one company's losses and two companies'
-    premium passed every guard and then picked up whichever premium row sorted
-    first - measured, half the origins scored against another line's exposure,
-    7.8x out, with the contract's own ``segment`` still reporting the right
-    cohort. Wrong premium is wrong ``mu`` for every entry in the lognormal
-    family, and a wrong Jacobian for anything on a loss-ratio measure.
+    the frame they build from. Premium is a different field, so it needs its own
+    check - and the check has to be that it MATCHES the loss cohort, not merely
+    that it is internally consistent.
+
+    Both halves matter, and only the first was obvious. A triangle with one
+    company's losses and two companies' premium picked whichever premium row
+    sorted first: half the origins on another line's exposure, 7.8x out. But a
+    triangle whose premium rows are *entirely* another company's is perfectly
+    consistent with itself, passes any uniqueness test, and is completely wrong -
+    measured, ``segment={'company': 'co1'}`` recorded on a contract carrying
+    co2's premium throughout.
+
+    Wrong premium is wrong ``mu`` for every entry in the lognormal family, and a
+    wrong Jacobian for anything on a loss-ratio measure.
     """
     pdf = triangle.select_fields(premium_field).latest_diagonal().execute()
     if pdf.empty:
@@ -180,6 +195,14 @@ def _premium_by_origin(triangle: Triangle, premium_field: str, origins: list) ->
             f"{segs}; filter to one cohort first (the loss field is already single-cohort, "
             "so this is exposure from another cohort)"
         )
+    if segment:
+        actual = {k: pdf[k].iloc[0] for k in segment if k in pdf.columns}
+        if actual != segment:
+            raise ValueError(
+                f"premium field {premium_field!r} belongs to cohort {actual}, but the loss "
+                f"field belongs to {segment}. A consistent set of premium rows for the WRONG "
+                "cohort passes every uniqueness check and is entirely wrong"
+            )
     pdf = pdf.copy()
     pdf["origin_period"] = _as_date(pdf["origin_period"])
     if pdf["origin_period"].duplicated().any():
@@ -284,7 +307,9 @@ def odp_stan_data(
     }
 
     if premium_field is not None:
-        premium = _premium_by_origin(triangle, premium_field, origins)
+        premium = _premium_by_origin(
+            triangle, premium_field, origins, segment=_cohort_identity(triangle, df, ())["segment"]
+        )
         data["premium"] = premium
         data["logprem"] = np.log(premium)[data["w"] - 1]
     return data
@@ -402,8 +427,12 @@ def compartmental_stan_data(
         "paid_to_date": latest[paid_field].to_numpy(dtype=float),
         "latest_d": latest["d"].to_numpy(dtype=int),
     }
-    premium = _premium_by_origin(triangle, premium_field, origins)
-    data["premium"] = premium
+    data["premium"] = _premium_by_origin(
+        triangle,
+        premium_field,
+        origins,
+        segment=_cohort_identity(triangle, df, ())["segment"],
+    )
     return data
 
 
@@ -493,7 +522,12 @@ def cohort_grid(
         loss_field=loss_field,
     )
     if premium_field is not None:
-        data["premium"] = _premium_by_origin(triangle, premium_field, data["origin_periods"])
+        data["premium"] = _premium_by_origin(
+            triangle,
+            premium_field,
+            data["origin_periods"],
+            segment=_cohort_identity(triangle, df, ())["segment"],
+        )
     return data
 
 
