@@ -38,7 +38,7 @@ import numpy as np
 from ibnr.kernels.densities import normal_lpdf
 from ibnr.kernels.holdout import CellIndex
 
-__all__ = ["log_lik_cells", "mu_cells"]
+__all__ = ["draw_cells", "log_lik_cells", "mu_cells"]
 
 #: posterior variables this scorer needs, in every backend
 REQUIRED_DRAWS: tuple[str, ...] = ("logelr", "alpha", "beta", "speedup", "sig")
@@ -70,5 +70,54 @@ def log_lik_cells(contract: dict, post: dict[str, np.ndarray], cells: CellIndex)
             "and cannot score them (the same rule the contract applies at fit time)"
         )
     mu = mu_cells(contract, post, cells)
-    sig = np.asarray(post["sig"], dtype=float)[:, cells.d - 1]
+    sig = _sig_cells(post, cells)
     return normal_lpdf(np.log(value)[None, :], mu, sig)
+
+
+def draw_cells(
+    contract: dict,
+    post: dict[str, np.ndarray],
+    cells: CellIndex,
+    *,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """``(n_draws, n_cells)`` draws of **cumulative** loss at the cells.
+
+    The sampling counterpart of :func:`log_lik_cells`, and the same two lines of
+    ``model.stan``: ``logloss[i] ~ normal(mu[i], sig[d[i]])`` read forwards
+    instead of backwards, so a draw is ``exp(normal(mu, sig))``.
+
+    **One draw per posterior draw**, paired row for row with ``mu`` and ``sig``.
+    That is the posterior predictive: it carries parameter uncertainty *and*
+    process noise. Drawing repeatedly from the posterior mean instead would give
+    a plug-in predictive that is systematically too sharp - narrower intervals,
+    a better-looking CRPS, and nothing about the output that says so.
+
+    Cumulative because CSR's ``logloss`` is ``log`` of the cumulative paid loss,
+    which is why the entry declares ``heldout_draw_scale = "cumulative"``. On the
+    Schedule P triangles that matches the triangle's own basis, so
+    ``PredictsHeldout.predict_at`` passes these through unchanged.
+
+    Unlike :func:`log_lik_cells` this does **not** need ``cells.value``: it is a
+    forecast, not an evaluation. So it does not inherit that function's
+    non-positive-loss refusal - a cohort whose held-out cell is zero-paid still
+    has a perfectly well-defined lognormal predictive, it just has no lognormal
+    *density* at the outcome. An entry can therefore be CRPS-scorable on a cohort
+    where it is not ELPD-scorable, which is exactly why the two capabilities are
+    separate mixins.
+    """
+    mu = mu_cells(contract, post, cells)
+    sig = _sig_cells(post, cells)
+    return np.exp(rng.normal(mu, sig))
+
+
+def _sig_cells(post: dict[str, np.ndarray], cells: CellIndex) -> np.ndarray:
+    """``(n_draws, n_cells)`` lognormal scale, ``sig[d]`` per ``model.stan``.
+
+    One expression, used by both the density and the draws, so the two cannot
+    disagree about which development lag a cell reads its scale at. An index slip
+    here shows up in a density as a mis-scored cell and in draws as a
+    mis-calibrated one, and reading them off separate lines is how those two stay
+    consistent with each other while both being wrong.
+    """
+    return np.asarray(post["sig"], dtype=float)[:, cells.d - 1]
