@@ -46,7 +46,12 @@ from ibnr.gallery.nn.transformer.config import TransformerConfig  # noqa: E402
 from ibnr.gallery.nn.transformer.model import NNTransformer  # noqa: E402
 from ibnr.kernels.densities import MEASURES, check_normalization  # noqa: E402
 from ibnr.kernels.forecast import logmeanexp  # noqa: E402
-from ibnr.kernels.holdout import CellIndex, index_into, next_diagonal  # noqa: E402
+from ibnr.kernels.holdout import (  # noqa: E402
+    CellIndex,
+    HoldoutCells,
+    index_into,
+    next_diagonal,
+)
 
 from .conftest import BACKENDS, make_multiline_triangle  # noqa: E402
 
@@ -202,6 +207,68 @@ def test_cohort_contract_on_a_hand_built_contract():
     np.testing.assert_allclose(got["premium"], [100.0, 200.0])  # cohort 0's row, 1-D
     with pytest.raises(IndexError, match="out of range"):
         cohort_contract(contract, 5, models=("paid_loss",))
+
+
+def test_adapter_declares_the_predecessor_of_every_obs_cell():
+    """Cumulative values at devs {1, 2, 4, 5}: the dev-3 hole makes the dev-4
+    increment unusable, so obs = {1, 2, 5} and the anchor is dev 5 - dev 4 is
+    neither, yet its VALUE fed the dev-5 increment during training. The
+    declared set must be the honest closure rather than relying on
+    ``next_diagonal`` excluding such cells as ``no_predecessor`` downstream:
+    ``index_into`` must refuse the dev-4 cell as training data. Dev 3, the
+    genuine hole, stays undeclared - the closure is minimal, not a blanket
+    fill.
+
+    Mutation this must catch: drop the predecessor-closure union in
+    ``cohort_contract`` - ``index_into`` then accepts the dev-4 cell and the
+    ``raises`` below fails.
+    """
+    import datetime as dtm
+
+    import pandas as pd
+
+    obs = np.zeros((1, 1, 5), dtype=bool)
+    obs[0, 0, [0, 1, 4]] = True  # usable increments at devs 1, 2, 5
+    contract = {
+        "cohorts": pd.DataFrame({"lob": ["a"]}),
+        "obs_mask": obs,
+        "latest_dev": np.array([[5]]),
+        "premium": np.array([[100.0]]),
+        "fields": ["paid_loss"],
+        "origin_periods": [dtm.date(2000, 1, 1)],
+        "dev_grain_months": 12,
+        "n_w": 1,
+        "n_d": 5,
+    }
+    adapter = cohort_contract(contract, 0, models=("paid_loss",))
+    declared = set(zip(adapter["w"].tolist(), adapter["d"].tolist(), strict=True))
+    # obs {1, 2, 5} + anchor {5} + predecessors {1, 4}; dev 3 undeclared
+    assert declared == {(1, 1), (1, 2), (1, 4), (1, 5)}
+
+    frame = pd.DataFrame(
+        [
+            {
+                "lob": "a",
+                "field": "paid_loss",
+                "origin_period": dtm.date(2000, 1, 1),
+                "dev_lag": 48,  # dev 4: the probed cell
+                "eval_date": dtm.date(2003, 12, 31),
+                "value": 123.0,
+                "prev_value": np.nan,
+            }
+        ]
+    )
+    cells = HoldoutCells(
+        frame=frame,
+        as_of=dtm.date(2004, 12, 31),
+        eval_date=dtm.date(2003, 12, 31),
+        excluded=frame.iloc[0:0],
+        train_origins=(dtm.date(2000, 1, 1),),
+        segments=("lob",),
+        measure="cumulative",
+    )
+    with pytest.raises(ValueError, match="TRAINING data"):
+        index_into(cells, adapter, field="paid_loss")
 
 
 def test_adapter_indexes_cells_correctly(fitted):

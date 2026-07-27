@@ -44,13 +44,20 @@ def cohort_contract(contract: dict, cohort: int, *, models: Sequence[str]) -> di
     models:   the field(s) this entry puts a likelihood on - for the MDN
               entries the target channel, ``contract["fields"][0]``.
 
-    The training cells declared as ``(w, d)`` are the union of the cohort's
-    usable increments (``obs_mask``) and its per-origin anchors
-    (``latest_dev``): an anchor cell whose own increment was unusable (a
-    predecessor hole) is absent from ``obs_mask``, but its VALUE was training
-    data all the same - the rollout and the held-out draws are anchored on it -
-    so scoring it as "held out" would report in-sample fit. ``premium`` is the
-    cohort's per-origin booked premium, 1-D as ``index_into`` indexes it.
+    The training cells declared as ``(w, d)`` are the honest closure of what
+    the fit consumed, the union of three sets: the cohort's usable increments
+    (``obs_mask``); its per-origin anchors (``latest_dev``); and each obs
+    cell's immediate predecessor ``(w, d - 1)``. The latter two cover cells
+    whose VALUE was training information even though their own increment was
+    unusable: an anchor with a predecessor hole is absent from ``obs_mask``
+    yet the rollout and the held-out draws are anchored on it, and with
+    cumulative values at devs {1, 2, 4, 5} the dev-4 cell feeds the dev-5
+    increment while being neither obs nor anchor. Scoring any of these as
+    "held out" would report in-sample fit, so they are declared here rather
+    than left to downstream guards (``next_diagonal`` happens to exclude the
+    dev-4 case as ``no_predecessor`` today, but the overlap check should not
+    depend on that). ``premium`` is the cohort's per-origin booked premium,
+    1-D as ``index_into`` indexes it.
 
     ``measure`` is ``"cumulative"`` unconditionally because ``nn_data`` refuses
     anything else at construction.
@@ -65,6 +72,10 @@ def cohort_contract(contract: dict, cohort: int, *, models: Sequence[str]) -> di
     obs = np.asarray(contract["obs_mask"][ci], dtype=bool)  # (n_w, n_d)
     w_obs, d_obs = np.nonzero(obs)
     trained = set(zip((w_obs + 1).tolist(), (d_obs + 1).tolist(), strict=True))
+    # predecessor closure: an obs cell's increment was differenced against
+    # (w, d - 1), so that cell's value is training information even when its
+    # own increment was unusable (0-based d_obs IS the 1-based predecessor dev)
+    trained |= {(int(w) + 1, int(d)) for w, d in zip(w_obs, d_obs, strict=True) if d >= 1}
     latest = np.asarray(contract["latest_dev"][ci], dtype=int)  # (n_w,) 1-based, 0 = none
     for w0 in np.nonzero(latest > 0)[0]:
         trained.add((int(w0) + 1, int(latest[w0])))
