@@ -2,8 +2,8 @@
 entry registers (and this config is importable) without the [nn] extra.
 
 Defaults are hand-chosen for the Schedule P regime (~600 cohorts x ~55
-observed cells) and disclosed as such in card.md; systematic HPO arrives
-with kernels/tuning.py (deferred)."""
+observed cells) and disclosed as such in card.md; systematic HPO lives in
+kernels/tuning.py (random search over this dataclass)."""
 
 from __future__ import annotations
 
