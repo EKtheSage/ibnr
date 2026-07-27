@@ -21,7 +21,7 @@ import pandas as pd
 import pytest
 
 from ibnr import Triangle
-from ibnr.kernels.contract import cohort_grid
+from ibnr.kernels.contract import cohort_grid, cohort_grid_frame
 from ibnr.kernels.mack import _tail_sigma2, fit_mack, fit_mack_many, simulate_ultimates
 
 from .conftest import make_cohort_triangle
@@ -63,6 +63,44 @@ def test_cohort_grid_accepts_more_origins_than_devs(backend_name):
     )
     grid = cohort_grid(make_cohort_triangle(backend_name, cum), loss_field="paid_loss")
     np.testing.assert_array_equal(grid["latest_dev"], [2, 2, 2, 1, 0])
+
+
+def test_cohort_grid_carries_identity_and_cell_indices(backend_name):
+    """Milestone 6: the deterministic contract carries the same cohort identity
+    as the Stan contracts (so ``kernels.holdout.index_into`` can refuse cells
+    that are not this fit's) plus 1-based ``w``/``d`` for every observed cell
+    (so it can refuse cells the fit was TRAINED on)."""
+    tri = make_cohort_triangle(backend_name, SMALL, segment={"lob": "auto"})
+    grid = cohort_grid(tri, loss_field="paid_loss")
+    assert grid["segment"] == {"lob": "auto"}
+    assert grid["fields"] == ("paid_loss",) == grid["models"]
+    assert grid["measure"] == "cumulative"
+    w0, d0 = np.nonzero(grid["obs_mask"])
+    np.testing.assert_array_equal(grid["w"], w0 + 1)
+    np.testing.assert_array_equal(grid["d"], d0 + 1)
+
+
+def test_cohort_grid_frame_takes_identity_from_the_caller(backend_name):
+    """The frame half has no Triangle to read an identity from, so the batch
+    caller (fit_mack_many's group loop) supplies segment and measure - and they
+    must land on the contract unchanged, or every batch fit is unindexable.
+
+    ``measure`` is REQUIRED, deliberately: it stamps an identity fact this
+    function cannot verify, and ``index_into``'s measure refusal would be keyed
+    off a defaulted lie the first time an incremental frame reached it."""
+    df = make_cohort_triangle(backend_name, SMALL).execute()
+    grid = cohort_grid_frame(
+        df,
+        dev_grain_months=12,
+        loss_field="paid_loss",
+        segment={"company_code": "0001"},
+        measure="cumulative",
+    )
+    assert grid["segment"] == {"company_code": "0001"}
+    assert grid["measure"] == "cumulative"
+    assert grid["fields"] == ("paid_loss",)
+    with pytest.raises(TypeError, match="measure"):
+        cohort_grid_frame(df, dev_grain_months=12, loss_field="paid_loss", segment={})
 
 
 def test_cohort_grid_rejects_interior_hole(backend_name):

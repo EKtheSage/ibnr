@@ -61,6 +61,7 @@ import numpy as np
 import pandas as pd
 
 from ibnr.kernels.contract import cohort_grid, cohort_grid_frame
+from ibnr.kernels.holdout import CellIndex
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.triangle.core import GRAIN_MONTHS, Triangle
 
@@ -363,7 +364,14 @@ def fit_mack_many(
         key = key if isinstance(key, tuple) else (key,)
         try:
             grid = cohort_grid_frame(
-                group, dev_grain_months=step, units=triangle.meta.units, loss_field=loss_field
+                group,
+                dev_grain_months=step,
+                units=triangle.meta.units,
+                loss_field=loss_field,
+                # the identity half a bare frame cannot derive: this loop's own
+                # group key IS the cohort, and the measure was checked above
+                segment=dict(zip(by, key, strict=True)),
+                measure=triangle.meta.measure,
             )
             fits[key] = fit_mack_grid(grid, sigma_rule=sigma_rule)
         except ValueError as exc:
@@ -519,10 +527,7 @@ def simulate_ultimates(
     fit.require_positive_open_diagonals()
     rng = np.random.default_rng(seed)
     n_w, n_d = fit.n_w, fit.n_d
-    f_true = np.tile(fit.f, (n_draws, 1))
-    if parameter_risk:
-        se = np.sqrt(np.where(fit.s > 0, fit.sigma2 / fit.s, 0.0))
-        f_true = np.maximum(f_true + rng.standard_normal((n_draws, n_d - 1)) * se, 1e-12)
+    f_true = _factor_draws(fit, n_draws=n_draws, rng=rng, parameter_risk=parameter_risk)
 
     ult = np.empty((n_draws, n_w))
     for i in range(n_w):
@@ -540,6 +545,125 @@ def simulate_ultimates(
         }
     )
     return PredictiveDistribution(samples=ult, targets=targets, units=fit.units).with_total("total")
+
+
+def _factor_draws(
+    fit: MackFit, *, n_draws: int, rng: np.random.Generator, parameter_risk: bool
+) -> np.ndarray:
+    """``(n_draws, n_d - 1)`` "true" development factors, one row per draw.
+
+    With ``parameter_risk``, drawn from Mack's estimation-error distribution
+    ``f_j ~ N(f_j-hat, sigma_j^2 / S_j)`` - ONCE per draw and shared across
+    every cell/origin that draw touches, which is exactly what correlates them.
+    A normal draw can cross zero on a thin, volatile step; a negative "true"
+    factor would make the simulated step meaningless, so it is floored at
+    1e-12. Rare enough to be a footnote, loud enough to document.
+
+    All THREE simulation paths consume this one function - ``simulate_ultimates``
+    (run-off), :func:`draw_next_cells` (held-out CRPS) and
+    ``kernels.cdr.simulate_one_year_cdr`` (one-year re-reserving) - so "parameter
+    risk" cannot come to mean three subtly different things.
+    """
+    f_true = np.tile(fit.f, (n_draws, 1))
+    if parameter_risk:
+        se = np.sqrt(np.where(fit.s > 0, fit.sigma2 / fit.s, 0.0))
+        f_true = np.maximum(f_true + rng.standard_normal((n_draws, fit.n_d - 1)) * se, 1e-12)
+    return f_true
+
+
+def _next_step_draws(
+    fit: MackFit,
+    step0: np.ndarray,
+    prev: np.ndarray,
+    *,
+    n_draws: int,
+    rng: np.random.Generator,
+    process: str,
+    parameter_risk: bool,
+) -> np.ndarray:
+    """One development step ahead of ``prev``: ``(n_draws, n_cells)`` draws with
+    Mack's conditional moments ``E = f[j] * prev``, ``Var = sigma2[j] * prev``.
+
+    ``step0`` is the 0-based step index per cell (``f[step0]`` carries the
+    step). The single core behind BOTH :func:`draw_next_cells` (the held-out
+    CRPS draws) and ``kernels.cdr.simulate_one_year_cdr``'s simulated next
+    diagonal, shared so the two cannot drift: they are the same two steps -
+    draw the true factors, then the step shock.
+    """
+    f_true = _factor_draws(fit, n_draws=n_draws, rng=rng, parameter_risk=parameter_risk)
+    mean = f_true[:, step0] * prev  # (n_draws, n_cells)
+    var = np.broadcast_to(fit.sigma2[step0] * prev, mean.shape)
+    return draw_step(rng, mean, var, law=process)
+
+
+def draw_next_cells(
+    fit: MackFit,
+    cells: CellIndex,
+    *,
+    rng: np.random.Generator,
+    n_draws: int = 10_000,
+    process: str = "gamma",
+    parameter_risk: bool = True,
+) -> np.ndarray:
+    """``(n_draws, n_cells)`` one-step-ahead draws of CUMULATIVE loss at cells.
+
+    The per-cell counterpart of ``kernels.cdr.simulate_one_year_cdr``'s step 2
+    (and it shares that code, see :func:`_next_step_draws`): each cell's draw
+    has Mack's conditional moments off its own training predecessor,
+
+        E   = f[d - 2] * prev_value
+        Var = sigma2[d - 2] * prev_value
+
+    ``d - 2`` because ``cells.d`` is the 1-BASED dev index of the drawn cell
+    while ``f``/``sigma2`` are 0-based per step (``f[j]`` carries dev index
+    ``j + 1 -> j + 2``); the step ENDING at cell ``d`` is ``d - 2``. An
+    off-by-one here reads a neighbouring factor and produces entirely plausible
+    draws, which is why both bounds are checked loudly below and pinned by test.
+
+    ``parameter_risk`` draws the true factors once per draw, SHARED across the
+    cells (see :func:`_factor_draws`) - two cells on the same development step
+    are positively correlated through it, exactly as the accident years are in
+    the CDR simulation. ``process`` picks the step shock among
+    ``PROCESS_LAWS``; ``gamma`` (the default) needs a positive conditional mean
+    and :meth:`MackFit.require_positive_open_diagonals` is the guard that makes
+    it well-posed. A cell whose step has ``sigma2 == 0`` (e.g. the extrapolated
+    last step of a 2-column triangle) comes back as a POINT MASS at its mean,
+    silently - ``draw_step``'s documented degenerate case.
+
+    One step only, matching what ``kernels.holdout.next_diagonal`` scores:
+    ``prev_value`` is training data, so no rollout and no leakage.
+    """
+    if process not in PROCESS_LAWS:
+        raise ValueError(f"process must be one of {PROCESS_LAWS}, got {process!r}")
+    if n_draws < 1:
+        raise ValueError("n_draws must be positive")
+    # Var = sigma2 * prev is non-positive off a non-positive diagonal, and
+    # draw_step then returns the mean exactly - an invisible point mass rather
+    # than an error. Same guard, same reason as every other variance path.
+    fit.require_positive_open_diagonals()
+    d = np.asarray(cells.d, dtype=int)
+    if (d < 2).any():
+        raise ValueError(
+            f"{int((d < 2).sum())} cell(s) sit at dev index 1, which no development step "
+            "ends at - there is no factor f[d-2] to draw with. next_diagonal() excludes "
+            "these as new_origin, so reaching one means the cells were built by hand"
+        )
+    if (d - 2 >= len(fit.f)).any():
+        raise ValueError(
+            f"dev index {int(d.max())} is beyond the fitted steps (n_d={fit.n_d}, so the "
+            f"deepest drawable dev index is {fit.n_d}); next_diagonal() excludes these as "
+            "dev_beyond_trained"
+        )
+    prev = np.asarray(cells.prev_value, dtype=float)
+    if np.isnan(prev).any():
+        raise ValueError(
+            f"{int(np.isnan(prev).sum())} cell(s) have no training predecessor "
+            "(prev_value is NaN), so the one-step moments are undefined; next_diagonal() "
+            "excludes these as no_predecessor"
+        )
+    return _next_step_draws(
+        fit, d - 2, prev, n_draws=n_draws, rng=rng, process=process, parameter_risk=parameter_risk
+    )
 
 
 def draw_step(
