@@ -4,11 +4,13 @@ Skips cleanly when torch is not installed.
 What this file protects, in three layers:
 
 1. **Network.** The GRU encoder/decoder emits a valid mixture density at every
-   cell from BOTH heads (normalized weights, positive sigmas), gradients flow
-   end to end through the masked encoder/decoder dispatch (overfit-one-batch),
-   and the company-embedding flag is genuinely delivered through the public
-   fit path - a signature test proves a wire exists, a parameter-count test
-   proves it is connected.
+   cell from BOTH heads (normalized weights, positive sigmas), origins are
+   BITWISE independent sequences at inference (the card's sharp architectural
+   difference from ``nn_transformer``, whose attention spans the whole grid),
+   gradients flow end to end through the masked encoder/decoder dispatch
+   (overfit-one-batch), and the company-embedding flag is genuinely delivered
+   through the public fit path - a signature test proves a wire exists, a
+   parameter-count test proves it is connected.
 2. **Entry.** PredictiveDistribution layout, rollout caching, and seed
    reproducibility (fit twice same seed -> identical validation histories),
    on both ibis backends.
@@ -133,6 +135,54 @@ def test_forward_shapes_and_validity():
         torch.testing.assert_close(
             log_pi.logsumexp(dim=-1), torch.zeros(b, 5, 4), atol=1e-5, rtol=0
         )
+
+
+def test_origins_are_independent_sequences():
+    """The card's bitwise claim, and the documented architectural difference
+    from ``nn_transformer``: the recurrence runs along the DEV axis only, with
+    origins folded into the batch (``tok.reshape(b * n_w, n_d, d_model)``), so
+    nothing flows between origins inside a forward pass. Poison origin 0 on
+    both of its input paths - channel values by 1e6 AND its context flags
+    flipped - and every other origin must come back BITWISE identical
+    (``torch.equal``, not allclose: the claim is bitwise or it is nothing), on
+    BOTH heads, all three mixture parameters.
+
+    Origin 0 itself must change. Without that half the test passes trivially
+    on a model that ignores its inputs, which is the same verdict a genuinely
+    independent architecture gives. The mutation this exists to catch: run the
+    GRU over the flattened w*d sequence instead of per-origin, and origin 0's
+    state leaks into every later origin.
+    """
+    cfg = TINY
+    torch.manual_seed(0)
+    model = DeepTriangleGRU(cfg, n_lob=3, n_company=4, n_features=2, n_w=5, n_d=4)
+    model.eval()  # cfg.dropout is 0, but the claim is about inference
+    b = 3
+    x = torch.randn(b, 2, 5, 4)
+    ctx = torch.rand(b, 5, 4) > 0.5
+    lob = torch.randint(0, 3, (b,))
+    comp = torch.randint(0, 4, (b,))
+    prem = torch.randn(b)
+
+    x_bad = x.clone()
+    x_bad[:, :, 0, :] += 1e6
+    ctx_bad = ctx.clone()
+    ctx_bad[:, 0, :] = ~ctx_bad[:, 0, :]
+
+    with torch.no_grad():
+        base = model(x, ctx, lob, comp, prem)
+        poisoned = model(x_bad, ctx_bad, lob, comp, prem)
+
+    names = ("log_pi", "mu", "sigma")
+    for head, before, after in (("target", base[0], poisoned[0]), ("aux", base[1], poisoned[1])):
+        for name, was, now in zip(names, before, after, strict=True):
+            assert torch.equal(was[:, 1:], now[:, 1:]), (
+                f"{head}.{name}: origins 1.. moved when only origin 0's inputs changed"
+            )
+            assert not torch.equal(was[:, 0], now[:, 0]), (
+                f"{head}.{name}: origin 0 did not move - the perturbation was inert, "
+                "so the identity above proves nothing"
+            )
 
 
 def test_mixture_math_is_imported_not_copied():
