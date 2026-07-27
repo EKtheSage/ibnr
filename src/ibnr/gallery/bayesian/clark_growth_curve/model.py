@@ -17,10 +17,12 @@ import numpy as np
 import pandas as pd
 
 from ibnr.gallery.bayesian._toolchain import ensure_stan_toolchain
-from ibnr.gallery.entry import GalleryEntry
+from ibnr.gallery.bayesian.clark_growth_curve import scorer
+from ibnr.gallery.entry import GalleryEntry, PredictsHeldout
 from ibnr.gallery.registry import register
-from ibnr.gallery.statistical.clark.model import Clark, growth
+from ibnr.gallery.statistical.clark.model import Clark, age_interval, growth
 from ibnr.kernels.contract import odp_stan_data, realized_values
+from ibnr.kernels.holdout import CellIndex
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.triangle.core import Triangle
 
@@ -45,9 +47,20 @@ def pooled(idata, name: str) -> np.ndarray:
 
 
 @register
-class ClarkGrowthCurve(GalleryEntry):
+class ClarkGrowthCurve(GalleryEntry, PredictsHeldout):
     name = "clark_growth_curve"
     family = "bayesian"
+
+    #: Clark models INCREMENTAL emergence while the Schedule P triangles are
+    #: cumulative, so ``predict_at`` adds each cell's training-diagonal anchor.
+    #: Declared rather than assumed: an undeclared increment draw is wrong by
+    #: that whole anchor while staying finite and plausible.
+    #:
+    #: Draws only - no ``ScoresHeldout`` and no ``heldout_measure``, on
+    #: principle: the ODP quasi-likelihood is not a normalized density on any
+    #: scale (``kernels/densities.py``, :ref:`odp-not-a-density`), so this
+    #: entry is CRPS-scored and permanently ELPD-ineligible.
+    heldout_draw_scale = "incremental"
 
     def __init__(self) -> None:
         self.contract_: dict | None = None
@@ -123,18 +136,17 @@ class ClarkGrowthCurve(GalleryEntry):
 
         # Assemble the Stan `data` block. Ages are DATA, not model logic (so a
         # port cannot drift on the convention): each incremental cell at dev d
-        # spans the age interval (age_lo, age_hi] measured in months from the
-        # origin's *average* accident date, hence the -step/2 mid-period shift
-        # (Clark 2003 uses the average date of the accident period). For dev d
-        # the raw window is ((d-1)*step, d*step]; subtracting step/2 centers it,
-        # and the first period's lower edge is clamped to 0.
+        # spans the mid-period age interval (age_lo, age_hi], from the one
+        # shared `age_interval` (Clark 2003 measures ages from the origin's
+        # *average* accident date - see its docstring).
         step = c["dev_grain_months"]
+        age_lo, age_hi = age_interval(c["d"], step)
         stan_data = {
             "len_data": c["len_data"],
             "n_w": c["n_w"],
             "w": c["w"],
-            "age_lo": np.maximum(step * (c["d"] - 1) - step / 2, 0.0),
-            "age_hi": step * c["d"] - step / 2,
+            "age_lo": age_lo,
+            "age_hi": age_hi,
             "inc_loss": c["inc_loss"],
             "logprem_w": np.log(c["premium"]),  # (n_w,): log net earned premium
             "phi": c["phi"],  # plug-in Pearson dispersion from the MLE twin
@@ -304,8 +316,7 @@ class ClarkGrowthCurve(GalleryEntry):
             # Only unobserved future dev lags (beyond the latest seen for this
             # origin) up to the triangle's final age n_d - no tail extrapolation.
             for dev in range(int(c["latest_d"][j]) + 1, n_d + 1):
-                lo = max(step * (dev - 1) - step / 2, 0.0)
-                hi = step * dev - step / 2
+                lo, hi = age_interval(dev, step)
                 # Expected fraction emerging in (lo, hi]: G(hi) - G(lo).
                 ginc = growth(hi, om, th, curve) - growth(lo, om, th, curve)  # (draws,)
                 # Expected increment E[X] = elr*premium * (G(hi) - G(lo)).
@@ -337,6 +348,29 @@ class ClarkGrowthCurve(GalleryEntry):
             origins=c["origin_periods"],
         )
         return np.append(per_origin, per_origin.sum())
+
+    def _draws_native(self, cells: CellIndex, *, rng: np.random.Generator) -> np.ndarray:
+        """``(n_draws, n_cells)`` incremental draws. See ``scorer.draw_cells``.
+
+        Three lines of glue: the arithmetic lives beside ``model.stan`` where
+        it can be read against it. The growth-curve name is fitted state
+        (``_curve``), not part of the contract, so it is threaded here.
+        """
+        if self.idata_ is None:
+            raise RuntimeError("call fit() first")
+        return scorer.draw_cells(
+            self.contract_, self._posterior(), cells, curve=self._curve, rng=rng
+        )
+
+    def _posterior(self) -> dict[str, np.ndarray]:
+        """Pooled draws of the variables the cell-level scorer reads.
+
+        ``posterior``, never ``log_likelihood``: Stan names that group
+        ``log_lik`` and this entry's PyMC port attaches via ``pm.Potential``
+        so it has no such group at all. The three sampled parameters carry the
+        same names in every backend.
+        """
+        return {name: pooled(self.idata_, name) for name in scorer.REQUIRED_DRAWS}
 
     def convergence(self, var_names: list[str] | None = None) -> dict:
         """Convergence diagnostics from the fitted posterior."""

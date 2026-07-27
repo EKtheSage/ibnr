@@ -17,9 +17,11 @@ import numpy as np
 import pandas as pd
 
 from ibnr.gallery.bayesian._toolchain import ensure_stan_toolchain
-from ibnr.gallery.entry import GalleryEntry
+from ibnr.gallery.bayesian.england_verrall_odp import scorer
+from ibnr.gallery.entry import GalleryEntry, PredictsHeldout
 from ibnr.gallery.registry import register
 from ibnr.kernels.contract import odp_stan_data, realized_values
+from ibnr.kernels.holdout import CellIndex
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.triangle.core import Triangle
 
@@ -102,9 +104,20 @@ def pearson_phi(w: np.ndarray, d: np.ndarray, inc: np.ndarray, n_w: int, n_d: in
 
 
 @register
-class EnglandVerrallODP(GalleryEntry):
+class EnglandVerrallODP(GalleryEntry, PredictsHeldout):
     name = "england_verrall_odp"
     family = "bayesian"
+
+    #: ``inc_loss`` is an INCREMENT while the Schedule P triangles are
+    #: cumulative, so ``predict_at`` adds each cell's training-diagonal anchor.
+    #: Declared rather than assumed: an undeclared increment draw is wrong by
+    #: that whole anchor while staying finite and plausible.
+    #:
+    #: Draws only - no ``ScoresHeldout`` and no ``heldout_measure``, on
+    #: principle: the ODP quasi-likelihood is not a normalized density on any
+    #: scale (``kernels/densities.py``, :ref:`odp-not-a-density`), so this
+    #: entry is CRPS-scored and permanently ELPD-ineligible.
+    heldout_draw_scale = "incremental"
 
     def __init__(self) -> None:
         self.contract_: dict | None = None
@@ -349,6 +362,28 @@ class EnglandVerrallODP(GalleryEntry):
             origins=c["origin_periods"],
         )
         return np.append(per_origin, per_origin.sum())
+
+    def _draws_native(self, cells: CellIndex, *, rng: np.random.Generator) -> np.ndarray:
+        """``(n_draws, n_cells)`` incremental draws. See ``scorer.draw_cells``.
+
+        Three lines of glue: the arithmetic lives beside ``model.stan`` where
+        it can be read against it, and takes plain arrays so it is testable
+        without a sampler.
+        """
+        if self.idata_ is None:
+            raise RuntimeError("call fit() first")
+        return scorer.draw_cells(self.contract_, self._posterior(), cells, rng=rng)
+
+    def _posterior(self) -> dict[str, np.ndarray]:
+        """Pooled draws of the variables the cell-level scorer reads.
+
+        ``posterior``, never ``log_likelihood``: that group is named
+        ``log_lik`` by Stan and ``obs`` by both ports, and it holds the
+        TRAINING cells in any case. ``alpha``/``beta`` are transformed
+        parameters in Stan and deterministics in both ports, so the read is
+        uniform across backends.
+        """
+        return {name: pooled(self.idata_, name) for name in scorer.REQUIRED_DRAWS}
 
     def convergence(self, var_names: list[str] | None = None) -> dict:
         """Convergence diagnostics from the fitted posterior: max R-hat, min
