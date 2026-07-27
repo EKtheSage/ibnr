@@ -14,6 +14,7 @@ from ibnr.gallery.bayesian import england_verrall_odp as _england_verrall_odp  #
 from ibnr.gallery.bayesian import meyers_ccl as _meyers_ccl  # noqa: F401
 from ibnr.gallery.bayesian import meyers_csr as _meyers_csr  # noqa: F401
 from ibnr.gallery.entry import GalleryEntry
+from ibnr.gallery.nn import deeptriangle as _nn_deeptriangle  # noqa: F401
 from ibnr.gallery.nn import transformer as _nn_transformer  # noqa: F401
 from ibnr.gallery.nn import transformer_ml as _nn_transformer_ml  # noqa: F401
 

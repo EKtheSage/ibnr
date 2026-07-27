@@ -105,7 +105,7 @@ from ibnr.kernels.scores import crps  # noqa: E402
 
 #: models cheap enough to run as the default trio (seconds-to-minutes per
 #: company); meyers_ccl is opt-in because it compiles and samples in cmdstan.
-FAST_MODELS = ["sur", "copula_glm", "nn_transformer"]
+FAST_MODELS = ["sur", "copula_glm", "nn_transformer", "deeptriangle"]
 #: multi-line transformer arms - the only entries that model cross-line
 #: dependence, so the only ones producing a meaningful diversified total.
 ML_MODELS = ["nn_ml_ar", "nn_ml_joint"]
@@ -455,6 +455,66 @@ def run_transformer(tri_market, scored, pools, args) -> list[dict]:
     return rows
 
 
+def run_deeptriangle(tri_market, scored, pools, args) -> list[dict]:
+    """Kuo's DeepTriangle (GRU encoder/decoder, MDN head): ONE pooled fit,
+    then per-(company, line) predicts - same shape as run_transformer.
+
+    Per-line draws are INDEPENDENT (no diversified company total); the entry
+    derives its auxiliary claims-outstanding target from the first feature
+    field, so ``--nn-features reported_loss`` (the default) is load-bearing.
+    """
+    from ibnr.gallery.nn.deeptriangle import DeepTriangleConfig
+
+    tri_pool = (
+        tri_market if args.nn_pool == "market" else pair_filter(tri_market, pools[args.nn_pool])
+    )
+    t0 = time.perf_counter()
+    entry = gallery.fit(
+        "deeptriangle",
+        tri_pool,
+        loss_field=args.loss_field,
+        feature_fields=tuple(args.nn_features),
+        as_of=args.as_of,
+        seed=args.seed,
+        config=DeepTriangleConfig(),
+    )
+    fit_secs = time.perf_counter() - t0
+    n_cohorts = len(entry.contract_["cohorts"])
+    print(f"  deeptriangle: pooled fit on {n_cohorts} cohorts ({fit_secs:.0f}s)", flush=True)
+
+    rows = []
+    # predict the SCORED pairs only, whatever the training pool was - the
+    # scored panel is fixed across models by construction
+    for code, lines_c in scored.items():
+        for line in lines_c:
+            seg = {"company_code": code, "line_of_business": line}
+            t1 = time.perf_counter()
+            try:
+                pred = entry.predict(segment=seg, n_draws=args.nn_draws, seed=args.seed)
+                realized = entry.realized_ultimates(tri_market, segment=seg)
+                per_label = line_total_rows(pred, realized, {line: "total"})
+                rows.append(
+                    {
+                        "model": "deeptriangle",
+                        "line": line,
+                        "company_code": code,
+                        **per_label[line],
+                        "seconds": time.perf_counter() - t1,
+                    }
+                )
+            except Exception as e:
+                rows.append(
+                    {
+                        "model": "deeptriangle",
+                        "line": line,
+                        "company_code": code,
+                        "error": str(e),
+                    }
+                )
+                print(f"  deeptriangle {line} {code}: FAILED {e}", flush=True)
+    return rows
+
+
 def run_transformer_ml(tri_market, scored, pools, args, dependence: str) -> list[dict]:
     """The multi-line transformer: one pooled company-level fit (attention
     across each company's screened lines), then per-company predicts in the
@@ -787,6 +847,10 @@ def main() -> int:
     if "nn_transformer" in args.models:
         print(f"\nnn_transformer: pooled fit, --nn-pool {args.nn_pool}", flush=True)
         all_rows += run_transformer(tri_market, scored, pools, args)
+
+    if "deeptriangle" in args.models:
+        print(f"\ndeeptriangle: pooled fit, --nn-pool {args.nn_pool}", flush=True)
+        all_rows += run_deeptriangle(tri_market, scored, pools, args)
 
     for dep in ("ar", "joint"):
         if f"nn_ml_{dep}" in args.models:
