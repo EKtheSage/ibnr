@@ -30,9 +30,27 @@ def _version(text: str) -> tuple[int, ...]:
 
 
 def _pyproject_ruff_floor() -> tuple[int, ...]:
+    """The one declared ruff floor, wherever it lives.
+
+    Scans EVERY dependency group rather than `dev` alone: ruff moved to the
+    `test` group when that group was carved out for the CI test matrix, and a
+    lookup hardcoded to one group would have gone quietly vacuous instead of
+    failing. The single-element unpack is the point - this module's rule is one
+    ruff version in one place, so two groups each declaring a floor is the
+    defect, not an inconvenience. Non-string entries are PEP 735 include-group
+    tables, which name a group rather than a requirement.
+    """
     with open(REPO / "pyproject.toml", "rb") as fh:
-        dev = tomllib.load(fh)["dependency-groups"]["dev"]
-    (spec,) = [d for d in dev if d.replace("-", "_").startswith("ruff")]
+        groups = tomllib.load(fh)["dependency-groups"]
+    specs = [
+        d
+        for group in groups.values()
+        for d in group
+        if isinstance(d, str) and d.replace("-", "_").startswith("ruff")
+    ]
+    assert specs, "no ruff requirement found in any dependency group"
+    assert len(specs) == 1, f"ruff declared in more than one group: {specs}"
+    (spec,) = specs
     assert ">=" in spec, f"expected a floor for ruff, got {spec!r}"
     return _version(spec)
 

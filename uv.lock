@@ -1120,6 +1120,10 @@ dev = [
 docs = [
     { name = "great-docs" },
 ]
+test = [
+    { name = "pytest" },
+    { name = "ruff" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1155,6 +1159,10 @@ dev = [
     { name = "ruff", specifier = ">=0.16" },
 ]
 docs = [{ name = "great-docs", specifier = ">=0.15" }]
+test = [
+    { name = "pytest", specifier = ">=8" },
+    { name = "ruff", specifier = ">=0.16" },
+]
 
 [[package]]
 name = "idna"
