@@ -45,7 +45,10 @@ dependencies = [
 # The second ibis backend. Only needed to pass backend="polars"; duckdb is the
 # default and covers every code path on its own.
 polars = ["ibis-framework[polars]>=9.5"]
-bayesian = ["cmdstanpy", "numpyro", "pymc", "arviz", "bayesblend"]
+# bayesblend is pinned to 0.0.x: kernels/stacking.py is written against its
+# 0.0.8 API (Draws.from_lpd, the four fitter classes, the weights property),
+# which a 0.1 release is free to break.
+bayesian = ["cmdstanpy", "numpyro", "pymc", "arviz", "bayesblend>=0.0.8,<0.1"]
 nn = ["torch>=2.2"]
 viz = ["altair"]
 # Needed only to convert OUT to these libraries (`to_chainladder`/`to_bermuda`).

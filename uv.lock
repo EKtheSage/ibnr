@@ -1125,7 +1125,7 @@ docs = [
 requires-dist = [
     { name = "altair", marker = "extra == 'viz'" },
     { name = "arviz", marker = "extra == 'bayesian'" },
-    { name = "bayesblend", marker = "extra == 'bayesian'" },
+    { name = "bayesblend", marker = "extra == 'bayesian'", specifier = ">=0.0.8,<0.1" },
     { name = "bermuda-ledger", marker = "extra == 'interop'", specifier = ">=2.3" },
     { name = "chainladder", marker = "extra == 'interop'", specifier = ">=0.8.18" },
     { name = "cmdstanpy", marker = "extra == 'bayesian'" },

@@ -1,4 +1,4 @@
-"""The model gallery. Public API: list(), get(), fit()."""
+"""The model gallery. Public API: list(), get(), fit(), stack(), leaderboard()."""
 
 from __future__ import annotations
 
@@ -17,6 +17,11 @@ from ibnr.gallery.entry import GalleryEntry
 from ibnr.gallery.nn import transformer as _nn_transformer  # noqa: F401
 from ibnr.gallery.nn import transformer_ml as _nn_transformer_ml  # noqa: F401
 
+# the evaluation layer is implemented once in kernels/ (design decision 5);
+# these re-exports are the gallery-facing names decision 8 promises
+from ibnr.kernels.forecast import leaderboard
+from ibnr.kernels.stacking import stack
+
 get = _registry.get
 fit = _registry.fit
 
@@ -26,4 +31,4 @@ def list() -> builtins.list[str]:  # noqa: A001 - mirrors the designed public AP
     return sorted(_registry.entries())
 
 
-__all__ = ["GalleryEntry", "fit", "get", "list"]
+__all__ = ["GalleryEntry", "fit", "get", "leaderboard", "list", "stack"]
