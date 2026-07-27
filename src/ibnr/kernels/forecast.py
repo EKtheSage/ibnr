@@ -188,12 +188,12 @@ __all__ = [
 #: not others is a cohort-level reason, and mixing the two is how "this entry
 #: cannot do it" gets confused with "this run did not do it".
 #:
-#: The two are kept apart because they libel different entries. Ten of the
+#: The two are kept apart because they libel different entries. Nine of the
 #: eleven registered entries do not subclass ``ScoresHeldout`` today, but only
 #: three of them are ineligible on principle; saying "no normalized predictive
-#: density" about ``meyers_ccl`` (lognormal, same family as CSR), ``sur``
-#: (multivariate normal), ``copula_glm`` (lognormal marginals) or the MDN-headed
-#: NN entries would be false, and the board prints these.
+#: density" about ``sur`` (multivariate normal), ``copula_glm`` (lognormal
+#: marginals) or the MDN-headed NN entries would be false, and the board
+#: prints these.
 MODEL_ABSENCE_REASONS: dict[str, str] = {
     "no_predictive_density": (
         "the entry has no normalized predictive density on any scale, so no change of "
@@ -726,8 +726,8 @@ class CohortForecast:
         Both reasons are REQUIRED and neither has a default. "Does not subclass
         ``ScoresHeldout``" is not by itself evidence of which reason applies, and
         a default would put the wrong one on a board row: only three registered
-        entries have no density on principle while seven more simply have no
-        scorer yet, and printing ``no_predictive_density`` next to ``meyers_ccl``
+        entries have no density on principle while six more simply have no
+        scorer yet, and printing ``no_predictive_density`` next to ``sur``
         or ``copula_glm`` would be a false statement about the model.
 
         Two reasons rather than one because the axes are independent and usually

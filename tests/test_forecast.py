@@ -550,8 +550,9 @@ def test_a_reason_cannot_name_the_wrong_capability():
 
 
 def test_unavailable_has_no_default_reason(cells_a):
-    """A default would put ``no_predictive_density`` next to ``meyers_ccl`` - a
-    lognormal model - which is a false statement the board would print."""
+    """A default would put ``no_predictive_density`` next to ``copula_glm`` - a
+    model with lognormal marginals - which is a false statement the board
+    would print."""
     with pytest.raises(TypeError):
         CohortForecast.unavailable(model="m", task=TASK, cells=cells_a)  # type: ignore[call-arg]
 
