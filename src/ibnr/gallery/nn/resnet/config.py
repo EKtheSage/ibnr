@@ -21,9 +21,14 @@ class ResNetConfig:
     comparison isolates the encoder body (the ablation this entry exists for).
     """
 
-    # network (~75k params at these sizes; deliberately tiny - the Schedule P
-    # regime is small-data and the central risk is overfitting, see card.md)
-    channels: int = 64  # conv width throughout the residual trunk
+    # network: 59,753 parameters at the reference shape (n_lob=4,
+    # n_features=1) - deliberately tiny, the Schedule P regime is small-data
+    # and the central risk is overfitting. The count is DISCLOSED in card.md
+    # and pinned by tests/test_resnet.py::test_disclosed_parameter_count, so
+    # changing a default here fails that test until the card is updated too.
+    # Note the count is independent of n_w/n_d: a conv body has no positional
+    # embedding tables, only the (n_lob x lob_embedding_dim) table scales.
+    channels: int = 32  # conv width throughout the residual trunk
     n_blocks: int = 3  # residual blocks (two 3x3 convs each)
     n_groups: int = 8  # GroupNorm groups; must divide channels. NEVER
     # BatchNorm: batch statistics would couple cohorts that were conditioned

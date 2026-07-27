@@ -49,15 +49,29 @@ Input is an image-like stack of per-cell channels over the (n_w, n_d) grid:
   premium, constant over the grid. No company embedding, for the same
   memorization reason as the transformer.
 
-Body: a 3x3 conv stem to 64 channels, 2-D channel dropout (0.15), then 3
+Body: a 3x3 conv stem to 32 channels, 2-D channel dropout (0.15), then 3
 pre-activation residual blocks (GroupNorm -> GELU -> 3x3 conv, twice, plus
-the identity skip; ~75k parameters). Each conv adds 2 cells of receptive
-field, so with the stem the default sees an 8-neighborhood-radius patch -
-most of a Schedule P 10x10 triangle, but reached through locality rather
-than granted by attention. Head: a final GroupNorm + GELU and a 1x1 conv
-reading the same K=3 Gaussian MDN per cell as the transformer; `mdn_nll` and
-`mdn_sample` are imported from `gallery/nn/transformer/network.py` so the
-three bodies share one head implementation.
+the identity skip). The default network has **59,753 parameters** at the
+reference shape (`n_lob=4`, `n_features=1`); unlike an attention body the
+count does not depend on n_w/n_d, since a conv has no positional embedding
+tables. The 7 convs of the default stack (stem + 3 blocks x 2) each add 1
+cell of radius, so a prediction sees a **radius-7** patch - most of a
+Schedule P 10x10 triangle, but reached through locality rather than granted
+by attention. Head: a final GroupNorm + GELU and a 1x1 conv reading the same
+K=3 Gaussian MDN per cell as the transformer; `mdn_nll` and `mdn_sample` are
+imported from `gallery/nn/transformer/network.py` so the three bodies share
+one head implementation.
+
+**Why 32 channels and not 64.** Width was cut from the first draft's 64
+after measuring: at 64 the trunk carries 230,057 parameters (each residual
+block holds two 64x64x3x3 convs, ~37k each), roughly 3x the 70,505 the
+transformer's default network carries at the same shape. That made the
+"deliberately tiny" claim above false and turned a body ablation into a
+capacity comparison. Depth was kept at 3 blocks because depth IS the
+architectural claim here - it sets the receptive field - and only width,
+which is pure capacity, was reduced. The disclosed count is pinned by
+`tests/test_resnet.py::test_disclosed_parameter_count`, which reads the
+number out of this card, so the two cannot drift apart again.
 
 **Why GroupNorm, never BatchNorm.** Under calendar-cutoff augmentation every
 cohort in a batch is conditioned at its OWN drawn cutoff. BatchNorm's batch
@@ -141,9 +155,9 @@ pred.summary(observed=realized)  # same Meyers-style table as every entry
 - Small-data regime is the central risk; mitigations: tiny network, channel
   dropout, weight decay, cutoff augmentation, eval_date early stopping,
   ensembling, no company embedding. First lever if validation NLL diverges:
-  channels 32 or n_blocks 2.
+  channels 24 or n_blocks 2.
 - The receptive field is finite (grows with depth): structure farther than
-  ~8 cells needs more blocks to influence a prediction. That is the point of
+  7 cells needs more blocks to influence a prediction. That is the point of
   the ablation - if the transformer beats this entry, global attention earns
   its keep; if not, locality was enough.
 - Feature channels are not simulated during rollout - future cells feed back

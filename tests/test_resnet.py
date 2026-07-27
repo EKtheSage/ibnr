@@ -33,6 +33,7 @@ of the pinned asymmetry.
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -130,6 +131,37 @@ def test_config_rejects_indivisible_groups():
     rather than failing inside torch with a shape error at fit time."""
     with pytest.raises(ValueError, match="n_groups"):
         ResNetConfig(channels=16, n_groups=5)
+
+
+def test_disclosed_parameter_count():
+    """The card's disclosed parameter count must be the network's ACTUAL count.
+
+    The card's small-data story ("deliberately tiny", the overfitting
+    mitigations) rests on this number, and the first draft was wrong by 3x -
+    a stale figure that no shape or accuracy test can catch. So the number is
+    READ OUT OF THE CARD rather than repeated here: the two cannot drift
+    apart, and changing any network default fails this test until the card is
+    updated with it.
+
+    The reference shape is (n_lob=4, n_features=1). A conv body has no
+    positional embedding tables, so the count is independent of n_w/n_d -
+    which is what makes a single disclosed number meaningful at all.
+
+    Mutation this must catch: bump any network default in ResNetConfig
+    (channels, n_blocks, n_groups, lob_embedding_dim, n_components).
+    """
+    card = ResNet.card()
+    match = re.search(r"\*\*([\d,]+) parameters\*\*", card)
+    assert match, "card.md no longer discloses a parameter count in the pinned format"
+    disclosed = int(match.group(1).replace(",", ""))
+    model = TriangleResNet(ResNetConfig(), n_lob=4, n_features=1, n_w=10, n_d=10)
+    actual = sum(p.numel() for p in model.parameters())
+    assert actual == disclosed, (
+        f"card.md discloses {disclosed:,} parameters, network has {actual:,}"
+    )
+    # the count really is n_w/n_d invariant, as the card claims
+    other = TriangleResNet(ResNetConfig(), n_lob=4, n_features=1, n_w=6, n_d=6)
+    assert sum(p.numel() for p in other.parameters()) == actual
 
 
 def test_overfit_one_batch():
