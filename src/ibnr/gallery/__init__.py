@@ -15,6 +15,7 @@ from ibnr.gallery.bayesian import meyers_ccl as _meyers_ccl  # noqa: F401
 from ibnr.gallery.bayesian import meyers_csr as _meyers_csr  # noqa: F401
 from ibnr.gallery.entry import GalleryEntry
 from ibnr.gallery.nn import deeptriangle as _nn_deeptriangle  # noqa: F401
+from ibnr.gallery.nn import mdn as _nn_mdn  # noqa: F401
 from ibnr.gallery.nn import transformer as _nn_transformer  # noqa: F401
 from ibnr.gallery.nn import transformer_ml as _nn_transformer_ml  # noqa: F401
 
