@@ -431,9 +431,7 @@ def cells_for_pairs(
     """
     out: dict[tuple[str, str], HoldoutCells | str] = {}
     for code, line in pairs:
-        tri = tri_pool.filter(
-            (ibis._.company_code == code) & (ibis._.line_of_business == line)
-        )
+        tri = tri_pool.filter((ibis._.company_code == code) & (ibis._.line_of_business == line))
         try:
             out[(code, line)] = study_cells(tri, as_of)
         except Exception as e:  # noqa: BLE001
@@ -613,7 +611,11 @@ def build_outputs(
     """
     cutoffs = sorted(forecasts_by_cutoff)
     panels = {}
-    boards, pointwise, censuses = [], [], {n: [] for n in ("coverage", "absences", "dropped", "excluded")}
+    boards, pointwise, censuses = (
+        [],
+        [],
+        {n: [] for n in ("coverage", "absences", "dropped", "excluded")},
+    )
 
     def add(label: str, panel, forecasts: list[CohortForecast]) -> None:
         board = leaderboard(panel)
@@ -715,7 +717,9 @@ class FitLog:
         flat["mart_publish_id"] = self._publish
         flat["clamp"] = CLAMP
         if self._writer is None:
-            self._file = open(self.path, "w", newline="", encoding="utf-8")
+            # long-lived handle, flushed per row and closed by close() - a
+            # context manager per row would defeat the incremental log
+            self._file = open(self.path, "w", newline="", encoding="utf-8")  # noqa: SIM115
             self._writer = csv.DictWriter(self._file, fieldnames=FIT_COLUMNS)
             self._writer.writeheader()
         self._writer.writerow(flat)
@@ -860,9 +864,7 @@ def main() -> int:
 
     if run_nn or unavailable:
         lines_needed = sorted({line for _, line in pairs})
-        tri_pool = clamp_paid_floor(
-            pair_filter(load_schedule_p(source, lines=lines_needed), pairs)
-        )
+        tri_pool = clamp_paid_floor(pair_filter(load_schedule_p(source, lines=lines_needed), pairs))
         for cutoff in CUTOFFS:
             cellmap = cells_for_pairs(tri_pool, pairs, cutoff)
             if run_nn:

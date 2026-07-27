@@ -32,7 +32,7 @@ from ibnr.kernels.forecast import (
     align_panel,
 )
 from ibnr.kernels.harness import RetroTask, SamplerSettings, run_retro
-from ibnr.kernels.holdout import HoldoutCells, next_diagonal
+from ibnr.kernels.holdout import HoldoutCells
 from ibnr.triangle.core import Triangle
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
@@ -356,9 +356,7 @@ def test_runner_through_run_retro_serial_keeps_order_and_escalates(monkeypatch):
         [_task("m_flaky"), _task("m_ok", company="CO_B")],
         stages=(SamplerSettings(), SamplerSettings(target_accept=0.99)),
         executor="serial",
-        runner=lambda task, settings: hl.run_cohort(
-            task, settings, load=_load, resolve=resolve
-        ),
+        runner=lambda task, settings: hl.run_cohort(task, settings, load=_load, resolve=resolve),
     )
     assert [r["model"] for r in rows] == ["m_flaky", "m_ok"]
     assert rows[0]["stage"] == 2 and rows[0]["error"] is None
@@ -459,9 +457,7 @@ def test_score_pooled_maps_a_pooled_fit_failure_to_every_cohort():
 
 def test_score_pooled_success_uses_the_same_absence_mapping():
     cellmap = {("A", "wc"): _cells("A"), ("B", "wc"): "ValueError: empty"}
-    rows, forecasts = hl.score_pooled(
-        StubEntry(), cellmap, as_of=AS_OF, seed=3, fit_seconds=1.0
-    )
+    rows, forecasts = hl.score_pooled(StubEntry(), cellmap, as_of=AS_OF, seed=3, fit_seconds=1.0)
     assert len(forecasts) == 1
     assert forecasts[0].has_density and forecasts[0].has_draws
     assert forecasts[0].model == hl.POOLED_MODEL
