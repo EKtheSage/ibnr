@@ -13,13 +13,18 @@ published method. The Bayesian twin of this entry is exercised in
 ``test_clark_growth_curve.py`` (slow, cmdstan).
 """
 
-import chainladder as cl
 import numpy as np
 import pandas as pd
 import pytest
 
-from ibnr import Triangle
-from ibnr.gallery.statistical.clark.model import Clark, growth
+# chainladder ships in the [interop] extra, so this has to SKIP when it is
+# absent. Left unguarded it raises during collection, which pytest treats as a
+# whole-run error rather than a skipped file - the core-only CI leg then reports
+# nothing at all instead of the tests it can run.
+cl = pytest.importorskip("chainladder")
+
+from ibnr import Triangle  # noqa: E402
+from ibnr.gallery.statistical.clark.model import Clark, growth  # noqa: E402
 
 pytestmark = pytest.mark.tieout
 

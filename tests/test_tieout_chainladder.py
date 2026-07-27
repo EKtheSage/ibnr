@@ -21,13 +21,16 @@ Marked ``tieout``: run with ``pytest -m tieout``. Requires chainladder-python,
 which is a dev dependency (interop is sacred), not an optional extra.
 """
 
-import chainladder as cl
 import numpy as np
 import pytest
 
-from ibnr import Triangle
+# chainladder ships in the [interop] extra; guard it so this file SKIPS without
+# it rather than erroring during collection. See tests/test_clark.py.
+cl = pytest.importorskip("chainladder")
 
-from .conftest import assert_triangles_equal, sorted_long
+from ibnr import Triangle  # noqa: E402
+
+from .conftest import assert_triangles_equal, sorted_long  # noqa: E402
 
 pytestmark = pytest.mark.tieout
 

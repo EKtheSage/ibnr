@@ -1,0 +1,627 @@
+name: Tests
+
+# There was no pytest workflow in this repository at all until this file, so a
+# green check mark on a pull request meant "ruff passed and the docs built" and
+# nothing more. Every test here had only ever run on one Windows laptop, by hand.
+#
+# Running pytest is the easy half. The hard half is making a green run MEAN
+# something, because in this repository a run can look fine while telling you
+# almost nothing. Nearly every optional dependency is guarded with
+# pytest.importorskip, and a guard that fires does not fail - it skips. Six test
+# files (test_deeptriangle, test_mdn, test_nn_heldout, test_nn_transformer,
+# test_nn_transformer_ml, test_resnet) call importorskip("torch") at MODULE
+# level, and a module-level skip collapses a whole file into a single "s". A
+# developer who runs `uv sync && uv run pytest` gets a fully green run in which
+# the nn tests, the bayesian tests and the polars half of the backend matrix
+# never execute. Measured: a core-only environment reports 540 passed and 197
+# skipped, and every one of those 197 is silent.
+#
+# So every leg here declares what it installed and what it must run, and a check
+# step after pytest reads the JUnit XML and fails the job on any of:
+#
+#   * a test was skipped because a package THIS LEG INSTALLED could not be
+#     imported - i.e. the install silently did not take;
+#   * a file this leg exists to exercise contributed ZERO executed tests,
+#     whether it was collection-skipped, renamed, or deleted;
+#   * fewer tests executed than a coarse floor.
+#
+# The middle one is the one with real teeth. Read the floors for what they are:
+# COLLAPSE DETECTORS, not delta checks. Every leg re-runs the same ~540 core
+# tests, so an extra's unique contribution (bayesian is +44) is far smaller than
+# any sane cushion on a total near 580 - no global count can notice that all
+# twelve bayesian files were deleted. That is what required_files is for, and
+# why it names every file whose absence is the thing the leg was built to
+# prevent.
+#
+# Both skip shapes had to be handled, because they differ. A MODULE-level
+# importorskip emits a single <testcase classname="" name="tests.test_mdn">
+# whose <skipped message="collection skipped"> carries the real reason in its
+# element TEXT. The bayesian files guard at FUNCTION level and so always collect
+# and skip individually. "At least one executed test per named file" is the one
+# rule that covers both.
+#
+# The matrix has two halves that do different jobs:
+#
+#   * The isolated legs (core, core-py311, polars, nn, bayesian, interop)
+#     install the core dependencies plus exactly ONE extra. This is CLAUDE.md's
+#     "CI matrix runs core and each extra in isolation to catch hidden imports".
+#     The core leg asserts the optional packages really are absent, so a
+#     module-level `import torch` anywhere on the `import ibnr` path fails here
+#     instead of shipping. That same isolation is why these legs cannot demand
+#     zero skips: a leg without polars is SUPPOSED to skip the polars half of
+#     the backend matrix.
+#
+#   * The `all` leg installs everything and makes the strong claim, so it runs
+#     in strict mode: it enumerates the only skip reasons a runner may produce
+#     and fails on anything else.
+#
+# On what the core leg does and does not prove about torch, because it is easy
+# to read backwards: tests/test_gallery.py's subprocess check asserts `'torch'
+# not in sys.modules` after importing ibnr.gallery. With torch ABSENT that
+# assertion is trivially true - what this leg actually catches is the subprocess
+# dying with ModuleNotFoundError. The assertion itself only has teeth where
+# torch IS importable, i.e. the nn and all legs. Both are real checks; they are
+# different checks. Anyone trimming this matrix for runner minutes should not
+# read the core leg as covering the nn one.
+#
+# COST, from the first real run rather than an estimate, because someone will
+# check it against the Actions tab. Billed job time: all 6m04, bayesian 4m19,
+# interop 2m22, nn 2m19, polars 56s, core 50s, core-py311 48s - about 18
+# runner-minutes per pull request, with wall clock set by the `all` leg at
+# roughly 6 minutes.
+#
+# Worth knowing if these numbers are ever re-derived on a laptop: the runners
+# are FASTER than the dev box for this workload, not slower. The `all` leg's
+# pytest took 179s on a runner against 327s locally. An earlier version of this
+# comment predicted 30-45 billed minutes by assuming the opposite, and was
+# wrong by roughly a factor of two.
+#
+# That price buys less new information than it looks like, and it is worth
+# being honest about the ratio. Every isolated leg re-runs the same ~540 core
+# tests; measured against the core leg's 540, the unique yield is polars +128,
+# nn +97, bayesian +44, interop +28. If that stops being worth it, narrow the
+# per-extra legs to their own files; do not cut the `all` leg or the gates.
+#
+# Deliberately NOT here, so nobody wonders whether it was forgotten:
+#
+#   * The slow/cmdstan job CLAUDE.md asks for. Those tests need a cmdstan
+#     toolchain built on the runner, roughly ten minutes before a single test
+#     runs, through an install path never once exercised on Linux. When it lands
+#     it should be its own file behind workflow_dispatch or a label, with
+#     -m "slow" spelled out in full and a timeout of its own.
+#
+#   * A `viz` leg. No test imports altair and src/ibnr/viz/ does not exist yet
+#     (milestone 8). The fix is a test, not a job.
+#
+#   * A Windows runner, even though Windows is the only machine this suite has
+#     ever run on. A real gap and a deliberate deferral: it would be the first
+#     non-ubuntu runner in the repository and belongs in its own change.
+#
+#   * An exhaustive import smoke test. The core leg only catches a hidden
+#     optional import in a module that some collected test actually imports.
+#     Making "catch hidden imports" literally true needs a test that walks the
+#     package importing every submodule, with a declared allowlist for the
+#     modules that legitimately require an extra (the network.py modules import
+#     torch at module level by design). That is a source change and a policy
+#     decision, not a workflow change.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+# New to this repository. Seven legs re-run on every push to a pull request
+# branch, so without cancellation a force-push leaves two full matrices racing.
+# Keyed on head_ref for pull requests so a branch coalesces to one run, and on
+# the unique run_id for pushes to main so merges NEVER cancel each other - main
+# is the branch whose green state people trust, and two merges landing close
+# together must both complete.
+concurrency:
+  group: "${{ github.workflow }}-${{ github.head_ref || github.run_id }}"
+  cancel-in-progress: true
+
+env:
+  # Point the Schedule P adapter at a path that cannot exist. Without this,
+  # tests/test_schedule_p.py evaluates `MART_AVAILABLE = mart_available()` at
+  # IMPORT time - during collection, in every job - which resolves the default
+  # source `github://EKtheSage/cas-schedule-p-data-model@latest` by shelling out
+  # to the `gh` CLI (preinstalled on GitHub runners) with no timeout, and on a
+  # cold cache downloads a parquet. Six more test modules import that flag and
+  # inherit the behaviour. With this set to a plain path the github branch is
+  # never taken and the mart tests skip immediately with a clear reason.
+  #
+  # This does NOT stop every gh subprocess. tests/test_schedule_p_github.py's
+  # `_gh_authed()` is evaluated as a decorator argument at import time and runs
+  # `gh auth status` during collection in every leg regardless of this variable.
+  # That call is fast and harmless, and it is why test_live_manifest_fetch skips
+  # on CI - see the allow_skips entry on the `all` leg.
+  IBNR_SCHEDULE_P_WAREHOUSE: /nonexistent/schedule-p-mart
+
+  # Do NOT add GH_TOKEN or GITHUB_TOKEN to this workflow. `gh auth status`
+  # exiting 0 is exactly what test_schedule_p_github.py's skipif tests, so a
+  # token would un-skip test_live_manifest_fetch, which then tries to read a
+  # PRIVATE data repository this repository's token cannot see, and fails.
+
+  # Pin the thread count so neural-network and BLAS-heavy tests take a
+  # comparable time on any runner, which keeps --durations output and the floors
+  # below meaningful across runs. This is about COMPARABILITY, not determinism:
+  # tests/test_deeptriangle.py's exact-equality comparison is between two fits
+  # in the SAME process, so the runner's core count cannot make them differ from
+  # each other. If float reproducibility ever becomes the goal, the lever is
+  # torch.use_deterministic_algorithms and a value of 1.
+  OMP_NUM_THREADS: "4"
+  MKL_NUM_THREADS: "4"
+
+jobs:
+  pytest:
+    name: pytest (${{ matrix.name }})
+    runs-on: ubuntu-latest
+
+    # A test job writes nothing. House style is least privilege declared at the
+    # point of use, not a blanket block at the top of the file.
+    permissions:
+      contents: read
+
+    # A hang budget, not a runtime budget: the slowest leg measured under four
+    # minutes locally. Without this every job inherits GitHub's 360 minute
+    # default, which is what a subprocess stuck on DNS would burn while printing
+    # nothing.
+    timeout-minutes: 30
+
+    strategy:
+      # One leg failing must not cancel the rest. When the nn leg breaks, the
+      # useful question is immediately whether bayesian broke too.
+      fail-fast: false
+      matrix:
+        include:
+          # ---------------------------------------------------------------
+          # SEPARATOR NOTE: every list field below is SEMICOLON separated, with
+          # no exceptions. One separator everywhere, because skip reasons
+          # legitimately contain commas and a mixed convention is a trap that
+          # only springs the first time someone adds a second entry.
+          #
+          # Every count in a comment below was MEASURED on a real environment
+          # built with the same `uv sync` line the leg uses, not estimated.
+          # ---------------------------------------------------------------
+
+          # core: the isolation proof. Installs nothing optional and asserts the
+          # optional packages really are missing, so a module-level `import
+          # torch` (or pymc, or chainladder) anywhere on the `import ibnr` path
+          # fails here rather than shipping.
+          - name: core
+            python: "3.12"
+            cache: "false"
+            sync_args: "--no-default-groups --group test"
+            expect_imports: ""
+            absent_imports: "torch;polars;pymc;numpyro;arviz;bayesblend;chainladder;bermuda;altair"
+            forbid_skips: ""
+            allow_skips: ""
+            strict_skips: "false"
+            required_files: "tests/test_core.py;tests/test_transforms.py;tests/test_gallery.py;tests/test_markdown_snippets.py"
+            # 540 passed locally, 539 on a runner - one test differs by platform.
+            # That one-test gap is the reason the floors carry a real cushion
+            # rather than being pinned to a local count.
+            min_tests: "500"
+
+          # ---------------------------------------------------------------
+          # core-py311: the same leg on the oldest Python the package claims to
+          # support. requires-python is >=3.11 and the classifiers advertise
+          # 3.11, but until this file nothing had ever tested it - the only
+          # workflow touching 3.11 was the docs build.
+          #
+          # Checked before shipping, because "the lock was resolved on 3.12" was
+          # the obvious way for this leg to fail on its first run for a reason
+          # having nothing to do with the code: `uv sync --locked ... --python
+          # 3.11` resolves and installs cleanly, and the suite gives 540 passed
+          # / 197 skipped there, identical to 3.12. So the 3.11 claim is real,
+          # not just advertised. If this leg ever goes red the answer is to fix
+          # the code or the classifier - never to drop --locked.
+          - name: core-py311
+            python: "3.11"
+            cache: "false"
+            sync_args: "--no-default-groups --group test"
+            expect_imports: ""
+            absent_imports: "torch;polars;pymc;numpyro;arviz;bayesblend;chainladder;bermuda;altair"
+            forbid_skips: ""
+            allow_skips: ""
+            strict_skips: "false"
+            required_files: "tests/test_core.py;tests/test_transforms.py;tests/test_gallery.py;tests/test_markdown_snippets.py"
+            min_tests: "500"
+
+          # ---------------------------------------------------------------
+          # polars: the second ibis backend, and the biggest silent-skip risk in
+          # the repository. 18 test files take the `backend_name` fixture from
+          # conftest.py, and without polars each runs at half coverage and
+          # reports green - test_mack.py goes 64 -> 30, test_holdout.py 38 -> 19.
+          # That is the largest skip category, and CLAUDE.md decision 2 says this
+          # dual-backend matrix is what keeps the polars-compatible formulations
+          # honest. So this leg forbids conftest.py's own skip reason: if the
+          # polars parameter skips here, the job fails.
+          - name: polars
+            python: "3.12"
+            cache: "false"
+            sync_args: "--no-default-groups --group test --extra polars"
+            expect_imports: "polars"
+            absent_imports: "torch;pymc;chainladder"
+            forbid_skips: "polars backend not installed"
+            allow_skips: ""
+            strict_skips: "false"
+            required_files: "tests/test_transforms.py;tests/test_mack.py;tests/test_holdout.py;tests/test_polars_extra.py"
+            # measured: 668 passed, 69 skipped
+            min_tests: "620"
+
+          # ---------------------------------------------------------------
+          # nn: the torch entries, and the leg the whole gate mechanism was
+          # written for. Six of these files guard at MODULE level, so without
+          # torch each collapses to a single skip line and every test in it
+          # disappears. Both gates cover it from different sides: forbidding
+          # "could not import 'torch'" catches the install silently failing,
+          # required_files catches a file being renamed or deleted - which no
+          # skip reason would ever mention, because a file that does not exist
+          # cannot skip.
+          #
+          # tests/test_fit_atomicity.py and tests/test_tuning.py also use torch
+          # but guard at function level, so they collect everywhere and are
+          # deliberately NOT in required_files: they would satisfy it even with
+          # torch missing.
+          - name: nn
+            python: "3.12"
+            cache: "true"
+            sync_args: "--no-default-groups --group test --extra nn"
+            expect_imports: "torch"
+            absent_imports: "polars;pymc;chainladder"
+            forbid_skips: ""
+            allow_skips: ""
+            strict_skips: "false"
+            required_files: "tests/test_deeptriangle.py;tests/test_mdn.py;tests/test_nn_heldout.py;tests/test_nn_transformer.py;tests/test_nn_transformer_ml.py;tests/test_resnet.py"
+            # measured: 637 passed, 249 skipped. The +97 over core is smaller
+            # than the number of tests in those six files, because this leg has
+            # no polars and many of them are parametrized over both backends.
+            min_tests: "590"
+
+          # ---------------------------------------------------------------
+          # bayesian: numpyro, pymc, arviz and bayesblend. cmdstanpy installs
+          # here too but cmdstan itself does NOT, so the Stan tests stay behind
+          # the `slow` marker that pyproject's addopts already excludes - this
+          # leg exercises the PPL ports and the stacking kernel, not Stan.
+          #
+          # All twelve files guard at FUNCTION level, so they never
+          # collection-skip and a "not collection-skipped" rule would be
+          # vacuous here. Naming all twelve in required_files is what makes the
+          # gate meaningful: the rule is "at least one executed test per named
+          # file", which covers both skip shapes.
+          - name: bayesian
+            python: "3.12"
+            cache: "true"
+            sync_args: "--no-default-groups --group test --extra bayesian"
+            expect_imports: "numpyro;pymc;arviz;bayesblend"
+            absent_imports: "torch;polars;chainladder"
+            forbid_skips: ""
+            allow_skips: ""
+            strict_skips: "false"
+            required_files: "tests/test_heldout_scorer_ccl.py;tests/test_heldout_scorer_compartmental.py;tests/test_heldout_scorer_csr.py;tests/test_heldout_scorer_guszcza.py;tests/test_nuts_sampler.py;tests/test_parity_clark.py;tests/test_parity_compartmental.py;tests/test_parity_meyers.py;tests/test_parity_meyers_csr.py;tests/test_parity_odp.py;tests/test_predicts_heldout_odp_clark.py;tests/test_stacking.py"
+            # measured: 584 passed, 153 skipped - exactly +44 over core. The
+            # floor is deliberately set ABOVE the core baseline of 540, so if
+            # every bayesian test vanished the count would fall back to ~540 and
+            # breach it. That is the one leg where the global floor can do the
+            # job required_files does elsewhere; the cushion is correspondingly
+            # thin, and removing bayesian tests on purpose means editing it.
+            min_tests: "550"
+
+          # ---------------------------------------------------------------
+          # interop: chainladder and bermuda-ledger, which back the `to_*`
+          # converters and every tie-out. CLAUDE.md calls interop sacred - the
+          # round-trips must be lossless - and these tests are the only thing
+          # checking that claim.
+          - name: interop
+            python: "3.12"
+            cache: "false"
+            sync_args: "--no-default-groups --group test --extra interop"
+            expect_imports: "chainladder;bermuda"
+            absent_imports: "torch;polars;pymc"
+            forbid_skips: ""
+            allow_skips: ""
+            strict_skips: "false"
+            required_files: "tests/test_clark.py;tests/test_odp_contract.py;tests/test_tieout_chainladder.py;tests/test_interop_bermuda.py"
+            # measured: 568 passed, 201 skipped. Only +28 over core, and the
+            # skip count goes UP versus core (197 -> 201) because three files
+            # that were one collection-skip each now collect and skip a few
+            # tests individually. required_files is what protects this leg; the
+            # floor alone could not.
+            min_tests: "530"
+
+          # ---------------------------------------------------------------
+          # all: everything installed, and the only leg where the cross-extra
+          # combinations run at all - the chainladder tie-outs against the
+          # polars backend, and the nn entries against both backends. It is also
+          # the only leg that makes the strong claim, so it runs strict: any
+          # skip whose reason is not named below fails the job.
+          #
+          # The allowlist is deliberately short and every entry is a fact about
+          # the RUNNER, not about the code. Measured: with every extra
+          # installed the suite skips exactly 7 tests, and all 7 say "CAS
+          # Schedule P gold mart not reachable" (two wordings, both containing
+          # "gold mart"). So:
+          #
+          #   - "gold mart"  the 7 measured skips - the mart is not on a runner
+          #                  (see IBNR_SCHEDULE_P_WAREHOUSE above)
+          #   - "gh CLI"     could not be observed from the dev box, which IS
+          #                  logged in to gh, so test_live_manifest_fetch runs
+          #                  there and skips on a runner instead. Listed on that
+          #                  reasoning, and the first CI run confirmed it: the
+          #                  runner skipped test_schedule_p_github.py:206 with
+          #                  "needs gh CLI authenticated to GitHub". Without
+          #                  this entry the leg would have gone red on arrival.
+          #   - "cmdstan"    belt and braces for the mart+cmdstan test, whose
+          #                  reason already contains "gold mart" today.
+          #
+          # If this leg goes red on a skip reason not listed here, that is the
+          # gate working. Read the reason it prints, and either fix the cause or
+          # add the reason with a note saying why it is a runner fact.
+          - name: all
+            python: "3.12"
+            cache: "true"
+            sync_args: >-
+              --no-default-groups --group test
+              --extra polars --extra nn --extra bayesian --extra interop --extra viz
+            expect_imports: "torch;polars;pymc;numpyro;arviz;bayesblend;chainladder;bermuda;altair"
+            absent_imports: ""
+            forbid_skips: ""
+            allow_skips: "gold mart;gh CLI;cmdstan"
+            strict_skips: "true"
+            required_files: "tests/test_transforms.py;tests/test_deeptriangle.py;tests/test_mdn.py;tests/test_resnet.py;tests/test_nn_heldout.py;tests/test_stacking.py;tests/test_tieout_chainladder.py;tests/test_clark.py;tests/test_interop_bermuda.py;tests/test_polars_extra.py"
+            min_tests: "860"
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "${{ matrix.python }}"
+          # Caching is per-leg and explicit, not inferred from an expression.
+          # One cache per leg because with a shared key whichever leg finished
+          # first would decide what every other leg gets, and the core leg's
+          # cache is worth nothing to the nn leg.
+          #
+          # It is OFF for the light legs: they install ~25 packages in seconds,
+          # inside the noise of a cache restore-plus-save round trip, and seven
+          # caches would otherwise compete for the repository's Actions cache
+          # budget and evict each other.
+          #
+          # prune-cache is false deliberately. setup-uv defaults it to TRUE,
+          # which runs `uv cache prune --ci` before saving, and that removes
+          # PRE-BUILT wheels while keeping only wheels built from source. torch
+          # is a pre-built wheel, so under the default the nn and all legs would
+          # re-download it on every single run and this cache would not do the
+          # one thing it is here for.
+          enable-cache: "${{ matrix.cache }}"
+          prune-cache: false
+          cache-suffix: "${{ matrix.name }}"
+          cache-dependency-glob: "uv.lock"
+
+      # `--locked` is the test-job version of the rule lint.yml applies to ruff:
+      # one version, in one place, and that place is uv.lock. It installs
+      # exactly the locked resolution AND fails when pyproject.toml has drifted
+      # from it, so CI can never quietly test a resolution nobody has locally.
+      # `--frozen` installs the lockfile without checking it, which is weaker.
+      # This matters more for tests than for lint, because a floating numpy or
+      # pandas changes numbers, not just formatting.
+      #
+      # `--no-default-groups --group test` is what makes isolation possible at
+      # all: the `dev` group carries polars, chainladder and bermuda right next
+      # to pytest, so a plain `uv sync` can never produce a core-only
+      # environment. The `test` group holds pytest and ruff and nothing else,
+      # exactly as `docs` was carved out so docs.yml could avoid the dev group.
+      - name: Install
+        run: uv sync --locked ${{ matrix.sync_args }}
+
+      # Fail before pytest if the environment is not what this leg claims.
+      # Cheap, and its failure message is obvious - which is exactly what a skip
+      # is not.
+      - name: Check this leg installed what it claims
+        env:
+          EXPECT_IMPORTS: ${{ matrix.expect_imports }}
+          ABSENT_IMPORTS: ${{ matrix.absent_imports }}
+        run: |
+          uv run --no-sync python - <<'PY'
+          import importlib
+          import importlib.util
+          import os
+          import sys
+
+
+          def names(var):
+              return [p.strip() for p in os.environ.get(var, "").split(";") if p.strip()]
+
+
+          problems = []
+          for name in names("EXPECT_IMPORTS"):
+              try:
+                  module = importlib.import_module(name)
+              except Exception as exc:
+                  problems.append(f"{name} should be installed here but did not import: {exc}")
+              else:
+                  print(f"present: {name} {getattr(module, '__version__', '')}")
+          for name in names("ABSENT_IMPORTS"):
+              if importlib.util.find_spec(name) is None:
+                  print(f"absent, as this leg requires: {name}")
+              else:
+                  problems.append(f"{name} must NOT be installed in this leg, but it is")
+          if problems:
+              sys.exit("FAIL:\n  " + "\n  ".join(problems))
+          PY
+
+      # No `-m` here on purpose. pyproject's addopts already carries
+      # -m "not slow", and a `-m` on the command line REPLACES it rather than
+      # combining, so a leg written as `pytest -m mart` would quietly pull the
+      # cmdstan tests into an environment with no cmdstan. Any future leg
+      # needing a marker filter must spell the whole thing out, as in
+      # -m "tieout and not slow".
+      #
+      # --strict-markers turns a typo'd marker into an error instead of a
+      # warning. Without it a stray `@pytest.mark.slw` on a cmdstan test escapes
+      # the "not slow" exclusion and tries to compile Stan right here.
+      #
+      # Runs through `uv run` rather than the virtualenv's python directly
+      # because `uv run` puts the environment's bin directory on PATH, and
+      # tests/test_markdown_snippets.py shells out to `ruff` by name. That is
+      # also why ruff is in the `test` group: without it those tests FAIL rather
+      # than skip.
+      - name: Run pytest
+        id: pytest
+        run: |
+          uv run --no-sync pytest \
+            --strict-markers --strict-config \
+            -rs --durations=10 \
+            --junitxml=junit.xml
+
+      # The gate. Runs even when pytest failed - a leg that fails on a real test
+      # failure should still report whether it ALSO skipped things it should not
+      # have, because both answers are useful and one must not hide the other.
+      #
+      # `!cancelled()` rather than `always()`: this workflow enables
+      # cancel-in-progress, so with always() every force-push would leave seven
+      # cancelled jobs each printing "pytest wrote no junit.xml" - a red,
+      # alarming, meaningless step on a run the user intentionally superseded.
+      # The outcome check keeps it quiet when Install failed and pytest never
+      # ran, so a broken install reports one error rather than two.
+      - name: Check the tests this leg exists for actually ran
+        if: ${{ !cancelled() && steps.pytest.outcome != 'skipped' }}
+        env:
+          EXPECT_IMPORTS: ${{ matrix.expect_imports }}
+          FORBID_SKIPS: ${{ matrix.forbid_skips }}
+          ALLOW_SKIPS: ${{ matrix.allow_skips }}
+          STRICT_SKIPS: ${{ matrix.strict_skips }}
+          REQUIRED_FILES: ${{ matrix.required_files }}
+          MIN_TESTS: ${{ matrix.min_tests }}
+          LEG: ${{ matrix.name }}
+        run: |
+          uv run --no-project python - <<'PY'
+          import os
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          report = Path("junit.xml")
+          if not report.exists():
+              sys.exit("FAIL: pytest wrote no junit.xml, so nothing can be verified.")
+
+
+          def listed(var):
+              return [p.strip() for p in os.environ.get(var, "").split(";") if p.strip()]
+
+
+          # A package this leg installed must never be why a test was skipped.
+          # "could not import 'x'" is pytest.importorskip's own wording.
+          banned = [f"could not import '{name}'" for name in listed("EXPECT_IMPORTS")]
+          banned += listed("FORBID_SKIPS")
+          allowed = listed("ALLOW_SKIPS")
+          strict = os.environ.get("STRICT_SKIPS", "false").strip().lower() == "true"
+          floor = int(os.environ.get("MIN_TESTS", "0"))
+          required = listed("REQUIRED_FILES")
+
+          # The skip policy is an EXPLICIT flag, never inferred from whether the
+          # allowlist happens to be non-empty. Inferring it would mean emptying
+          # one string silently disarms the whole gate on the one leg that makes
+          # the strong claim, with no visible difference in the log.
+          print(f"leg: {os.environ.get('LEG', '?')}")
+          if strict:
+              print(f"skip policy: STRICT, allowing {len(allowed)} reason(s): {allowed}")
+          else:
+              print("skip policy: permissive (isolated leg; some skips are expected)")
+
+          passed = failed = errored = 0
+          per_file_ran = {}
+          collection_skipped = set()
+          offenders = []
+          unexpected = []
+
+          for case in ET.parse(report).getroot().iter("testcase"):
+              # Verified against pytest 9.0.3: NO testcase carries a `file`
+              # attribute, in either shape. A normal test has
+              # classname="tests.test_mack" and name="test_x". A module-level
+              # importorskip instead emits classname="" with the dotted module
+              # in `name` and message="collection skipped", the real reason
+              # living in the element TEXT - which is why reason searches both.
+              classname = case.get("classname") or ""
+              name = case.get("name") or ""
+              skipped = case.find("skipped")
+
+              if skipped is None:
+                  # Counted separately so the summary cannot print a reassuring
+                  # "N tests executed" that is really N failures.
+                  if case.find("error") is not None:
+                      errored += 1
+                  elif case.find("failure") is not None:
+                      failed += 1
+                  else:
+                      passed += 1
+                  if classname:
+                      per_file_ran[classname] = per_file_ran.get(classname, 0) + 1
+                  continue
+
+              if not classname:
+                  collection_skipped.add(name)
+
+              reason = f"{skipped.get('message') or ''} {skipped.text or ''}"
+              where = "::".join(p for p in (classname, name) if p) or "unknown test"
+              hit = next((phrase for phrase in banned if phrase in reason), None)
+              if hit is not None:
+                  offenders.append(f"  {where}\n      skipped for: {hit}")
+              elif strict and not any(phrase in reason for phrase in allowed):
+                  unexpected.append(f"  {where}\n      skipped for: {reason.strip()[:160]}")
+
+          executed = passed + failed
+          print(f"{passed} passed, {failed} failed, {errored} errors; floor is {floor}")
+          print(f"PASTE-BACK: this leg executed {executed} tests (passed+failed)")
+
+          problems = []
+          if offenders:
+              problems.append(
+                  f"{len(offenders)} test(s) skipped for a package THIS LEG INSTALLED:\n"
+                  + "\n".join(offenders[:25])
+              )
+          if unexpected:
+              problems.append(
+                  f"{len(unexpected)} test(s) skipped for a reason this leg does not allow:\n"
+                  + "\n".join(unexpected[:25])
+              )
+
+          # The gate with real teeth. A global floor cannot notice that one file
+          # vanished, because ~540 core tests run in every leg and drown the
+          # difference - the bayesian extra's entire unique contribution is 44.
+          missing = []
+          for path in required:
+              module = path.replace("/", ".").replace("\\", ".").removesuffix(".py")
+              if module in collection_skipped:
+                  missing.append(f"  {path}: COLLECTION-SKIPPED (module-level importorskip fired)")
+              elif per_file_ran.get(module, 0) == 0:
+                  missing.append(
+                      f"  {path}: contributed ZERO executed tests (renamed? deleted? all skipped?)"
+                  )
+          if missing:
+              problems.append(
+                  "file(s) this leg exists to exercise ran nothing:\n" + "\n".join(missing)
+              )
+
+          if executed < floor:
+              problems.append(
+                  f"only {executed} tests executed, below this leg's floor of {floor}. Either the "
+                  "environment is wrong, or tests were removed and the floor needs updating."
+              )
+          if problems:
+              sys.exit("FAIL: " + "\n\n".join(problems))
+          print("OK: this leg ran the tests it exists to run.")
+          PY
+
+      # Worth keeping: the log shows the first 25 offenders, the report has all
+      # of them, and skip reasons are the thing you want to read after the fact.
+      - name: Save the test report
+        if: ${{ !cancelled() && steps.pytest.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit-${{ matrix.name }}
+          path: junit.xml
+          if-no-files-found: warn
