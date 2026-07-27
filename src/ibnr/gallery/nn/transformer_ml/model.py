@@ -13,13 +13,13 @@ normalization and split helpers are imported from it - one implementation.
 from __future__ import annotations
 
 import datetime as dt
-import math
 
 import numpy as np
 import pandas as pd
 
 from ibnr.gallery.entry import GalleryEntry
-from ibnr.gallery.nn.transformer.model import _norm_stats, _splits
+from ibnr.gallery.nn._scheme import norm_stats, splits
+from ibnr.gallery.nn._training import train_ensemble
 from ibnr.gallery.nn.transformer_ml.config import TransformerMLConfig
 from ibnr.gallery.registry import register
 from ibnr.kernels.contract import _as_date
@@ -46,6 +46,13 @@ class NNTransformerML(GalleryEntry):
 
     name = "nn_transformer_ml"
     family = "nn"
+
+    # NOTE: no held-out (milestone 6) wiring here yet, deliberately. The
+    # multiline contract's (company, line, origin, dev) layout needs its own
+    # per-(company, line) adapter design - a company cohort is NOT one
+    # next_diagonal cohort. See the single-line implementation for the pattern
+    # to follow: gallery/nn/transformer/model.py (_heldout_log_lik /
+    # _heldout_draws) + gallery/nn/_heldout.py (cohort_contract, CohortHeldout).
 
     def __init__(self) -> None:
         self.contract_: dict | None = None  # nn_company_data() dict
@@ -97,7 +104,7 @@ class NNTransformerML(GalleryEntry):
         # diagonals (an eval_date-style split). A cutoff is per company but
         # spans all its lines - calendar is shared across a company's lines.
         obs_any = c["obs_mask"].any(axis=1)  # (n_c, n_w, n_d): any line observed
-        _, _, val_cutoff = _splits(obs_any, c["cal_idx"], cfg.val_diagonals)
+        _, _, val_cutoff = splits(obs_any, c["cal_idx"], cfg.val_diagonals)
         cal = c["cal_idx"]  # (n_w, n_d) 1-based diagonal index
         ctx_elig = c["obs_mask"] & (cal[None, None] <= val_cutoff)  # cells trainable as context
         val_tgt = c["obs_mask"] & (cal[None, None] > val_cutoff)  # held-out validation targets
@@ -110,7 +117,7 @@ class NNTransformerML(GalleryEntry):
         std = np.ones((n_l, n_f, n_d))
         pinned = np.zeros((n_l, n_f, n_d), dtype=bool)
         for li in range(n_l):
-            mean[li], std[li], pinned[li] = _norm_stats(
+            mean[li], std[li], pinned[li] = norm_stats(
                 c["x"][:, li], ctx_elig[:, li], c["obs_mask"][:, li]
             )
         # normalize log premium over the lines actually present (absent = 0 later)
@@ -154,71 +161,42 @@ class NNTransformerML(GalleryEntry):
 
         # earliest cutoff the augmentation may draw (leave >= 1 target diagonal)
         min_cutoff = max(1, min(cfg.min_cutoff, val_cutoff - 1))
-        # deep ensemble: cfg.ensemble_size independently-seeded fits; their
-        # draws are pooled at predict time to widen the predictive distribution
-        self.models_, self.history_ = [], []
-        for member in range(cfg.ensemble_size):
-            member_seed = None if seed is None else seed + 1000 * member
-            if member_seed is not None:
-                torch.manual_seed(member_seed)
-            rng = np.random.default_rng(member_seed)
-            model = net.TriangleTransformerML(
-                cfg, n_lines=n_l, n_features=n_f, n_w=n_w, n_d=n_d
-            ).to(dev)
-            opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
 
-            best_val, best_state, patience_left = math.inf, None, cfg.patience
-            history: list[dict] = []
-            for epoch in range(cfg.max_epochs):
-                model.train()
-                epoch_loss, n_batches = 0.0, 0
-                perm = rng.permutation(n_c)  # shuffle companies each epoch
-                for start in range(0, n_c, cfg.batch_size):
-                    idx = torch.tensor(perm[start : start + cfg.batch_size], device=dev)
-                    # calendar-cutoff augmentation: each company in the batch
-                    # gets a random conditioning diagonal; cells on/before it are
-                    # context, later observed cells are the prediction targets -
-                    # this teaches the model to forecast future diagonals
-                    cutoffs = torch.tensor(
-                        rng.integers(min_cutoff, val_cutoff, size=len(idx)), device=dev
-                    )
-                    ctx = obs_t[idx] & (cal_t[None, None] <= cutoffs[:, None, None, None])
-                    tgt = ctx_elig_t[idx] & (cal_t[None, None] > cutoffs[:, None, None, None])
-                    if not bool(tgt.any()):
-                        continue
-                    loss = nll(model, xt[idx], ctx, lm_t[idx], prem_t[idx], cutoffs, yt[idx], tgt)
-                    opt.zero_grad()
-                    loss.backward()
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
-                    opt.step()
-                    epoch_loss += float(loss.detach())
-                    n_batches += 1
+        def make_model():
+            return net.TriangleTransformerML(cfg, n_lines=n_l, n_features=n_f, n_w=n_w, n_d=n_d).to(
+                dev
+            )
 
-                # validate at the fixed val_cutoff: condition on all trainable
-                # cells, score the held-out trailing diagonals
-                model.eval()
-                with torch.no_grad():
-                    val_loss = float(
-                        nll(model, xt, ctx_elig_t, lm_t, prem_t, val_cut_t, yt, val_tgt_t)
-                    )
-                history.append(
-                    {"epoch": epoch, "train": epoch_loss / max(n_batches, 1), "val": val_loss}
-                )
-                if show_progress:
-                    print(f"member {member} epoch {epoch}: val {val_loss:.4f}")
-                # early stopping: keep the best-validation weights
-                if val_loss < best_val - 1e-6:
-                    best_val, patience_left = val_loss, cfg.patience
-                    best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
-                else:
-                    patience_left -= 1
-                    if patience_left <= 0:
-                        break
-            if best_state is not None:
-                model.load_state_dict(best_state)
-            model.eval()
-            self.models_.append(model)
-            self.history_.append(history)
+        def train_loss(model, idx, cutoffs):
+            # cells on/before the augmented cutoff are context, later observed
+            # cells are the prediction targets - this teaches the model to
+            # forecast future diagonals
+            ctx = obs_t[idx] & (cal_t[None, None] <= cutoffs[:, None, None, None])
+            tgt = ctx_elig_t[idx] & (cal_t[None, None] > cutoffs[:, None, None, None])
+            if not bool(tgt.any()):
+                return None
+            return nll(model, xt[idx], ctx, lm_t[idx], prem_t[idx], cutoffs, yt[idx], tgt)
+
+        def val_loss(model):
+            # condition on all trainable cells, score the held-out trailing
+            # diagonals at the fixed val_cutoff
+            return float(nll(model, xt, ctx_elig_t, lm_t, prem_t, val_cut_t, yt, val_tgt_t))
+
+        # deep ensemble via the shared loop (gallery/nn/_training.py):
+        # cfg.ensemble_size independently-seeded fits; their draws are pooled
+        # at predict time to widen the predictive distribution
+        self.models_, self.history_ = train_ensemble(
+            n_c,
+            config=cfg,
+            seed=seed,
+            make_model=make_model,
+            train_loss=train_loss,
+            val_loss=val_loss,
+            min_cutoff=min_cutoff,
+            val_cutoff=val_cutoff,
+            device=dev,
+            show_progress=show_progress,
+        )
 
         self._rollout_key = None
         return self

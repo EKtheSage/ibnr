@@ -278,6 +278,18 @@ def test_norm_stats_ignore_validation_cells_except_pinned():
     np.testing.assert_allclose(mean_b[0, 3], 1e6)
 
 
+def test_scheme_helpers_are_the_shared_implementations():
+    """The training-scheme helpers live ONCE, in ``gallery/nn/_scheme.py``;
+    this module's ``_splits``/``_norm_stats`` are compatibility aliases, not
+    copies. A drifted second implementation of the pinning rule is the v2
+    regression waiting to happen, so identity (``is``) rather than behavior
+    is the assertion."""
+    from ibnr.gallery.nn import _scheme
+
+    assert _splits is _scheme.splits
+    assert _norm_stats is _scheme.norm_stats
+
+
 # -- entry ---------------------------------------------------------------------
 
 
