@@ -427,6 +427,62 @@ def test_log_lik_refused_at_pinned_devs_but_draws_survive(fitted):
     assert not np.allclose(ll[0], ll[1])
 
 
+def test_log_lik_matches_independent_recomputation(fitted):
+    """Recompute the density from scratch - own forward pass, standardization,
+    mixture assembly and BOTH Jacobians written out by hand - and require
+    agreement with ``log_lik_at`` to float32 accuracy.
+
+    Everything after the shared fitted state (weights, norm stats) is
+    independent: the conditioning context, the as_of cutoff, ``z``, the
+    ``-log std0[d]`` standardization Jacobian and the ``-log premium`` measure
+    carry. This is the only test that pins the DEV INDEXING on the density
+    path: a density built with the wrong dev's ``std0`` in both ``z`` and the
+    Jacobian is still self-consistently normalized (the normalization check
+    passes on it by construction), still finite, still ranks - and is wrong at
+    every cell. Other mutations this catches: dropping either Jacobian term,
+    conditioning at the wrong cutoff, and scoring the cumulative value instead
+    of the increment.
+    """
+    entry = fitted.entry
+    cells = _split(fitted.cells0, pinned=False)
+    view = entry.at_cohort(SEG0)
+    idx = index_into(cells, view.contract_, field="paid_loss")
+    got = view.log_lik_at(cells, field="paid_loss")  # (n_members, n_cells), amount scale
+
+    c = entry.contract_
+    ci = entry._cohort_index(SEG0)
+    norm = entry.norm_
+    x_norm = (c["x"][ci] - norm["mean"][:, None, :]) / norm["std"][:, None, :]
+    x_norm = np.where(norm["pinned"][:, None, :], 0.0, x_norm)
+    obs = c["obs_mask"][ci]
+    cutoff = int(c["cal_idx"][obs].max())  # the as_of diagonal
+    assert cutoff == 6
+    xt = torch.tensor(x_norm[None], dtype=torch.float32)
+    ctx = torch.tensor(obs[None])
+    lob = torch.tensor([c["lob_idx"][ci]], dtype=torch.long)
+    prem_feat = torch.tensor(
+        [(c["log_premium"][ci] - norm["prem_mean"]) / norm["prem_std"]], dtype=torch.float32
+    )
+    cut = torch.tensor([cutoff], dtype=torch.long)
+
+    w0, d0 = idx.w - 1, idx.d - 1
+    mean0, std0 = norm["mean"][0], norm["std"][0]
+    increment = idx.value - idx.prev_value
+    z = (increment / idx.premium - mean0[d0]) / std0[d0]
+    expected = np.empty((len(entry.models_), idx.n_cells))
+    with torch.no_grad():
+        for m, model in enumerate(entry.models_):
+            log_pi, mu, sigma = model(xt, ctx, lob, prem_feat, cut)
+            lp = log_pi[0].numpy()[w0, d0]  # (n_cells, K)
+            mu_ = mu[0].numpy()[w0, d0]
+            sg = sigma[0].numpy()[w0, d0]
+            comp = -0.5 * ((z[:, None] - mu_) / sg) ** 2 - np.log(sg) - 0.5 * np.log(2.0 * np.pi)
+            dens_z = np.log(np.exp(lp + comp).sum(axis=1))  # small K: direct sum is fine
+            # z -> ratio Jacobian, then ratio -> amount measure carry
+            expected[m] = dens_z - np.log(std0[d0]) - np.log(idx.premium)
+    np.testing.assert_allclose(got, expected, rtol=1e-5, atol=1e-6)
+
+
 def test_log_lik_carry_is_exactly_log_premium(fitted):
     """The measure-carry layer: ``log_lik_at == _log_lik_native - log premium``.
     Pins that the entry declares loss_ratio and the base applies exactly that
