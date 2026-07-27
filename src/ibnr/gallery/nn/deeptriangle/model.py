@@ -24,20 +24,17 @@ cross-line dependence (that is ``nn_transformer_ml``'s job)."""
 from __future__ import annotations
 
 import datetime as dt
-import math
 
 import numpy as np
 import pandas as pd
-from scipy.special import logsumexp
 
-from ibnr.gallery.entry import GalleryEntry, PredictsHeldout, ScoresHeldout
-from ibnr.gallery.nn._heldout import CohortHeldout
+from ibnr.gallery.entry import GalleryEntry
+from ibnr.gallery.nn._heldout import PooledMDNHeldout
 from ibnr.gallery.nn._scheme import norm_stats, splits
 from ibnr.gallery.nn._training import train_ensemble
 from ibnr.gallery.nn.deeptriangle.config import DeepTriangleConfig
 from ibnr.gallery.registry import register
 from ibnr.kernels.contract import _as_date
-from ibnr.kernels.holdout import CellIndex, HoldoutCells
 from ibnr.kernels.nn_contract import nn_data
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.triangle.core import Triangle
@@ -45,11 +42,9 @@ from ibnr.triangle.core import Triangle
 #: cap on (draw chunk x cohorts) per rollout forward pass
 MAX_ROLLOUT_BATCH = 4096
 
-LOG_2PI = math.log(2.0 * math.pi)
-
 
 @register
-class DeepTriangle(GalleryEntry, ScoresHeldout, PredictsHeldout):
+class DeepTriangle(GalleryEntry, PooledMDNHeldout):
     name = "deeptriangle"
     family = "nn"
 
@@ -307,235 +302,14 @@ class DeepTriangle(GalleryEntry, ScoresHeldout, PredictsHeldout):
 
     # -- held-out scoring (milestone 6 wiring) -------------------------------------
 
-    def at_cohort(self, segment: dict[str, str]) -> CohortHeldout:
-        """A per-cohort held-out scorer view (see ``gallery/nn/_heldout.py``).
-
-        The pooled fit is multi-cohort while ``kernels.holdout`` scores one
-        cohort at a time, so held-out capability is handed out per cohort: the
-        view carries a single-cohort adapter contract that ``index_into``
-        accepts unchanged (cohort-identity and training-overlap guards
-        included), and its ``log_lik_at``/``predict_at`` are the unmodified
-        mixin implementations."""
-        if self.models_ is None or self.contract_ is None:
-            raise RuntimeError("call fit() first")
-        return CohortHeldout(self, self._cohort_index(segment))
-
-    def log_lik_at(self, cells, *, field: str | None = None) -> np.ndarray:
-        """``(n_members, n_cells)`` log density on Lebesgue-on-amount.
-
-        Resolves the cohort from the cells' own segment values, then delegates
-        to :meth:`at_cohort`'s view, whose ``log_lik_at`` IS
-        ``ScoresHeldout.log_lik_at`` - the measure carry and every guard run in
-        the base class against the per-cohort contract."""
-        return self.at_cohort(self._heldout_segment(cells)).log_lik_at(cells, field=field)
-
-    def predict_at(
-        self, cells: HoldoutCells, *, field: str | None = None, seed: int | None = None
-    ) -> np.ndarray:
-        """``(n_draws, n_cells)`` draws on the TRIANGLE's basis, in cell order.
-
-        Same delegation as :meth:`log_lik_at`: the view's ``predict_at`` is
-        ``PredictsHeldout.predict_at`` unchanged, so the incremental draws are
-        anchored onto each cell's training-diagonal predecessor in the base
-        class, never here."""
-        return self.at_cohort(self._heldout_segment(cells)).predict_at(
-            cells, field=field, seed=seed
+    def _forward_mixture(self, model, inputs: dict) -> tuple:
+        """``(log_pi, mu, sigma)`` from the TARGET head. The auxiliary
+        claims-outstanding head is dropped here: it is a training-time
+        regularizer only and never part of the predictive density."""
+        params, _aux = model(
+            inputs["x"], inputs["ctx"], inputs["lob"], inputs["comp"], inputs["prem"]
         )
-
-    def training_cells(self) -> CellIndex:
-        raise NotImplementedError(
-            "the NN contract carries loss ratios, not per-cell loss values, so the "
-            "in-sample agreement gate's CellIndex cannot be built from it; the fast "
-            "closed-form tests play that role for the NN entries"
-        )
-
-    def _log_lik_native(self, cells: CellIndex) -> np.ndarray:
-        raise NotImplementedError(
-            "deeptriangle's fit spans many cohorts and a bare CellIndex cannot name "
-            "one; call log_lik_at(HoldoutCells) or at_cohort(segment).log_lik_at(...)"
-        )
-
-    def _draws_native(self, cells: CellIndex, *, rng: np.random.Generator) -> np.ndarray:
-        raise NotImplementedError(
-            "deeptriangle's fit spans many cohorts and a bare CellIndex cannot name "
-            "one; call predict_at(HoldoutCells) or at_cohort(segment).predict_at(...)"
-        )
-
-    def _heldout_segment(self, cells) -> dict[str, str]:
-        """The one segment combination the held-out cells describe."""
-        if not isinstance(cells, HoldoutCells):
-            raise TypeError(
-                "deeptriangle resolves which cohort to score from the cells' segment "
-                f"values, and only HoldoutCells carries them; got {type(cells).__name__}. "
-                "For a bare CellIndex, bind the cohort first: at_cohort(segment)"
-            )
-        combos = cells.frame[list(cells.segments)].drop_duplicates()
-        if len(combos) != 1:
-            raise ValueError(
-                f"held-out cells span {len(combos)} segment combinations; "
-                "next_diagonal scores one cohort at a time"
-            )
-        return {col: combos.iloc[0][col] for col in combos.columns}
-
-    def _heldout_log_lik(self, ci: int, cells: CellIndex) -> np.ndarray:
-        """``(n_members, n_cells)`` log density of the loss RATIO at the cells.
-
-        Per ensemble member: the target head's mixture density of the
-        STANDARDIZED increment ratio ``z = (increment/premium - mean0[d]) /
-        std0[d]``, with the standardization Jacobian folded in
-        (``- log std0[d]``), leaving a density on the ratio - which is what
-        ``heldout_measure = "loss_ratio"`` declares, so the base class's
-        ``- log premium`` completes the carry to Lebesgue-on-amount (the
-        increment/cumulative step has Jacobian 1).
-
-        The draw axis is the ENSEMBLE MEMBERS: ``logmeanexp`` over it is the
-        ensemble-average predictive density, the deep-ensemble analogue of
-        averaging a posterior's per-draw likelihoods. Two members minimum -
-        one member is a plug-in density, not an ensemble.
-
-        Cells at a PINNED dev are refused: no trained head exists there and
-        the standardized scale is degenerate, so a density would be dishonest.
-        The same cells remain CRPS-scorable through :meth:`predict_at` - the
-        documented asymmetry (card.md "Held-out scoring").
-        """
-        if self.models_ is None or self.contract_ is None:
-            raise RuntimeError("call fit() first")
-        if len(self.models_) < 2:
-            raise ValueError(
-                f"the ensemble has {len(self.models_)} member(s); the members are the "
-                "density's draw axis and one member is a plug-in, not a predictive "
-                "distribution - fit with ensemble_size >= 2"
-            )
-        d0 = np.asarray(cells.d, dtype=int) - 1
-        pinned0 = self.norm_["pinned"][0]
-        bad = pinned0[d0]
-        if bad.any():
-            devs = sorted({int(v) + 1 for v in d0[bad]})
-            raise ValueError(
-                f"{int(bad.sum())} cell(s) sit at pinned dev step(s) {devs}: fewer than "
-                "two training-context values reached the per-dev normalizer there, so "
-                "the MDN head is untrained and its scale is degenerate. deeptriangle "
-                "refuses to score a density at a pinned dev; the cells remain "
-                "CRPS-scorable via predict_at, where a pinned draw is the pooled dev mean"
-            )
-        prev = np.asarray(cells.prev_value, dtype=float)
-        if np.isnan(prev).any():
-            raise ValueError(
-                f"{int(np.isnan(prev).sum())} cell(s) have no training predecessor, so "
-                "no increment can be formed to evaluate the density at"
-            )
-        premium = np.asarray(cells.premium, dtype=float)
-        increment = np.asarray(cells.value, dtype=float) - prev
-        mean0, std0 = self.norm_["mean"][0], self.norm_["std"][0]  # (n_d,)
-        z = (increment / premium - mean0[d0]) / std0[d0]  # (n_cells,)
-
-        log_pi, mu, sigma = self._heldout_mixture(ci, cells)  # (n_members, n_cells, K)
-        comp = -0.5 * ((z[None, :, None] - mu) / sigma) ** 2 - np.log(sigma) - 0.5 * LOG_2PI
-        ll_z = logsumexp(log_pi + comp, axis=-1)  # (n_members, n_cells) density of z
-        # z -> ratio change of variable: r = z * std0 + ..., so divide by std0
-        return ll_z - np.log(std0[d0])[None, :]
-
-    def _heldout_draws(self, ci: int, cells: CellIndex, *, rng: np.random.Generator) -> np.ndarray:
-        """``(config.n_draws, n_cells)`` INCREMENTAL dollar draws at the cells.
-
-        One forward pass per ensemble member conditioned on everything the
-        cohort had at as_of (the held-out diagonal is the decoder's next step -
-        one decoder step, no rollout), then ``mdn_sample`` at the requested
-        cells, un-standardized (``z * std0[d] + mean0[d]``) and scaled by the
-        cell's premium. Draws are split across members exactly as ``_rollout``
-        splits them; per-member torch seeds derive from ``rng``, so
-        ``predict_at(seed=...)`` is reproducible.
-
-        Pinned devs keep rollout semantics: the sampled ``z`` is forced to 0,
-        i.e. the pooled dev mean after un-standardizing - a point-mass column,
-        legal for CRPS as long as some requested cell is live. If EVERY
-        requested cell is pinned the result would be a point mass everywhere,
-        which is not a predictive distribution, so that is refused.
-        """
-        import torch
-
-        from ibnr.gallery.nn.transformer.network import mdn_sample
-
-        if self.models_ is None or self.contract_ is None:
-            raise RuntimeError("call fit() first")
-        d0 = np.asarray(cells.d, dtype=int) - 1
-        pin_cells = self.norm_["pinned"][0][d0]  # (n_cells,)
-        if pin_cells.all():
-            raise ValueError(
-                "every requested cell sits at a pinned dev step, so every draw column "
-                "would be the point mass at the pooled dev mean - not a predictive "
-                "distribution. A pinned dev has no trained head (fewer than two "
-                "training-context values reached the per-dev normalizer)"
-            )
-        premium = np.asarray(cells.premium, dtype=float)
-        if np.isnan(premium).any():
-            raise ValueError(
-                f"{int(np.isnan(premium).sum())} cell(s) have no premium; draws are "
-                "premium x sampled ratio, so they cannot be formed"
-            )
-        mean0, std0 = self.norm_["mean"][0], self.norm_["std"][0]  # (n_d,)
-        dev = torch.device(self._device)
-        inputs = self._heldout_inputs(ci)
-        w0_t = torch.as_tensor(np.asarray(cells.w, dtype=int) - 1, device=dev)
-        d0_t = torch.as_tensor(d0, device=dev)
-        pin_t = torch.as_tensor(pin_cells, device=dev)
-
-        # split the requested draws across members exactly like _rollout
-        n_draws = self.config_.n_draws
-        n_members = len(self.models_)
-        member_draws = [n_draws // n_members] * n_members
-        for i in range(n_draws % n_members):
-            member_draws[i] += 1
-        # one torch seed per member, drawn from the caller's generator for
-        # EVERY member (zero-draw ones too) so the numpy stream is identical
-        # whatever the split - predict_at(seed=) stays reproducible
-        member_seeds = [int(rng.integers(0, 2**63 - 1)) for _ in range(n_members)]
-
-        pieces: list[np.ndarray] = []
-        with torch.no_grad():
-            for model, m_draws, m_seed in zip(
-                self.models_, member_draws, member_seeds, strict=True
-            ):
-                if m_draws == 0:
-                    continue
-                (log_pi, mu, sigma), _ = model(
-                    inputs["x"], inputs["ctx"], inputs["lob"], inputs["comp"], inputs["prem"]
-                )
-                # index the grid at the requested cells, replicate per draw
-                log_pi_c = log_pi[0, w0_t, d0_t].unsqueeze(0).expand(m_draws, -1, -1)
-                mu_c = mu[0, w0_t, d0_t].unsqueeze(0).expand(m_draws, -1, -1)
-                sigma_c = sigma[0, w0_t, d0_t].unsqueeze(0).expand(m_draws, -1, -1)
-                gen = torch.Generator(device=dev)
-                gen.manual_seed(m_seed)
-                sample = mdn_sample(log_pi_c, mu_c, sigma_c, generator=gen)
-                # pinned devs -> 0 (pooled dev mean after un-standardizing),
-                # the same rule _rollout applies
-                sample = sample.masked_fill(pin_t[None, :], 0.0)
-                pieces.append(sample.cpu().numpy())
-        draws = np.concatenate(pieces, axis=0)  # (n_draws, n_cells) standardized
-        ratios = draws * std0[d0][None, :] + mean0[d0][None, :]
-        return ratios * premium[None, :]  # incremental dollars
-
-    def _heldout_mixture(self, ci: int, cells: CellIndex) -> tuple[np.ndarray, ...]:
-        """``(n_members, n_cells, K)`` TARGET-head MDN parameters at the cells,
-        one forward pass per ensemble member at the cohort's as_of conditioning.
-        The auxiliary head is never consulted here - it is a training-time
-        regularizer only."""
-        import torch
-
-        inputs = self._heldout_inputs(ci)
-        dev = torch.device(self._device)
-        w0_t = torch.as_tensor(np.asarray(cells.w, dtype=int) - 1, device=dev)
-        d0_t = torch.as_tensor(np.asarray(cells.d, dtype=int) - 1, device=dev)
-        acc: tuple[list, list, list] = ([], [], [])
-        with torch.no_grad():
-            for model in self.models_:
-                params, _ = model(
-                    inputs["x"], inputs["ctx"], inputs["lob"], inputs["comp"], inputs["prem"]
-                )
-                for out, t in zip(acc, params, strict=True):
-                    out.append(t[0, w0_t, d0_t].cpu().numpy())  # (n_cells, K)
-        return tuple(np.stack(a) for a in acc)
+        return params
 
     def _heldout_inputs(self, ci: int) -> dict:
         """One cohort's forward inputs, conditioned on everything it had at
@@ -560,18 +334,6 @@ class DeepTriangle(GalleryEntry, ScoresHeldout, PredictsHeldout):
         }
 
     # -- internals ---------------------------------------------------------------
-
-    def _cohort_index(self, segment: dict[str, str]) -> int:
-        cohorts = self.contract_["cohorts"]
-        mask = np.ones(len(cohorts), dtype=bool)
-        for col, value in segment.items():
-            if col not in cohorts.columns:
-                raise KeyError(f"unknown segment column {col!r}; have {list(cohorts.columns)}")
-            mask &= (cohorts[col] == value).to_numpy()
-        idx = np.nonzero(mask)[0]
-        if len(idx) != 1:
-            raise ValueError(f"segment {segment} matches {len(idx)} cohorts, need exactly 1")
-        return int(idx[0])
 
     def _rollout(self, n_draws: int, seed: int | None) -> np.ndarray:
         """Autoregressive rollout, diagonal by diagonal: sample every future

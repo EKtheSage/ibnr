@@ -20,8 +20,9 @@ fixed. Everything that is not the encoder is imported from the shared
 modules rather than re-implemented, so the two entries cannot drift apart:
 `gallery/nn/_scheme.py` (splits + pinned norm stats), `gallery/nn/_training.py`
 (deep-ensemble loop, member seeds `seed + 1000 * member`),
-`gallery/nn/_heldout.py` (per-cohort held-out adapter), and the transformer's
-own `mdn_nll`/`mdn_sample` (head loss and sampler, imported - not copied).
+`gallery/nn/_heldout.py` (the per-cohort adapter AND the whole held-out
+scoring implementation, via `PooledMDNHeldout`), and the transformer's own
+`mdn_nll`/`mdn_sample` (head loss and sampler, imported - not copied).
 
 ## Data
 
@@ -82,10 +83,13 @@ premium x summed sampled future increments; draws pooled over the ensemble.
 
 ## Held-out scoring (milestones 6/7)
 
-The transformer's exact pattern, via the shared per-cohort adapter
-(`gallery/nn/_heldout.py`): `at_cohort(segment)` returns a scorer view whose
-`log_lik_at`/`predict_at` are the unmodified base-class implementations, so
-`index_into`'s cohort-identity and training-overlap guards apply unchanged.
+Shared code, via `PooledMDNHeldout` (`gallery/nn/_heldout.py`):
+`at_cohort(segment)` returns a scorer view whose `log_lik_at`/`predict_at` are
+the unmodified base-class implementations, so `index_into`'s cohort-identity
+and training-overlap guards apply unchanged. `mdn` adds only the two abstract
+hooks, `_heldout_inputs` and `_forward_mixture`, and both are identical in
+substance to the transformer's - this entry differs from it in the encoder,
+nowhere else.
 
 - **Draw scale: `incremental`.** One forward pass per ensemble member at
   cutoff = the cohort's as_of diagonal, `mdn_sample` at the requested cells,

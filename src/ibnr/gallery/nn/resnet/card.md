@@ -117,11 +117,13 @@ cross-line dependence and emits no diversified total.
 
 ## Held-out scoring (milestone 6 wiring)
 
-The transformer's exact pattern: the entry subclasses both held-out mixins,
-and capability is served **per cohort** via `entry.at_cohort(segment)` -> a
-scorer view over the single-cohort adapter contract
-(`gallery/nn/_heldout.py`), so `index_into`'s cohort-identity and
-training-overlap guards apply unchanged.
+Shared code, not a copy: the entry mixes in `PooledMDNHeldout`
+(`gallery/nn/_heldout.py`), and capability is served **per cohort** via
+`entry.at_cohort(segment)` -> a scorer view over the single-cohort adapter
+contract, so `index_into`'s cohort-identity and training-overlap guards apply
+unchanged. `resnet` adds only the two abstract hooks, `_heldout_inputs` and
+`_forward_mixture`; both match the transformer's, since this entry differs
+from it in the encoder alone.
 
 - **Draw scale: `incremental`.** One forward pass per ensemble member at
   cutoff = the cohort's as_of diagonal, `mdn_sample` at the requested cells,

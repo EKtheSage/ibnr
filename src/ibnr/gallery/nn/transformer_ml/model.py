@@ -50,9 +50,12 @@ class NNTransformerML(GalleryEntry):
     # NOTE: no held-out (milestone 6) wiring here yet, deliberately. The
     # multiline contract's (company, line, origin, dev) layout needs its own
     # per-(company, line) adapter design - a company cohort is NOT one
-    # next_diagonal cohort. See the single-line implementation for the pattern
-    # to follow: gallery/nn/transformer/model.py (_heldout_log_lik /
-    # _heldout_draws) + gallery/nn/_heldout.py (cohort_contract, CohortHeldout).
+    # next_diagonal cohort, which is exactly the assumption gallery/nn/
+    # _heldout.py is built on, so this entry cannot simply mix in
+    # PooledMDNHeldout the way the single-line entries do. That module is
+    # still the pattern to follow (cohort_contract, CohortHeldout,
+    # PooledMDNHeldout); what it needs is a multiline sibling of
+    # cohort_contract, not a fourth copy of the scoring code.
 
     def __init__(self) -> None:
         self.contract_: dict | None = None  # nn_company_data() dict
