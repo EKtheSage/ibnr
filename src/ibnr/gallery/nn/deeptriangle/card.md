@@ -29,8 +29,13 @@ per-dev stats under the same rule.
 One derived-target caveat, disclosed: the contract masks usable increments
 for the TARGET channel only, so the auxiliary OS increment is trained on
 `obs_mask` cells and is distorted wherever the reported channel is padding at
-an observed paid cell. On the Schedule P mart paid and reported are booked on
-the same cells, so the masks coincide in practice.
+an observed paid cell. The blast radius is TWO auxiliary targets per missing
+reported cell, not one: increments are differenced against the immediate
+predecessor dev, so a hole at dev d corrupts the aux target at dev d (the
+padding zero is read as the reported cumulative) and again at dev d + 1
+(which differences against that same zero). The target channel is untouched
+either way. On the Schedule P mart paid and reported are booked on the same
+cells, so the masks coincide in practice.
 
 ## Network
 
@@ -46,6 +51,21 @@ masked per-step dispatch (rather than pack/pad split sequences) is what lets
 one batch mix cutoffs and predecessor holes. Heads read the state AFTER each
 step; only non-context cells are ever scored, so a head never reads a state
 that consumed the cell's own value.
+
+**Each origin is an INDEPENDENT sequence at inference, and this is the sharp
+difference from `nn_transformer`.** The recurrence runs along the development
+axis only: origins are folded into the batch, so nothing flows between them
+inside a forward pass. Change origin 0's context values and every other
+origin's prediction is bitwise unchanged. Origins still share information,
+but only through the trained weights - the dev-lag embeddings, the GRU cells
+and the heads were fit on all origins of all cohorts at once. That is
+learned-at-training-time sharing, not conditioning at prediction time. The
+transformer is the opposite: its self-attention spans the whole origin x dev
+grid, so one cell's value moves every other cell's prediction in the same
+forward pass. Read every phrase below of the form "conditioned on everything
+the cohort had at as_of" with that in mind: for this entry it means each
+origin is conditioned on its OWN observed development, and each origin's
+prediction can be computed alone.
 
 **No calendar input at all.** The transformer needed a *relative* calendar
 embedding to avoid the v1/v2 absolute-embedding defect (untrained parameters
