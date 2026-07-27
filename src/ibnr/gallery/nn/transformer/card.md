@@ -114,14 +114,21 @@ rollout - fit once, score every company.
 
 ## Held-out scoring (milestone 6)
 
-The entry subclasses both held-out mixins; because the fit is pooled across
-cohorts while `kernels.holdout` scores one cohort at a time, capability is
-served **per cohort**: `entry.at_cohort(segment)` returns a light scorer view
-whose `log_lik_at`/`predict_at` are the unmodified base-class implementations
-over a single-cohort adapter contract (`gallery/nn/_heldout.py`), so
-`index_into`'s cohort-identity and training-overlap guards apply unchanged.
-The entry-level `log_lik_at`/`predict_at` resolve the cohort from the cells'
-own segment values and delegate.
+The entry mixes in `PooledMDNHeldout` (`gallery/nn/_heldout.py`), which holds
+the held-out scoring for every NN entry in the gallery - this one, `mdn`,
+`deeptriangle` and `resnet` share one implementation, not four copies of it.
+The entry itself supplies only two methods: `_heldout_inputs` (assemble one
+cohort's forward inputs) and `_forward_mixture` (call the network, return
+`(log_pi, mu, sigma)`). Both are abstract, so an entry cannot forget one.
+
+Because the fit is pooled across cohorts while `kernels.holdout` scores one
+cohort at a time, capability is served **per cohort**:
+`entry.at_cohort(segment)` returns a light scorer view whose
+`log_lik_at`/`predict_at` are the unmodified base-class implementations over a
+single-cohort adapter contract, so `index_into`'s cohort-identity and
+training-overlap guards apply unchanged. The entry-level
+`log_lik_at`/`predict_at` resolve the cohort from the cells' own segment
+values and delegate.
 
 - **Draw scale: `incremental`.** A draw is one forward pass per ensemble
   member at cutoff = the cohort's as_of diagonal (the held-out diagonal sits

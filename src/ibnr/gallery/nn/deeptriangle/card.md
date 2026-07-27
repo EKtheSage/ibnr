@@ -132,14 +132,22 @@ over the ensemble members and cached per (n_draws, seed).
 
 ## Held-out scoring (milestone 6 wiring)
 
-Exactly the transformer's pattern: the entry subclasses both mixins, and
-because the fit is pooled while `kernels.holdout` scores one cohort at a
-time, capability is served per cohort through `entry.at_cohort(segment)` -> a
-`CohortHeldout` view (`gallery/nn/_heldout.py`) whose
+Shared code, not a copy of the transformer's: the entry mixes in
+`PooledMDNHeldout` (`gallery/nn/_heldout.py`), the one implementation every NN
+entry uses. Because the fit is pooled while `kernels.holdout` scores one
+cohort at a time, capability is served per cohort through
+`entry.at_cohort(segment)` -> a `CohortHeldout` view whose
 `log_lik_at`/`predict_at` are the unmodified base-class implementations over
 a single-cohort adapter contract, so `index_into`'s cohort-identity and
 training-overlap guards apply unchanged. The entry-level methods resolve the
 cohort from the cells' own segment values and delegate.
+
+DeepTriangle supplies the two per-entry hooks: `_heldout_inputs` (its
+conditioning takes a company embedding index rather than a calendar cutoff)
+and `_forward_mixture`, which is where the **auxiliary head is dropped** - the
+network returns `(mixture, aux)` and only the mixture is a predictive density.
+The auxiliary claims-outstanding task is a training-time regularizer and is
+never consulted at scoring time.
 
 - **Draw scale: `incremental`.** One forward pass per ensemble member
   conditioned on everything the cohort had at as_of - the held-out diagonal
