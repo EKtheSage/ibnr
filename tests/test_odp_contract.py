@@ -15,13 +15,19 @@ chainladder-python and against a published number from the paper, not internal
 self-consistency.
 """
 
-import chainladder as cl
 import numpy as np
 import pytest
 
-from ibnr import Triangle
-from ibnr.gallery.bayesian.england_verrall_odp.model import odp_mle_fitted, pearson_phi
-from ibnr.kernels.contract import odp_stan_data
+# chainladder ships in the [interop] extra; guard it so this file SKIPS without
+# it rather than erroring during collection. See tests/test_clark.py.
+cl = pytest.importorskip("chainladder")
+
+from ibnr import Triangle  # noqa: E402
+from ibnr.gallery.bayesian.england_verrall_odp.model import (  # noqa: E402
+    odp_mle_fitted,
+    pearson_phi,
+)
+from ibnr.kernels.contract import odp_stan_data  # noqa: E402
 
 pytestmark = pytest.mark.tieout
 

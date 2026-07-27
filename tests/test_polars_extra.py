@@ -41,11 +41,7 @@ def test_polars_resolves_when_the_extra_is_present():
 
 
 class _FailingBackend:
-    """Stand-in for ``ibis.polars`` whose ``connect`` raises.
-
-    ``ibis.polars`` is a lazily-resolved module attribute, so the substitution
-    happens on the ``ibis`` module object that ``io`` actually holds.
-    """
+    """Stand-in for ``ibis.polars`` whose ``connect`` raises."""
 
     def __init__(self, exc):
         self._exc = exc
@@ -54,13 +50,36 @@ class _FailingBackend:
         raise self._exc
 
 
+class _IbisWithPolars:
+    """The real ``ibis`` module with ``polars`` swapped for a stand-in.
+
+    Why substitute the whole module rather than ``setattr(io.ibis, "polars",
+    ...)``: ``ibis.polars`` resolves lazily, so when the extra is absent merely
+    READING it raises - and ``monkeypatch.setattr`` has to read the old value in
+    order to put it back afterwards. That made these two tests error out in
+    exactly the environment they exist to describe, a core-only install, so they
+    had to be skipped there. Replacing the module object ``io`` holds needs no
+    such read and works either way.
+
+    Everything other than ``polars`` delegates to the real module, so this does
+    not quietly become a stub if ``resolve_backend`` grows another ``ibis``
+    reference.
+    """
+
+    def __init__(self, real, polars):
+        self._real = real
+        self.polars = polars
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
 def test_missing_polars_names_the_extra(monkeypatch):
     """Simulate a core-only install: the error must name the fix."""
     from ibnr.triangle import io
 
-    monkeypatch.setattr(
-        io.ibis, "polars", _FailingBackend(ModuleNotFoundError("No module named 'polars'"))
-    )
+    failing = _FailingBackend(ModuleNotFoundError("No module named 'polars'"))
+    monkeypatch.setattr(io, "ibis", _IbisWithPolars(io.ibis, failing))
     monkeypatch.setattr(io, "_polars_installed", lambda: False)
 
     with pytest.raises(ModuleNotFoundError) as exc:
@@ -77,7 +96,7 @@ def test_a_real_polars_error_is_not_masked_as_missing(monkeypatch):
     from ibnr.triangle import io
 
     sentinel = RuntimeError("genuine backend failure")
-    monkeypatch.setattr(io.ibis, "polars", _FailingBackend(sentinel))
+    monkeypatch.setattr(io, "ibis", _IbisWithPolars(io.ibis, _FailingBackend(sentinel)))
     monkeypatch.setattr(io, "_polars_installed", lambda: True)
 
     with pytest.raises(RuntimeError) as exc:
