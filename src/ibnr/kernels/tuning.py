@@ -4,9 +4,9 @@ Per decision 5 the search machinery lives ONCE in kernels and the entries call
 it; per the NN overfitting gotcha the objective is the entry's own eval_date
 validation NLL - the trailing-diagonal holdout ``fit()`` already early-stops
 on - never a test-period quantity. :func:`validation_score` reads it straight
-off the fitted entry's ``history_``: the per-member minimum over epochs (the
-early-stopping best, whose weights ``fit()`` restores), averaged over ensemble
-members. Lower is better.
+off the fitted entry's ``history_``: the per-member minimum finite ``val``
+over epochs (the early-stopping best, whose weights ``fit()`` restores),
+averaged over ensemble members. Lower is better.
 
 The search itself is plain random search over a small vocabulary of parameter
 distributions (:class:`Choice`, :class:`Uniform`, :class:`LogUniform`,
@@ -24,9 +24,12 @@ Reproducibility contract: ``tune(seed=s)`` draws every trial's parameters from
 one ``np.random.default_rng(s)`` stream BEFORE running it, so the parameter
 sequence is a function of (seed, space insertion order) alone - a failing
 trial cannot perturb its successors' parameters. Trial ``i`` fits with
-``trial_seed = s + 10_000 * i``, echoing the NN family's widely-spaced member
-seeds (``seed + 1000 * member`` inside ``fit()``), so no two trials' member
-streams collide for ensembles up to 10 members.
+``trial_seed = s + 10_000 * (i + 1)`` - offset so no trial fits with the bare
+``s``, which is the very seed the tuner's own parameter stream is built from
+(and the seed ``fit()``'s member 0 would reuse as ``default_rng(s)``) -
+echoing the NN family's widely-spaced member seeds (``seed + 1000 * member``
+inside ``fit()``), so no two trials' member streams collide for ensembles up
+to 10 members.
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ import abc
 import dataclasses
 import math
 import time
+import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
@@ -239,7 +243,9 @@ def tune(
         # sampled BEFORE the fit, from the one stream: the parameter sequence
         # depends only on (seed, space order), never on trial outcomes
         params = sample(space, rng)
-        trial_seed = seed + 10_000 * i
+        # (i + 1): trial 0 must not fit with the bare seed, which already
+        # names the tuner's own parameter stream (module docstring)
+        trial_seed = seed + 10_000 * (i + 1)
         start = time.perf_counter()
         error: str | None = None
         try:
@@ -279,12 +285,20 @@ def tune(
 
 def validation_score(entry) -> float:
     """The fitted entry's eval_date validation NLL: per ensemble member the
-    minimum ``val`` over epochs (the early-stopping best, whose weights
+    minimum FINITE ``val`` over epochs (the early-stopping best, whose weights
     ``fit()`` restores), averaged over members. Lower is better.
 
     Reads the ``history_`` every NN entry records (one list of
     ``{"epoch", "train", "val"}`` dicts per member); never a test-period
     quantity, so tuning on it cannot leak the backtest.
+
+    NaN epochs are skipped, and order-independently so - a plain ``min`` would
+    score ``[nan, 3.0]`` and ``[3.0, nan]`` differently, the same multiset
+    with opposite verdicts. Skipping matches what ``fit()`` restored: its
+    early stopping never snapshots a NaN val, so the best finite epoch is the
+    one the weights correspond to. A member whose history is ALL NaN scores
+    NaN (its all-NaN RuntimeWarning suppressed here as noise), which
+    ``tune()``'s non-finite quarantine then records as a failed trial.
     """
     if not hasattr(entry, "history_"):
         raise TypeError(
@@ -298,7 +312,10 @@ def validation_score(entry) -> float:
     for m, member_history in enumerate(history):
         if not member_history:
             raise ValueError(f"member {m} has an empty epoch history")
-        per_member.append(min(rec["val"] for rec in member_history))
+        vals = np.asarray([rec["val"] for rec in member_history], dtype=float)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN member -> NaN, quarantined
+            per_member.append(float(np.nanmin(vals)))
     return float(np.mean(per_member))
 
 
@@ -318,9 +335,10 @@ def tune_entry(
     Each trial fits ``entry_name`` on ``triangle`` with
     ``dataclasses.replace(base_config, **params)`` and ``seed=trial_seed``,
     scored by :func:`validation_score`. ``fit_kwargs`` (loss_field, as_of,
-    device, ...) pass through to ``gallery.fit`` verbatim on every trial.
-    Space keys must name fields of ``base_config`` - checked up front, since
-    a typo would otherwise fail every trial identically.
+    device, ...) pass through to ``gallery.fit`` verbatim on every trial;
+    ``config`` and ``seed`` are tune_entry's own to pass and may not appear
+    there. Space keys must name fields of ``base_config`` - checked up front,
+    since a typo would otherwise fail every trial identically.
     """
     if not dataclasses.is_dataclass(base_config) or isinstance(base_config, type):
         raise TypeError(f"base_config must be a config dataclass instance, got {base_config!r}")
@@ -329,6 +347,11 @@ def tune_entry(
     if unknown:
         raise ValueError(f"space keys {unknown} are not fields of {type(base_config).__name__}")
     kwargs = dict(fit_kwargs or {})
+    if overlap := ({"config", "seed"} & set(kwargs)):
+        raise ValueError(
+            f"fit_kwargs may not carry {sorted(overlap)}: tune_entry builds config "
+            "from base_config and passes each trial's own seed"
+        )
 
     def fit_trial(params: dict, trial_seed: int) -> float:
         # lazy on purpose: kernels never imports gallery at module scope

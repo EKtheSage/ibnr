@@ -9,7 +9,8 @@ What this file protects, in three layers:
 2. **The search loop.** The reproducibility contract is the load-bearing part:
    trial ``i``'s parameters come from one ``default_rng(seed)`` stream sampled
    BEFORE the fit, so a failing trial cannot perturb its successors, and
-   ``trial_seed = seed + 10_000 * i`` is pinned literally. Failed trials are
+   ``trial_seed = seed + 10_000 * (i + 1)`` is pinned literally (offset so no
+   trial fits with the bare seed that names the tuner's own param stream). Failed trials are
    recorded (score NaN + exception text), non-finite scores can never become
    ``best_score`` (a ``-inf`` "NLL" would be unbeatable forever), and the
    trials frame's column layout is part of the API.
@@ -28,6 +29,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -155,8 +157,10 @@ def test_tune_finds_the_quadratic_minimum():
 
 
 def test_trial_seeds_follow_the_documented_convention():
-    """trial_seed = seed + 10_000 * i, echoing the family's widely-spaced
-    member seeds (fit spreads members by 1000 within each trial)."""
+    """trial_seed = seed + 10_000 * (i + 1): spaced to echo the family's
+    member seeds (fit spreads members by 1000 within each trial), and offset
+    by one so trial 0 never fits with the bare seed - the very seed the
+    tuner's own parameter stream is built from."""
     seen = []
 
     def objective(params, trial_seed):
@@ -164,7 +168,8 @@ def test_trial_seeds_follow_the_documented_convention():
         return 1.0
 
     result = tune(objective, {"x": Uniform(0.0, 1.0)}, n_trials=4, seed=123)
-    assert seen == [123, 10_123, 20_123, 30_123]
+    assert seen == [10_123, 20_123, 30_123, 40_123]
+    assert 123 not in seen  # the tuner's own stream seed is never a fit seed
     assert list(result.trials["seed"]) == seen
 
 
@@ -298,6 +303,50 @@ def test_validation_score_is_the_mean_early_stopping_best():
     assert validation_score(_StubEntry(history)) == pytest.approx((3.0 + 4.6) / 2)
 
 
+def test_validation_score_skips_nan_epochs_order_independently():
+    """Regression: a plain min gives [nan, 3.0] -> nan but [3.0, nan] -> 3.0,
+    the same multiset with opposite verdicts. NaN epochs are skipped (fit()'s
+    early stopping never snapshots a NaN val, so the best FINITE epoch is what
+    the restored weights correspond to), so both orderings score 3.0."""
+    nan_first = [
+        [{"epoch": 0, "train": 1.0, "val": math.nan}, {"epoch": 1, "train": 1.0, "val": 3.0}]
+    ]
+    nan_last = [
+        [{"epoch": 0, "train": 1.0, "val": 3.0}, {"epoch": 1, "train": 1.0, "val": math.nan}]
+    ]
+    a = validation_score(_StubEntry(nan_first))
+    b = validation_score(_StubEntry(nan_last))
+    assert a == b == pytest.approx(3.0)
+
+
+def test_all_nan_history_becomes_a_quarantined_trial():
+    """A member with no finite epoch scores NaN - silently (the all-NaN
+    RuntimeWarning is suppressed, proven by escalating warnings to errors
+    here) - and tune()'s non-finite quarantine records that trial as failed
+    with the non-finite error text, never as best."""
+    all_nan = _StubEntry(
+        [[{"epoch": 0, "train": 1.0, "val": math.nan}, {"epoch": 1, "train": 1.0, "val": math.nan}]]
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        assert math.isnan(validation_score(all_nan))
+
+        calls = []
+
+        def objective(params, trial_seed):
+            calls.append(trial_seed)
+            if len(calls) == 1:
+                return validation_score(all_nan)
+            return 1.0
+
+        result = tune(objective, {"x": Uniform(0.0, 1.0)}, n_trials=3, seed=0)
+    first = result.trials.iloc[0]
+    assert math.isnan(first["score"])
+    assert "non-finite" in first["error"]
+    assert result.trials["error"].iloc[1:].isna().all()
+    assert result.best_score == pytest.approx(1.0)
+
+
 def test_validation_score_raises_clearly_when_history_is_missing():
     with pytest.raises(ValueError, match="empty or None"):
         validation_score(_StubEntry([]))
@@ -344,7 +393,7 @@ def test_tune_entry_delivers_params_and_seeds_through_gallery_fit(monkeypatch):
     )
 
     assert [c["name"] for c in calls] == ["nn_transformer"] * 3
-    assert [c["seed"] for c in calls] == [42, 10_042, 20_042]
+    assert [c["seed"] for c in calls] == [10_042, 20_042, 30_042]
     assert all(c["triangle"] == "THE_TRIANGLE" for c in calls)
     assert all(c["kwargs"] == {"loss_field": "paid_loss"} for c in calls)
 
@@ -376,6 +425,33 @@ def test_tune_entry_rejects_bad_spaces_before_any_fit():
             base_config=TransformerConfig,
             n_trials=1,
             seed=0,
+        )
+
+
+def test_tune_entry_rejects_reserved_fit_kwargs():
+    """config and seed are tune_entry's own to pass; a collision must surface
+    at call time as a clear error, not as 'all N trials failed'."""
+    base = TransformerConfig()
+    space = {"lr": Uniform(1e-4, 1e-3)}
+    with pytest.raises(ValueError, match="may not carry.*config"):
+        tune_entry(
+            "nn_transformer",
+            None,
+            space,
+            base_config=base,
+            n_trials=1,
+            seed=0,
+            fit_kwargs={"config": base},
+        )
+    with pytest.raises(ValueError, match="may not carry.*seed"):
+        tune_entry(
+            "nn_transformer",
+            None,
+            space,
+            base_config=base,
+            n_trials=1,
+            seed=0,
+            fit_kwargs={"seed": 1, "loss_field": "paid_loss"},
         )
 
 
