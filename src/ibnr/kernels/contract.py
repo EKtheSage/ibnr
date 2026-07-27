@@ -551,7 +551,7 @@ def cohort_grid_frame(
     units: str | None = None,
     loss_field: str | None = None,
     segment: dict | None = None,
-    measure: str = "cumulative",
+    measure: str,
 ) -> dict[str, Any]:
     """:func:`cohort_grid`'s frame half: one cohort's already-materialized rows
     (``origin_period``, ``dev_lag``, ``value``) to the dense contract dict.
@@ -565,8 +565,12 @@ def cohort_grid_frame(
     ``segment``/``measure`` are the cohort-identity half a bare frame cannot
     derive for itself (no Triangle here): the batch caller supplies them from
     its own group key and metadata, :func:`cohort_grid` from
-    :func:`_cohort_identity`. ``fields``/``models`` are ``(loss_field,)`` - the
-    deterministic entries model exactly the field they read.
+    :func:`_cohort_identity`. ``measure`` is REQUIRED, no default: it stamps an
+    identity fact this function cannot verify, and ``index_into``'s measure
+    refusal would be keyed off a defaulted lie the first time an incremental
+    frame reached it. Like ``segment``, it is consciously supplied or the call
+    is refused. ``fields``/``models`` are ``(loss_field,)`` - the deterministic
+    entries model exactly the field they read.
     """
     # Vectorized throughout: this runs once per cohort in fit_mack_many's batch
     # loop, so per-row pandas iteration here would put the loop's cost right

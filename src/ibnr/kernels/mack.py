@@ -527,10 +527,7 @@ def simulate_ultimates(
     fit.require_positive_open_diagonals()
     rng = np.random.default_rng(seed)
     n_w, n_d = fit.n_w, fit.n_d
-    f_true = np.tile(fit.f, (n_draws, 1))
-    if parameter_risk:
-        se = np.sqrt(np.where(fit.s > 0, fit.sigma2 / fit.s, 0.0))
-        f_true = np.maximum(f_true + rng.standard_normal((n_draws, n_d - 1)) * se, 1e-12)
+    f_true = _factor_draws(fit, n_draws=n_draws, rng=rng, parameter_risk=parameter_risk)
 
     ult = np.empty((n_draws, n_w))
     for i in range(n_w):
@@ -561,6 +558,11 @@ def _factor_draws(
     A normal draw can cross zero on a thin, volatile step; a negative "true"
     factor would make the simulated step meaningless, so it is floored at
     1e-12. Rare enough to be a footnote, loud enough to document.
+
+    All THREE simulation paths consume this one function - ``simulate_ultimates``
+    (run-off), :func:`draw_next_cells` (held-out CRPS) and
+    ``kernels.cdr.simulate_one_year_cdr`` (one-year re-reserving) - so "parameter
+    risk" cannot come to mean three subtly different things.
     """
     f_true = np.tile(fit.f, (n_draws, 1))
     if parameter_risk:

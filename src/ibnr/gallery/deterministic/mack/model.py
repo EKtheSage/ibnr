@@ -97,16 +97,27 @@ class Mack(GalleryEntry, PredictsHeldout):
         whether the factors' estimation error is drawn (shared across cells,
         which is what correlates the held-out diagonal).
         """
+        train = triangle.as_of(as_of) if as_of is not None else triangle
+        # Same two steps as kernels.mack.fit_mack, but the grid survives as the
+        # contract: index_into needs its identity to refuse cells that are not
+        # this fit's, and its w/d to refuse cells the fit was trained on.
+        #
+        # BUILD FIRST, ASSIGN AFTER EVERYTHING SUCCEEDED - fit() must be atomic.
+        # cohort_grid accepts cohorts that fit_mack_grid then refuses (e.g. a
+        # zero-volume step), and assigning contract_ before that raise leaves a
+        # TORN entry: the NEW cohort's contract over the OLD cohort's factors.
+        # index_into checks identity against the contract, so predict_at on the
+        # new cohort's cells would pass every check and return plausible draws
+        # from the wrong company's factors. A failed refit instead leaves the
+        # previous fitted state fully intact and consistent.
+        contract = cohort_grid(train, loss_field=loss_field)
+        fitted = fit_mack_grid(contract, sigma_rule=sigma_rule)
         self._loss_field = loss_field
         self.heldout_n_draws = heldout_n_draws
         self.heldout_process = heldout_process
         self.heldout_parameter_risk = heldout_parameter_risk
-        train = triangle.as_of(as_of) if as_of is not None else triangle
-        # same two steps as kernels.mack.fit_mack, but the grid survives as the
-        # contract: index_into needs its identity to refuse cells that are not
-        # this fit's, and its w/d to refuse cells the fit was trained on
-        self.contract_ = cohort_grid(train, loss_field=loss_field)
-        self.fit_ = fit_mack_grid(self.contract_, sigma_rule=sigma_rule)
+        self.contract_ = contract
+        self.fit_ = fitted
         return self
 
     def _fitted(self) -> MackFit:

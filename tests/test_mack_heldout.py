@@ -311,3 +311,36 @@ def test_zero_open_diagonal_refused_through_predict_at(square):
     cells = next_diagonal(tri, as_of=AS_OF, fields="paid_loss")
     with pytest.raises(ValueError, match="latest diagonal of open origin"):
         entry.predict_at(cells, seed=0)
+
+
+def test_failed_refit_leaves_the_previous_fit_intact(triangle, heldout):
+    """fit() must be ATOMIC - a confirmed review defect, not a hypothetical.
+
+    ``cohort_grid`` accepts cohorts that ``fit_mack_grid`` then refuses (here:
+    zero volume at dev step 1). Assigning ``contract_`` before that raise left
+    a TORN entry: the NEW cohort's contract over the OLD cohort's factors.
+    ``index_into`` checks identity against the contract, so ``predict_at`` on
+    the new cohort's cells passed every check and returned 10,000 x n_cells of
+    plausible draws of cohort B's cells from cohort A's factors.
+
+    Post-fix: a failed refit changes NOTHING - the entry still predicts A's
+    cells bit-identically, and B's cells are refused as the wrong cohort.
+    """
+    entry = gallery.fit("mack", triangle, loss_field="paid_loss", as_of=AS_OF)
+    before = entry.predict_at(heldout, seed=21)
+
+    # cohort B passes the grid contract but fails the estimator: every pair
+    # origin at the first dev step sits at zero, so the factor is 0/0
+    bad = full_square()
+    bad[:, 0] = 0.0
+    tri_b = make_cohort_triangle(None, bad, start_year=2010, segment={"lob": "comauto"})
+    with pytest.raises(ValueError, match="zero volume at dev step 1"):
+        entry.fit(tri_b, loss_field="paid_loss", as_of=AS_OF)
+
+    # (a) the previous fitted state survives, fully consistent: same draws
+    np.testing.assert_array_equal(entry.predict_at(heldout, seed=21), before)
+
+    # (b) the failed cohort's cells are refused against the SURVIVING contract
+    cells_b = next_diagonal(tri_b, as_of=AS_OF, fields="paid_loss")
+    with pytest.raises(ValueError, match="belong to cohort"):
+        entry.predict_at(cells_b, seed=0)

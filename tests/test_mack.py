@@ -83,7 +83,11 @@ def test_cohort_grid_carries_identity_and_cell_indices(backend_name):
 def test_cohort_grid_frame_takes_identity_from_the_caller(backend_name):
     """The frame half has no Triangle to read an identity from, so the batch
     caller (fit_mack_many's group loop) supplies segment and measure - and they
-    must land on the contract unchanged, or every batch fit is unindexable."""
+    must land on the contract unchanged, or every batch fit is unindexable.
+
+    ``measure`` is REQUIRED, deliberately: it stamps an identity fact this
+    function cannot verify, and ``index_into``'s measure refusal would be keyed
+    off a defaulted lie the first time an incremental frame reached it."""
     df = make_cohort_triangle(backend_name, SMALL).execute()
     grid = cohort_grid_frame(
         df,
@@ -95,6 +99,8 @@ def test_cohort_grid_frame_takes_identity_from_the_caller(backend_name):
     assert grid["segment"] == {"company_code": "0001"}
     assert grid["measure"] == "cumulative"
     assert grid["fields"] == ("paid_loss",)
+    with pytest.raises(TypeError, match="measure"):
+        cohort_grid_frame(df, dev_grain_months=12, loss_field="paid_loss", segment={})
 
 
 def test_cohort_grid_rejects_interior_hole(backend_name):
