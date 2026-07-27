@@ -64,13 +64,17 @@ name: Tests
 # different checks. Anyone trimming this matrix for runner minutes should not
 # read the core leg as covering the nn one.
 #
-# COST, stated plainly because someone will check it against the Actions tab.
-# Measured pytest wall clock, summed across all seven legs on the dev box, is
-# about 15 minutes (core 41s, core-py311 77s, polars 62s, interop 80s,
-# bayesian 133s, nn 198s, all 327s). Adding provisioning, install and gate
-# steps, and allowing for CI runners slower than this laptop, expect 30-45
-# billed runner-minutes per pull request and 8-12 minutes of wall clock, set by
-# the `all` leg.
+# COST, from the first real run rather than an estimate, because someone will
+# check it against the Actions tab. Billed job time: all 6m04, bayesian 4m19,
+# interop 2m22, nn 2m19, polars 56s, core 50s, core-py311 48s - about 18
+# runner-minutes per pull request, with wall clock set by the `all` leg at
+# roughly 6 minutes.
+#
+# Worth knowing if these numbers are ever re-derived on a laptop: the runners
+# are FASTER than the dev box for this workload, not slower. The `all` leg's
+# pytest took 179s on a runner against 327s locally. An earlier version of this
+# comment predicted 30-45 billed minutes by assuming the opposite, and was
+# wrong by roughly a factor of two.
 #
 # That price buys less new information than it looks like, and it is worth
 # being honest about the ratio. Every isolated leg re-runs the same ~540 core
@@ -195,7 +199,9 @@ jobs:
             allow_skips: ""
             strict_skips: "false"
             required_files: "tests/test_core.py;tests/test_transforms.py;tests/test_gallery.py;tests/test_markdown_snippets.py"
-            # measured: 540 passed, 197 skipped, 35 deselected
+            # 540 passed locally, 539 on a runner - one test differs by platform.
+            # That one-test gap is the reason the floors carry a real cushion
+            # rather than being pinned to a local count.
             min_tests: "500"
 
           # ---------------------------------------------------------------
@@ -340,11 +346,13 @@ jobs:
           #
           #   - "gold mart"  the 7 measured skips - the mart is not on a runner
           #                  (see IBNR_SCHEDULE_P_WAREHOUSE above)
-          #   - "gh CLI"     NOT observable from the dev box, which is logged in
-          #                  to gh, so test_live_manifest_fetch runs here and
-          #                  will SKIP on a runner instead. Listed on that
-          #                  reasoning rather than on a measurement - it is the
-          #                  one entry here that first CI run will confirm.
+          #   - "gh CLI"     could not be observed from the dev box, which IS
+          #                  logged in to gh, so test_live_manifest_fetch runs
+          #                  there and skips on a runner instead. Listed on that
+          #                  reasoning, and the first CI run confirmed it: the
+          #                  runner skipped test_schedule_p_github.py:206 with
+          #                  "needs gh CLI authenticated to GitHub". Without
+          #                  this entry the leg would have gone red on arrival.
           #   - "cmdstan"    belt and braces for the mart+cmdstan test, whose
           #                  reason already contains "gold mart" today.
           #
