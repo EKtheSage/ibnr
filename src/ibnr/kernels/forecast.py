@@ -566,11 +566,22 @@ class CohortForecast:
                 "infinite loss is not a forecast - unlike a log density, where -inf is the "
                 "legitimate verdict 'this outcome had zero probability'"
             )
-        # Variance over the columns that have any finite value. A log-density
-        # column of all -inf has no variance to speak of and is a verdict, not a
-        # plug-in; it would otherwise poison the check with a NaN and a warning.
-        live = np.isfinite(a).any(axis=0)
-        if live.any() and float(a[:, live].var(axis=0).max()) == 0.0:
+        # Variance per column, over its FINITE entries only. A -inf row in a
+        # log-density column is a verdict ("this draw gave the outcome zero
+        # density"), not a draw of the same quantity, so it carries no variance
+        # information - and a column mixing finite and -inf rows would otherwise
+        # put a NaN into ``var`` (with a RuntimeWarning), and ``NaN == 0.0`` is
+        # False, silently disarming this guard for the WHOLE forecast: a
+        # repeated point estimate in the other columns then sails through. A
+        # column needs at least 2 finite entries to have a variance; columns
+        # with fewer (all -inf is the common case) are excluded, and the guard
+        # fires when every column that has one shows exactly 0.0. Draws are
+        # fully finite (checked above), so there this is the plain per-column
+        # variance, unchanged.
+        finite = np.isfinite(a)
+        checkable = np.flatnonzero(finite.sum(axis=0) >= 2)
+        variances = [float(a[finite[:, j], j].var()) for j in checkable]
+        if variances and max(variances) == 0.0:
             raise ValueError(
                 f"{self.model}: {name} has zero variance across draws in every cell, so "
                 "these are not posterior draws - a point estimate was repeated. The "
@@ -732,9 +743,10 @@ class CohortForecast:
 
         Two reasons rather than one because the axes are independent and usually
         differ. ``deterministic/mack`` is the clearest case: ``no_predictive_density``
-        on the density axis (its bootstrap states no observation model) but its
-        draws axis is only ``scorer_not_implemented`` - it can draw, nobody has
-        wired it up. A single shared reason would libel it on one axis or the other.
+        on the density axis is permanent (its bootstrap states no observation
+        model), while its draws axis is real - it subclasses ``PredictsHeldout``
+        and belongs on the CRPS board. A single shared reason would libel an
+        entry shaped like that on one axis or the other.
         """
         return cls(
             model=model,

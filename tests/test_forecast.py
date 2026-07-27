@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import datetime as dt
 import io
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -851,6 +852,47 @@ def test_an_all_minus_inf_column_does_not_trip_the_zero_variance_check(cells_a, 
         draws_absence=Absence("no_cell_sampler"),
     )
     assert np.isneginf(f.pointwise_elpd()[0])
+
+
+def test_a_mixed_finite_inf_column_passes_cleanly_beside_a_varying_one(cells_a, rng):
+    """Part of the posterior giving one cell zero density is routine (a stacked
+    forecast where one member verdicts ``-inf`` there is the usual way), and the
+    other columns genuinely vary - nothing here is a repeated point estimate.
+    The naive ``a[:, live].var(axis=0)`` makes that column NaN with a
+    RuntimeWarning; warnings are escalated so the warning itself is a failure,
+    not just the wrong verdict."""
+    ld = _density(cells_a, rng=rng)
+    ld[: N_DRAWS // 2, 0] = -np.inf
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        f = CohortForecast(
+            model="m",
+            task=TASK,
+            cells=cells_a,
+            field="paid_loss",
+            log_density=ld,
+            draws_absence=Absence("no_cell_sampler"),
+        )
+    assert np.isfinite(f.pointwise_elpd()).all()
+
+
+def test_a_mixed_finite_inf_column_does_not_disarm_the_zero_variance_check(cells_a):
+    """THE bug this guard had: one column mixing finite and ``-inf`` rows made
+    ``var`` NaN, and ``NaN == 0.0`` is False, so a repeated point estimate in
+    every OTHER column was waved through. Mutation: revert to
+    ``a[:, live].var(axis=0).max() == 0.0``; this fixture then constructs
+    without complaint and both reductions return plug-in values."""
+    flat = np.tile(np.full(cells_a.n_cells, -4.0), (50, 1))
+    flat[:25, -1] = -np.inf  # the finite half of this column is also all -4.0
+    with pytest.raises(ValueError, match="zero variance"):
+        CohortForecast(
+            model="m",
+            task=TASK,
+            cells=cells_a,
+            field="paid_loss",
+            log_density=flat,
+            draws_absence=Absence("no_cell_sampler"),
+        )
 
 
 def test_non_finite_draws_are_refused(cells_a, rng):
