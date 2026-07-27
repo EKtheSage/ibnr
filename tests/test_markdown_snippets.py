@@ -21,7 +21,12 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 
-from lint_md_snippets import check, extract_snippets, repo_snippets  # noqa: E402
+from lint_md_snippets import (  # noqa: E402
+    check,
+    extract_snippets,
+    iter_markdown_files,
+    repo_snippets,
+)
 
 
 def _md(tmp_path: Path, body: str, name: str = "doc.md") -> Path:
@@ -41,6 +46,30 @@ def test_the_repo_actually_has_snippets_to_check():
     snippets = repo_snippets()
     assert len(snippets) >= 5
     assert any(s.rel.replace("\\", "/") == "README.md" for s in snippets)
+
+
+def test_the_walk_skips_the_branch_per_task_worktrees(tmp_path):
+    """`.claude/worktrees/<name>/` is a full copy of the repo, so without the
+    exclusion this gate lints every sibling branch too: a broken snippet on an
+    unrelated branch would fail the branch you are actually working on, and the
+    real files would each be linted once per worktree on top of that."""
+    (tmp_path / "README.md").write_text("```python\na = 1\n```\n", encoding="utf-8")
+    other = tmp_path / ".claude" / "worktrees" / "some-branch"
+    other.mkdir(parents=True)
+    (other / "README.md").write_text("```python\ndef f(:\n```\n", encoding="utf-8")
+
+    assert iter_markdown_files(tmp_path) == [tmp_path / "README.md"]
+    assert not check([s for p in iter_markdown_files(tmp_path) for s in extract_snippets(p)])
+
+
+def test_the_walk_still_reaches_nested_real_docs(tmp_path):
+    """Guard the guard: pruning must not cost the model cards, which live several
+    directories down under src/. An exclusion that found nothing would also make
+    the test above pass."""
+    card = tmp_path / "src" / "ibnr" / "gallery" / "bayesian" / "meyers_ccl"
+    card.mkdir(parents=True)
+    (card / "card.md").write_text("```python\na = 1\n```\n", encoding="utf-8")
+    assert iter_markdown_files(tmp_path) == [card / "card.md"]
 
 
 def test_a_block_that_does_not_parse_is_a_failure(tmp_path):
