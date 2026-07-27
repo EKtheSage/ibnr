@@ -202,10 +202,11 @@ def test_odp_mu_cells_matches_the_stan_formula_cellwise(contract, heldout, where
     held-out cells as well as training cells, because the premium trap only
     bites where the cell list stops being the training rows.
 
-    Mutations (verified to fail): alpha read at cells.w (off-by-one, the
-    index-arithmetic mutation this file exists for); premium read from
-    contract["logprem"][cells.w - 1] (the per-training-row trap - returns
-    origin 1's rows for every cell, wrong wherever premiums differ)."""
+    Mutations (verified to fail): alpha read one origin off (the
+    index-arithmetic mutation this file exists for); beta read one dev off;
+    premium read from contract["logprem"][cells.w - 1] (the per-training-row
+    trap - returns origin 1's rows for every cell, wrong wherever premiums
+    differ)."""
     cells = training_index(contract) if where == "training" else index_into(heldout, contract)
     post = odp_posterior(contract, n_draws=7)
     got = odp_scorer.mu_cells(contract, post, cells)
@@ -249,8 +250,8 @@ def test_odp_draw_cells_is_phi_times_poisson_of_mu_over_phi(contract, heldout):
     """model.stan:59 read forwards: X = phi * Poisson(mu / phi), one draw per
     posterior draw, reproduced exactly by seeding the same generator.
 
-    Mutations (verified): rng.poisson(mu) without the phi scaling in either
-    place changes every draw; so does a plug-in at the posterior-mean mu."""
+    Mutation (verified): rng.poisson(mu) without the phi scaling - the mean
+    survives it, so only an exact or a variance check can see it."""
     post = odp_posterior(contract, n_draws=50)
     idx = index_into(heldout, contract)
     got = odp_scorer.draw_cells(contract, post, idx, rng=np.random.default_rng(3))
@@ -354,8 +355,8 @@ def test_mle_draw_cells_reproduces_the_recipe_exactly(clark_cape, heldout):
     """The whole chain - MVN parameter sample, shared ages, growth increment,
     floor, od-Poisson - reproduced end to end with the same seeded generator,
     including the rng consumption ORDER (parameters first, then one Poisson
-    call). Mutation (verified): drawing the Poisson before the parameters
-    changes every draw."""
+    call). Mutations (verified): a plug-in sample with the parameter risk
+    zeroed; a hard-coded draw count; cape_cod levels recovered the ldf way."""
     c, prm = clark_cape.contract_, clark_cape.params_
     idx = index_into(heldout, c)
     got = mle_scorer.draw_cells(c, prm, idx, n_draws=64, rng=np.random.default_rng(9))
@@ -404,6 +405,32 @@ def test_clark_draw_moments_are_mu_and_phi_mu(contract, heldout):
     np.testing.assert_allclose(draws.var(axis=0), PHI * mu, rtol=0.08)
 
 
+def test_clark_entry_threads_its_fitted_curve_into_the_draws(contract, heldout):
+    """The growth-curve name is FITTED STATE (``_curve``), not a contract key,
+    so the entry glue must thread it into the scorer. A hard-coded curve in
+    ``_draws_native`` agrees with itself through every other test (the stub
+    and the carry compare the same mutated path to itself); only this
+    entry-vs-scorer comparison, run for BOTH curves, can see it - the
+    inert-parameter bug class: a signature proves the wire exists, not that it
+    is connected.
+
+    Mutation (verified): curve="weibull" hard-coded in _draws_native."""
+    post = clark_posterior(60, jitter=0.0)
+    idx = index_into(heldout, contract)
+    for curve in ("loglogistic", "weibull"):
+        entry = _StubClarkGC(contract, post, curve=curve)
+        native = entry._draws_native(idx, rng=np.random.default_rng(21))
+        want = clark_scorer.draw_cells(
+            contract, post, idx, curve=curve, rng=np.random.default_rng(21)
+        )
+        np.testing.assert_allclose(native, want)
+    # the two curves genuinely disagree at these cells, or the loop is vacuous
+    assert not np.allclose(
+        clark_scorer.mu_cells(contract, post, idx, curve="loglogistic"),
+        clark_scorer.mu_cells(contract, post, idx, curve="weibull"),
+    )
+
+
 def test_mle_draws_agree_with_predicts_own_machinery(clark_cape, heldout):
     """Origin 2's ONLY unobserved cell inside the training window is the
     held-out cell (2, 6), so predict()'s ultimate for origin 2 minus its
@@ -411,8 +438,11 @@ def test_mle_draws_agree_with_predicts_own_machinery(clark_cape, heldout):
     published machinery. Moment agreement there pins _draws_native to
     predict() - same MVN, same ages, same floor, same process law.
 
-    Mutation (verified): _draws_native drawing at the MLE point (plug-in)
-    instead of through param_draws shrinks the variance detectably."""
+    Mutation (verified): recovering cape_cod levels the ldf way inside
+    param_draws breaks this agreement. (The plug-in mutation - zeroing the
+    parameter risk - is pinned by the exact-reproduction test above; on this
+    smooth fixture process noise dominates the variance, so a moment check
+    alone cannot see it.)"""
     c = clark_cape.contract_
     assert int(c["latest_d"][1]) == N_D - 1
 
