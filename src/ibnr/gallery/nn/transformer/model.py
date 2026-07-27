@@ -103,16 +103,20 @@ class NNTransformer(GalleryEntry, ScoresHeldout, PredictsHeldout):
 
         cfg = config or TransformerConfig()
         train = triangle.as_of(as_of) if as_of is not None else triangle
-        self.contract_ = nn_data(
+        # BUILD FIRST, ASSIGN AFTER TRAINING SUCCEEDED - fit() must be atomic.
+        # The ensemble trainer is the fallible step (bad loss surfaces, OOM,
+        # interrupts), and assigning contract_/norm_ before it leaves a failed
+        # refit TORN: the new pool's contract and normalizer over the old
+        # pool's networks, which at_cohort/predict then serve under the wrong
+        # identity. See mack.
+        contract = nn_data(
             train,
             loss_field=loss_field,
             feature_fields=feature_fields,
             premium_field=premium_field,
         )
-        self._loss_field = loss_field
-        self.config_ = cfg
-        self._device = device or "cpu"
-        c = self.contract_
+        device_str = device or "cpu"
+        c = contract
         # n_c cohorts, n_f channels (target first), n_w origins, n_d dev lags
         n_c, n_f, n_w, n_d = c["x"].shape
 
@@ -127,7 +131,7 @@ class NNTransformer(GalleryEntry, ScoresHeldout, PredictsHeldout):
         prem_std = float(np.std(c["log_premium"]))
         if prem_std < 1e-8:
             prem_std = 1.0
-        self.norm_ = {
+        norm = {
             "mean": mean,
             "std": std,
             "pinned": pinned,
@@ -141,7 +145,7 @@ class NNTransformer(GalleryEntry, ScoresHeldout, PredictsHeldout):
         # over cohorts (axis 0) and origins (axis 2). x_norm is (n_c, n_f, n_w, n_d).
         x_norm = (c["x"] - mean[None, :, None, :]) / std[None, :, None, :]
         x_norm = np.where(pinned[None, :, None, :], 0.0, x_norm)
-        dev = torch.device(self._device)
+        dev = torch.device(device_str)
         xt = torch.tensor(x_norm, dtype=torch.float32, device=dev)  # (n_c, n_f, n_w, n_d)
         yt = xt[:, 0]  # (n_c, n_w, n_d) - target channel, normalized (channel 0)
         obs_t = torch.tensor(c["obs_mask"], device=dev)
@@ -187,7 +191,7 @@ class NNTransformer(GalleryEntry, ScoresHeldout, PredictsHeldout):
         # seeding, cutoff augmentation batching, AdamW, early stopping. Pooling
         # the members' draws at rollout adds epistemic spread on top of the
         # MDN's aleatoric spread (card.md "Why an MDN head").
-        self.models_, self.history_ = train_ensemble(
+        models, history = train_ensemble(
             n_c,
             config=cfg,
             seed=seed,
@@ -200,7 +204,15 @@ class NNTransformer(GalleryEntry, ScoresHeldout, PredictsHeldout):
             show_progress=show_progress,
         )
 
+        self.contract_ = contract
+        self._loss_field = loss_field
+        self.config_ = cfg
+        self._device = device_str
+        self.norm_ = norm
+        self.models_, self.history_ = models, history
+        # the cached rollout belongs to the previous fit; drop it whole
         self._rollout_key = None
+        self._rollout_ults = None
         return self
 
     def predict(

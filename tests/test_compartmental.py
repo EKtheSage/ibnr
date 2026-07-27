@@ -171,12 +171,9 @@ def test_lognormal_data_assembly(contract):
     cell is non-positive, so the lognormal support drops nothing - that
     baseline is what makes the next test meaningful.
     """
-    entry = Compartmental()
-    entry.contract_ = contract
-    entry.variant_ = "lognormal"
-    data = entry._lognormal_stan_data()
+    data, _, dropped = Compartmental()._lognormal_stan_data(contract)
     # noise-free curves: every OS level and paid increment is positive
-    assert entry.dropped_cells_ == {"outstanding": 0, "paid_incremental": 0}
+    assert dropped == {"outstanding": 0, "paid_incremental": 0}
     assert data["len_data"] == contract["len_data"]
     assert data["devfreq"] == 1.0
     # paid rows are incremental loss ratios: they cumulate back to the curve
@@ -218,11 +215,8 @@ def test_lognormal_drops_nonpositive_cells():
         reported_field="reported_loss",
         premium_field="earned_premium",
     )
-    entry = Compartmental()
-    entry.contract_ = c
-    entry.variant_ = "lognormal"
-    data = entry._lognormal_stan_data()
-    assert entry.dropped_cells_["outstanding"] == c["len_data"] // 2
+    data, _, dropped = Compartmental()._lognormal_stan_data(c)
+    assert dropped["outstanding"] == c["len_data"] // 2
     assert (data["delta"] == 1).all()
 
 

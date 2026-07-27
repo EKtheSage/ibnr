@@ -115,24 +115,28 @@ class ClarkGrowthCurve(GalleryEntry, PredictsHeldout):
         # odp_stan_data builds the INCREMENTAL-cell contract (Clark models
         # incremental emergence, not cumulative); premium is required for the
         # Cape Cod ELR and negative increments are rejected upstream.
-        self.contract_ = odp_stan_data(train, loss_field=loss_field, premium_field=premium_field)
-        if "premium" not in self.contract_:
+        #
+        # BUILD FIRST, ASSIGN AFTER THE SAMPLER SUCCEEDED - fit() must be
+        # atomic. The MLE twin and the sampler both legitimately refuse
+        # cohorts the contract accepted, and assigning contract_/mle_ before
+        # those steps leaves a failed refit TORN: the new cohort's contract
+        # over the old cohort's posterior, which index_into then accepts. See
+        # meyers_ccl/mack.
+        contract = odp_stan_data(train, loss_field=loss_field, premium_field=premium_field)
+        if "premium" not in contract:
             raise ValueError("clark_growth_curve needs a premium_field (Cape Cod ultimates)")
-        self._loss_field = loss_field
-        self._curve = growth_curve
-        self.backend_ = backend
 
         # plug-in dispersion: the Pearson scale from the MLE of the identical
         # Cape Cod model (the statistical clark entry)
-        self.mle_ = Clark().fit(
+        mle = Clark().fit(
             train,
             loss_field=loss_field,
             premium_field=premium_field,
             growth_curve=growth_curve,
             method="cape_cod",
         )
-        c = self.contract_
-        c["phi"] = self.mle_.params_["phi"]
+        c = contract
+        c["phi"] = mle.params_["phi"]
 
         # Assemble the Stan `data` block. Ages are DATA, not model logic (so a
         # port cannot drift on the convention): each incremental cell at dev d
@@ -155,7 +159,6 @@ class ClarkGrowthCurve(GalleryEntry, PredictsHeldout):
             # scale prior comparable across annual/quarterly triangles.
             "theta_prior_median": 4.0 * step,
         }
-        self.stan_data_ = stan_data  # the single data block every backend consumes
         sampler = {
             "stan": self._sample_stan,
             "numpyro": self._sample_numpyro,
@@ -171,9 +174,10 @@ class ClarkGrowthCurve(GalleryEntry, PredictsHeldout):
         # "pymc" default while the caller believed a foreign NUTS ran.
         if backend == "pymc":
             extra["nuts_sampler"] = nuts_sampler
-        # All three return a comparable arviz.InferenceData, so predict(),
-        # convergence() and parity are backend-agnostic.
-        self.idata_ = sampler(
+        # All three return (comparable arviz.InferenceData, raw cmdstan fit or
+        # None), so predict(), convergence() and parity are backend-agnostic -
+        # and fit() stays the single writer of entry state.
+        idata, raw_fit = sampler(
             stan_data,
             chains=chains,
             iter_warmup=iter_warmup,
@@ -183,6 +187,16 @@ class ClarkGrowthCurve(GalleryEntry, PredictsHeldout):
             show_progress=show_progress,
             **extra,
         )
+        self.contract_ = contract
+        self._loss_field = loss_field
+        self._curve = growth_curve
+        self.backend_ = backend
+        self.mle_ = mle
+        self.stan_data_ = stan_data  # the single data block every backend consumes
+        self.idata_ = idata
+        # None for the ports, which also clears a stale cmdstan object left by
+        # an earlier stan-backend fit of a different cohort
+        self.fit_ = raw_fit
         return self
 
     @classmethod
@@ -220,7 +234,7 @@ class ClarkGrowthCurve(GalleryEntry, PredictsHeldout):
         ensure_stan_toolchain()
         model = CmdStanModel(stan_file=str(STAN_FILE))
         t0 = time.perf_counter()
-        self.fit_ = model.sample(
+        fit = model.sample(
             data=stan_data,
             chains=chains,
             # 1 = sequential, the fair single-core runtime convention vs future
@@ -234,10 +248,10 @@ class ClarkGrowthCurve(GalleryEntry, PredictsHeldout):
             show_progress=show_progress,
         )
         runtime_s = time.perf_counter() - t0
-        idata = az.from_cmdstanpy(self.fit_, log_likelihood="log_lik")
+        idata = az.from_cmdstanpy(fit, log_likelihood="log_lik")
         idata.attrs["runtime_s"] = runtime_s
         idata.attrs["backend"] = "stan"
-        return idata
+        return idata, fit
 
     def _sample_numpyro(
         self, stan_data, *, chains, iter_warmup, iter_sampling, seed, target_accept, show_progress
@@ -258,7 +272,7 @@ class ClarkGrowthCurve(GalleryEntry, PredictsHeldout):
             seed=seed,
             target_accept=target_accept,
             progress_bar=show_progress,
-        )
+        ), None
 
     def _sample_pymc(
         self,
@@ -284,7 +298,7 @@ class ClarkGrowthCurve(GalleryEntry, PredictsHeldout):
             target_accept=target_accept,
             nuts_sampler=nuts_sampler,
             progressbar=show_progress,
-        )
+        ), None
 
     def predict(self, seed: int | None = None) -> PredictiveDistribution:
         """Ultimates per origin + total: paid-to-date plus simulated future

@@ -95,10 +95,16 @@ class CopulaGLM(GalleryEntry):
             raise ValueError(f"nonpositive must be 'error' or 'drop', got {nonpositive!r}")
         train = triangle.as_of(as_of) if as_of is not None else triangle
         # Canonical prep also pulls premium (the marginal's exposure denominator).
-        self.contract_ = multiline_data(train, loss_field=loss_field, premium_field=premium_field)
-        self._loss_field = loss_field
-        self._dev_effect = dev_effect
-        c = self.contract_
+        #
+        # BUILD FIRST, ASSIGN AFTER THE ESTIMATOR SUCCEEDED - fit() must be
+        # atomic. The non-positive-increment guard and the identification
+        # checks below legitimately refuse real cohorts AFTER the contract is
+        # built, and assigning contract_ before them leaves a failed refit
+        # TORN: the new cohort's contract over the old cohort's marginals and
+        # copula, which predict() then simulates under the wrong identity. See
+        # mack.
+        contract = multiline_data(train, loss_field=loss_field, premium_field=premium_field)
+        c = contract
         n_lob, n_w, n_d = c["n_lob"], c["n_w"], c["n_d"]
         cum, mask = c["cum"], c["obs_mask"]  # cum: (K, n_w, n_d)
 
@@ -155,7 +161,7 @@ class CopulaGLM(GalleryEntry):
         # Copula = Pearson correlation of standardized log-residuals (the normal
         # scores); PD-repair so predict()'s Cholesky exists. Trivial for K=1.
         std_resid = resid / sigma[:, None]  # (K, n_obs)
-        self.corr_ = _nearest_pd(np.corrcoef(std_resid)) if n_lob > 1 else np.ones((1, 1))
+        corr = _nearest_pd(np.corrcoef(std_resid)) if n_lob > 1 else np.ones((1, 1))
 
         # Anchor for prediction: each origin's latest observed cumulative and the
         # 1-based dev step it sits at (future increments start at latest_dev[w]).
@@ -168,7 +174,12 @@ class CopulaGLM(GalleryEntry):
             latest_dev[w] = int(devs[-1]) + 1
             latest_cum[:, w] = cum[:, w, devs[-1]]
 
+        # Everything estimated; only now does the entry's state change.
+        self.contract_ = contract
+        self._loss_field = loss_field
+        self._dev_effect = dev_effect
         self.beta_, self.sigma_ = beta, sigma
+        self.corr_ = corr
         # Cache design + pseudo-inverse so the bootstrap refits are one matmul each.
         self._obs_w, self._obs_d, self._x, self._pinv = obs_w, obs_d, x, pinv
         self._latest_cum, self._latest_dev = latest_cum, latest_dev

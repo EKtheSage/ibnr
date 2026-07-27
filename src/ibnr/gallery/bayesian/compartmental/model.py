@@ -203,22 +203,25 @@ class Compartmental(GalleryEntry, ScoresHeldout, PredictsHeldout):
                 f"parallel_chains is a stan-backend control; the {backend!r} port does not take it"
             )
         train = triangle.as_of(as_of) if as_of is not None else triangle
-        self.contract_ = compartmental_stan_data(
+        # BUILD FIRST, ASSIGN AFTER THE SAMPLER SUCCEEDED - fit() must be
+        # atomic. The lognormal data prep and the sampler both legitimately
+        # refuse cohorts the contract accepted, and this entry has the richest
+        # torn state in the gallery: assigning early would leave a failed
+        # gaussian -> lognormal refit with the WRONG variant, measure and
+        # draw-scale declarations stamped over the surviving gaussian
+        # posterior, while index_into still accepts the new contract. See
+        # meyers_ccl/mack.
+        contract = compartmental_stan_data(
             train,
             paid_field=loss_field,
             reported_field=reported_field,
             premium_field=premium_field,
         )
-        self._loss_field = loss_field
-        self.backend_ = backend
-        self.variant_ = variant
-        # the held-out capability declarations follow the variant; setting them
-        # here (not at class level) is what lets one entry carry two measures
-        for name, value in HELDOUT_DECLARATIONS[variant].items():
-            setattr(self, name, value)
-        stan_data = (
-            self._gaussian_stan_data() if variant == "gaussian" else self._lognormal_stan_data()
-        )
+        if variant == "gaussian":
+            stan_data = self._gaussian_stan_data(contract)
+            kept_rows, dropped_cells = None, None  # every stacked row enters the likelihood
+        else:
+            stan_data, kept_rows, dropped_cells = self._lognormal_stan_data(contract)
         sampler = {
             "stan": self._sample_stan,
             "numpyro": self._sample_numpyro,
@@ -229,8 +232,11 @@ class Compartmental(GalleryEntry, ScoresHeldout, PredictsHeldout):
         # PyTensor path that is effectively unrunnable for this entry -- while
         # the caller believed a foreign NUTS ran.
         extra = {"nuts_sampler": nuts_sampler} if backend == "pymc" else {}
-        self.idata_ = sampler(
+        # All three return (comparable arviz.InferenceData, raw cmdstan fit or
+        # None) - fit() stays the single writer of entry state.
+        idata, raw_fit = sampler(
             stan_data,
+            variant=variant,
             chains=chains,
             iter_warmup=iter_warmup,
             iter_sampling=iter_sampling,
@@ -241,6 +247,22 @@ class Compartmental(GalleryEntry, ScoresHeldout, PredictsHeldout):
             show_progress=show_progress,
             **extra,
         )
+        self.contract_ = contract
+        self._loss_field = loss_field
+        self.backend_ = backend
+        self.variant_ = variant
+        # lognormal-only bookkeeping, reset to None on a gaussian (re)fit so no
+        # stale keep mask survives a variant switch
+        self._kept_rows_ = kept_rows
+        self.dropped_cells_ = dropped_cells
+        # the held-out capability declarations follow the variant; setting them
+        # here (not at class level) is what lets one entry carry two measures
+        for name, value in HELDOUT_DECLARATIONS[variant].items():
+            setattr(self, name, value)
+        self.idata_ = idata
+        # None for the ports, which also clears a stale cmdstan object left by
+        # an earlier stan-backend fit of a different cohort
+        self.fit_ = raw_fit
         return self
 
     @classmethod
@@ -254,13 +276,12 @@ class Compartmental(GalleryEntry, ScoresHeldout, PredictsHeldout):
         for stan_file in STAN_FILES.values():
             CmdStanModel(stan_file=str(stan_file))
 
-    def _gaussian_stan_data(self) -> dict:
+    def _gaussian_stan_data(self, c: dict) -> dict:
         """Model 1 rows: the contract as-is - OS levels and cumulative paid as
         AMOUNTS, every cell kept. The Gaussian likelihood takes zero and
         negative outstanding natively (redundant case reserves, or a fully
         run-off origin), which is exactly why this arm survives a mechanical
         200-company retrospective without a clamp."""
-        c = self.contract_
         return {
             "len_data": c["len_data"],
             "n_w": c["n_w"],
@@ -271,13 +292,18 @@ class Compartmental(GalleryEntry, ScoresHeldout, PredictsHeldout):
             "premium": c["premium"],
         }
 
-    def _lognormal_stan_data(self) -> dict:
+    def _lognormal_stan_data(self, c: dict) -> tuple[dict, np.ndarray, dict]:
         """Model 2 rows: OS levels and incremental paid, as LOSS RATIOS,
-        non-positive cells dropped (the lognormal cannot take them). The
-        drop counts land in ``dropped_cells_`` - a mechanical study must
-        report them, they are the variant's analogue of the ODP entries'
-        negative-increment failures."""
-        c = self.contract_
+        non-positive cells dropped (the lognormal cannot take them).
+
+        Returns ``(stan_data, kept_rows, dropped_cells)`` rather than stamping
+        the bookkeeping on the entry - fit() assigns state only after the
+        sampler succeeded, so its atomicity holds. ``kept_rows`` is the mask
+        itself, not only its counts: Stan's log_lik vector runs over the kept
+        rows in contract order, and the held-out scorer's agreement gate has
+        to subset the training index to exactly these rows. ``dropped_cells``
+        is what a mechanical study must report - the variant's analogue of the
+        ODP entries' negative-increment failures."""
         paid_blk = c["delta"] == 1
         w = c["w"]
         value = c["loss"].copy()
@@ -295,11 +321,8 @@ class Compartmental(GalleryEntry, ScoresHeldout, PredictsHeldout):
         # a negative paid increment (salvage/subrogation, a reopened-then-
         # closed year) has to leave the likelihood entirely
         keep = ratio > 0
-        # the mask itself, not only its counts: Stan's log_lik vector runs over
-        # the kept rows in contract order, and the held-out scorer's agreement
-        # gate has to subset the training index to exactly these rows
-        self._kept_rows_ = np.flatnonzero(keep)
-        self.dropped_cells_ = {
+        kept_rows = np.flatnonzero(keep)
+        dropped_cells = {
             "outstanding": int((~keep & (c["delta"] == 0)).sum()),
             "paid_incremental": int((~keep & paid_blk).sum()),
         }
@@ -308,7 +331,7 @@ class Compartmental(GalleryEntry, ScoresHeldout, PredictsHeldout):
         # ker/kp are per-year rates, so the dev period length goes to Stan in
         # years too (1.0 on the annual Schedule P grain)
         step_years = c["dev_grain_months"] / 12.0
-        return {
+        stan_data = {
             "len_data": int(keep.sum()),
             "n_w": c["n_w"],
             "n_d": c["n_d"],
@@ -319,11 +342,13 @@ class Compartmental(GalleryEntry, ScoresHeldout, PredictsHeldout):
             "y": ratio[keep],
             "devfreq": step_years,
         }
+        return stan_data, kept_rows, dropped_cells
 
     def _sample_stan(
         self,
         stan_data,
         *,
+        variant,
         chains,
         iter_warmup,
         iter_sampling,
@@ -340,9 +365,9 @@ class Compartmental(GalleryEntry, ScoresHeldout, PredictsHeldout):
 
         # Windows RTools PATH/MAKE fixup; no-op elsewhere (see CLAUDE.md)
         ensure_stan_toolchain()
-        model = CmdStanModel(stan_file=str(STAN_FILES[self.variant_]))
+        model = CmdStanModel(stan_file=str(STAN_FILES[variant]))
         t0 = time.perf_counter()
-        self.fit_ = model.sample(
+        fit = model.sample(
             data=stan_data,
             chains=chains,
             # 1 = sequential, the fair single-core runtime convention vs future
@@ -358,15 +383,16 @@ class Compartmental(GalleryEntry, ScoresHeldout, PredictsHeldout):
         runtime_s = time.perf_counter() - t0
         # log_lik is per stacked cell, so ELPD/LOO in kernels/ scores the
         # joint paid+outstanding fit (not paid alone) - noted in the card
-        idata = az.from_cmdstanpy(self.fit_, log_likelihood="log_lik")
+        idata = az.from_cmdstanpy(fit, log_likelihood="log_lik")
         idata.attrs["runtime_s"] = runtime_s
         idata.attrs["backend"] = "stan"
-        return idata
+        return idata, fit
 
     def _sample_numpyro(
         self,
         stan_data,
         *,
+        variant,
         chains,
         iter_warmup,
         iter_sampling,
@@ -386,7 +412,7 @@ class Compartmental(GalleryEntry, ScoresHeldout, PredictsHeldout):
 
         return model_numpyro.sample(
             stan_data,
-            variant=self.variant_,
+            variant=variant,
             chains=chains,
             iter_warmup=iter_warmup,
             iter_sampling=iter_sampling,
@@ -394,12 +420,13 @@ class Compartmental(GalleryEntry, ScoresHeldout, PredictsHeldout):
             target_accept=target_accept,
             max_treedepth=max_treedepth,
             progress_bar=show_progress,
-        )
+        ), None
 
     def _sample_pymc(
         self,
         stan_data,
         *,
+        variant,
         chains,
         iter_warmup,
         iter_sampling,
@@ -415,7 +442,7 @@ class Compartmental(GalleryEntry, ScoresHeldout, PredictsHeldout):
 
         return model_pymc.sample(
             stan_data,
-            variant=self.variant_,
+            variant=variant,
             chains=chains,
             iter_warmup=iter_warmup,
             iter_sampling=iter_sampling,
@@ -424,7 +451,7 @@ class Compartmental(GalleryEntry, ScoresHeldout, PredictsHeldout):
             max_treedepth=max_treedepth,
             nuts_sampler=nuts_sampler,
             progressbar=show_progress,
-        )
+        ), None
 
     def predict(self, seed: int | None = None) -> PredictiveDistribution:
         """Predictive distribution of cumulative paid at the triangle's final
