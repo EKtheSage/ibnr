@@ -103,9 +103,11 @@ from ibnr.kernels.calibration import ks_uniformity  # noqa: E402
 from ibnr.kernels.mack import fit_mack  # noqa: E402
 from ibnr.kernels.scores import crps  # noqa: E402
 
-#: models cheap enough to run as the default trio (seconds-to-minutes per
+#: models cheap enough to run as the default set (seconds-to-minutes per
 #: company); meyers_ccl is opt-in because it compiles and samples in cmdstan.
-FAST_MODELS = ["sur", "copula_glm", "nn_transformer"]
+#: "mdn" is the transformer's no-attention ablation - same pool, seeds and
+#: augmentation, so running both in one study isolates the encoder body.
+FAST_MODELS = ["sur", "copula_glm", "nn_transformer", "mdn"]
 #: multi-line transformer arms - the only entries that model cross-line
 #: dependence, so the only ones producing a meaningful diversified total.
 ML_MODELS = ["nn_ml_ar", "nn_ml_joint"]
@@ -455,6 +457,54 @@ def run_transformer(tri_market, scored, pools, args) -> list[dict]:
     return rows
 
 
+def run_mdn(tri_market, scored, pools, args) -> list[dict]:
+    """The no-attention ablation: run_transformer's exact shape with the MLP
+    entry. Same pool, seed, features and as_of, so any gap between the mdn
+    and nn_transformer rows is attributable to the encoder body."""
+    from ibnr.gallery.nn.mdn import MDNConfig
+
+    tri_pool = (
+        tri_market if args.nn_pool == "market" else pair_filter(tri_market, pools[args.nn_pool])
+    )
+    t0 = time.perf_counter()
+    entry = gallery.fit(
+        "mdn",
+        tri_pool,
+        loss_field=args.loss_field,
+        feature_fields=tuple(args.nn_features),
+        as_of=args.as_of,
+        seed=args.seed,
+        config=MDNConfig(),
+    )
+    n_cohorts = len(entry.contract_["cohorts"])
+    print(f"  mdn: pooled fit on {n_cohorts} cohorts ({time.perf_counter() - t0:.0f}s)", flush=True)
+
+    rows = []
+    # predict the SCORED pairs only, whatever the training pool was - the
+    # scored panel is fixed across models by construction
+    for code, lines_c in scored.items():
+        for line in lines_c:
+            seg = {"company_code": code, "line_of_business": line}
+            t1 = time.perf_counter()
+            try:
+                pred = entry.predict(segment=seg, n_draws=args.nn_draws, seed=args.seed)
+                realized = entry.realized_ultimates(tri_market, segment=seg)
+                per_label = line_total_rows(pred, realized, {line: "total"})
+                rows.append(
+                    {
+                        "model": "mdn",
+                        "line": line,
+                        "company_code": code,
+                        **per_label[line],
+                        "seconds": time.perf_counter() - t1,
+                    }
+                )
+            except Exception as e:
+                rows.append({"model": "mdn", "line": line, "company_code": code, "error": str(e)})
+                print(f"  mdn {line} {code}: FAILED {e}", flush=True)
+    return rows
+
+
 def run_transformer_ml(tri_market, scored, pools, args, dependence: str) -> list[dict]:
     """The multi-line transformer: one pooled company-level fit (attention
     across each company's screened lines), then per-company predicts in the
@@ -787,6 +837,10 @@ def main() -> int:
     if "nn_transformer" in args.models:
         print(f"\nnn_transformer: pooled fit, --nn-pool {args.nn_pool}", flush=True)
         all_rows += run_transformer(tri_market, scored, pools, args)
+
+    if "mdn" in args.models:
+        print(f"\nmdn: pooled fit (no-attention ablation), --nn-pool {args.nn_pool}", flush=True)
+        all_rows += run_mdn(tri_market, scored, pools, args)
 
     for dep in ("ar", "joint"):
         if f"nn_ml_{dep}" in args.models:
