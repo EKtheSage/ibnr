@@ -25,9 +25,12 @@ held-out cells arrive as a plain :class:`~ibnr.kernels.holdout.CellIndex` from
 stores. :func:`cell_deltas` encodes that rule in one place.
 
 **The lognormal per-cell parameters are reconstructed from sampled sites**
-(``u = sd * z``, ``model_lognormal.stan:92-97`` verbatim), never read from
-Stan's ``u_*`` transformed parameters - neither port exposes those as
-deterministics, and reading them would silently make this module Stan-only.
+(``u = sd * z``, ``model_lognormal.stan:92-97`` verbatim) rather than read
+from Stan's ``u_*`` transformed parameters, which the ports do not expose -
+reading them would silently make this module Stan-only. The one exception is
+``u_ay``, which IS read directly: all three backends expose it as a
+deterministic, so it is safe, and its Cholesky construction is not worth
+re-implementing here.
 
 **``t`` comes from the CONTRACT's grain** (``d * dev_grain_months / 12``),
 never from the cells: ker/kp are per-year rates, and on the annual Schedule P
@@ -291,6 +294,16 @@ def _observed_ratios(contract: dict, cells: CellIndex) -> np.ndarray:
     increment/cumulative Jacobian 1). The premium is the contract's, not the
     cells', because Stan's ``y`` was divided by that exact number and the
     agreement gate compares elementwise.
+
+    **The two premium sources must agree, and that is checked here.** The
+    ratio divides by the CONTRACT's premium while the base class's measure
+    carry (``to_amount_scale``) divides by the CELLS' premium - the holdout
+    frame's, when ``next_diagonal`` attached one. Both are the training
+    slice's booked value, so today they cannot differ; but if they ever did,
+    the carried density would silently stop integrating to 1 - a wrong
+    Jacobian, the bug class nothing downstream can see. Cells carrying no
+    premium (NaN) are exempt from the comparison: the carry has its own
+    refusal for those.
     """
     delta = cell_deltas(cells)
     value = np.asarray(cells.value, dtype=float)
@@ -305,6 +318,17 @@ def _observed_ratios(contract: dict, cells: CellIndex) -> np.ndarray:
         )
     amount = np.where(paid, value - prev, value)
     premium = np.asarray(contract["premium"], dtype=float)[np.asarray(cells.w, dtype=int) - 1]
+    cell_premium = np.asarray(cells.premium, dtype=float)
+    mismatched = ~np.isnan(cell_premium) & ~np.isclose(cell_premium, premium)
+    if mismatched.any():
+        raise ValueError(
+            f"{int(mismatched.sum())} cell(s) carry a premium that disagrees with the "
+            "fitted contract's per-origin premium (the cells' comes from the holdout "
+            "frame, attached by next_diagonal from the training slice; the contract's "
+            "is _premium_by_origin's booked value). The observed ratio divides by the "
+            "contract's number while the measure carry divides by the cells', so a "
+            "mismatch would produce a density that silently no longer integrates to 1"
+        )
     ratio = amount / premium
     bad = ratio <= 0
     if bad.any():

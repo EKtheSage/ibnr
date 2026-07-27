@@ -203,7 +203,10 @@ rows) via `entry._kept_rows_`, the stored keep mask.
 The lognormal scorer reconstructs the per-cell parameters from the sampled
 `sd_*`/`z_*` sites (`u = sd * z`, the Stan file's own identities) rather
 than reading the Stan-only `u_*` transformed parameters, so held-out
-scoring is backend-blind across all three ports.
+scoring is backend-blind across all three ports. Note the gap that remains:
+`predict()` for the lognormal variant still reads the Stan-only
+`u_*_dev`/`u_*_ay` names (`model.py::_predict_lognormal`), so full-triangle
+prediction is Stan-only while held-out scoring is not.
 
 ## Data contract
 

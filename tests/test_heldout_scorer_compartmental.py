@@ -504,6 +504,51 @@ def test_lognormal_refuses_nonpositive_cells_and_gaussian_takes_them(contract):
         )
 
 
+def test_a_divergent_cell_premium_is_refused_not_silently_mis_normalized(contract):
+    """The lognormal ratio divides by the CONTRACT's premium (Stan's y did),
+    while the base class's measure carry divides by the CELLS' premium (the
+    holdout frame's). Today both are the same training-slice booked value; if
+    they ever diverged, the carried density would silently stop integrating
+    to 1 - wrong-Jacobian territory, invisible downstream. So the loss-ratio
+    path refuses the mismatch outright, naming both sources.
+
+    Mutation: drop the consistency check in ``_observed_ratios`` - the
+    drifted index below then scores finitely and plausibly, wrong by exactly
+    ``log(1.1)`` per cell after the carry."""
+    cells = training_index(contract)
+    post = fake_posterior_lognormal(contract)
+    drifted = DeltaCellIndex(
+        w=cells.w,
+        d=cells.d,
+        value=cells.value,
+        prev_value=cells.prev_value,
+        premium=cells.premium * 1.1,
+        delta=cells.delta,
+    )
+    with pytest.raises(ValueError, match="disagrees with the.*fitted contract"):
+        scorer.log_lik_cells(contract, post, drifted, variant="lognormal")
+
+    # NaN premium is NOT a disagreement: the comparison covers only cells that
+    # carry a number, and the measure carry has its own refusal for NaN
+    no_premium = DeltaCellIndex(
+        w=cells.w,
+        d=cells.d,
+        value=cells.value,
+        prev_value=cells.prev_value,
+        premium=np.full(cells.n_cells, np.nan),
+        delta=cells.delta,
+    )
+    assert np.isfinite(scorer.log_lik_cells(contract, post, no_premium, variant="lognormal")).all()
+
+    # the gaussian density is on amounts - the cells' premium plays no role in
+    # it, so the drifted index must stay scorable there
+    assert np.isfinite(
+        scorer.log_lik_cells(
+            contract, fake_posterior_gaussian(contract), drifted, variant="gaussian"
+        )
+    ).all()
+
+
 def test_t_comes_from_the_contract_grain_not_the_dev_index():
     """On the annual grain t == d numerically, so a scorer that reads the dev
     index as an age passes every mart-shaped test. A quarterly contract
