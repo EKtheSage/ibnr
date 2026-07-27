@@ -128,6 +128,28 @@ def test_a_dominant_model_takes_nearly_all_the_weight(rng):
     assert result.model == "stacked_mle"
 
 
+def test_pseudo_bma_recovers_the_dominant_model_and_is_seed_deterministic(rng):
+    """The pseudo_bma branch of ``_fit_weights``, exercised end to end: the
+    Bayesian bootstrap must favour the uniformly better member, and the SAME
+    seed must reproduce the weights to the last bit - PseudoBma's bootstrap is
+    the one stochastic step in the fast methods.
+
+    Mutation: drop the ``seed=seed`` pass-through in the pseudo_bma branch; the
+    two calls then bootstrap with fresh entropy and the exact-equality
+    assertion fails.
+    """
+    pytest.importorskip("bayesblend")
+    panel = _weights_panel(rng, shift_b=-1.0)
+    evaluation = _evaluation(rng, shift_b=-1.0)
+    first = stack(panel, evaluation, method="pseudo_bma", seed=7)
+    second = stack(panel, evaluation, method="pseudo_bma", seed=7)
+
+    assert first.method == "pseudo_bma" and first.model == "stacked_pseudo_bma"
+    assert first.weights["model_a"] > 0.9
+    assert np.isclose(sum(first.weights.values()), 1.0, atol=1e-9)
+    assert first.weights == second.weights, "same seed, same bootstrap, same weights exactly"
+
+
 def test_indistinguishable_models_split_the_weight(rng):
     """Identical lpd columns make the objective flat, so MLE stays at its
     uniform start. A stacking layer that favours either copy is reading
@@ -348,6 +370,26 @@ def test_an_evaluation_panel_is_refused_with_directions(rng):
         stack(weights_panel, eval_panel)
 
 
+def test_members_disagreeing_on_the_observed_value_are_refused(rng):
+    """The order-dependence repro. The stacked forecast is anchored on ONE
+    member's cells, so before this guard two members disagreeing on an observed
+    value were silently resolved in favour of whichever came FIRST in the list -
+    and align_panel over the stacked forecasts alone passed, the losing member's
+    value never reaching a panel. Same keys, values 2500 vs 5000, both orders.
+
+    Mutation: drop the "observed value" _agree call; both orders then build a
+    stacked forecast whose outcomes depend on list order.
+    """
+    cells = _cells("CO_A", as_of=EVAL_AS_OF)
+    doubled = _cells("CO_A", as_of=EVAL_AS_OF, scale=2.0)
+    assert cells.values.tolist() != doubled.values.tolist()
+    a = _forecast("model_a", cells, rng=rng)
+    b = _forecast("model_b", doubled, rng=rng)
+    for members in ([a, b], [b, a]):
+        with pytest.raises(ValueError, match="observed value"):
+            apply_weights({"model_a": 0.5, "model_b": 0.5}, members, model="stacked_mle")
+
+
 def test_stacking_needs_at_least_two_members(rng):
     forecasts = [
         _forecast("only", _cells(c, as_of=WEIGHTS_AS_OF), rng=rng) for c in ("CO_A", "CO_B")
@@ -383,9 +425,13 @@ def test_end_to_end_the_stacked_model_lands_on_the_board(rng):
     )
     assert by_model.loc["stacked_mle", "elpd_status"] == "scored"
     assert by_model.loc["stacked_mle", "crps_status"] == "scored"
-    assert (board["n_cells_elpd"] == board["n_cells_elpd"].iloc[0]).all(), (
-        "the stacked model covers exactly the members' cells, so the panel must not shrink"
-    )
+    # The stacked model covers exactly the members' cells, so adding it must not
+    # shrink either panel - compared against the MEMBERS-ONLY panel, because
+    # n_cells_elpd is one scalar per board and a self-comparison passes for any
+    # panel size, including a wrongly shrunk one.
+    members_only = align_panel(evaluation)
+    assert int(board["n_cells_elpd"].iloc[0]) == members_only.n_cells_for("elpd")
+    assert int(board["n_cells_crps"].iloc[0]) == members_only.n_cells_for("crps")
 
 
 def test_stacking_imports_without_bayesblend():

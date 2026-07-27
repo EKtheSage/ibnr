@@ -38,7 +38,12 @@ Stan, so their tests live behind ``-m slow``. Hierarchical stacking fits
 per-cell weights against a ``dev_lag`` covariate; this module applies the
 cell-AVERAGED posterior-mean weight, so the covariate structure informs the fit
 but the applied weight is global - one weight per model is what the stacked
-pseudo-model below is defined over. bayesblend is imported lazily inside the
+pseudo-model below is defined over. Note WHAT is averaged over: the WEIGHTS
+panel's cells, whose development mix is systematically shallower than the
+evaluation panel's (the earlier cutoff never contains a dev-120 cell - see
+``forecast.py``'s panel geometry), so the deepest evaluation cells influence
+the applied weight only through the fitted covariate slope, never the average
+itself. bayesblend is imported lazily inside the
 fitting function: its import pulls cmdstanpy and arviz at module scope, and the
 core install has neither.
 
@@ -75,7 +80,10 @@ evenly spaced rows of its own array. Deliberately NOT bayesblend's ``_blend``,
 which resamples members stochastically per datapoint: an unseeded blend makes
 the stacked CRPS irreproducible run to run, and a seeded one still cannot be
 reproduced from the weights alone. Largest remainder + even spacing is
-deterministic twice over - same inputs, same rows, same order.
+deterministic twice over - same inputs, same rows, same order. Weight
+resolution in this arm is ``1/target``: a member whose weight is positive but
+small enough to win no seat contributes ZERO rows to the stacked draws while
+still contributing its (tiny) share to the stacked density.
 
 The stacked forecasts are ordinary ``CohortForecast`` objects named
 ``stacked_<method>``. They do not get a private scoring path: pass them INTO
@@ -204,8 +212,14 @@ def stack(
     * ``weights_panel.as_of >= evaluation as_of`` - weights graded on the cells
       that chose them measure selection, not skill;
     * mixed ``as_of``/``task``/segment schema/measure among the evaluation
-      forecasts, and any disagreement of those with the weights panel - the
-      same identity checks ``align_panel`` applies, one cutoff earlier;
+      forecasts, and any disagreement of those with the weights panel. What is
+      checked WHERE: those four panel-identity checks happen here;
+      :func:`apply_weights` checks per-cohort member agreement (task, field,
+      cell keys, observed values, ``eval_date``, ``train_origins``); the
+      remaining panel checks - premium agreement, the upstream exclusion
+      censuses, cross-cohort duplicates - happen when the stacked forecasts are
+      aligned WITH their members, which is the only supported way to score
+      them;
     * a member-set mismatch: the models offering a density at evaluation must
       be EXACTLY the weight panel's ELPD members. A weight vector fitted over
       one member set cannot be applied to another silently - a missing member
@@ -418,6 +432,18 @@ def apply_weights(
     and a zero weight apportions zero draw rows anyway. A KEPT member missing a
     cohort (or refusing an arm there) makes the stacked cohort an ``Absence``
     on that arm - the mixture is defined over all its members or not at all.
+
+    Per cohort, the member forecasts must AGREE on task, field, cell keys,
+    observed values, ``eval_date`` and ``train_origins``, and a disagreement
+    raises. The stacked forecast is anchored on one member's ``cells``, so
+    without these checks two members disagreeing on an observed value would be
+    silently resolved in favour of whichever came FIRST in the list - an
+    order-dependent answer, invisible to an ``align_panel`` over the stacked
+    forecasts alone, because the losing member's value never reaches the panel. What is
+    NOT checked here: premium agreement and the upstream exclusion censuses,
+    which ``align_panel`` checks when the stacked forecasts are aligned WITH
+    their members (the only supported way to score them), and the triangle
+    measure, which :func:`stack` checks against the weights panel.
     """
     _check_weights(weights)
     kept = [m for m in sorted(weights) if weights[m] > 0.0]
@@ -448,6 +474,13 @@ def apply_weights(
         _agree(cohort, present, "task", lambda f: f.task)
         _agree(cohort, present, "field", lambda f: f.field)
         _agree(cohort, present, "cell keys", lambda f: tuple(f.keys))
+        # The three checks the anchor would otherwise launder: the stacked
+        # forecast carries ONE member's cells, so a disagreement here would be
+        # resolved in favour of whichever member came first in the list, and an
+        # align_panel over the stacked forecasts alone would never see it.
+        _agree(cohort, present, "observed value", lambda f: tuple(f.key_frame["value"].tolist()))
+        _agree(cohort, present, "eval_date", lambda f: f.eval_date)
+        _agree(cohort, present, "train_origins", lambda f: f.cells.train_origins)
         anchor = next(iter(present.values()))
 
         missing = [m for m in kept if m not in present]
