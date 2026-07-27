@@ -107,7 +107,7 @@ from ibnr.kernels.scores import crps  # noqa: E402
 #: company); meyers_ccl is opt-in because it compiles and samples in cmdstan.
 #: "mdn" is the transformer's no-attention ablation - same pool, seeds and
 #: augmentation, so running both in one study isolates the encoder body.
-FAST_MODELS = ["sur", "copula_glm", "nn_transformer", "deeptriangle", "mdn"]
+FAST_MODELS = ["sur", "copula_glm", "nn_transformer", "deeptriangle", "mdn", "resnet"]
 #: multi-line transformer arms - the only entries that model cross-line
 #: dependence, so the only ones producing a meaningful diversified total.
 ML_MODELS = ["nn_ml_ar", "nn_ml_joint"]
@@ -565,6 +565,79 @@ def run_mdn(tri_market, scored, pools, args) -> list[dict]:
     return rows
 
 
+def run_resnet(tri_market, scored, pools, args) -> list[dict]:
+    """The residual conv net: run_transformer's exact shape - ONE pooled fit,
+    then per-(company, line) predicts on the fixed scored panel. Same pool,
+    seed, draws, features and loss field, so any gap between the resnet and
+    nn_transformer rows is attributable to the encoder body (local 3x3
+    convolutions vs global attention). Per-line draws are independent; no
+    diversified total.
+
+    ONE exception to "differs only by the encoder body", and it is announced
+    rather than silent: ``--nn-exposure-sigma`` is a single-line-transformer
+    knob (``TransformerConfig.exposure_sigma``); ``ResNetConfig`` has no
+    equivalent, so with the flag on the transformer's sigma head carries a
+    learned premium power and resnet's does not. The run is still meaningful -
+    resnet is simply the flat-sigma baseline - but the two arms then differ in
+    the head as well as the body, so the mismatch is printed on every run.
+    """
+    from ibnr.gallery.nn.resnet import ResNetConfig
+
+    if args.nn_exposure_sigma:
+        print(
+            "  WARNING: --nn-exposure-sigma has no resnet equivalent "
+            "(ResNetConfig has no exposure_sigma); resnet runs the flat-sigma "
+            "head while nn_transformer runs the exposure-scaled one, so these "
+            "rows differ in the HEAD as well as the encoder body",
+            flush=True,
+        )
+    tri_pool = (
+        tri_market if args.nn_pool == "market" else pair_filter(tri_market, pools[args.nn_pool])
+    )
+    t0 = time.perf_counter()
+    entry = gallery.fit(
+        "resnet",
+        tri_pool,
+        loss_field=args.loss_field,
+        feature_fields=tuple(args.nn_features),
+        as_of=args.as_of,
+        seed=args.seed,
+        config=ResNetConfig(),
+    )
+    n_cohorts = len(entry.contract_["cohorts"])
+    print(
+        f"  resnet: pooled fit on {n_cohorts} cohorts ({time.perf_counter() - t0:.0f}s)",
+        flush=True,
+    )
+
+    rows = []
+    # predict the SCORED pairs only, whatever the training pool was - the
+    # scored panel is fixed across models by construction
+    for code, lines_c in scored.items():
+        for line in lines_c:
+            seg = {"company_code": code, "line_of_business": line}
+            t1 = time.perf_counter()
+            try:
+                pred = entry.predict(segment=seg, n_draws=args.nn_draws, seed=args.seed)
+                realized = entry.realized_ultimates(tri_market, segment=seg)
+                per_label = line_total_rows(pred, realized, {line: "total"})
+                rows.append(
+                    {
+                        "model": "resnet",
+                        "line": line,
+                        "company_code": code,
+                        **per_label[line],
+                        "seconds": time.perf_counter() - t1,
+                    }
+                )
+            except Exception as e:
+                rows.append(
+                    {"model": "resnet", "line": line, "company_code": code, "error": str(e)}
+                )
+                print(f"  resnet {line} {code}: FAILED {e}", flush=True)
+    return rows
+
+
 def run_transformer_ml(tri_market, scored, pools, args, dependence: str) -> list[dict]:
     """The multi-line transformer: one pooled company-level fit (attention
     across each company's screened lines), then per-company predicts in the
@@ -905,6 +978,10 @@ def main() -> int:
     if "mdn" in args.models:
         print(f"\nmdn: pooled fit (no-attention ablation), --nn-pool {args.nn_pool}", flush=True)
         all_rows += run_mdn(tri_market, scored, pools, args)
+
+    if "resnet" in args.models:
+        print(f"\nresnet: pooled fit (conv-body ablation), --nn-pool {args.nn_pool}", flush=True)
+        all_rows += run_resnet(tri_market, scored, pools, args)
 
     for dep in ("ar", "joint"):
         if f"nn_ml_{dep}" in args.models:
