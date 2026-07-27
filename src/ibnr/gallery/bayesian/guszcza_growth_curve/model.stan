@@ -34,6 +34,22 @@ functions {
     }
     return 1 - exp(-pow(t / theta, omega)); // weibull
   }
+
+  // The lognormal location for every cell. A FUNCTION rather than a
+  // transformed parameter: `mu` has no consumer outside this file (the
+  // held-out scorer rebuilds it from ulr/omega/theta), and declaring it in
+  // `transformed parameters` would write len_data extra columns per draw to
+  // the CSV for nothing. Both the model and the generated-quantities block
+  // call this, so there is still exactly one definition.
+  vector mu_vec(vector ulr, array[] int w, vector t, real omega, real theta,
+                int curve) {
+    int n = num_elements(t);
+    vector[n] mu;
+    for (i in 1 : n) {
+      mu[i] = log(ulr[w[i]] * growth_curve(t[i], omega, theta, curve));
+    }
+    return mu;
+  }
 }
 data {
   int<lower=1> len_data;
@@ -57,12 +73,10 @@ transformed parameters {
   // additive AY effect on the ulr scale, exactly as brms builds the nlpar's
   // linear predictor; ulr[w] is therefore NOT bounded below by 0, and a draw
   // that pushes it non-positive makes mu NaN and is rejected - the same
-  // implicit truncation the brms-generated Stan code has
+  // implicit truncation the brms-generated Stan code has.
+  // The ONLY saved transformed parameter: the held-out scorer reads it (and
+  // the ports must re-expose it), and it is n_w columns rather than len_data.
   vector[n_w] ulr = ulr_pop + sd_ulr * z_ulr;
-  vector[len_data] mu;
-  for (i in 1 : len_data) {
-    mu[i] = log(ulr[w[i]] * growth_curve(t[i], omega, theta, curve));
-  }
 }
 model {
   // the post's my_priors, verbatim, less the company-level pieces that
@@ -74,13 +88,16 @@ model {
   sd_ulr ~ student_t(3, 0, 1); // half-t via the bound (brms class sd)
   z_ulr ~ std_normal();
   sigma ~ student_t(3, 0, 1); // half-t via the bound (brms class sigma)
-  y ~ lognormal(mu, sigma);
+  y ~ lognormal(mu_vec(ulr, w, t, omega, theta, curve), sigma);
 }
 generated quantities {
   // pointwise log density ON THE LOSS-RATIO SCALE (the model's own measure);
   // ScoresHeldout.log_lik_at carries it to Lebesgue-on-amount (-log premium)
   vector[len_data] log_lik;
-  for (i in 1 : len_data) {
-    log_lik[i] = lognormal_lpdf(y[i] | mu[i], sigma);
+  {
+    vector[len_data] mu = mu_vec(ulr, w, t, omega, theta, curve);
+    for (i in 1 : len_data) {
+      log_lik[i] = lognormal_lpdf(y[i] | mu[i], sigma);
+    }
   }
 }

@@ -37,7 +37,7 @@ from ibnr.gallery.bayesian.guszcza_growth_curve.model import (
     GuszczaGrowthCurve,
 )
 from ibnr.gallery.entry import PredictsHeldout, ScoresHeldout
-from ibnr.gallery.statistical.clark.model import growth
+from ibnr.gallery.statistical.clark.model import GROWTH_CURVES, growth
 from ibnr.kernels.contract import stan_data
 from ibnr.kernels.densities import check_normalization, normal_lpdf
 from ibnr.kernels.holdout import CellIndex, index_into, next_diagonal, training_index
@@ -288,6 +288,60 @@ def test_nonpositive_ulr_draws_are_refused(contract):
         scorer.mu_cells(contract, post, training_index(contract), curve="loglogistic")
 
 
+def test_the_ulr_guard_covers_origins_outside_the_scored_cells(contract):
+    """The guard checks the WHOLE posterior, not the columns a caller selects.
+
+    The invariant it asserts is that the sampler rejected such draws for EVERY
+    trained origin. A version that sliced first (``post["ulr"][:, w0]`` then
+    tested) let a bad origin through silently whenever it was not among the
+    scored cells - a narrower check than the message claimed, and exactly the
+    case a single-cell held-out panel hits.
+    """
+    post = fake_posterior(contract)
+    # break an origin that the scored cell does NOT index
+    post["ulr"][1, contract["n_w"] - 1] = -0.02
+    one = CellIndex(
+        w=np.array([1]),
+        d=np.array([2]),
+        value=np.array([300.0]),
+        prev_value=np.array([200.0]),
+        premium=np.array([PREMIUM]),
+    )
+    with pytest.raises(ValueError, match="non-positive ulr"):
+        scorer.mu_cells(contract, post, one, curve="loglogistic")
+
+
+def test_predict_refuses_a_nonpositive_ulr_rather_than_emitting_nan(contract, monkeypatch):
+    """``predict()`` and the scorer must not disagree about what is scorable.
+
+    Before the guard was hoisted into one helper, ``predict()`` took
+    ``log(ulr * G)`` unguarded: a single bad draw produced NaN ultimates that
+    flowed into ``PredictiveDistribution``, ``evaluate()``'s summary /
+    percentiles / CRPS, and any retro CSV, behind nothing louder than an
+    "invalid value encountered in log" warning. Unreachable from Stan today,
+    but the entry ships a BACKENDS seam and tells port authors to re-expose
+    ``ulr`` - a port attaching its likelihood via factor/Potential rather than
+    exception-rejection produces exactly this posterior.
+    """
+    post = fake_posterior(contract, n_draws=16)
+    entry = _StubGuszcza(contract, post)
+    entry.idata_ = object()  # only pooled() reads it, and that is patched below
+
+    def fake_pooled(_idata, name):
+        return post[name]
+
+    monkeypatch.setattr("ibnr.gallery.bayesian.guszcza_growth_curve.model.pooled", fake_pooled)
+    # a healthy posterior predicts fine, and every ultimate is finite
+    healthy = entry.predict(seed=0)
+    assert np.isfinite(healthy.samples).all()
+
+    # break ONE draw at a NOT-fully-developed origin (origin 1 is anchored at
+    # its observed value, so a break there would never reach the log)
+    post["ulr"][3, 2] = -0.01
+    with pytest.raises(ValueError, match="non-positive ulr"):
+        entry.predict(seed=0)
+
+
 def test_a_premium_disagreeing_with_the_contract_is_refused(contract):
     """The observed ratio divides by the CONTRACT's premium while the measure
     carry divides by the CELLS'; if the two differed, the carried density
@@ -428,8 +482,14 @@ def test_entry_is_registered_with_its_declarations():
     assert cls.heldout_measure == "loss_ratio"
     assert cls.heldout_draw_scale == "cumulative"
     assert BACKENDS == ("stan",)
-    assert set(CURVE_CODES) == {"loglogistic", "weibull"}
     assert cls.card()  # card.md ships with the entry
+
+    # TWO validators police the curve argument - the entry's CURVE_CODES (which
+    # maps to the Stan `curve` data value) and the scorer's GROWTH_CURVES
+    # (which the shared growth() accepts). They must not drift: a curve in one
+    # and not the other is either an entry that accepts a name Stan cannot fit,
+    # or a scorer that refuses a curve the entry just fitted.
+    assert set(CURVE_CODES) == set(GROWTH_CURVES) == {"loglogistic", "weibull"}
 
 
 def test_fit_validates_before_touching_a_sampler():
@@ -448,9 +508,7 @@ def test_fit_validates_before_touching_a_sampler():
 
 
 def test_fit_is_atomic_when_the_sampler_fails(monkeypatch):
-    """The torn-refit-state defect: a failed re-fit must not leave the entry
-    holding a new contract against an old (or no) posterior. Everything is
-    built into locals and assigned only after the sampler returns."""
+    """A failed FIRST fit leaves no partial state behind."""
     tri = _triangle(through=N_W)
     entry = GuszczaGrowthCurve()
 
@@ -466,6 +524,45 @@ def test_fit_is_atomic_when_the_sampler_fails(monkeypatch):
     assert entry.idata_ is None
     assert entry.curve_ is None
     assert entry.backend_ is None
+
+
+def test_a_failed_REFIT_leaves_the_previous_fit_intact(monkeypatch):
+    """The torn-refit-state defect proper, which the first-fit case cannot
+    see: after a SUCCESSFUL fit, a failed re-fit on different data must leave
+    the old contract AND the old posterior both intact and mutually
+    consistent.
+
+    The dangerous version is not "some state is None" - it is an entry holding
+    the NEW cohort's contract against the OLD cohort's posterior, which indexes
+    cleanly and scores a company the posterior never saw.
+    """
+    first = _triangle(through=N_W)
+    entry = GuszczaGrowthCurve()
+
+    sentinel_idata, sentinel_fit = object(), object()
+    monkeypatch.setattr(entry, "_sample_stan", lambda *a, **k: (sentinel_idata, sentinel_fit))
+    entry.fit(first, growth_curve="loglogistic")
+
+    good_contract = entry.contract_
+    good_stan_data = entry.stan_data_
+    assert good_contract is not None and entry.idata_ is sentinel_idata
+
+    # now a re-fit on a DIFFERENT triangle (one origin fewer) that blows up
+    def boom(*args, **kwargs):
+        raise RuntimeError("sampler exploded")
+
+    monkeypatch.setattr(entry, "_sample_stan", boom)
+    with pytest.raises(RuntimeError, match="sampler exploded"):
+        entry.fit(_triangle(through=N_W - 1), growth_curve="weibull")
+
+    # every piece of the previous fit survives, and they still agree
+    assert entry.contract_ is good_contract
+    assert entry.stan_data_ is good_stan_data
+    assert entry.idata_ is sentinel_idata
+    assert entry.fit_ is sentinel_fit
+    assert entry.curve_ == "loglogistic"  # NOT the refit's weibull
+    assert entry.backend_ == "stan"
+    assert entry.contract_["n_w"] == N_W  # NOT the refit's smaller triangle
 
 
 def test_a_scorer_needs_a_fit_first():

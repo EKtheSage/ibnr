@@ -37,7 +37,13 @@ from ibnr.gallery.statistical.clark.model import GROWTH_CURVES, growth
 from ibnr.kernels.densities import lognormal_lpdf
 from ibnr.kernels.holdout import CellIndex
 
-__all__ = ["draw_cells", "log_lik_cells", "mu_cells", "sigma_cells"]
+__all__ = [
+    "check_ulr_positive",
+    "draw_cells",
+    "log_lik_cells",
+    "mu_cells",
+    "sigma_cells",
+]
 
 #: posterior variables this scorer needs. ``ulr`` is a Stan transformed
 #: parameter (the ports must re-expose it as a deterministic); the rest are
@@ -45,29 +51,52 @@ __all__ = ["draw_cells", "log_lik_cells", "mu_cells", "sigma_cells"]
 REQUIRED_DRAWS: tuple[str, ...] = ("ulr", "omega", "theta", "sigma")
 
 
+def check_ulr_positive(ulr) -> np.ndarray:
+    """Refuse a posterior holding a non-positive ``ulr`` anywhere, and return it.
+
+    **The whole ``(n_draws, n_w)`` array, not the slice a caller happens to
+    need.** The invariant being asserted is that the sampler rejected such
+    draws for EVERY trained origin - `ulr[w] <= 0` makes that origin's training
+    ``mu`` NaN - so checking only the selected columns would wave through a
+    malformed posterior whenever the bad origin is not among the scored cells,
+    while the error message still claimed the stronger property. Same one line,
+    cheaper than slicing first, and it matches what is actually being claimed.
+
+    Called by everything that turns ``ulr`` into a ``log()``:
+    :func:`mu_cells` and the entry's ``predict()``. Hoisted into one helper
+    because a guard on only one path is not a guard - ``predict()`` used to
+    emit NaN exactly where the scorer refused, and that NaN reached
+    ``PredictiveDistribution``, ``evaluate()`` and any retro CSV. Unreachable
+    from the Stan backend today, but this entry ships a ``BACKENDS`` seam and
+    a port attaching its likelihood via ``factor``/``Potential`` rather than
+    exception-rejection produces exactly that posterior.
+    """
+    ulr = np.asarray(ulr, dtype=float)
+    bad = ulr <= 0
+    if bad.any():
+        origins = np.flatnonzero(bad.any(axis=0)) + 1  # report 1-based, as Stan
+        raise ValueError(
+            f"{int(bad.sum())} posterior draw(s) have a non-positive ulr at origin(s) "
+            f"{origins.tolist()}; the sampler rejects such draws for every trained origin, "
+            "so this posterior cannot have come from a fit of this cohort"
+        )
+    return ulr
+
+
 def mu_cells(
     contract: dict, post: dict[str, np.ndarray], cells: CellIndex, *, curve: str
 ) -> np.ndarray:
     """``(n_draws, n_cells)`` lognormal location: ``log(ulr[w] * G(t))``.
 
-    ``ulr[w]`` must be strictly positive: every retained posterior draw
-    satisfies that for every trained origin (a non-positive ``ulr`` makes the
-    training ``mu`` NaN and the proposal is rejected), and held-out cells only
-    ever index trained origins (``new_origin`` is excluded upstream). A
-    non-positive value reaching here is therefore a malformed posterior, and
-    refusing beats returning NaN that pandas would silently drop.
+    ``ulr[w]`` must be strictly positive - see :func:`check_ulr_positive` for
+    why that is checked over the whole posterior rather than the scored
+    columns. Refusing beats returning NaN that pandas would silently drop.
     """
     _require(post, curve)
     w0 = np.asarray(cells.w, dtype=int) - 1  # contract w/d are 1-based (Stan)
     t = _t_years(contract, cells)
 
-    ulr = np.asarray(post["ulr"], dtype=float)[:, w0]
-    if np.any(ulr <= 0):
-        raise ValueError(
-            f"{int(np.sum(np.any(ulr <= 0, axis=0)))} cell(s) index an accident year with "
-            "non-positive ulr draws; the sampler rejects such draws for every trained "
-            "origin, so this posterior cannot have come from a fit of these cells"
-        )
+    ulr = check_ulr_positive(post["ulr"])[:, w0]
     omega = np.asarray(post["omega"], dtype=float).reshape(-1, 1)
     theta = np.asarray(post["theta"], dtype=float).reshape(-1, 1)
     return np.log(ulr * growth(t[None, :], omega, theta, curve))

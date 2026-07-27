@@ -48,14 +48,25 @@ METHODS = ("ldf", "cape_cod")
 
 
 def growth(x: np.ndarray, omega: float, theta: float, curve: str) -> np.ndarray:
-    """Clark's growth functions: expected fraction of ultimate paid by age x
-    (months). G(0) = 0, G -> 1 as x -> inf.
+    """Clark's growth functions: expected fraction of ultimate paid by age x.
+    G(0) = 0, G -> 1 as x -> inf.
 
     Clark (2003), the two curves he fits:
       loglogistic  G = x^omega / (x^omega + theta^omega)
       weibull      G = 1 - exp(-(x/theta)^omega)
     omega = shape (steepness), theta = scale (age at which half of ultimate is
-    reported). x is a scalar age or a vector of ages, returned elementwise."""
+    reported). x is a scalar age or a vector of ages, returned elementwise.
+
+    **Unit-agnostic in x and theta**, and deliberately so - both appear only as
+    the ratio ``theta/x``, so the function is correct for any age unit provided
+    ``x`` and ``theta`` are on the SAME one. The Clark entries here use MONTHS
+    (Clark's own convention, and what ``age_interval`` returns);
+    ``bayesian/guszcza_growth_curve`` uses YEARS, so that its ``theta ~
+    normal(4, 1)`` prior keeps the blog post's meaning on any dev grain. A
+    fitted ``theta`` is therefore NOT comparable across those cards without
+    converting - and the age conventions differ too (Clark measures from the
+    origin's average accident date, ``12d - 6``; the Guszcza entry from the
+    period end, ``12d``)."""
     x = np.maximum(np.asarray(x, dtype=float), 0.0)
     if curve == "loglogistic":
         # Computed as 1/(1 + (theta/x)^omega), algebraically identical to the

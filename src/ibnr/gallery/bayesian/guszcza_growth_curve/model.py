@@ -27,12 +27,15 @@ Relation to the rest of the gallery:
   per-AY random ultimates and PROPER lognormal density are exactly what make
   it ELPD-eligible - a new density member for the milestone-6 board.
 
-The post fits ten companies jointly with correlated per-company effects on
-(ulr, omega, theta). This entry fits ONE cohort at a time (the package-wide
-contract), which collapses the company level into the population intercepts -
-one company cannot identify a between-company sd or an LKJ correlation - and
-what remains is exactly Guszcza's model. The dropped pieces are documented in
-``model.stan`` and the card.
+**Hierarchical across ACCIDENT YEARS, not across companies.** The post fits
+ten companies jointly with correlated per-company effects on (ulr, omega,
+theta); this entry fits ONE cohort at a time (the package-wide contract),
+which collapses the company level into the population intercepts - one company
+cannot identify a between-company sd or an LKJ correlation - leaving Guszcza's
+single-company model. Note that this narrows the MARGINAL prior on the curve
+parameters (the entity-level ``student_t(3, 0, 1)`` sd goes with the level),
+which is the over-confident direction; the card states the size and the
+ablation that would answer it.
 
 Stan-only in this branch; the NumPyro/PyMC ports and their parity gates are a
 follow-up task, matching how milestones 4 -> 5 sequenced the rest of the
@@ -260,9 +263,14 @@ class GuszczaGrowthCurve(GalleryEntry, ScoresHeldout, PredictsHeldout):
         realized paid at that age, and extrapolating past it (``G < 1`` there)
         would score a different quantity.
 
-        ``ulr`` draws are strictly positive here: a draw with a non-positive
-        ``ulr[w]`` for any trained origin makes the training ``mu`` NaN and is
-        rejected by the sampler, so none survives into the posterior.
+        ``ulr`` draws must be strictly positive, and that is CHECKED here
+        through the same ``scorer.check_ulr_positive`` the density path uses -
+        not assumed. The sampler rejects such draws (a non-positive ``ulr[w]``
+        makes that origin's training ``mu`` NaN), so none survives a Stan fit;
+        but a guard on only one of the two paths is not a guard, and the
+        unguarded version emitted NaN here exactly where the scorer refused,
+        with the NaN reaching ``PredictiveDistribution``, ``evaluate()`` and
+        any retro CSV.
         """
         if self.idata_ is None or self.contract_ is None:
             raise RuntimeError("call fit() first")
@@ -270,7 +278,7 @@ class GuszczaGrowthCurve(GalleryEntry, ScoresHeldout, PredictsHeldout):
         n_w, n_d = c["n_w"], c["n_d"]
         t_final = n_d * c["dev_grain_months"] / 12.0
 
-        ulr = pooled(self.idata_, "ulr")  # (draws, n_w)
+        ulr = scorer.check_ulr_positive(pooled(self.idata_, "ulr"))  # (draws, n_w)
         omega = pooled(self.idata_, "omega")  # (draws,)
         theta = pooled(self.idata_, "theta")
         sigma = pooled(self.idata_, "sigma")

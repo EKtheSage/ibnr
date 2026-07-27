@@ -1,14 +1,21 @@
-# guszcza_growth_curve - Hierarchical Growth Curve (Guszcza / Gesmann)
+# guszcza_growth_curve - Single-Company Growth Curve, Hierarchical Across Accident Years
+
+**This entry is hierarchical across ACCIDENT YEARS, not across companies.**
+The source post's title means the latter - it pools ten insurers - and this
+entry cannot, because the package fits one cohort at a time. What is fitted
+here is Guszcza's single-company model: a random ultimate loss ratio per
+accident year, shared growth-curve parameters. See "What collapsed" below;
+it changes the marginal prior, not only the parameter count.
 
 **Family:** bayesian · **References:** Guszcza, *Hierarchical Growth Curve
 Models for Loss Reserving* (CAS Forum, 2008) for the model structure; the
 implementation reference - and the ground truth for the likelihood and the
-priors, held verbatim - is Gesmann, "Hierarchical loss reserving with growth
-curves using brms" (magesblog.com, 2018-07-15), whose `brm()` call is the
-specification. Lineage note: the `compartmental` entry (Gesmann & Morris,
-2020) is this model's successor - same author, same hierarchical philosophy,
-an ODE compartment system where this has a parametric curve. This entry is
-the simpler ancestor.
+priors - is Gesmann, "Hierarchical loss reserving with growth curves using
+brms" (magesblog.com, 2018-07-15), whose `brm()` call is the specification.
+Lineage note: the `compartmental` entry (Gesmann & Morris, 2020) is this
+model's successor - same author, same hierarchical philosophy, an ODE
+compartment system where this has a parametric curve. This entry is the
+simpler ancestor.
 
 ## Model
 
@@ -38,13 +45,23 @@ Both curves appear in Guszcza (2008) (he leads with the weibull) and in
 Zhang, Dukic & Guszcza (2012), the post's other stated ancestor; the curve
 is this entry's one ablatable dimension, everything else shared.
 
+**Units: `theta` here is in YEARS.** `growth()` is unit-agnostic - `x` and
+`theta` appear only as the ratio `theta/x` - so it is correct on any age
+unit as long as both sides agree. The Clark entries pass MONTHS (Clark's own
+convention); this entry passes years so that `theta ~ normal(4, 1)` keeps
+the post's meaning on any dev grain. **A fitted `theta` is therefore not
+comparable between this card and `clark_growth_curve`'s**, and not only by a
+factor of 12: the age conventions differ too (Clark measures from the
+origin's average accident date, `12d - 6`; this entry from the period end,
+`12d`).
+
 Relation to `clark_growth_curve`: same growth curves, different model. Clark
 is fixed-effects with an ODP *quasi*-likelihood on increments - not a
 normalized density on any scale, hence CRPS-only. This entry's per-AY random
 ultimates and proper lognormal density on cumulative ratios are exactly what
 make it ELPD-eligible: a new density member for the milestone-6 board.
 
-## Priors (the post's `my_priors`, verbatim)
+## Priors (each line the post's `my_priors` verbatim; the marginal differs - see below)
 
 ```
 ulr_pop ~ lognormal(log(0.6), log(2))     prior(lognormal(log(0.6), log(2)), nlpar="ulr", lb=0)
@@ -63,10 +80,22 @@ identify a between-company sd or an LKJ correlation - those effects are
 exactly confounded with the population intercepts. So the company level
 collapses into `ulr_pop`/`omega`/`theta`, their `student_t(3, 0, 1)` sds and
 the `lkj(2)` prior drop with it, and what remains is Guszcza's own model:
-per-AY random ultimate, shared curve. The per-AY effect and every retained
-prior are the post's, untouched. (A cross-company pooled variant would need
-a multi-cohort contract - the same open ablation the compartmental card
+per-AY random ultimate, shared curve. (A cross-company pooled variant would
+need a multi-cohort contract - the same open ablation the compartmental card
 records.)
+
+**This changes the marginal prior, and in the over-confident direction.**
+Every prior line above is the post's verbatim, but the priors above are not
+the whole prior: dropping the entity level also removes the entity-level
+`student_t(3, 0, 1)` sd from the *marginal* prior on this cohort's
+parameters. The post's implied single-company marginal on `omega` is roughly
+`N(2, sqrt(1 + sd^2))`; ours is `N(2, 1)` - the same centre, a narrower
+spread, on `omega`, `theta` and `ulr` alike. The effect is modest at these
+scales, but it runs the way that costs calibration rather than the way that
+is safe: a too-tight prior is precisely how `compartmental`'s gaussian arm
+came out too sharp (CV around 2.5%, combined D = 39.9). Worth revisiting
+when this entry gets its Schedule P retrospective - a widened-prior arm is
+the natural ablation if the PIT comes back over-confident.
 
 ## Parameterization (to be held constant by the milestone-5-style ports)
 
