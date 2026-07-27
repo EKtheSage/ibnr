@@ -169,6 +169,57 @@ years, which is what correlates them; process noise is independent. This is the
 bootstrap wrapper a deterministic method needs to enter the gallery - the point
 estimate alone could not.
 
+## Held-out one-step draws (CRPS board)
+
+The entry subclasses `PredictsHeldout`: `predict_at(cells)` draws the outcome
+of next-diagonal cells the fit never saw, so mack sits on the leaderboard's
+CRPS panel. Each cell's draw carries Mack's one-step conditional moments off
+its own training predecessor - for a cell at 1-based dev index `d`,
+
+```
+E   = f[d-2] * prev_value
+Var = sigma[d-2]^2 * prev_value
+```
+
+with `prev_value` on the training diagonal (data the model already had, so no
+leakage). The draws are `kernels.mack.draw_next_cells`, which **shares its
+core with `cdr_distribution()`'s simulated next diagonal** - the board and the
+CDR carry the identical noise assumption by construction, not by discipline.
+Draws are cumulative (`heldout_draw_scale = "cumulative"`), the triangle's own
+basis, so the base class passes them through unchanged.
+
+Knobs, set at fit time (`fit(..., heldout_n_draws=10_000,
+heldout_process="gamma", heldout_parameter_risk=True)`):
+
+- `heldout_process` - the step shock's shape, one of `gamma` (default,
+  positive support), `lognormal`, `normal`. As everywhere in this entry, the
+  law is an assumption of the *simulation*: Mack's model fixes two moments and
+  nothing else. `gamma`/`lognormal` need a positive conditional mean, and
+  `require_positive_open_diagonals` is the guard that makes that well-posed -
+  a fit whose open diagonal carries a zero or negative cell refuses to draw
+  (loudly, naming the origin) rather than degenerate.
+- `heldout_parameter_risk` - draw the "true" factors from their estimation
+  error once per draw, **shared across the cells**. That shared draw is what
+  correlates the held-out diagonal, exactly as it correlates accident years in
+  the CDR; off, the cells are independent pure process noise.
+
+One caveat worth knowing: a cell whose development step has `sigma^2 = 0`
+(possible only via the extrapolated last-step rule, e.g. a 2-column triangle)
+draws a **point mass at its mean, silently** - `draw_step`'s documented
+degenerate case. Zero estimated variance is the model's answer there, however
+implausible the triangle that produced it, so it is left to stand rather than
+patched.
+
+**ELPD is a permanent N/A, by design.** Mack's model states two conditional
+moments and no distribution, so there is no predictive density to evaluate an
+outcome under - which is exactly what an ELPD is. The gamma law above *would*
+technically define a one-step density, but claiming it would promote an
+assumption of the simulation into a claim about the model, and that promotion
+is an explicitly reserved decision (do not make it in passing; ask). The entry
+therefore does **not** subclass `ScoresHeldout`, and the board prints its ELPD
+as `na: no_predictive_density` - a statement about the density axis only. Its
+draws axis is first-class: CRPS and PIT work fine.
+
 ## Data contract
 
 `kernels/contract.py::cohort_grid` - one cohort, cumulative, a genuine run-off

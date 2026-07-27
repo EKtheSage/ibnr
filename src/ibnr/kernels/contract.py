@@ -490,6 +490,13 @@ def cohort_grid(
     - ``dev_grain_months``   : int - months per dev step.
     - ``units``, ``loss_field`` : carried through for labelling.
     - ``premium``            : (n_w,) float64, only when ``premium_field`` is given.
+    - ``segment``, ``fields``, ``models``, ``measure`` : the cohort identity, same
+      as the Stan contracts (see :func:`_cohort_identity`) - what lets
+      ``kernels.holdout.index_into`` refuse cells that are not this fit's.
+    - ``w``, ``d``           : (n_cells,) int, **1-based** origin/dev index of every
+      observed cell (Stan style, like ``stan_data``), row-major over the grid.
+      Exists for the training-overlap refusal in ``index_into``: a held-out score
+      computed on training cells is not wrong-looking, it is flattering.
 
     Unlike the Stan contracts above, the consumers here (Mack's distribution-free
     chain ladder and the Merz-Wuthrich one-year CDR) are *recursive over the
@@ -515,18 +522,24 @@ def cohort_grid(
         raise ValueError(
             f"triangle has multiple segment combinations on {segs}; filter to one cohort first"
         )
+    identity = _cohort_identity(triangle, df, (loss_field,))
     data = cohort_grid_frame(
         df,
         dev_grain_months=GRAIN_MONTHS[triangle.meta.dev_grain],
         units=triangle.meta.units,
         loss_field=loss_field,
+        segment=identity["segment"],
+        measure=identity["measure"],
     )
+    # splat the full identity so this entry point and stan_data cannot drift on
+    # what "identity" means (fields/models are (loss_field,) either way today)
+    data.update(identity)
     if premium_field is not None:
         data["premium"] = _premium_by_origin(
             triangle,
             premium_field,
             data["origin_periods"],
-            segment=_cohort_identity(triangle, df, ())["segment"],
+            segment=identity["segment"],
         )
     return data
 
@@ -537,6 +550,8 @@ def cohort_grid_frame(
     dev_grain_months: int,
     units: str | None = None,
     loss_field: str | None = None,
+    segment: dict | None = None,
+    measure: str = "cumulative",
 ) -> dict[str, Any]:
     """:func:`cohort_grid`'s frame half: one cohort's already-materialized rows
     (``origin_period``, ``dev_lag``, ``value``) to the dense contract dict.
@@ -546,6 +561,12 @@ def cohort_grid_frame(
     the per-cohort engine round-trip is what dominates a filter+fit loop. All
     contract guarantees (dev-grain multiples, one row per cell, run-off
     staircase) are enforced here, identically for both entry points.
+
+    ``segment``/``measure`` are the cohort-identity half a bare frame cannot
+    derive for itself (no Triangle here): the batch caller supplies them from
+    its own group key and metadata, :func:`cohort_grid` from
+    :func:`_cohort_identity`. ``fields``/``models`` are ``(loss_field,)`` - the
+    deterministic entries model exactly the field they read.
     """
     # Vectorized throughout: this runs once per cohort in fit_mack_many's batch
     # loop, so per-row pandas iteration here would put the loop's cost right
@@ -588,6 +609,11 @@ def cohort_grid_frame(
             f"(origin, observed cells, expected depth) mismatches: {bad}"
         )
 
+    # 1-based cell indices of the observed cells, row-major (sorted by (w, d)),
+    # the same convention as stan_data's w/d. Derived from the mask rather than
+    # the input rows so they cannot disagree with the grid they index.
+    w_obs, d_obs = np.nonzero(obs_mask)
+    scored = (loss_field,) if loss_field is not None else ()
     return {
         "n_w": n_w,
         "n_d": n_d,
@@ -598,6 +624,12 @@ def cohort_grid_frame(
         "dev_grain_months": step,
         "units": units,
         "loss_field": loss_field,
+        "segment": dict(segment or {}),
+        "fields": scored,
+        "models": scored,
+        "measure": measure,
+        "w": (w_obs + 1).astype(int),
+        "d": (d_obs + 1).astype(int),
     }
 
 

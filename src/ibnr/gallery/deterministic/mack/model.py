@@ -18,6 +18,15 @@ next year's re-estimate move", the claims development result of Merz & Wuthrich
 
 The algorithms themselves live in ``kernels/mack.py`` and ``kernels/cdr.py`` -
 this entry only wires them to the gallery contract.
+
+On the milestone-6 board this entry is a CRPS member and a permanent ELPD N/A:
+it subclasses ``PredictsHeldout`` (its one-step-ahead draws are
+``kernels.mack.draw_next_cells``, the same core the CDR simulation uses) but
+deliberately NOT ``ScoresHeldout``. Mack states two conditional moments, not an
+observation model, so there is no predictive density to claim - the gamma step
+law is an assumption of the simulation, and claiming it as a density is an
+explicitly reserved decision (``forecast.MODEL_ABSENCE_REASONS
+["no_predictive_density"]`` names this entry).
 """
 
 from __future__ import annotations
@@ -26,31 +35,41 @@ import datetime as dt
 
 import numpy as np
 
-from ibnr.gallery.entry import GalleryEntry
+from ibnr.gallery.entry import GalleryEntry, PredictsHeldout
 from ibnr.gallery.registry import register
 from ibnr.kernels.cdr import CDRResult, one_year_cdr, simulate_one_year_cdr
-from ibnr.kernels.contract import realized_values
-from ibnr.kernels.mack import MackFit, fit_mack, simulate_ultimates
+from ibnr.kernels.contract import cohort_grid, realized_values
+from ibnr.kernels.holdout import CellIndex
+from ibnr.kernels.mack import MackFit, draw_next_cells, fit_mack_grid, simulate_ultimates
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.triangle.core import Triangle
 
 
 @register
-class Mack(GalleryEntry):
+class Mack(GalleryEntry, PredictsHeldout):
     """Distribution-free chain ladder with run-off and one-year uncertainty.
 
-    Fitted state is the whole of ``fit_``: development factors, Mack's
-    ``sigma^2`` per step, the volumes behind each factor, and the observed
-    triangle they came from. Everything else - ultimates, reserves, run-off
-    MSEP, the one-year CDR - is derived from it on demand.
+    Fitted state is ``fit_`` (development factors, Mack's ``sigma^2`` per step,
+    the volumes behind each factor, and the observed triangle they came from)
+    plus ``contract_``, the ``cohort_grid`` dict the fit was built from - kept
+    so held-out cells can be indexed against this fit's own cohort identity.
+    Everything else - ultimates, reserves, run-off MSEP, the one-year CDR, the
+    held-out draws - is derived on demand.
     """
 
     name = "mack"
     family = "deterministic"
+    #: the fit's ``cum`` is cumulative loss, so the one-step draws are too; on a
+    #: cumulative triangle ``predict_at`` passes them through unchanged.
+    heldout_draw_scale = "cumulative"
 
     def __init__(self) -> None:
         self.fit_: MackFit | None = None
+        self.contract_: dict | None = None
         self._loss_field: str | None = None
+        self.heldout_n_draws: int = 10_000
+        self.heldout_process: str = "gamma"
+        self.heldout_parameter_risk: bool = True
 
     def fit(
         self,
@@ -59,6 +78,9 @@ class Mack(GalleryEntry):
         loss_field: str = "paid_loss",
         as_of: dt.date | str | None = None,
         sigma_rule: str = "mack",
+        heldout_n_draws: int = 10_000,
+        heldout_process: str = "gamma",
+        heldout_parameter_risk: bool = True,
     ) -> Mack:
         """Estimate the chain ladder on one cohort's run-off triangle.
 
@@ -68,9 +90,23 @@ class Mack(GalleryEntry):
         default to). It is the only modelling choice here; the factors
         themselves are volume-weighted, which is what Mack's and
         Merz-Wuthrich's variance formulas assume.
+
+        The ``heldout_*`` knobs configure :meth:`predict_at`'s one-step draws
+        (``_draws_native``'s signature is fixed by the ABC, so they ride on the
+        entry): draw count, step law among ``kernels.mack.PROCESS_LAWS``, and
+        whether the factors' estimation error is drawn (shared across cells,
+        which is what correlates the held-out diagonal).
         """
         self._loss_field = loss_field
-        self.fit_ = fit_mack(triangle, loss_field=loss_field, as_of=as_of, sigma_rule=sigma_rule)
+        self.heldout_n_draws = heldout_n_draws
+        self.heldout_process = heldout_process
+        self.heldout_parameter_risk = heldout_parameter_risk
+        train = triangle.as_of(as_of) if as_of is not None else triangle
+        # same two steps as kernels.mack.fit_mack, but the grid survives as the
+        # contract: index_into needs its identity to refuse cells that are not
+        # this fit's, and its w/d to refuse cells the fit was trained on
+        self.contract_ = cohort_grid(train, loss_field=loss_field)
+        self.fit_ = fit_mack_grid(self.contract_, sigma_rule=sigma_rule)
         return self
 
     def _fitted(self) -> MackFit:
@@ -99,6 +135,25 @@ class Mack(GalleryEntry):
             seed=seed,
             process=process,
             parameter_risk=parameter_risk,
+        )
+
+    def _draws_native(self, cells: CellIndex, *, rng: np.random.Generator) -> np.ndarray:
+        """``(n_draws, n_cells)`` one-step-ahead cumulative draws at the cells.
+
+        Glue over :func:`ibnr.kernels.mack.draw_next_cells`, which shares its
+        core with the CDR simulation's next diagonal - so the board's CRPS and
+        ``cdr_distribution()`` carry the identical noise assumption. The knobs
+        are the ``heldout_*`` fit parameters; ``gamma`` (the default) needs a
+        positive open diagonal, and ``require_positive_open_diagonals`` inside
+        the kernel is what refuses the fits where it is not well-posed.
+        """
+        return draw_next_cells(
+            self._fitted(),
+            cells,
+            rng=rng,
+            n_draws=self.heldout_n_draws,
+            process=self.heldout_process,
+            parameter_risk=self.heldout_parameter_risk,
         )
 
     def one_year_cdr(self) -> CDRResult:

@@ -49,7 +49,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from ibnr.kernels.mack import PROCESS_LAWS, MackFit, draw_step
+from ibnr.kernels.mack import PROCESS_LAWS, MackFit, _next_step_draws
 from ibnr.kernels.predictive import PredictiveDistribution
 
 
@@ -283,23 +283,23 @@ def simulate_one_year_cdr(
     diag = fit.latest  # (n_w,) each origin's cumulative on the current diagonal
     open_ = _open_years(fit)
 
-    # 1. true factors per draw (parameter risk). Var(f_j-hat) = sigma_j^2 / S_j
-    # is Mack's estimation-error variance for the volume-weighted factor.
-    f_true = np.tile(fit.f, (n_draws, 1))  # (n_draws, n_d - 1)
-    if parameter_risk:
-        se = np.sqrt(np.where(fit.s > 0, fit.sigma2 / fit.s, 0.0))
-        f_true = f_true + rng.standard_normal((n_draws, n_d - 1)) * se
-        # A normal draw can cross zero on a thin, volatile step; a negative
-        # "true" factor would make the simulated diagonal meaningless, so it is
-        # floored. Rare enough to be a footnote, loud enough to document.
-        f_true = np.maximum(f_true, 1e-12)
-
-    # 2. next diagonal for the open origins, one column per origin
+    # 1.-2. true factors per draw (parameter risk; Var(f_j-hat) = sigma_j^2/S_j
+    # is Mack's estimation-error variance for the volume-weighted factor), then
+    # the next diagonal cell of every open origin with Mack's conditional
+    # moments. These two steps ARE the held-out one-step cell draw, so they
+    # live once in ``kernels.mack._next_step_draws``, shared with
+    # ``draw_next_cells`` - the CRPS board and the CDR cannot drift apart.
     x = np.zeros((n_draws, n_w))
     idx = np.nonzero(open_)[0]
-    mean = f_true[:, k[idx]] * diag[idx]  # (n_draws, n_open)
-    var = np.broadcast_to(fit.sigma2[k[idx]] * diag[idx], mean.shape)
-    x[:, idx] = draw_step(rng, mean, var, law=process)
+    x[:, idx] = _next_step_draws(
+        fit,
+        k[idx],
+        diag[idx],
+        n_draws=n_draws,
+        rng=rng,
+        process=process,
+        parameter_risk=parameter_risk,
+    )
 
     # 3. re-estimate every factor on the extended triangle
     f_new = np.tile(fit.f, (n_draws, 1))
