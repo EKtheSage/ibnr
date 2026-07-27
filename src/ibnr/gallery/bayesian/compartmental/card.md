@@ -160,6 +160,51 @@ Open ablation (not built): a `hierarchical` variant with per-line,
 mart-derived prior medians (or cross-company partial pooling) to test
 whether the gaussian arm's failure is purely the single-company priors.
 
+## Held-out scoring (milestone 6)
+
+The entry subclasses `ScoresHeldout` and `PredictsHeldout`; `scorer.py`
+evaluates both variants' likelihoods and draws at arbitrary cells, in plain
+numpy, over the posterior of any backend. Because the two variants sit on
+different observation scales, the declarations are per-variant instance
+attributes set by `fit()`:
+
+| variant | `heldout_measure` (density of) | `heldout_draw_scale` (draws are) |
+|---|---|---|
+| `gaussian` | `amount` - OS levels + cumulative paid amounts | `cumulative` paid amounts |
+| `lognormal` | `loss_ratio` - OS-level + incremental paid ratios | `incremental` paid amounts |
+
+The carries are the base classes' job, once: `log_lik_at` subtracts
+`log premium` from the lognormal ratio density (the gaussian one is already
+on amounts), and `predict_at` adds the training-diagonal anchor to the
+lognormal variant's incremental draws. Both variants' single-cell densities
+are normalization-checked on the amount scale in
+`tests/test_heldout_scorer_compartmental.py`.
+
+**Board scope: paid only.** The held-out `CohortForecast` covers
+`field='paid_loss'` - the one field intersectable with the other entries.
+`index_into` resolves exactly that field (`'outstanding'` is derived,
+reported minus paid, not a raw field), hands back a plain `CellIndex`, and
+the scorer reads a plain index as the paid block (`scorer.cell_deltas`).
+The OS block is not board-scored; it exists for the in-sample agreement
+gate, where `training_index` returns a `DeltaCellIndex` over BOTH stacked
+blocks with per-block predecessors - the (w, d) ambiguity that used to make
+`training_index` refuse this contract outright.
+
+**Lognormal refusals.** A held-out cell whose OS level or paid increment is
+non-positive has no lognormal density: the scorer raises (the same family
+limit `_lognormal_stan_data` applies at fit time, counted in
+`dropped_cells_`), and a retro run maps that to a cohort-level
+`scoring_refused` absence. Draws do NOT inherit the refusal - a cohort with
+a negative held-out increment is still CRPS-scorable. The gaussian variant
+takes non-positive cells natively on both axes, deliberately. The
+in-sample gate aligns with Stan's `log_lik` (which covers only surviving
+rows) via `entry._kept_rows_`, the stored keep mask.
+
+The lognormal scorer reconstructs the per-cell parameters from the sampled
+`sd_*`/`z_*` sites (`u = sd * z`, the Stan file's own identities) rather
+than reading the Stan-only `u_*` transformed parameters, so held-out
+scoring is backend-blind across all three ports.
+
 ## Data contract
 
 `kernels.contract.compartmental_stan_data(paid_field, reported_field,

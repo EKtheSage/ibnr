@@ -153,34 +153,85 @@ def test_every_contract_records_the_cohort_and_fields_it_was_built_from():
         assert c["measure"] == "cumulative"
 
 
-def test_training_index_refuses_the_delta_stacked_compartmental_contract():
-    """compartmental stacks outstanding (delta=0) and paid (delta=1) over
-    IDENTICAL (w, d), so a predecessor lookup keyed on (w, d) keeps whichever
-    block came last and hands every outstanding cell a PAID predecessor - same
-    sign, same order of magnitude, silently wrong. ``CellIndex`` has no delta
-    axis to tell the halves apart, so the honest answer is to refuse rather than
-    return something that cannot be right."""
+def _joint_contract():
+    """The compartmental (delta-stacked) contract over the shared cohort
+    fixture. reported = 1.25 * paid, so outstanding = 0.25 * paid - every OS
+    value differs from its paid twin at the same (w, d), which is what makes a
+    predecessor handed across blocks detectable rather than plausible."""
     from ibnr.kernels.contract import compartmental_stan_data
-    from ibnr.kernels.holdout import training_index
 
     df = _cohort_triangle().execute()
     reported = df[df["field"] == "paid_loss"].copy()
     reported["field"] = "reported_loss"
     reported["value"] = reported["value"] * 1.25
     joint = Triangle.from_long(pd.concat([df, reported], ignore_index=True))
-    comp = compartmental_stan_data(
+    return compartmental_stan_data(
         joint,
         paid_field="paid_loss",
         reported_field="reported_loss",
         premium_field="earned_premium",
     )
 
+
+def test_training_index_carries_delta_for_the_compartmental_contract():
+    """compartmental stacks outstanding (delta=0) and paid (delta=1) over
+    IDENTICAL (w, d), so (w, d) alone cannot identify a cell - an earlier
+    version of ``training_index`` refused this contract outright for exactly
+    that reason. The delta-aware index restores identity: each block keeps its
+    OWN predecessors, keyed on (delta, w, d-1).
+
+    The bug the refusal used to guard against - an outstanding cell handed the
+    PAID predecessor, same sign, same order of magnitude - is asserted away
+    here cell by cell, on a fixture where the two candidates always differ.
+    """
+    from ibnr.kernels.holdout import DeltaCellIndex, training_index
+
+    comp = _joint_contract()
+
     # the duplication is real: every (w, d) appears twice
     pairs = list(zip(comp["w"].tolist(), comp["d"].tolist(), strict=True))
     assert len(pairs) == 2 * len(set(pairs))
 
-    with pytest.raises(NotImplementedError, match="delta-stacked"):
-        training_index(comp)
+    idx = training_index(comp)
+    assert isinstance(idx, DeltaCellIndex)
+    np.testing.assert_array_equal(idx.delta, comp["delta"])
+    np.testing.assert_array_equal(idx.value, comp["loss"])
+    np.testing.assert_allclose(idx.premium, np.asarray(comp["premium"])[idx.w - 1])
+
+    row_of = {
+        (int(dl), int(w), int(d)): i
+        for i, (dl, w, d) in enumerate(zip(comp["delta"], comp["w"], comp["d"], strict=True))
+    }
+    checked_across_blocks = 0
+    for i in range(idx.n_cells):
+        dl, w, d = int(idx.delta[i]), int(idx.w[i]), int(idx.d[i])
+        if d == 1:
+            # first dev: a cumulative value IS its increment, and OS(0) = 0
+            assert idx.prev_value[i] == 0.0
+            continue
+        own_block = float(comp["loss"][row_of[(dl, w, d - 1)]])
+        other_block = float(comp["loss"][row_of[(1 - dl, w, d - 1)]])
+        assert idx.prev_value[i] == own_block
+        # the fixture must be able to tell the two candidates apart, or the
+        # assertion above is vacuous
+        assert own_block != other_block
+        checked_across_blocks += 1
+    assert checked_across_blocks > 0
+
+
+def test_training_index_still_refuses_duplicates_without_a_delta_axis():
+    """The delta axis is the LICENSE for duplicate (w, d), not an amnesty.
+
+    A contract that duplicates cells while carrying no block indicator is
+    genuinely ambiguous - there is nothing to key the predecessor on - and it
+    must stay refused, or the silent-wrong-predecessor bug the old
+    NotImplementedError guarded against comes back without a trace."""
+    from ibnr.kernels.holdout import training_index
+
+    comp = _joint_contract()
+    stripped = {k: v for k, v in comp.items() if k != "delta"}
+    with pytest.raises(ValueError, match=r"duplicate \(w, d\)"):
+        training_index(stripped)
 
 
 def test_premium_from_another_cohort_is_refused():

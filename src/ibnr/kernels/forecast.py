@@ -215,9 +215,9 @@ MODEL_ABSENCE_REASONS: dict[str, str] = {
         "the entry states an observation model but has no held-out scorer yet - it does "
         "not subclass ScoresHeldout (density axis) or PredictsHeldout (draws axis). "
         "Temporary, and NOT a statement that the entry lacks the capability. Use "
-        "Absence.detail to say what is missing (compartmental's blocker, for instance, is "
-        "that training_index refuses its delta-stacked contract, so it has no in-sample "
-        "agreement gate behind any held-out number it would produce)"
+        "Absence.detail to say what is missing (sur, copula_glm and the nn entries are "
+        "the remaining cases; compartmental's former blocker - training_index refusing "
+        "its delta-stacked contract - fell to DeltaCellIndex)"
     ),
 }
 
@@ -946,10 +946,11 @@ def align_panel(forecasts: Iterable[CohortForecast], *, units: str | None = None
         member emptied the board and drop it deliberately. Returning an empty
         panel would let a leaderboard of zeros be published.
 
-    An entry whose contract carries ``delta`` (compartmental) cannot reach here:
-    ``training_index`` refuses it, so it has no in-sample agreement gate, and the
-    agreement gate is what makes any held-out number trustworthy. Record it as
-    ``scorer_not_implemented`` with that blocker in the detail.
+    An entry whose contract carries ``delta`` (compartmental) reaches here like
+    any other: ``training_index`` returns a ``DeltaCellIndex`` for it, so its
+    scorer has the same in-sample agreement gate, and its board forecasts cover
+    the paid field only - 'outstanding' is derived, not a raw field a panel can
+    intersect on.
     """
     items = list(forecasts)
     if not items:
