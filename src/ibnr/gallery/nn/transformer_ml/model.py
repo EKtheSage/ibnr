@@ -163,9 +163,9 @@ class NNTransformerML(GalleryEntry):
         min_cutoff = max(1, min(cfg.min_cutoff, val_cutoff - 1))
 
         def make_model():
-            return net.TriangleTransformerML(
-                cfg, n_lines=n_l, n_features=n_f, n_w=n_w, n_d=n_d
-            ).to(dev)
+            return net.TriangleTransformerML(cfg, n_lines=n_l, n_features=n_f, n_w=n_w, n_d=n_d).to(
+                dev
+            )
 
         def train_loss(model, idx, cutoffs):
             # cells on/before the augmented cutoff are context, later observed

@@ -112,6 +112,46 @@ sampled future increments. Draws are pooled over the ensemble members
 (default 1000 total). `predict(segment=...)` slices the cached global
 rollout - fit once, score every company.
 
+## Held-out scoring (milestone 6)
+
+The entry subclasses both held-out mixins; because the fit is pooled across
+cohorts while `kernels.holdout` scores one cohort at a time, capability is
+served **per cohort**: `entry.at_cohort(segment)` returns a light scorer view
+whose `log_lik_at`/`predict_at` are the unmodified base-class implementations
+over a single-cohort adapter contract (`gallery/nn/_heldout.py`), so
+`index_into`'s cohort-identity and training-overlap guards apply unchanged.
+The entry-level `log_lik_at`/`predict_at` resolve the cohort from the cells'
+own segment values and delegate.
+
+- **Draw scale: `incremental`.** A draw is one forward pass per ensemble
+  member at cutoff = the cohort's as_of diagonal (the held-out diagonal sits
+  at distance 1, the most-supervised relative-calendar position - no rollout),
+  sampled from the MDN, un-standardized (`z * std0[d] + mean0[d]`) and scaled
+  by premium: an incremental dollar amount. The base class anchors it onto
+  the cell's training-diagonal predecessor to reach the cumulative triangle
+  basis. Draws are split across members exactly as the rollout splits them;
+  per-member torch seeds derive from `predict_at(seed=...)`.
+- **Density measure: `loss_ratio`.** Per member, the mixture log density of
+  the standardized ratio with the standardization Jacobian folded in
+  (`logsumexp_K(log_pi + log N(z; mu, sigma)) - log std0[d]`), i.e. a density
+  of the incremental loss ratio; the base class subtracts `log premium` to
+  reach Lebesgue-on-amount (the increment/cumulative step has Jacobian 1).
+  The **draw axis is the ensemble members** (>= 2 required), so `logmeanexp`
+  over it is the ensemble-average predictive density. Normalization over the
+  amount space is pinned by test (`densities.check_normalization`).
+- **Pinned-dev asymmetry.** At a pinned dev (fewer than two training-context
+  values reached the per-dev normalizer - in practice the deepest dev) there
+  is no trained head. Draws keep rollout semantics: the sampled value is
+  forced to the pooled dev mean, a point-mass column (legal for CRPS; a
+  request where EVERY cell is pinned is refused). The density is REFUSED
+  outright - an untrained head on a degenerate scale is not an honest
+  predictive law. The entry is therefore **CRPS-scorable at cells where it is
+  not ELPD-scorable**; a retro harness should map the pinned-dev refusal to a
+  cohort-level `scoring_refused` absence on the density axis only.
+
+`nn_transformer_ml` has none of this wiring yet: its multiline layout needs
+its own per-(company, line) adapter design.
+
 ## Evaluate flow
 
 Global fit / per-cohort predict inverts the meyers_ccl loop:

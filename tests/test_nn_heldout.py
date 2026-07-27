@@ -41,7 +41,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from ibnr.gallery.entry import PredictsHeldout, ScoresHeldout  # noqa: E402
-from ibnr.gallery.nn._heldout import CohortHeldout, cohort_contract  # noqa: E402
+from ibnr.gallery.nn._heldout import cohort_contract  # noqa: E402
 from ibnr.gallery.nn.transformer.config import TransformerConfig  # noqa: E402
 from ibnr.gallery.nn.transformer.model import NNTransformer  # noqa: E402
 from ibnr.kernels.densities import MEASURES, check_normalization  # noqa: E402
@@ -109,9 +109,7 @@ def fitted(request):
         one = make_multiline_triangle(
             backend, {lob: matrix}, premium_by_lob={lob: prem}, start_year=START
         )
-        return next_diagonal(
-            one, as_of=AS_OF, fields="paid_loss", premium_field="earned_premium"
-        )
+        return next_diagonal(one, as_of=AS_OF, fields="paid_loss", premium_field="earned_premium")
 
     return SimpleNamespace(
         entry=entry,
@@ -399,11 +397,7 @@ def test_log_lik_matches_independent_recomputation(fitted):
             lp = log_pi[0].numpy()[w0, d0]  # (n_cells, K)
             mu_ = mu[0].numpy()[w0, d0]
             sg = sigma[0].numpy()[w0, d0]
-            comp = (
-                -0.5 * ((z[:, None] - mu_) / sg) ** 2
-                - np.log(sg)
-                - 0.5 * np.log(2.0 * np.pi)
-            )
+            comp = -0.5 * ((z[:, None] - mu_) / sg) ** 2 - np.log(sg) - 0.5 * np.log(2.0 * np.pi)
             dens_z = np.log(np.exp(lp + comp).sum(axis=1))  # small K: direct sum is fine
             # z -> ratio Jacobian, then ratio -> amount measure carry
             expected[m] = dens_z - np.log(std0[d0]) - np.log(idx.premium)

@@ -109,9 +109,7 @@ class CohortHeldout(ScoresHeldout, PredictsHeldout):
         # single source of truth for both declarations
         self.heldout_measure = entry.heldout_measure
         self.heldout_draw_scale = entry.heldout_draw_scale
-        self.contract_ = cohort_contract(
-            entry.contract_, cohort, models=(entry._loss_field,)
-        )
+        self.contract_ = cohort_contract(entry.contract_, cohort, models=(entry._loss_field,))
 
     @property
     def cohort(self) -> int:

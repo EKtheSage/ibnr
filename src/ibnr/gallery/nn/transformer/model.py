@@ -24,7 +24,6 @@ import math
 
 import numpy as np
 import pandas as pd
-
 from scipy.special import logsumexp
 
 from ibnr.gallery.entry import GalleryEntry, PredictsHeldout, ScoresHeldout
@@ -399,9 +398,7 @@ class NNTransformer(GalleryEntry, ScoresHeldout, PredictsHeldout):
         # z -> ratio change of variable: r = z * std0 + ..., so divide by std0
         return ll_z - np.log(std0[d0])[None, :]
 
-    def _heldout_draws(
-        self, ci: int, cells: CellIndex, *, rng: np.random.Generator
-    ) -> np.ndarray:
+    def _heldout_draws(self, ci: int, cells: CellIndex, *, rng: np.random.Generator) -> np.ndarray:
         """``(config.n_draws, n_cells)`` INCREMENTAL dollar draws at the cells.
 
         One forward pass per ensemble member at cutoff = the cohort's as_of

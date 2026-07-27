@@ -101,9 +101,7 @@ def train_ensemble(
             torch.manual_seed(member_seed)
         rng = np.random.default_rng(member_seed)
         model = make_model()
-        opt = torch.optim.AdamW(
-            model.parameters(), lr=config.lr, weight_decay=config.weight_decay
-        )
+        opt = torch.optim.AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
 
         best_val, best_state, patience_left = math.inf, None, config.patience
         history: list[dict] = []
