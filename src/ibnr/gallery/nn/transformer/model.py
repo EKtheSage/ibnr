@@ -307,18 +307,6 @@ class NNTransformer(GalleryEntry, PooledMDNHeldout):
 
     # -- internals ---------------------------------------------------------------
 
-    def _cohort_index(self, segment: dict[str, str]) -> int:
-        cohorts = self.contract_["cohorts"]
-        mask = np.ones(len(cohorts), dtype=bool)
-        for col, value in segment.items():
-            if col not in cohorts.columns:
-                raise KeyError(f"unknown segment column {col!r}; have {list(cohorts.columns)}")
-            mask &= (cohorts[col] == value).to_numpy()
-        idx = np.nonzero(mask)[0]
-        if len(idx) != 1:
-            raise ValueError(f"segment {segment} matches {len(idx)} cohorts, need exactly 1")
-        return int(idx[0])
-
     def _rollout(self, n_draws: int, seed: int | None) -> np.ndarray:
         """Autoregressive rollout, diagonal by diagonal: sample every future
         cell on the next calendar diagonal, feed the samples back as context,
