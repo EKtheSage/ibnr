@@ -63,6 +63,28 @@ identically (its fully-developed origin gets ultimate = latest). Extending
 `G` to infinity is a deliberate non-goal here; Clark's own truncation
 discussion applies.
 
+## Held-out evaluation: CRPS only, never ELPD
+
+This entry has no MCMC posterior but it does have genuine draws, so it sits
+on the milestone-6 CRPS board: `scorer.py` samples the log parameters from
+the asymptotic MVN above (the entry's stand-in for a posterior, one sample
+per draw), then draws each next-diagonal increment as
+`X = phi * Poisson(mu / phi)` - the identical two-stage recipe `predict()`
+runs for the ultimates, factored into one place so the two cannot drift.
+Both `ldf` and `cape_cod` level recoveries are supported, exactly as
+`predict()` defines them. The entry declares
+`heldout_draw_scale = "incremental"`, so `PredictsHeldout.predict_at` adds
+each cell's training-diagonal cumulative before scoring; the draw count is
+the instance attribute `n_heldout_draws` (default 10,000, matching
+`predict()`).
+
+The ELPD column is permanently empty, on principle: the quasi-likelihood
+this entry maximizes is not a normalized density on any scale -
+`exp(odp_lpdf)/phi` integrates to 0.69 at `mu/phi = 0.5` and the defect
+varies with `mu/phi` (`kernels/densities.py`, the odp-not-a-density note).
+An ELPD would require declaring a real predictive distribution (negative
+binomial, Tweedie) - a modelling decision, not a units conversion.
+
 ## Data contract
 
 `kernels.contract.odp_stan_data` - incremental cells, `paid_to_date` /

@@ -52,6 +52,28 @@ age (no tail), paid-to-date anchored - identical mechanics to the MLE twin
 with the posterior replacing the delta-method MVN. Fully-developed origins
 are constant.
 
+## Held-out evaluation: CRPS only, never ELPD
+
+On the milestone-6 board this entry is scored by CRPS from one-step draws:
+`scorer.py` (beside `model.stan`) draws each next-diagonal increment as
+`X = phi * Poisson(mu / phi)`, one per posterior draw of
+`(logelr, omega, theta)`, with the growth-curve share taken over the cell's
+mid-period age interval from the one shared `age_interval` (the same
+convention the fit put in the Stan data block). The entry declares
+`heldout_draw_scale = "incremental"`, so `PredictsHeldout.predict_at` adds
+each cell's training-diagonal cumulative before the draws meet the outcomes.
+A cell whose age interval spans no emergence has `mu` exactly 0 (floored at
+1e-12 so the Poisson stays legal) and draws all zeros - the model's own
+statement, handled by the panel's bookkeeping rather than a refusal here.
+
+The ELPD column is permanently empty, on principle: the ODP
+quasi-likelihood is not a normalized density on any scale -
+`exp(odp_lpdf)/phi` integrates to 0.69 at `mu/phi = 0.5` and the defect
+varies with `mu/phi`, so no change of variable can fix it
+(`kernels/densities.py`, the odp-not-a-density note). An ELPD would require
+a real predictive distribution (negative binomial, Tweedie) - a different
+model, not a conversion.
+
 ## Validation
 
 Retrospective Meyers protocol on paid: `scripts/meyers_validation.py
@@ -66,8 +88,9 @@ piled at ~0 - within noise of the MLE twin's 61.3*, confirming the
 posterior tracks the MLE.** The failure is the model, not the inference:
 the post-1997 settlement speedup plus the loglogistic tail mass (see the
 MLE twin's card for the weibull ablation, D = 49.6*). In the gallery this
-entry is the growth-curve baseline for ELPD/stacking; meyers_csr (D = 4.1,
-passes) is what calibrated paid reserving looks like in this window.
+entry is the growth-curve baseline on the CRPS board (it is ELPD-ineligible,
+see the held-out section above); meyers_csr (D = 4.1, passes) is what
+calibrated paid reserving looks like in this window.
 
 ## Backends (three ports, one data block)
 

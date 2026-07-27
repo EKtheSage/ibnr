@@ -36,9 +36,10 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
 
-from ibnr.gallery.entry import GalleryEntry
+from ibnr.gallery.entry import GalleryEntry, PredictsHeldout
 from ibnr.gallery.registry import register
 from ibnr.kernels.contract import odp_stan_data, realized_values
+from ibnr.kernels.holdout import CellIndex
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.triangle.core import Triangle
 
@@ -68,6 +69,29 @@ def growth(x: np.ndarray, omega: float, theta: float, curve: str) -> np.ndarray:
     raise ValueError(f"growth must be one of {GROWTH_CURVES}, got {curve!r}")
 
 
+def age_interval(d, step: float) -> tuple[np.ndarray, np.ndarray]:
+    """Clark's mid-period age interval for a cell at dev index ``d``:
+    ``(max(step*(d-1) - step/2, 0), step*d - step/2]`` months.
+
+    The single home of the convention - it used to be spelled out at four call
+    sites (both Clark entries' fit and predict), and a fifth copy drifting by
+    ``step/2`` would produce perfectly plausible mis-scaled draws. Ages are
+    measured from the origin period's AVERAGE accident date, so the raw dev
+    window ``((d-1)*step, d*step]`` is shifted back half a period (Clark 2003;
+    the same ``x = 12d - 6`` convention as chainladder's ClarkLDF, pinned by
+    the tieout tests). The first period's lower edge clamps to exactly ``0.0``,
+    where :func:`growth` returns exactly ``0.0`` - both facts are load-bearing
+    (see the zero-age gotcha in ``bayesian/clark_growth_curve/card.md``).
+
+    ``d`` may be a scalar or an array of dev indices; ``step`` is the dev grain
+    in months (``contract["dev_grain_months"]``).
+    """
+    d = np.asarray(d, dtype=float)
+    lo = np.maximum(step * (d - 1) - step / 2, 0.0)
+    hi = step * d - step / 2
+    return lo, hi
+
+
 def _hessian(f, x0: np.ndarray, rel_step: float = 1e-4) -> np.ndarray:
     """Central-difference Hessian of a scalar function; dims here are <= n_w + 2.
 
@@ -89,14 +113,25 @@ def _hessian(f, x0: np.ndarray, rel_step: float = 1e-4) -> np.ndarray:
 
 
 @register
-class Clark(GalleryEntry):
+class Clark(GalleryEntry, PredictsHeldout):
     name = "clark"
     family = "statistical"
+
+    #: Clark models INCREMENTAL emergence while the Schedule P triangles are
+    #: cumulative, so ``predict_at`` must add each cell's training-diagonal
+    #: anchor. Declared rather than assumed: an undeclared increment draw is
+    #: wrong by that whole anchor while staying finite and plausible.
+    heldout_draw_scale = "incremental"
 
     def __init__(self) -> None:
         self.contract_: dict | None = None
         self.params_: dict | None = None
         self._loss_field: str | None = None
+        #: held-out draw count. An attribute rather than an argument because
+        #: ``PredictsHeldout`` fixes ``_draws_native``'s signature; unlike the
+        #: Bayesian entries this one has no posterior whose size decides it.
+        #: Defaults to ``predict()``'s 10_000.
+        self.n_heldout_draws: int = 10_000
 
     def fit(
         self,
@@ -121,11 +156,9 @@ class Clark(GalleryEntry):
         w, d, inc = c["w"], c["d"], c["inc_loss"]  # ragged (len_data,) per observed cell
         step = c["dev_grain_months"]  # 12 for annual grain
         # Each cell spans an age interval measured from the origin's average
-        # accident date (uniform-writing => shift back half a period): a dev at
-        # index d covers [max(step(d-1) - step/2, 0), step*d - step/2] months.
-        # The cell's expected increment is U * (G(age_hi) - G(age_lo)).
-        age_lo = np.maximum(step * (d - 1) - step / 2, 0.0)  # (len_data,)
-        age_hi = step * d - step / 2  # (len_data,)
+        # accident date; the cell's expected increment is
+        # U * (G(age_hi) - G(age_lo)). One shared home for the convention.
+        age_lo, age_hi = age_interval(d, step)  # each (len_data,)
 
         if method == "ldf":
             row_tot = np.array([inc[w == wi].sum() for wi in range(1, c["n_w"] + 1)])
@@ -236,21 +269,20 @@ class Clark(GalleryEntry):
             raise RuntimeError("call fit() first")
         c, prm = self.contract_, self.params_
         n_w, n_d, step = c["n_w"], c["n_d"], c["dev_grain_months"]
-        curve, method, phi = prm["growth_curve"], prm["method"], prm["phi"]
+        curve, phi = prm["growth_curve"], prm["phi"]
         premium = c.get("premium")
 
         # PARAMETER RISK: draw the whole log-parameter vector from its
         # asymptotic MVN (mean = MLE, cov = the delta-method covariance above),
-        # then exponentiate back to the natural scale.
+        # then exponentiate back to the natural scale. Shared with the held-out
+        # scorer so predict() and predict_at() cannot drift apart.
+        from ibnr.gallery.statistical.clark import scorer  # local: scorer imports this module
+
         rng = np.random.default_rng(seed)
-        draws = rng.multivariate_normal(prm["log_params"], prm["log_cov"], size=n_draws)  # (N, p)
-        om = np.exp(draws[:, -2])  # (n_draws,) curve shape per draw
-        th = np.exp(draws[:, -1])  # (n_draws,) curve scale per draw
-        if method == "ldf":
-            levels = np.exp(draws[:, :n_w])  # (n_draws, n_w) free ultimate per origin
-        else:
-            # cape_cod: single ELR draw scaled by each origin's premium.
-            levels = np.exp(draws[:, [0]]) * premium[None, :]  # (n_draws, n_w)
+        post = scorer.param_draws(c, prm, n_draws=n_draws, rng=rng)
+        om = post["omega"]  # (n_draws,) curve shape per draw
+        th = post["theta"]  # (n_draws,) curve scale per draw
+        levels = post["level"]  # (n_draws, n_w) ultimate per origin per draw
 
         # Ultimate = observed paid-to-date + simulated future increments; start
         # every draw at the origin's latest cumulative paid (constant).
@@ -258,8 +290,7 @@ class Clark(GalleryEntry):
         for j in range(n_w):  # per origin
             for dev in range(int(c["latest_d"][j]) + 1, n_d + 1):  # unobserved lags only
                 # Age interval for this future cell (same convention as fit()).
-                lo = max(step * (dev - 1) - step / 2, 0.0)
-                hi = step * dev - step / 2
+                lo, hi = age_interval(dev, step)
                 # Per-draw share of ultimate in the interval, then the cell mean.
                 ginc = growth(hi, om, th, curve) - growth(lo, om, th, curve)  # (n_draws,)
                 mu = np.maximum(levels[:, j] * ginc, 1e-12)  # (n_draws,)
@@ -276,6 +307,22 @@ class Clark(GalleryEntry):
         )
         pred = PredictiveDistribution(samples=ults, targets=targets)
         return pred.with_total()
+
+    def _draws_native(self, cells: CellIndex, *, rng: np.random.Generator) -> np.ndarray:
+        """``(n_heldout_draws, n_cells)`` incremental draws. See ``scorer.draw_cells``.
+
+        Three lines of glue over the same recipe ``predict()`` runs - MVN
+        parameter sample plus od-Poisson process noise - factored into
+        ``scorer.py`` so the two cannot drift. This entry's "posterior" is that
+        MVN sample, drawn here from ``params_`` with the caller's ``rng``.
+        """
+        if self.params_ is None:
+            raise RuntimeError("call fit() first")
+        from ibnr.gallery.statistical.clark import scorer  # local: scorer imports this module
+
+        return scorer.draw_cells(
+            self.contract_, self.params_, cells, n_draws=self.n_heldout_draws, rng=rng
+        )
 
     def realized_ultimates(self, full_triangle: Triangle) -> np.ndarray:
         """Outcomes aligned to predict()'s targets (per origin + total)."""

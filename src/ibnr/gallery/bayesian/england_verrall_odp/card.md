@@ -66,6 +66,26 @@ scaled-Poisson draw. The first origin is fully developed at the cutoff, so
 its ultimate is constant (zero SE), aligning the summary table with the
 rest of the family.
 
+## Held-out evaluation: CRPS only, never ELPD
+
+On the milestone-6 board this entry is scored by CRPS from one-step draws:
+`scorer.py` (beside `model.stan`) draws each next-diagonal increment as
+`X = phi * Poisson(mu / phi)`, one draw per posterior draw, with `mu` built
+from the held-out cell's origin premium and the posterior `(c, alpha, beta)`.
+The entry declares `heldout_draw_scale = "incremental"`, so
+`PredictsHeldout.predict_at` adds each cell's training-diagonal cumulative
+before the draws meet the outcomes - without that anchor the draws would be
+finite, plausible, and wrong by the whole cumulative-to-date.
+
+The ELPD column is permanently empty, and that is a property of the model,
+not missing work. The ODP quasi-likelihood is not a normalized density on
+any scale: `exp(odp_lpdf)/phi` integrates to 0.69 at `mu/phi = 0.5` and 0.83
+at 1.0, and the defect varies with `mu/phi`, so it cannot be fixed by a
+change of variable and does not cancel between models
+(`kernels/densities.py`, the odp-not-a-density note). Giving this entry an
+ELPD would mean replacing the quasi-likelihood with a real distribution
+(negative binomial, Tweedie) - a different model, not a units conversion.
+
 ## Backends (three ports, one contract)
 
 | file | backend | sampler |
