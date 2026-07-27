@@ -13,6 +13,7 @@ three-repo diagram is built from it. Other non-ASCII (arrows, Greek, math
 operators such as U+00B1 PLUS-MINUS) is fine too; only dashes are policed.
 """
 
+import os
 from pathlib import Path
 
 import pytest
@@ -40,32 +41,60 @@ UNICODE_DASHES = {
 BOX_DRAWINGS_LIGHT_HORIZONTAL = chr(0x2500)
 
 SUFFIXES = {".md", ".py", ".stan", ".toml", ".yml", ".yaml", ".ipynb", ".cfg", ".txt"}
-EXCLUDE_DIRS = {".git", ".venv", "great-docs", "__pycache__", ".ruff_cache", ".pytest_cache"}
+#: ".claude" holds the worktrees of the branch-per-task workflow, each a full
+#: copy of this repo - without it the walk scans every sibling branch as well.
+EXCLUDE_DIRS = {
+    ".git",
+    ".venv",
+    ".claude",
+    "great-docs",
+    "__pycache__",
+    ".ruff_cache",
+    ".pytest_cache",
+}
 EXCLUDE_FILES = {"uv.lock", "LICENSE"}
 
 
 def _repo_text_files():
-    for p in REPO.rglob("*"):
-        if not p.is_file() or p.suffix not in SUFFIXES or p.name in EXCLUDE_FILES:
+    """Walk the repo once, pruning excluded directories as we descend.
+
+    Pruning inside the walk rather than filtering afterwards is what makes this
+    cheap: ``.venv`` alone holds ~32k files against the repo's ~1.4k, and
+    ``rglob("*")`` enumerated every one of them before discarding it.
+    """
+    for dirpath, dirnames, filenames in os.walk(REPO):
+        dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS]
+        for name in filenames:
+            if name in EXCLUDE_FILES:
+                continue
+            p = Path(dirpath) / name
+            if p.suffix in SUFFIXES:
+                yield p
+
+
+@pytest.fixture(scope="session")
+def repo_texts():
+    """Every policed file as (relative path, text), read once per session.
+
+    The check below is parametrized over 14 codepoints. Reading here instead of
+    inside the test turns 14 walks and 14 full re-reads of the repo into one.
+    """
+    texts = []
+    for p in _repo_text_files():
+        try:
+            texts.append((p.relative_to(REPO), p.read_text(encoding="utf-8")))
+        except (UnicodeDecodeError, OSError):
             continue
-        if EXCLUDE_DIRS & set(p.relative_to(REPO).parts):
-            continue
-        yield p
+    return texts
 
 
 @pytest.mark.parametrize("dash", sorted(UNICODE_DASHES), ids=lambda d: UNICODE_DASHES[d])
-def test_no_unicode_dash(dash):
+def test_no_unicode_dash(dash, repo_texts):
     offenders = []
-    for p in _repo_text_files():
-        try:
-            text = p.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            continue
+    for rel, text in repo_texts:
         if dash in text:
             offenders += [
-                f"{p.relative_to(REPO)}:{n}"
-                for n, line in enumerate(text.splitlines(), 1)
-                if dash in line
+                f"{rel}:{n}" for n, line in enumerate(text.splitlines(), 1) if dash in line
             ]
     assert not offenders, (
         f"{UNICODE_DASHES[dash]} (U+{ord(dash):04X}) found; use a plain '-':\n  "
