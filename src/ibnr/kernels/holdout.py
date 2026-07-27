@@ -85,7 +85,14 @@ import pandas as pd
 from ibnr.kernels.contract import _as_date as _dates_to_python
 from ibnr.triangle.core import GRAIN_MONTHS, Triangle
 
-__all__ = ["CellIndex", "HoldoutCells", "index_into", "next_diagonal", "training_index"]
+__all__ = [
+    "CellIndex",
+    "DeltaCellIndex",
+    "HoldoutCells",
+    "index_into",
+    "next_diagonal",
+    "training_index",
+]
 
 #: reasons a next-diagonal cell is not scorable, in the order they are tested
 EXCLUSION_REASONS: tuple[str, ...] = ("new_origin", "dev_beyond_trained", "no_predecessor")
@@ -124,12 +131,51 @@ class CellIndex:
         return len(self.w)
 
 
+@dataclass(frozen=True)
+class DeltaCellIndex(CellIndex):
+    """Cells of a delta-stacked contract: ``delta`` names the observation block
+    each row belongs to (0 = outstanding, 1 = paid).
+
+    The compartmental contract is the only delta-stacked one: its outstanding
+    and paid blocks share ``(w, d)`` exactly, so a plain :class:`CellIndex`
+    cannot say which block a cell observes, and a ``(w, d)``-keyed predecessor
+    lookup keeps whichever block came last - handing every outstanding cell the
+    PAID predecessor, same sign, same order of magnitude, silently wrong.
+    Carrying ``delta`` restores cell identity: ``prev_value`` is the same cell
+    one dev step back **in the same block**.
+
+    Held-out cells built by :func:`index_into` stay plain ``CellIndex`` on
+    purpose: the only raw field that contract can score is the paid one
+    ('outstanding' is derived, not a stored field), so a plain index reaching
+    the compartmental scorer IS the paid block - a rule the scorer encodes
+    explicitly in ``scorer.cell_deltas``.
+    """
+
+    delta: np.ndarray  # 0 = outstanding, 1 = paid
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if len(self.delta) != len(self.w):
+            raise ValueError(f"delta has {len(self.delta)} entries, expected {len(self.w)}")
+        stray = set(np.unique(np.asarray(self.delta)).tolist()) - {0, 1}
+        if stray:
+            raise ValueError(f"delta must be 0 (outstanding) or 1 (paid); got {sorted(stray)}")
+
+
 def training_index(contract: dict) -> CellIndex:
     """The cells a fit was trained on, in the same shape a scorer takes.
 
     Exists for the agreement gate: a scorer handed these must reproduce the
     fit's own ``log_lik`` elementwise. Without that, a scorer can be wrong in
     its index arithmetic and produce entirely plausible held-out numbers.
+
+    A contract carrying ``delta`` (compartmental) gets a :class:`DeltaCellIndex`
+    whose predecessors are looked up per ``(delta, w, d - 1)`` - within the
+    cell's own block - because its two blocks share ``(w, d)`` exactly and a
+    block-blind lookup would hand every outstanding cell the paid predecessor.
+    Duplicate ``(w, d)`` **without** a delta axis stays refused: there is no
+    block indicator to disambiguate with, and returning either candidate would
+    be the same silent-wrong-predecessor bug.
 
     .. warning::
 
@@ -145,37 +191,44 @@ def training_index(contract: dict) -> CellIndex:
     w = np.asarray(contract["w"], dtype=int)
     d = np.asarray(contract["d"], dtype=int)
     loss = np.asarray(contract["loss"], dtype=float)
+    premium = _contract_premium(contract, w)
 
-    # compartmental stacks TWO observation blocks - outstanding (delta=0) then
-    # paid (delta=1) - over identical (w, d). A dict keyed on (w, d) alone keeps
-    # whichever came last, so every outstanding cell would be handed the PAID
-    # predecessor: same sign, same order of magnitude, silently wrong. CellIndex
-    # has no delta axis to tell the halves apart either, so rather than return
-    # something that cannot be right, refuse.
     if "delta" in contract:
-        raise NotImplementedError(
-            "training_index does not support the delta-stacked compartmental contract: its "
-            "outstanding and paid blocks share (w, d), so predecessors and cell identity are "
-            "ambiguous. compartmental needs its own index carrying delta"
-        )
+        delta = np.asarray(contract["delta"], dtype=int)
+        keys = list(zip(delta.tolist(), w.tolist(), d.tolist(), strict=True))
+        if len(set(keys)) != len(keys):
+            raise ValueError(
+                "contract has duplicate (delta, w, d) cells, so a predecessor lookup is ambiguous"
+            )
+        row_of = {key: i for i, key in enumerate(keys)}
+        prev = np.array([_predecessor_value(loss, row_of, key) for key in keys], dtype=float)
+        return DeltaCellIndex(w=w, d=d, value=loss, prev_value=prev, premium=premium, delta=delta)
+
     pairs = list(zip(w.tolist(), d.tolist(), strict=True))
     if len(set(pairs)) != len(pairs):
         raise ValueError(
-            "contract has duplicate (w, d) cells, so a predecessor lookup is ambiguous"
+            "contract has duplicate (w, d) cells and no delta axis to tell them apart, "
+            "so a predecessor lookup is ambiguous"
         )
-    row_of = {(int(a), int(b)): i for i, (a, b) in enumerate(zip(w, d, strict=True))}
-
-    def predecessor(origin: int, dev: int) -> float:
-        back = row_of.get((origin, dev - 1))
-        if back is not None:
-            return float(loss[back])
-        # a cell at the first dev has no predecessor and its cumulative value IS
-        # its increment; a hole anywhere else is genuinely unknown
-        return 0.0 if dev == 1 else float("nan")
-
-    prev = np.array([predecessor(int(a), int(b)) for a, b in zip(w, d, strict=True)], dtype=float)
-    premium = _contract_premium(contract, w)
+    row_of = {pair: i for i, pair in enumerate(pairs)}
+    prev = np.array([_predecessor_value(loss, row_of, pair) for pair in pairs], dtype=float)
     return CellIndex(w=w, d=d, value=loss, prev_value=prev, premium=premium)
+
+
+def _predecessor_value(loss: np.ndarray, row_of: dict, key: tuple) -> float:
+    """The value one development step back within the same key group.
+
+    ``key`` is ``(..., dev)`` - the leading elements (nothing, or the delta
+    block) identify the group the lookup must stay inside. A cell at the first
+    dev has no predecessor and 0.0 is the correct value, not a placeholder: a
+    cumulative value there IS its increment, and the outstanding curve likewise
+    starts at OS(0) = 0. A hole anywhere else is genuinely unknown, hence NaN.
+    """
+    *group, dev = key
+    back = row_of.get((*group, dev - 1))
+    if back is not None:
+        return float(loss[back])
+    return 0.0 if dev == 1 else float("nan")
 
 
 def index_into(cells: HoldoutCells, contract: dict, *, field: str | None = None) -> CellIndex:

@@ -53,9 +53,10 @@ import numpy as np
 import pandas as pd
 
 from ibnr.gallery.bayesian._toolchain import ensure_stan_toolchain
-from ibnr.gallery.entry import GalleryEntry
+from ibnr.gallery.entry import GalleryEntry, PredictsHeldout, ScoresHeldout
 from ibnr.gallery.registry import register
 from ibnr.kernels.contract import compartmental_stan_data, realized_values
+from ibnr.kernels.holdout import CellIndex
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.triangle.core import Triangle
 
@@ -70,6 +71,17 @@ STAN_FILES = {
 #: posterior backends this entry can dispatch to; all three target the same
 #: posterior, which ``kernels.parity`` gates before any convergence claim
 BACKENDS = ("stan", "numpyro", "pymc")
+
+#: per-variant held-out declarations, applied by ``fit()`` as INSTANCE
+#: attributes (the mixins read them via getattr, so this is the sanctioned way
+#: for one entry to vary them by variant). Model 1 is a density on OS +
+#: cumulative paid AMOUNTS whose paid draws are cumulative; Model 2 is a
+#: density on OS-level + INCREMENTAL paid loss RATIOS whose paid draws are
+#: incremental amounts (``predict_at`` adds the training-diagonal anchor).
+HELDOUT_DECLARATIONS = {
+    "gaussian": {"heldout_measure": "amount", "heldout_draw_scale": "cumulative"},
+    "lognormal": {"heldout_measure": "loss_ratio", "heldout_draw_scale": "incremental"},
+}
 
 
 def os_curve(t, ker, kp, rlr):
@@ -102,9 +114,14 @@ def pooled(idata, name: str) -> np.ndarray:
 
 
 @register
-class Compartmental(GalleryEntry):
+class Compartmental(GalleryEntry, ScoresHeldout, PredictsHeldout):
     name = "compartmental"
     family = "bayesian"
+
+    # NOTE: unlike the Meyers entries there is no class-level heldout_measure /
+    # heldout_draw_scale - the two variants sit on different measures AND
+    # different draw scales, so fit() sets both as instance attributes from
+    # HELDOUT_DECLARATIONS once the variant is known.
 
     def __init__(self) -> None:
         # the standardized joint paid+outstanding dict (contract.py); also
@@ -118,6 +135,11 @@ class Compartmental(GalleryEntry):
         # {"outstanding": n, "paid_incremental": n} - cells the lognormal
         # likelihood could not take; a mechanical study must report them
         self.dropped_cells_: dict | None = None  # lognormal only
+        # indices into the contract's stacked rows of the cells that SURVIVED
+        # the lognormal keep mask. Stored, not just counted: Stan's log_lik
+        # vector covers exactly these rows in this order, so the in-sample
+        # agreement gate needs the mask itself to align elementwise.
+        self._kept_rows_: np.ndarray | None = None  # lognormal only
         self._loss_field: str | None = None
 
     def fit(
@@ -190,6 +212,10 @@ class Compartmental(GalleryEntry):
         self._loss_field = loss_field
         self.backend_ = backend
         self.variant_ = variant
+        # the held-out capability declarations follow the variant; setting them
+        # here (not at class level) is what lets one entry carry two measures
+        for name, value in HELDOUT_DECLARATIONS[variant].items():
+            setattr(self, name, value)
         stan_data = (
             self._gaussian_stan_data() if variant == "gaussian" else self._lognormal_stan_data()
         )
@@ -269,6 +295,10 @@ class Compartmental(GalleryEntry):
         # a negative paid increment (salvage/subrogation, a reopened-then-
         # closed year) has to leave the likelihood entirely
         keep = ratio > 0
+        # the mask itself, not only its counts: Stan's log_lik vector runs over
+        # the kept rows in contract order, and the held-out scorer's agreement
+        # gate has to subset the training index to exactly these rows
+        self._kept_rows_ = np.flatnonzero(keep)
         self.dropped_cells_ = {
             "outstanding": int((~keep & (c["delta"] == 0)).sum()),
             "paid_incremental": int((~keep & paid_blk).sum()),
@@ -549,6 +579,54 @@ class Compartmental(GalleryEntry):
             origins=c["origin_periods"],
         )
         return np.append(per_origin, per_origin.sum())
+
+    def _log_lik_native(self, cells: CellIndex) -> np.ndarray:
+        """``(n_draws, n_cells)`` on the fitted variant's own measure: amounts
+        for gaussian, loss ratios for lognormal.
+
+        Glue over ``scorer.log_lik_cells``; the arithmetic lives beside the two
+        Stan programs. Training cells arrive as a ``DeltaCellIndex`` carrying
+        both stacked blocks; held-out cells arrive as a plain ``CellIndex``
+        from ``index_into`` and ARE the paid block (``scorer.cell_deltas``).
+        """
+        # imported here, not at module level: scorer reads this module's
+        # os_curve/paid_curve, so a top-level import would be a cycle
+        from ibnr.gallery.bayesian.compartmental import scorer
+
+        if self.idata_ is None:
+            raise RuntimeError("call fit() first")
+        return scorer.log_lik_cells(self.contract_, self._posterior(), cells, variant=self.variant_)
+
+    def _draws_native(self, cells: CellIndex, *, rng: np.random.Generator) -> np.ndarray:
+        """``(n_draws, n_cells)`` draws on the fitted variant's own scale:
+        cumulative paid amounts (gaussian) or incremental paid amounts
+        (lognormal; ``predict_at`` adds the training-diagonal anchor).
+
+        The same glue over the same posterior as :meth:`_log_lik_native`, so
+        the density and the draws cannot describe different distributions -
+        both read ``scorer.mu_cells`` and ``scorer.sigma_cells``. Unlike
+        ``predict()``, no cell is ever anchored at zero variance here.
+        """
+        from ibnr.gallery.bayesian.compartmental import scorer
+
+        if self.idata_ is None:
+            raise RuntimeError("call fit() first")
+        return scorer.draw_cells(
+            self.contract_, self._posterior(), cells, rng=rng, variant=self.variant_
+        )
+
+    def _posterior(self) -> dict[str, np.ndarray]:
+        """Pooled draws of the variables the fitted variant's scorer reads.
+
+        ``posterior``, never ``log_likelihood`` (Stan names that group
+        ``log_lik``, both ports name it ``obs``) - and for the lognormal
+        variant the sampled ``sd_*``/``z_*`` sites rather than the Stan-only
+        ``u_*`` transformed parameters, so the scorer works identically over
+        all three backends.
+        """
+        from ibnr.gallery.bayesian.compartmental import scorer
+
+        return {name: pooled(self.idata_, name) for name in scorer.REQUIRED_DRAWS[self.variant_]}
 
     def convergence(self, var_names: list[str] | None = None) -> dict:
         """Convergence diagnostics from the fitted posterior.
