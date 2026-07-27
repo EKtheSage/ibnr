@@ -125,7 +125,7 @@ def test_fit_delivers_it_to_the_pymc_sampler(name, requested, tiny_triangle):
 
     def recorder(*args, **kwargs):
         seen.update(kwargs)
-        return "not-an-idata"
+        return "not-an-idata", None
 
     entry = gallery.get(name)()
     entry._sample_pymc = recorder  # instance attribute wins the self._sample_pymc lookup
@@ -147,7 +147,7 @@ def test_non_pymc_backends_are_not_handed_a_nuts_sampler(name, tiny_triangle):
 
     def recorder(*args, **kwargs):
         seen.update(kwargs)
-        return "not-an-idata"
+        return "not-an-idata", None
 
     entry = gallery.get(name)()
     entry._sample_numpyro = recorder

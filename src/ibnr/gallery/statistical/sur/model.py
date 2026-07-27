@@ -89,10 +89,15 @@ class SUR(GalleryEntry):
         """
         train = triangle.as_of(as_of) if as_of is not None else triangle
         # Single canonical data prep (one company, K aligned LOBs, cumulative).
-        self.contract_ = multiline_data(train, loss_field=loss_field)
-        self._loss_field = loss_field
-        self._intercept = intercept
-        c = self.contract_
+        #
+        # BUILD FIRST, ASSIGN AFTER THE ESTIMATOR SUCCEEDED - fit() must be
+        # atomic. The positivity guard and the per-transition checks below
+        # legitimately refuse real cohorts AFTER the contract is built, and
+        # assigning contract_ before them leaves a failed refit TORN: the new
+        # cohort's contract over the old cohort's transitions, which predict()
+        # then happily rolls forward under the wrong identity. See mack.
+        contract = multiline_data(train, loss_field=loss_field)
+        c = contract
         n_lob, n_d = c["n_lob"], c["n_d"]
         cum, mask = c["cum"], c["obs_mask"]  # cum: (K, n_w, n_d); mask: same shape
         # Mack's variance is proportional to C, so whitening divides by sqrt(C);
@@ -151,9 +156,9 @@ class SUR(GalleryEntry):
         # steps. Falls back to independence (identity) if nothing was poolable.
         if pooled_resid:
             stacked = np.hstack(pooled_resid)  # (K, sum_n) columns across transitions
-            self.pooled_corr_ = _nearest_pd(np.corrcoef(stacked))  # (K, K)
+            pooled_corr = _nearest_pd(np.corrcoef(stacked))  # (K, K)
         else:
-            self.pooled_corr_ = np.eye(n_lob)
+            pooled_corr = np.eye(n_lob)
 
         # pass 2: FGLS where the transition supports it, guarded fallbacks below
         transitions: list[dict] = []
@@ -165,7 +170,7 @@ class SUR(GalleryEntry):
                 beta, sigma, coef_cov = _fgls(xw, yw, max_iter=max_iter, tol=tol)
                 method = "fgls"
             else:
-                beta, sigma, coef_cov, method = self._fallback(tr, transitions, p)
+                beta, sigma, coef_cov, method = self._fallback(tr, transitions, p, pooled_corr)
             transitions.append(
                 {
                     "n": n,
@@ -176,11 +181,15 @@ class SUR(GalleryEntry):
                     "method": method,  # "fgls" | "pooled_corr" | "tail"
                 }
             )
+        self.contract_ = contract
+        self._loss_field = loss_field
+        self._intercept = intercept
+        self.pooled_corr_ = pooled_corr
         self.transitions_ = transitions
         return self
 
     def _fallback(
-        self, tr: dict, done: list[dict], p: int
+        self, tr: dict, done: list[dict], p: int, pooled_corr: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, str]:
         """Per-line WLS slopes with a pooled correlation structure, and the
         Mack tail rule for the variance when the residual df run out.
@@ -207,7 +216,9 @@ class SUR(GalleryEntry):
         sd = np.sqrt(var)  # (K,)
         # Rebuild the K x K covariance as R_bar scaled by own sds: keep each
         # line's marginal variance, borrow only the correlation from the pool.
-        sigma = self.pooled_corr_ * np.outer(sd, sd)  # (K, K)
+        # (R_bar arrives as an argument: during fit() it is still a local -
+        # nothing is stamped on the entry until the whole estimation succeeds.)
+        sigma = pooled_corr * np.outer(sd, sd)  # (K, K)
         # Coefficient covariance is block-diagonal here: each line's WLS slope
         # var(k) * (X'X)^-1 sits on its own block, no cross-line coupling (unlike
         # FGLS, where the off-diagonals are non-zero).

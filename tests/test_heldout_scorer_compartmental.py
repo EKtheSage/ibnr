@@ -590,12 +590,14 @@ def test_t_comes_from_the_contract_grain_not_the_dev_index():
 # -- the kept-rows bookkeeping ------------------------------------------------
 
 
-def test_lognormal_stan_data_stores_the_surviving_rows():
-    """``_kept_rows_`` is what aligns a scorer elementwise with Stan's log_lik
-    vector, which covers ONLY the kept rows in contract order. One paid cell
-    is pushed below its predecessor, so exactly one row must drop - and the
-    stored indices must reproduce Stan's ``y`` from the training index's own
-    arrays, elementwise. ``dropped_cells_`` keeps its published meaning."""
+def test_lognormal_stan_data_returns_the_surviving_rows():
+    """The kept-rows mask is what aligns a scorer elementwise with Stan's
+    log_lik vector, which covers ONLY the kept rows in contract order. One paid
+    cell is pushed below its predecessor, so exactly one row must drop - and
+    the returned indices must reproduce Stan's ``y`` from the training index's
+    own arrays, elementwise. (fit() stamps them on the entry as ``_kept_rows_``
+    / ``dropped_cells_`` only after the sampler succeeds - atomicity - so the
+    helper RETURNS the bookkeeping rather than assigning it.)"""
     tri = _joint_triangle(through=N_W)
     df = tri.execute()
     # execute() hands back datetime64, so compare on a normalized column
@@ -606,13 +608,9 @@ def test_lognormal_stan_data_stores_the_surviving_rows():
     df.loc[hit, "value"] = float(prev.iloc[0]) * 0.9  # a negative increment at (w=1, d=4)
     contract = _contract_for(Triangle.from_long(df, measure="cumulative"))
 
-    entry = Compartmental()
-    entry.contract_ = contract
-    entry.variant_ = "lognormal"
-    data = entry._lognormal_stan_data()
+    data, kept, dropped = Compartmental()._lognormal_stan_data(contract)
 
-    assert entry.dropped_cells_ == {"outstanding": 0, "paid_incremental": 1}
-    kept = entry._kept_rows_
+    assert dropped == {"outstanding": 0, "paid_incremental": 1}
     assert kept is not None
     assert len(kept) == data["len_data"] == contract["len_data"] - 1
     np.testing.assert_array_equal(contract["w"][kept], data["w"])
@@ -657,7 +655,7 @@ def test_fit_applies_the_variant_declarations(monkeypatch, variant):
     log_lik_at / predict_at refuse to run. The sampler is stubbed out - the
     declarations must not depend on it."""
     entry = Compartmental()
-    monkeypatch.setattr(entry, "_sample_stan", lambda *a, **k: "sentinel-idata")
+    monkeypatch.setattr(entry, "_sample_stan", lambda *a, **k: ("sentinel-idata", None))
     entry.fit(_joint_triangle(through=N_W), variant=variant, seed=1)
     assert entry.idata_ == "sentinel-idata"
     for name, value in HELDOUT_DECLARATIONS[variant].items():

@@ -114,9 +114,12 @@ class MeyersCSR(GalleryEntry, ScoresHeldout, PredictsHeldout):
         # stan_data builds the shared Meyers contract dict (the Stan `data`
         # block per CLAUDE.md decision 3). CSR consumes logloss = log paid,
         # logprem = log net earned premium, and the (w, d) index arrays.
-        self.contract_ = stan_data(train, loss_field=loss_field, premium_field=premium_field)
-        self._loss_field = loss_field
-        self.backend_ = backend
+        #
+        # BUILD FIRST, ASSIGN AFTER THE SAMPLER SUCCEEDED - fit() must be
+        # atomic: assigning contract_ before the fallible sampling step leaves
+        # a failed refit TORN (the new cohort's contract over the old cohort's
+        # posterior, which index_into then accepts). See meyers_ccl/mack.
+        contract = stan_data(train, loss_field=loss_field, premium_field=premium_field)
         sampler = {
             "stan": self._sample_stan,
             "numpyro": self._sample_numpyro,
@@ -132,9 +135,11 @@ class MeyersCSR(GalleryEntry, ScoresHeldout, PredictsHeldout):
         # "pymc" default while the caller believed a foreign NUTS ran.
         if backend == "pymc":
             extra["nuts_sampler"] = nuts_sampler
-        # All three return a comparable arviz.InferenceData, so predict(),
-        # convergence() and parity are backend-agnostic.
-        self.idata_ = sampler(
+        # All three return (comparable arviz.InferenceData, raw cmdstan fit or
+        # None), so predict(), convergence() and parity are backend-agnostic -
+        # and fit() stays the single writer of entry state.
+        idata, raw_fit = sampler(
+            contract,
             chains=chains,
             iter_warmup=iter_warmup,
             iter_sampling=iter_sampling,
@@ -143,6 +148,13 @@ class MeyersCSR(GalleryEntry, ScoresHeldout, PredictsHeldout):
             show_progress=show_progress,
             **extra,
         )
+        self.contract_ = contract
+        self._loss_field = loss_field
+        self.backend_ = backend
+        self.idata_ = idata
+        # None for the ports, which also clears a stale cmdstan object left by
+        # an earlier stan-backend fit of a different cohort
+        self.fit_ = raw_fit
         return self
 
     @classmethod
@@ -156,6 +168,7 @@ class MeyersCSR(GalleryEntry, ScoresHeldout, PredictsHeldout):
 
     def _sample_stan(
         self,
+        contract,
         *,
         chains,
         iter_warmup,
@@ -179,8 +192,8 @@ class MeyersCSR(GalleryEntry, ScoresHeldout, PredictsHeldout):
         ensure_stan_toolchain()
         model = CmdStanModel(stan_file=str(STAN_FILE))
         t0 = time.perf_counter()
-        self.fit_ = model.sample(
-            data={k: self.contract_[k] for k in STAN_DATA_KEYS},
+        fit = model.sample(
+            data={k: contract[k] for k in STAN_DATA_KEYS},
             chains=chains,
             # 1 = sequential, the fair single-core runtime convention vs future
             # ports; the retro harness raises it in late escalation stages
@@ -193,13 +206,13 @@ class MeyersCSR(GalleryEntry, ScoresHeldout, PredictsHeldout):
             show_progress=show_progress,
         )
         runtime_s = time.perf_counter() - t0
-        idata = az.from_cmdstanpy(self.fit_, log_likelihood="log_lik")
+        idata = az.from_cmdstanpy(fit, log_likelihood="log_lik")
         idata.attrs["runtime_s"] = runtime_s
         idata.attrs["backend"] = "stan"
-        return idata
+        return idata, fit
 
     def _sample_numpyro(
-        self, *, chains, iter_warmup, iter_sampling, seed, target_accept, show_progress
+        self, contract, *, chains, iter_warmup, iter_sampling, seed, target_accept, show_progress
     ):
         """NumPyro (JAX) port. Same centered parameterization, same contract.
 
@@ -210,17 +223,18 @@ class MeyersCSR(GalleryEntry, ScoresHeldout, PredictsHeldout):
         from ibnr.gallery.bayesian.meyers_csr import model_numpyro
 
         return model_numpyro.sample(
-            self.contract_,
+            contract,
             chains=chains,
             iter_warmup=iter_warmup,
             iter_sampling=iter_sampling,
             seed=seed,
             target_accept=target_accept,
             progress_bar=show_progress,
-        )
+        ), None
 
     def _sample_pymc(
         self,
+        contract,
         *,
         chains,
         iter_warmup,
@@ -234,7 +248,7 @@ class MeyersCSR(GalleryEntry, ScoresHeldout, PredictsHeldout):
         from ibnr.gallery.bayesian.meyers_csr import model_pymc
 
         return model_pymc.sample(
-            self.contract_,
+            contract,
             chains=chains,
             iter_warmup=iter_warmup,
             iter_sampling=iter_sampling,
@@ -242,7 +256,7 @@ class MeyersCSR(GalleryEntry, ScoresHeldout, PredictsHeldout):
             target_accept=target_accept,
             nuts_sampler=nuts_sampler,
             progressbar=show_progress,
-        )
+        ), None
 
     def predict(self, seed: int | None = None) -> PredictiveDistribution:
         """Predictive distribution of ultimates (losses at the last dev period)

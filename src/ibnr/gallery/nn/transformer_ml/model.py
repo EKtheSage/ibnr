@@ -88,16 +88,17 @@ class NNTransformerML(GalleryEntry):
 
         cfg = config or TransformerMLConfig()
         train = triangle.as_of(as_of) if as_of is not None else triangle
-        self.contract_ = nn_company_data(
+        # BUILD FIRST, ASSIGN AFTER TRAINING SUCCEEDED - fit() must be atomic:
+        # a failed refit must not leave the new pool's contract/normalizer over
+        # the old pool's networks (see the single-line entry and mack).
+        contract = nn_company_data(
             train,
             loss_field=loss_field,
             feature_fields=feature_fields,
             premium_field=premium_field,
         )
-        self._loss_field = loss_field
-        self.config_ = cfg
-        self._device = device or "cpu"
-        c = self.contract_
+        device_str = device or "cpu"
+        c = contract
         n_c, n_l, n_f, n_w, n_d = c["x"].shape
 
         # validation split: hold out the last cfg.val_diagonals calendar
@@ -125,7 +126,7 @@ class NNTransformerML(GalleryEntry):
         prem_mean, prem_std = float(lp.mean()), float(lp.std())
         if prem_std < 1e-8:
             prem_std = 1.0
-        self.norm_ = {
+        norm = {
             "mean": mean,
             "std": std,
             "pinned": pinned,
@@ -139,7 +140,7 @@ class NNTransformerML(GalleryEntry):
         x_norm = np.where(pinned[None, :, :, None, :], 0.0, x_norm)
         prem_norm = np.where(c["line_mask"], (c["log_premium"] - prem_mean) / prem_std, 0.0)
 
-        dev = torch.device(self._device)
+        dev = torch.device(device_str)
         xt = torch.tensor(x_norm, dtype=torch.float32, device=dev)  # (n_c, L, F, W, D)
         yt = xt[:, :, 0]  # (n_c, L, W, D) target channel
         obs_t = torch.tensor(c["obs_mask"], device=dev)
@@ -185,7 +186,7 @@ class NNTransformerML(GalleryEntry):
         # deep ensemble via the shared loop (gallery/nn/_training.py):
         # cfg.ensemble_size independently-seeded fits; their draws are pooled
         # at predict time to widen the predictive distribution
-        self.models_, self.history_ = train_ensemble(
+        models, history = train_ensemble(
             n_c,
             config=cfg,
             seed=seed,
@@ -198,7 +199,15 @@ class NNTransformerML(GalleryEntry):
             show_progress=show_progress,
         )
 
+        self.contract_ = contract
+        self._loss_field = loss_field
+        self.config_ = cfg
+        self._device = device_str
+        self.norm_ = norm
+        self.models_, self.history_ = models, history
+        # the cached rollout belongs to the previous fit; drop it whole
         self._rollout_key = None
+        self._rollout_ults = None
         return self
 
     def predict(

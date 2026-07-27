@@ -149,10 +149,16 @@ class Clark(GalleryEntry, PredictsHeldout):
             raise ValueError(f"method must be one of {METHODS}")
         # Backtest slice, then the same incremental ODP contract the E&V entry
         # uses (Clark shares the od-Poisson likelihood, only the mean differs).
+        #
+        # BUILD FIRST, ASSIGN AFTER THE MLE SUCCEEDED - fit() must be atomic.
+        # The optimizer and the dof/positivity checks below legitimately refuse
+        # cohorts the contract accepted, and assigning contract_ before them
+        # leaves a failed refit TORN: the new cohort's contract over the old
+        # cohort's MLE, which index_into then accepts - predict_at would draw
+        # one cohort's cells from another cohort's curve. See mack.
         train = triangle.as_of(as_of) if as_of is not None else triangle
-        self.contract_ = odp_stan_data(train, loss_field=loss_field, premium_field=premium_field)
-        self._loss_field = loss_field
-        c = self.contract_
+        contract = odp_stan_data(train, loss_field=loss_field, premium_field=premium_field)
+        c = contract
         w, d, inc = c["w"], c["d"], c["inc_loss"]  # ragged (len_data,) per observed cell
         step = c["dev_grain_months"]  # 12 for annual grain
         # Each cell spans an age interval measured from the origin's average
@@ -247,6 +253,8 @@ class Clark(GalleryEntry, PredictsHeldout):
         # covariance of the log-parameters (Clark's parameter-risk covariance).
         cov = phi * np.linalg.pinv(hess)  # (p, p)
 
+        self.contract_ = contract
+        self._loss_field = loss_field
         self.params_ = {
             "growth_curve": growth_curve,
             "method": method,
