@@ -1,4 +1,11 @@
-"""ibnr: gallery-centric probabilistic loss reserving on a long-format triangle layer."""
+"""ibnr: gallery-centric probabilistic loss reserving on a long-format triangle layer.
+
+``Triangle`` is re-exported here; the model gallery is **not**. ``import ibnr``
+followed by ``ibnr.gallery`` raises ``AttributeError``, because a submodule
+becomes an attribute of its package only once something imports it, and
+importing it eagerly here would pull every entry (and its optional dependency
+probing) into a bare ``import ibnr``. Use ``from ibnr import gallery``.
+"""
 
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _dist_version

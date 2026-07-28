@@ -30,26 +30,34 @@ cmdstan on this machine: installed at `~/.cmdstan` (2.39.0), built with the RToo
 3. **The Stan `data` block is the data contract.** `kernels/contract.py` maps Triangle → standardized dict. NumPyro and PyMC implementations consume the identical dict. Never let a backend grow its own data prep.
 4. **`PredictiveDistribution` is the unifying output type** (`kernels/predictive.py`). Every gallery entry - Bayesian, NN, deterministic - must produce one. NN models require distributional heads (mixture/quantile heads or deep ensembles); point estimators cannot enter the gallery. Deterministic baselines (Mack, basic CL) are wrapped with bootstrap.
 5. **Evaluation is a contract, not a feature.** `GalleryEntry` ABC requires `.fit()`, `.predict()`, `.evaluate()`, `.card()`. An entry that fails the eval harness does not register. Eval algorithms (ELPD/LOO/WAIC, PIT calibration, stacking via `bayesblend`, ArviZ-based diagnostics) are implemented ONCE in `kernels/` - gallery entries call them, never reimplement.
-6. **Eject-pattern codegen, not a formula DSL.** Every gallery model is literal, readable source: `model.stan`, `model_numpyro.py`, `model_pymc.py` side by side. `gallery.scaffold()` copies source into the user's project for them to extend (copulas, priors, hyperparameters). Precedent: brms/bambi, but simpler.
+6. **Eject-pattern codegen, not a formula DSL.** Every gallery model is literal, readable source: `model.stan`, `model_numpyro.py`, `model_pymc.py` side by side. Precedent: brms/bambi, but simpler. **`gallery.scaffold()` is PLANNED, not built** (no `gallery/scaffold.py`, nothing in `gallery.__all__`) - it is meant to copy an entry's source into the user's project for them to extend (copulas, priors, hyperparameters). The constraint it implies is already live and must be kept: each model directory has to stand alone, importable and readable without the rest of the package, so a future scaffold is a file copy. Several cards and model modules already say "for `gallery.scaffold()`"; read those as the standing requirement, not as a shipped API.
 7. **Cross-backend parity is a feature.** `kernels/parity.py` validates that NumPyro/PyMC ports match the Stan reference posterior before any convergence/speed comparisons. Parameterization (centered vs non-centered, truncation handling, init strategy) is an explicit documented attribute of each model card. Stan implementations from the literature are ground truth.
-8. **Small public API:** `Triangle`, `gallery.list/fit/evaluate/stack/scaffold/leaderboard`.
+8. **Small public API.** As built (checked 2026-07-27): `ibnr.__all__` is `Triangle`, `TriangleMeta`, `__version__`; `ibnr.gallery.__all__` is `GalleryEntry`, `list`, `get`, `fit`, `stack`, `leaderboard`. Two names from the original statement are NOT there and the difference is deliberate, not drift: **`gallery.evaluate()` does not exist and should not** - evaluation is per fitted entry (`entry.evaluate(observed)`, decision 5's ABC method), because scoring needs the fit that produced the prediction, and the cross-model layer is `leaderboard`/`stack` over a shared panel. **`gallery.scaffold()` is planned** (decision 6). Two consumer-facing surprises worth knowing before changing this surface: `import ibnr; ibnr.gallery` is an `AttributeError` (a submodule is an attribute only once imported - use `from ibnr import gallery`), and `gallery.get(name)` returns the entry **class**, so the call is `gallery.get("mack")().fit(tri)`. Both are documented in the README.
 
 ## Repository layout
 
+Actual tree as of 2026-07-27; `viz/` and `gallery/scaffold.py` are the two entries that do
+not exist yet (milestone 8 and decision 6 respectively) and are marked PLANNED rather than
+dropped, because the design intent stands.
+
 ```
-src/<pkg>/
+src/ibnr/
   triangle/    core.py (Triangle over ibis expr), transforms.py, io.py, validate.py
   kernels/     contract.py, predictive.py, scores.py, calibration.py,
                multiline.py (multi-LOB contract), nn_contract.py (NN grids/masks),
                mack.py (distribution-free chain ladder), cdr.py (one-year CDR),
-               stacking.py, parity.py, tuning.py
-  gallery/     registry.py, entry.py (GalleryEntry ABC), scaffold.py
-    bayesian/  meyers_ccl/ meyers_csr/ england_verrall_odp/ compartmental/
-    nn/        transformer/ deeptriangle/ mdn/ resnet/
-    statistical/    sur/ copula_glm/   (frequentist stochastic dependence models)
-    deterministic/  mack/ ...
+               holdout.py + densities.py + forecast.py (milestone 6: held-out cells,
+               measure carries, the forecast object and leaderboard),
+               harness.py (parallel retro pool), stacking.py, parity.py, tuning.py
+  gallery/     registry.py, entry.py (GalleryEntry ABC + ScoresHeldout/PredictsHeldout
+               mixins), scaffold.py [PLANNED, decision 6]
+    bayesian/  meyers_ccl/ meyers_csr/ england_verrall_odp/ clark_growth_curve/
+               guszcza_growth_curve/ compartmental/
+    nn/        transformer/ transformer_ml/ deeptriangle/ mdn/ resnet/
+    statistical/    sur/ copula_glm/ clark/   (frequentist; clark = the 2003 MLE)
+    deterministic/  mack/
   data/        schedule_p.py (gold mart adapter)
-  viz/         tidy.py, altair_.py, site.py (quarto gallery site)
+  viz/         [PLANNED, milestone 8] tidy.py, altair_.py, site.py (quarto gallery site)
 ```
 
 Each gallery model dir contains: `card.md`, `model.stan`, `model_numpyro.py`, `model_pymc.py` (bayesian) or pytorch module + config (nn) or plain-numpy `model.py` (statistical).
