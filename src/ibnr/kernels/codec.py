@@ -55,6 +55,11 @@ Envelope, version 1. One Arrow IPC **stream** per artifact:
                         b"ibnr.arrays.<name>"   nested IPC stream, one ndarray
                         b"ibnr.nested.<name>"   a complete nested envelope
 
+Each nested frame stream carries two more fields of its own:
+
+    schema metadata     b"ibnr.tagged_columns"  columns tagged value by value
+                        b"ibnr.index"           how to rebuild the index
+
 Arrow metadata values are raw bytes, so nesting a whole IPC stream inside one is
 legal and byte-exact. Every array shape and ``n_draws`` lives in the header
 rather than being inferred from the table, because a zero-target distribution
@@ -63,7 +68,16 @@ recovered.
 
 Frames go through ``pa.Table.from_pandas``, which handles every dtype in this
 package except object columns holding tuples or ``pd.NA`` - see
-:data:`_TAGGED_COLUMNS` for why those two matter and what happens to them.
+:data:`_TAGGED_COLUMNS` for why those two matter and what happens to them. The
+index does NOT go through pyarrow's own handling, for the same two reasons one
+axis over: see :func:`_index_to_columns`.
+
+Kinds are checked on the way in, not just routed on. ``from_arrow(data)``
+dispatches on the payload's ``ibnr.kind``, but every typed entry point -
+``PredictiveDistribution.from_arrow`` and its five siblings, and the nested
+children of a ``MackFitPanel`` - passes ``expect=`` and refuses anything else.
+Without that a typed decoder returns a correctly decoded artifact of the wrong
+class, which fails later and somewhere else.
 
 The header is emitted with ``allow_nan=False``. That is a guard rail rather
 than a formality: ``json.dumps`` will happily write the bare tokens ``NaN`` and
@@ -139,6 +153,10 @@ _NESTED_PREFIX = b"ibnr.nested."
 #:   ELPD" into "not a number" - the missing-versus-value distinction the whole
 #:   board rests on (CLAUDE.md milestone 6: a missing score is pd.NA, NEVER 0.0).
 _TAGGED_COLUMNS = b"ibnr.tagged_columns"
+
+#: How to rebuild one frame's index, written per frame stream. The index is data
+#: and gets the same treatment the columns get - see :func:`_index_to_columns`.
+_INDEX_RECORD = b"ibnr.index"
 
 
 # -- envelope primitives -------------------------------------------------------
@@ -225,20 +243,28 @@ def _unpack(data: bytes) -> tuple[str, pa.Table, dict, dict, dict, dict]:
 def _frame_to_bytes(frame: pd.DataFrame, compression: str | None) -> bytes:
     """One DataFrame as a nested IPC stream.
 
-    ``preserve_index=None`` is pyarrow's default and the right one here: a
-    RangeIndex rides in the pandas metadata and a named index becomes a column,
-    so both come back as they went in. Object columns Arrow cannot restore go
-    through :func:`_tag` value by value; anything :func:`_tag` does not know is
-    refused there by name rather than coerced to its ``repr``.
+    The index is taken over here rather than left to ``preserve_index=None``,
+    which is pyarrow's default and handles most of it - but not the two shapes
+    this package exists to keep straight. A nullable ``Int64`` index of
+    ``[3, pd.NA]`` comes back float64 ``[3.0, nan]``, the missing-versus-value
+    collapse the columns are guarded against, one axis over; and an object index
+    of tuples raises inside ``from_pandas`` outright, so a frame keyed by cohort
+    could not be sent at all. Every non-range index therefore travels as ordinary
+    columns, through the same :func:`_tag` machinery as the data, and a
+    RangeIndex travels as its start/stop/step so an empty body stays empty.
+    Anything :func:`_tag` does not know is refused there by name rather than
+    coerced to its ``repr``.
     """
+    index_record, frame = _index_to_columns(frame)
     tagged = [c for c in frame.columns if frame[c].dtype == object and not _arrow_native(frame[c])]
     if tagged:
         frame = frame.copy()
         for column in tagged:
             frame[column] = [json.dumps(_tag(v)) for v in frame[column]]
-    table = pa.Table.from_pandas(frame, preserve_index=None)
+    table = pa.Table.from_pandas(frame, preserve_index=False)
     metadata = dict(table.schema.metadata or {})
     metadata[_TAGGED_COLUMNS] = json.dumps(tagged).encode("utf-8")
+    metadata[_INDEX_RECORD] = json.dumps(index_record).encode("utf-8")
     return _write_stream(table.replace_schema_metadata(metadata), compression)
 
 
@@ -251,6 +277,76 @@ def _frame_from_bytes(data: bytes) -> pd.DataFrame:
         frame[column] = pd.Series(
             [_untag(json.loads(v)) for v in frame[column]], index=frame.index, dtype=object
         )
+    # Untag first: the index columns are tagged like any other, and a tuple index
+    # is exactly the case that needs it.
+    return _index_from_columns(frame, json.loads(metadata[_INDEX_RECORD]))
+
+
+# -- the index -----------------------------------------------------------------
+
+
+def _index_placeholder(level: int, taken) -> str:
+    """A column label for one index level that no real column can hold.
+
+    Suffixed until it is free rather than assumed unique: ``__ibnr_index_0__`` is
+    a legal column name, and a frame that happens to carry one would otherwise
+    have it silently overwritten and then dropped on decode.
+    """
+    name = f"__ibnr_index_{level}__"
+    while name in taken:
+        name += "_"
+    return name
+
+
+def _index_to_columns(frame: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
+    """Move the index into columns, returning the record needed to rebuild it."""
+    index = frame.index
+    names = [_tag(name) for name in index.names]
+    if isinstance(index, pd.RangeIndex):
+        # Described, not materialized: a RangeIndex is three integers, and
+        # writing it as a column would put a body on the kinds that have none.
+        return {
+            "kind": "range",
+            "start": int(index.start),
+            "stop": int(index.stop),
+            "step": int(index.step),
+            "names": names,
+        }, frame
+    columns = []
+    out = frame.reset_index(drop=True)
+    for level in range(index.nlevels):
+        column = _index_placeholder(level, out.columns)
+        # The level keeps its own dtype and becomes an ordinary column, which is
+        # the whole point: nullable Int64, Categorical and object-of-tuples are
+        # all things this codec already carries correctly in a COLUMN, and none
+        # of them survive pyarrow's index handling. An Index is array-like rather
+        # than a Series, so this assigns by position and cannot realign.
+        out[column] = pd.Series(index.get_level_values(level), index=out.index, copy=False)
+        columns.append(column)
+    return {"kind": "levels", "names": names, "columns": columns}, out
+
+
+def _index_from_columns(frame: pd.DataFrame, record: dict) -> pd.DataFrame:
+    """Rebuild the index :func:`_index_to_columns` took apart."""
+    names = [_untag(name) for name in record["names"]]
+    if record["kind"] == "range":
+        frame.index = pd.RangeIndex(record["start"], record["stop"], record["step"], name=names[0])
+        return frame
+    levels = [frame[column] for column in record["columns"]]
+    frame = frame.drop(columns=record["columns"])
+    if len(levels) == 1:
+        # `.rename` and not `name=`: pandas reads the name off the Series when
+        # `name` is None, so an index that had no name comes back carrying the
+        # placeholder column label. Measured - it is not a hypothetical.
+        #
+        # tupleize_cols=False is belt and braces. Pandas only tupleizes a LIST of
+        # tuples (measured on 2.3.3: a Series or ndarray input never does), so
+        # this is inert against today's call and becomes load-bearing the moment
+        # the levels are materialized any other way. A flat index of tuples
+        # turning into a MultiIndex is a different object with different names.
+        frame.index = pd.Index(levels[0], tupleize_cols=False).rename(names[0])
+    else:
+        frame.index = pd.MultiIndex.from_arrays(levels, names=names)
     return frame
 
 
@@ -296,6 +392,18 @@ def _array_from_bytes(data: bytes, record: dict) -> np.ndarray:
 # list column can hold; a board column is python floats beside pd.NA, which Arrow
 # flattens to one null. Each value therefore carries its own type tag and
 # reconstructs exactly, rather than as whatever the wire format rounded it to.
+
+
+#: Tags whose JSON form is already the python value, handed back untouched.
+_PLAIN_TAGS = frozenset({"null", "bool", "int", "str"})
+
+#: Every tag :func:`_tag` can write. :func:`_untag` refuses anything else by
+#: name: the two are hand-written dispatch tables and they drift silently in one
+#: direction - a kind the decoder does not know would otherwise fall through the
+#: final ``return`` and come back as its JSON shape, a list where a tuple was.
+_TAG_KINDS = _PLAIN_TAGS | frozenset(
+    {"na", "nat", "tuple", "float", "date", "datetime", "timestamp"}
+)
 
 
 def _tag(value) -> list:
@@ -345,7 +453,9 @@ def _untag(tagged: Sequence) -> Any:
         return dt.datetime.fromisoformat(value)
     if kind == "timestamp":
         return pd.Timestamp(value)
-    return value
+    if kind in _PLAIN_TAGS:
+        return value
+    raise ValueError(f"unknown tagged value kind {kind!r}; known kinds are {sorted(_TAG_KINDS)}")
 
 
 def _is_missing(value) -> bool:
@@ -444,6 +554,11 @@ def _encode_mack_fit(obj: MackFit, compression: str | None) -> bytes:
         "loss_field": obj.loss_field,
         "n_w": obj.n_w,
         "n_d": obj.n_d,
+        # Recorded for the same reason every entry in `arrays` records one: this
+        # is the ONE array on a MackFit that is not carried through `_pack`, and
+        # rebuilding it at a hardcoded float64 would make it the one that comes
+        # back as a different array from the one that was sent.
+        "cum_dtype": str(obj.cum.dtype),
     }
     arrays = {name: getattr(obj, name) for name in _MACK_ARRAYS}
     return _pack("MackFit", body, header, arrays=arrays, compression=compression)
@@ -451,7 +566,7 @@ def _encode_mack_fit(obj: MackFit, compression: str | None) -> bytes:
 
 def _decode_mack_fit(body: pa.Table, header: dict, frames, arrays, nested) -> MackFit:
     n_w, n_d = header["n_w"], header["n_d"]
-    cum = np.empty((n_w, n_d), dtype=float)
+    cum = np.empty((n_w, n_d), dtype=np.dtype(header["cum_dtype"]))
     for j in range(n_d):
         cum[:, j] = body.column(f"d{j}").to_numpy(zero_copy_only=False)
     return MackFit(
@@ -488,7 +603,11 @@ def _encode_mack_panel(obj: MackFitPanel, compression: str | None) -> bytes:
 
 def _decode_mack_panel(body, header: dict, frames, arrays, nested: dict) -> MackFitPanel:
     keys = [tuple(_untag(part) for part in key) for key in header["keys"]]
-    fits = {key: from_arrow(nested[str(i)]) for i, key in enumerate(keys)}
+    # `expect` on every child, for the same reason the typed classmethods carry
+    # it: the dispatcher routes on the nested blob's own kind, so a payload whose
+    # children are not fits would decode into a panel of whatever they were and
+    # fail its first `.ultimate` with nothing pointing back at the wire.
+    fits = {key: from_arrow(nested[str(i)], expect="MackFit") for i, key in enumerate(keys)}
     errors = {
         tuple(_untag(part) for part in key): message
         for key, message in zip(header["error_keys"], header["error_messages"], strict=True)
@@ -650,13 +769,28 @@ def to_arrow(obj, *, compression: str | None = None) -> bytes:
     return encode(obj, compression)
 
 
-def from_arrow(data: bytes, **kwargs):
+def from_arrow(data: bytes, *, expect: str | None = None, **kwargs):
     """Reconstruct whatever :func:`to_arrow` wrote, dispatching on ``ibnr.kind``.
+
+    ``expect`` names the kind the caller is prepared to receive, and anything
+    else is refused rather than decoded. Routing on the payload's own kind is
+    right for a router that will hand the result on, and wrong everywhere a
+    caller has already committed to a type - which is why every typed
+    ``from_arrow`` classmethod in this package passes its own kind here. Without
+    it ``PredictiveDistribution.from_arrow(triangle_bytes)`` returns a Triangle:
+    a real, correctly decoded artifact of the wrong type, whose error surfaces
+    somewhere else as a missing attribute.
 
     ``kwargs`` reach the per-kind decoder; today only ``Triangle`` takes one
     (``backend=``).
     """
+    if expect is not None and expect not in _DECODERS:
+        # Checked before the bytes are touched: a typo'd `expect` otherwise
+        # refuses every payload there is, which reads as a corrupt wire.
+        raise ValueError(f"unknown expected kind {expect!r}; known kinds are {sorted(_DECODERS)}")
     kind, body, header, frames, arrays, nested = _unpack(data)
+    if expect is not None and kind != expect:
+        raise ValueError(f"expected an envelope of kind {expect!r}, found {kind!r}")
     if kind not in _DECODERS:
         raise ValueError(f"unknown envelope kind {kind!r}; known kinds are {sorted(_DECODERS)}")
     return _DECODERS[kind](body, header, frames, arrays, nested, **kwargs)
@@ -706,6 +840,14 @@ def to_summary(obj, *, quantiles: Sequence[float] = DEFAULT_QUANTILES) -> dict:
             "enough to send whole"
         )
     levels = [float(q) for q in quantiles]
+    # Checked here rather than left to np.quantile, which only sees the levels on
+    # the branch that HAS draws. A zero-draw distribution answers with one null
+    # per level without evaluating any of them, so an impossible grid used to
+    # come back as a well-formed summary whose levels said 1.5 - the same call
+    # accepted or refused depending on the data rather than on the request.
+    bad = [q for q in levels if not 0.0 <= q <= 1.0]
+    if bad:
+        raise ValueError(f"quantile levels must lie in [0, 1]; got {bad}")
     if obj.n_draws == 0:
         mean = sd = [None] * obj.n_targets
         grid = [[None] * len(levels) for _ in range(obj.n_targets)]

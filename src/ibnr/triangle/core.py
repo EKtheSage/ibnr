@@ -228,9 +228,14 @@ class Triangle:
 
     @classmethod
     def from_arrow(cls, data: bytes, *, backend=None) -> Triangle:
+        """Decode a triangle written by :meth:`to_arrow` onto ``backend``.
+
+        ``expect`` refuses a payload of any other kind rather than returning it:
+        the dispatcher routes on the payload's own kind, not on the class asked.
+        """
         from ibnr.kernels import codec
 
-        return codec.from_arrow(data, backend=backend)
+        return codec.from_arrow(data, expect="Triangle", backend=backend)
 
     @classmethod
     def from_bermuda(cls, tri, **kwargs) -> Triangle:

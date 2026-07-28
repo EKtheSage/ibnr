@@ -864,9 +864,11 @@ class ForecastPanel:
 
     @classmethod
     def from_arrow(cls, data: bytes) -> ForecastPanel:
+        """Decode a panel written by :meth:`to_arrow`, refusing any other kind -
+        including the leaderboard ``DataFrame`` reduced from it."""
         from ibnr.kernels import codec
 
-        return codec.from_arrow(data)
+        return codec.from_arrow(data, expect="ForecastPanel")
 
     def __repr__(self) -> str:
         return (

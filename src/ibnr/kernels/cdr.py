@@ -120,9 +120,10 @@ class CDRResult:
 
     @classmethod
     def from_arrow(cls, data: bytes) -> CDRResult:
+        """Decode a CDR written by :meth:`to_arrow`, refusing any other kind."""
         from ibnr.kernels import codec
 
-        return codec.from_arrow(data)
+        return codec.from_arrow(data, expect="CDRResult")
 
 
 def _open_years(fit: MackFit) -> np.ndarray:
