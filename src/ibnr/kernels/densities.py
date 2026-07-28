@@ -100,7 +100,6 @@ the arithmetic come out.
 from __future__ import annotations
 
 import numpy as np
-from scipy import integrate
 from scipy.special import gammaln
 
 __all__ = [
@@ -257,6 +256,14 @@ def check_normalization(logpdf, *, lo: float, hi: float, tol: float = 1e-4) -> f
     density anywhere the data actually lives. A check that cannot fail is worse
     than no check, because it is quoted as evidence.
     """
+    # Imported here, not at module scope: this module is on the import path of
+    # every gallery entry (via ``gallery.entry``), while ``check_normalization``
+    # is a test-time guard rail no production path calls. ``scipy.integrate``
+    # drags ``scipy.optimize`` and ``scipy.sparse.linalg`` in behind it (its
+    # ``_bvp`` submodule needs both), so at module scope it charges that to
+    # every caller that only ever evaluates one of the lpdfs above.
+    from scipy import integrate
+
     mass = float(integrate.quad(lambda x: float(np.exp(logpdf(np.array([x])))[0]), lo, hi)[0])
     if not abs(mass - 1.0) <= tol:
         raise AssertionError(f"density integrates to {mass:.6f}, not 1 (tol {tol})")

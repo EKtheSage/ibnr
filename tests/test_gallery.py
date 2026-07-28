@@ -1,7 +1,7 @@
 """Guards the gallery contract: registration, the GalleryEntry ABC, and the
-no-torch-at-import rule.
+rules about what may not be imported at module level.
 
-Three invariants live here:
+Four invariants live here:
 
 1. **Entries self-register on import.** ``ibnr.gallery`` must expose every
    family (bayesian / nn / statistical / deterministic) through
@@ -11,7 +11,12 @@ Three invariants live here:
    top-level ``import torch`` in an nn entry would break plain
    ``import ibnr.gallery`` for everyone. Only a subprocess can prove this -
    see ``test_gallery_import_does_not_require_torch``.
-3. **The GalleryEntry contract is enforced at registration time, not at
+3. **Neither ``import ibnr`` nor importing the gallery pulls in
+   ``scipy.integrate`` or ``scipy.optimize``.** Each serves one narrow path
+   and each costs about a second, which a downstream Azure Function pays on
+   every cold start - see
+   ``test_import_does_not_pull_heavy_scipy_subpackages``.
+4. **The GalleryEntry contract is enforced at registration time, not at
    fit time** (design decision 5: "an entry that fails the eval harness does
    not register"). ``register()`` rejects non-subclasses, still-abstract
    classes, missing ``name``/``family``, and a missing ``card.md``.
@@ -61,6 +66,34 @@ def test_gallery_import_does_not_require_torch():
         "import sys; import ibnr.gallery as g; "
         "assert 'nn_transformer' in g.list(); "
         "assert 'torch' not in sys.modules, 'gallery import pulled in torch'"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
+@pytest.mark.parametrize("stmt", ["import ibnr", "from ibnr import gallery"])
+def test_import_does_not_pull_heavy_scipy_subpackages(stmt):
+    """Neither import may drag ``scipy.integrate`` or ``scipy.optimize`` in.
+
+    Both serve exactly one narrow path each - ``check_normalization`` (a
+    test-time guard rail) and Clark's MLE - and between them they cost about a
+    second of import time, ``scipy.integrate`` largely because its ``_bvp``
+    submodule imports ``scipy.optimize`` and ``scipy.sparse.linalg``. A
+    downstream Azure Function pays that on every cold start against a fixed
+    30 s app-init timeout, so the imports live at their point of use and this
+    test is what keeps them there: the natural edit - hoisting one back to
+    module scope for tidiness - is silent otherwise.
+
+    ``scipy.special`` is deliberately NOT in the list. It is unavoidable
+    (``gammaln`` for ``odp_lpdf``, ``logsumexp`` in ``forecast.py``), so
+    asserting on it would fail for a reason nobody can act on.
+
+    Subprocess for the same reason as the torch guard above: this process has
+    almost certainly imported both already via pytest's own dependencies.
+    """
+    code = (
+        f"import sys; {stmt}; "
+        "leaked = [m for m in ('scipy.integrate', 'scipy.optimize') if m in sys.modules]; "
+        f"assert not leaked, '{stmt} pulled in ' + repr(leaked)"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
 
