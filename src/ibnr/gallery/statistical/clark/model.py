@@ -14,6 +14,9 @@ Methods, per the paper:
 - ``cape_cod``: U_w = ELR * premium_w with a single profiled ELR - Clark's
   recommendation for thin triangles.
 
+Only ``cape_cod`` consumes premium, so only it resolves ``premium_field``:
+``ldf`` fits a losses-only triangle with the argument's default in place.
+
 Predictive distribution = Clark's own variance decomposition, simulated:
 parameter risk from the MVN with covariance phi * inverse observed Fisher
 information (log-parameter space), process risk as scaled-Poisson ODP draws,
@@ -148,7 +151,7 @@ class Clark(GalleryEntry, PredictsHeldout):
         triangle: Triangle,
         *,
         loss_field: str = "paid_loss",
-        premium_field: str = "earned_premium",
+        premium_field: str | None = "earned_premium",
         as_of: dt.date | str | None = None,
         growth_curve: str = "loglogistic",
         method: str = "cape_cod",
@@ -167,7 +170,14 @@ class Clark(GalleryEntry, PredictsHeldout):
         # cohort's MLE, which index_into then accepts - predict_at would draw
         # one cohort's cells from another cohort's curve. See mack.
         train = triangle.as_of(as_of) if as_of is not None else triangle
-        contract = odp_stan_data(train, loss_field=loss_field, premium_field=premium_field)
+        # cape_cod alone consumes premium (U[w] = ELR * premium[w]); resolving
+        # it under ldf would refuse a losses-only triangle over a field the
+        # method never reads.
+        contract = odp_stan_data(
+            train,
+            loss_field=loss_field,
+            premium_field=premium_field if method == "cape_cod" else None,
+        )
         c = contract
         w, d, inc = c["w"], c["d"], c["inc_loss"]  # ragged (len_data,) per observed cell
         step = c["dev_grain_months"]  # 12 for annual grain

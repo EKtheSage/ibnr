@@ -88,7 +88,9 @@ binomial, Tweedie) - a modelling decision, not a units conversion.
 ## Data contract
 
 `kernels.contract.odp_stan_data` - incremental cells, `paid_to_date` /
-`latest_d` anchors, premium by origin. Negative increments are rejected
+`latest_d` anchors, premium by origin (resolved under `cape_cod` only; `ldf`
+never reads premium, so a losses-only triangle fits it with no
+`premium_field` argument). Negative increments are rejected
 (same ODP limitation as the bootstrap; failures are recorded, not patched).
 Zero increments are fine. The `ldf` method additionally requires positive
 paid-to-date per origin; `cape_cod` does not.

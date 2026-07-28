@@ -279,26 +279,10 @@ for premium field 'earned_premium'`) - except in the NN entries, which train
 pooled across many cohorts and so *drop* an unusable cohort from the pool
 instead of refusing the whole fit.
 
-`clark` is the awkward case. Its default `method="cape_cod"` genuinely needs
-premium (`U[w] = ELR * premium[w]`), and `method="ldf"` estimates a free
-ultimate per origin and never uses premium - but `ldf` still *resolves*
-`premium_field` when it builds its data contract, ahead of the branch that
-would have ignored it. So on a triangle carrying no premium, choosing `ldf` is
-not enough on its own; the default argument has to go too:
-
-```python
-# `losses` here carries paid_loss and nothing else - no premium field at all.
-# ValueError: no rows for premium field 'earned_premium', raised while building
-# the data contract, before the method is looked at:
-gallery.fit("clark", losses, method="ldf")
-
-# what actually works - ldf ignores premium, so switch the default off as well:
-gallery.fit("clark", losses, method="ldf", premium_field=None)
-```
-
-(The example triangle built above does carry `earned_premium`, so `ldf` happens
-to work on it with no extra argument - which is exactly what makes this easy to
-miss until you point the same call at a triangle of losses only.)
+`clark` needs premium under its default `method="cape_cod"` (`U[w] = ELR *
+premium[w]`), not under `method="ldf"`, which estimates a free ultimate per
+origin and neither reads nor resolves premium - on a triangle of losses only,
+`gallery.fit("clark", losses, method="ldf")` just works.
 
 **Bringing your own connection.** `backend=` takes `"duckdb"` (the default),
 `"polars"` (needs the `[polars]` extra), or an already-connected ibis backend -
