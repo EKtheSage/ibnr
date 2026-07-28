@@ -129,6 +129,15 @@ class MeyersCCL(GalleryEntry, ScoresHeldout, PredictsHeldout):
                 f"nuts_sampler={nuts_sampler!r} is a pymc-backend control; "
                 f"the {backend!r} backend does not take it"
             )
+        # parallel_chains / max_treedepth are cmdstan-level controls the retro
+        # harness escalates on; the ports keep their own defaults. Validated
+        # BEFORE any data prep: a port that accepted them silently would report
+        # an escalated fit that never ran.
+        if backend != "stan" and (parallel_chains != 1 or max_treedepth is not None):
+            raise ValueError(
+                "parallel_chains / max_treedepth are stan-backend controls; "
+                f"the {backend!r} port does not take them"
+            )
         train = triangle.as_of(as_of) if as_of is not None else triangle
         # One contract dict for all three backends (CLAUDE.md #3): no backend
         # is allowed to grow its own data prep. stan_data() also validates the
@@ -148,16 +157,11 @@ class MeyersCCL(GalleryEntry, ScoresHeldout, PredictsHeldout):
             "numpyro": self._sample_numpyro,
             "pymc": self._sample_pymc,
         }[backend]
-        # parallel_chains / max_treedepth are cmdstan-level controls the
-        # retro harness escalates on; the ports keep their own defaults
-        extra = {}
-        if backend == "stan":
-            extra = {"parallel_chains": parallel_chains, "max_treedepth": max_treedepth}
-        elif parallel_chains != 1 or max_treedepth is not None:
-            raise ValueError(
-                "parallel_chains / max_treedepth are stan-backend controls; "
-                f"the {backend!r} port does not take them"
-            )
+        extra = (
+            {"parallel_chains": parallel_chains, "max_treedepth": max_treedepth}
+            if backend == "stan"
+            else {}
+        )
         # nuts_sampler is the pymc-side analogue and has to reach _sample_pymc:
         # accepting it here and dropping it would sample with that method's own
         # "pymc" default while the caller believed a foreign NUTS ran.

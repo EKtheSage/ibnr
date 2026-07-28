@@ -206,6 +206,24 @@ def test_entry_rejects_unknown_backend():
         MeyersCCL().fit(None, backend="jags")
 
 
+def test_ports_reject_stan_only_controls():
+    """``parallel_chains`` / ``max_treedepth`` are cmdstan controls the retro
+    harness escalates on. A port that silently ignored them would report an
+    escalated fit that never happened, so they are a hard error instead.
+
+    ``triangle=None`` is the assertion: the guard has to fire BEFORE any data
+    prep, so the ValueError arrives rather than the AttributeError that
+    ``None.as_of(...)`` would raise. CCL validated these AFTER building its
+    contract until this test was added, which is why it reported a missing
+    premium field where its three siblings reported the bad argument."""
+    from ibnr.gallery.bayesian.meyers_ccl.model import MeyersCCL
+
+    with pytest.raises(ValueError, match="stan-backend controls"):
+        MeyersCCL().fit(None, backend="numpyro", parallel_chains=4)
+    with pytest.raises(ValueError, match="stan-backend controls"):
+        MeyersCCL().fit(None, backend="numpyro", max_treedepth=12)
+
+
 # -- slow: NumPyro and PyMC sample the same posterior ------------------------
 
 
