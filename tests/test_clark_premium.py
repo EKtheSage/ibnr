@@ -86,6 +86,28 @@ def test_ldf_fits_a_premium_free_triangle_through_gallery_fit():
     np.testing.assert_array_less(entry.contract_["paid_to_date"] - 1e-9, ults[:-1])
 
 
+def test_ldf_ignores_an_explicitly_named_premium_field():
+    """The other wire: the premium ARGUMENT is inert under ldf, not just the
+    premium DATA.
+
+    Naming ``premium_field="earned_premium"`` on a triangle that has no such
+    field must still fit, because ldf never resolves the argument at all - and
+    the MLE must be bit-identical to the ``premium_field=None`` fit, since the
+    two see the same cells and run the same deterministic optimizer. A fix that
+    only skipped premium when the caller passed ``None`` would pass every other
+    test in this file and fail here.
+    """
+    tri = _triangle(with_premium=False)
+
+    named = gallery.fit("clark", tri, method="ldf", premium_field="earned_premium")
+    disabled = gallery.fit("clark", tri, method="ldf", premium_field=None)
+
+    for key in ("omega", "theta", "phi"):
+        assert named.params_[key] == disabled.params_[key]
+    np.testing.assert_array_equal(named.params_["level"], disabled.params_["level"])
+    assert "premium" not in named.contract_
+
+
 def test_cape_cod_without_premium_names_premium_and_the_method():
     """The other half of the criterion: the method that DOES need premium still
     refuses, and its message says which method and what to do about it."""
