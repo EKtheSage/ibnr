@@ -1,6 +1,6 @@
 [project]
 name = "ibnr"
-version = "0.4.0"
+version = "0.5.0"
 description = "Gallery-centric probabilistic loss reserving: Bayesian MCMC and neural network methods with mandatory evaluation, over a long-format triangle data layer."
 readme = "README.md"
 license = "MPL-2.0"
@@ -20,6 +20,12 @@ keywords = [
 ]
 # No "License ::" classifier: `license` above is an SPDX expression (PEP 639),
 # and hatchling rejects declaring the license both ways.
+#
+# These classifiers describe the CORE install, which is what `pip install ibnr`
+# gets and the only thing requires-python governs. Measured wheels-only on
+# x86_64 linux: core resolves on every one of 3.11-3.14 with no failures. The
+# extras are narrower and say so in their own markers below - a classifier
+# cannot express "3.11-3.14 unless you asked for [interop]".
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
@@ -28,6 +34,8 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Mathematics",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
@@ -35,7 +43,27 @@ dependencies = [
     # duckdb only. The polars backend pulls a ~176 MB runtime that a duckdb-only
     # user never executes, so it lives in the `polars` extra below. Both backends
     # remain first-class and are tested together (see the dev group).
-    "ibis-framework[duckdb]>=9.5",
+    #
+    # The <13 ceiling is the tested one, not a guess: 12.0.0 is what uv.lock
+    # resolves and what every CI leg runs. ibis has broken us across majors
+    # before - the polars backend's total absence of window functions
+    # (CLAUDE.md gotchas) is an ibis 10.x fact that transforms.py is written
+    # around - so a major bump has to be a deliberate change with the
+    # dual-backend suite re-run, not something a fresh resolve does silently.
+    "ibis-framework[duckdb]>=9.5,<13",
+    # Deliberately NOT numpy>=2, even though numpy 2 is what we want and what
+    # this repo now locks (see [tool.uv] below). This floor ALREADY resolves to
+    # numpy 2.x for a plain `pip install ibnr`; the numpy 1.26.4 that used to
+    # appear in uv.lock was a property of THIS repo's environment, where the
+    # [interop] and [bayesian] extras resolve alongside the core and drag their
+    # transitive numpy<2 caps in. Raising the floor to 2 would buy a core user
+    # nothing they do not already have and would make `pip install
+    # ibnr[interop]` and `ibnr[bayesian]` unsatisfiable, because bermuda-ledger
+    # 2.3.0 and arviz 0.18.0 both cap numpy below 2 and both are the newest
+    # releases of their projects. Measured on a clean core-only install of the
+    # built wheel: 548 passed / 0 failed on numpy 2.4.6 + pandas 3.0.5, and the
+    # identical 548 / 0 on numpy 2.5.1 + pandas 3.0.5, which is what a plain
+    # `pip install ibnr` resolves today.
     "numpy>=1.26",
     "pandas>=2",
     "scipy>=1.11",
@@ -43,18 +71,72 @@ dependencies = [
 
 [project.optional-dependencies]
 # The second ibis backend. Only needed to pass backend="polars"; duckdb is the
-# default and covers every code path on its own.
-polars = ["ibis-framework[polars]>=9.5"]
+# default and covers every code path on its own. Ceiling as for the core dep.
+polars = ["ibis-framework[polars]>=9.5,<13"]
+#
+# ---------------------------------------------------------------------------
+# TWO EXTRAS CARRY A PYTHON CEILING, AND IT IS THE SAME CEILING FOR THE SAME
+# REASON. Both [bayesian] and [interop] transitively pin numpy below 2 -
+# arviz 0.18.0 (pulled by bayesblend 0.0.8's arviz>=0.18,<0.19) and
+# bermuda-ledger 2.3.0 respectively. The newest numpy under 2 is 1.26.4, which
+# has no cp313 wheel and whose source does not support 3.13 at all. So both
+# extras stop at Python 3.12, while the core and the other three extras resolve
+# wheels-only through 3.14.
+#
+# A marker ALONE would be a silent no-op and is the wrong answer: on 3.13 the
+# extra would simply resolve WITHOUT bayesblend (or without bermuda), and the
+# user meets a ModuleNotFoundError at import - the runtime crash this is here to
+# prevent. Leaving the dependency unmarked is no better: the resolver only
+# complains under --only-binary, and with sdists allowed (what plain `pip
+# install` does) it resolves happily to unbuildable numpy 1.26.4 sources and
+# fails minutes later inside cc. Measured, all three ways.
+#
+# So the complementary marker requires a package that does not exist on PyPI.
+# That turns the ceiling into a resolution failure that names its own reason,
+# under BOTH resolution modes. Both sentinel names were 404 on PyPI when this
+# landed and should be reserved, so a squatter cannot turn a clean error into a
+# wrong install. This repo's own lock steps over them - see [tool.uv].
+# ---------------------------------------------------------------------------
+#
 # bayesblend is pinned to 0.0.x: kernels/stacking.py is written against its
 # 0.0.8 API (Draws.from_lpd, the four fitter classes, the weights property),
 # which a 0.1 release is free to break.
-bayesian = ["cmdstanpy", "numpyro", "pymc", "arviz", "bayesblend>=0.0.8,<0.1"]
+#
+# arviz<1 and pymc<6 are MEASURED breaks, not caution. arviz 1.x is the
+# arviz-base/arviz-stats/arviz-plots rewrite and drops the
+# az.from_dict(posterior=...) signature the parity tests are written against;
+# pymc 6.x changed LKJCorrRV.rv_op and fails
+# test_lkj1_gives_uniform_correlation[pymc]. Neither cap is visible today only
+# because bayesblend's own arviz>=0.18,<0.19 holds the resolution down - the day
+# that pin moves, both land silently on a consumer.
+#
+# Note for anyone reading the wheel-tag story: on 3.12 this extra installs but
+# does NOT install wheels-only, because bayesblend pins matplotlib==3.7.2, whose
+# newest wheel is cp311. 3.12 builds it from source (CI does exactly this and is
+# green); 3.11 is the last version that needs no compiler.
+bayesian = [
+    "cmdstanpy",
+    "numpyro",
+    "pymc<6",
+    "arviz<1",
+    "bayesblend>=0.0.8,<0.1; python_version < '3.13'",
+    "ibnr-bayesian-extra-requires-python-3-12; python_version >= '3.13'",
+]
 nn = ["torch>=2.2"]
 viz = ["altair"]
 # Needed only to convert OUT to these libraries (`to_chainladder`/`to_bermuda`).
 # Reading FROM them takes a foreign object the caller already built, so it needs
 # no dependency of ours.
-interop = ["chainladder>=0.8.18", "bermuda-ledger>=2.3"]
+#
+# The chainladder floor is 0.9.2, raised from 0.8.18, because the old floor let
+# `pip install ibnr[interop]` resolve 0.8.26 - which is NOT the version every
+# tieout in this repo was validated against. A floor whose resolution nobody has
+# ever run the suite on is not a floor.
+interop = [
+    "chainladder>=0.9.2",
+    "bermuda-ledger>=2.3; python_version < '3.13'",
+    "ibnr-interop-extra-requires-python-3-12; python_version >= '3.13'",
+]
 
 [project.urls]
 Homepage = "https://github.com/EKtheSage/ibnr"
@@ -88,8 +170,8 @@ dev = [
     # polars is optional for users but REQUIRED for development: the transform
     # suite runs against both backends, and that matrix is what keeps the
     # polars-compatible formulations honest (CLAUDE.md #2).
-    "ibis-framework[polars]>=9.5",
-    "chainladder>=0.8.18",
+    "ibis-framework[polars]>=9.5,<13",
+    "chainladder>=0.9.2",
     "bermuda-ledger>=2.3",
     "pandas>=2",
     "pyarrow>=15",
@@ -102,6 +184,55 @@ dev = [
 # Documentation site (Quarto-based; needs the `quarto` CLI installed separately).
 # Build with: uv run --group docs great-docs build
 docs = ["great-docs>=0.15"]
+
+[tool.uv]
+# Overrides apply to THIS project's own resolution only. They are a uv concept
+# and never reach the published metadata - the wheel still declares exactly what
+# [project] says above, sentinels included. That separation is the whole point:
+# it lets the dev environment and CI run the numpy the core dependency already
+# resolves to for a consumer, without shipping metadata that cannot be satisfied.
+#
+# Every version override below is a STALE upstream pin on code that works, and
+# each was verified by running the suite rather than by reading changelogs:
+#   bermuda-ledger 2.3.0 declares numpy<2,>1.23.1   -> 570 passed / 0 failed on 2.4.6
+#   arviz 0.18.0 (via bayesblend) declares numpy<2  -> 586 passed / 0 failed on 0.23.4
+#   bayesblend 0.0.8 declares matplotlib==3.7.2     -> that wheel is numpy-1 ABI and
+#       dies with "numpy.core.multiarray failed to import" the moment numpy 2 is
+#       present; 3.11.1 is fine, and it is a WHEEL on 3.12 rather than a source
+#       build. All extras together on these overrides: 932 passed / 0 failed.
+# One upgrade was NOT optional and is worth knowing before anyone pins pymc
+# back: pytensor 2.31.7 unpacks numpy's einsum_path result as a 5-tuple, numpy
+# 2.4 returns 3, and every LKJ-based compartmental test dies on
+# "not enough values to unpack". pymc 5.28.5 / pytensor 2.38.3 fix it, so the
+# lock carries them and the bayesian suite is 593 passed / 0 failed there.
+# The right long-term fix is upstream (bermuda: drop numpy<2; bayesblend: drop
+# arviz<0.19 and the exact matplotlib pin); this is the local bridge until then.
+#
+# The numpy override is a FLOOR of 2, not just permission to reach it. Written
+# as the permissive `numpy>1.23.1,<2.5` it changed nothing: an override widens
+# what is allowed, and uv then prefers the version already in the lockfile, so
+# a re-lock sat right back down on 1.26.4. The whole point of this block is that
+# development and CI run the numpy generation a consumer already gets, so the
+# floor says so and cannot quietly regress. The <2.5 ceiling is numba's real cap
+# (numpy<2.5), inherited through chainladder -> sparse; drop it when numba
+# supports 2.5.
+#
+# The last two entries are not version overrides at all. They neutralise the
+# nonexistent sentinel packages the [bayesian] and [interop] extras declare
+# above, by re-declaring them under a marker that can never be true. Without
+# this `uv lock` fails outright - it resolves every extra across the whole
+# requires-python range, hits the >=3.13 split, and correctly reports that a
+# package which does not exist cannot be installed. The consequence in-repo is
+# that on 3.13+ those two extras would resolve EMPTY here rather than erroring;
+# that is unreachable in practice, since every CI leg and the dev box run 3.11
+# or 3.12, which is the range the extras support anyway.
+override-dependencies = [
+    "numpy>=2,<2.5",
+    "arviz>=0.23,<1",
+    "matplotlib>=3.10",
+    "ibnr-bayesian-extra-requires-python-3-12; python_version < '3'",
+    "ibnr-interop-extra-requires-python-3-12; python_version < '3'",
+]
 
 [build-system]
 requires = ["hatchling"]

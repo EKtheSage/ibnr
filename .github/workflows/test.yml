@@ -40,7 +40,7 @@ name: Tests
 # and skip individually. "At least one executed test per named file" is the one
 # rule that covers both.
 #
-# The matrix has two halves that do different jobs:
+# The matrix has three parts that do different jobs:
 #
 #   * The isolated legs (core, core-py311, polars, nn, bayesian, interop)
 #     install the core dependencies plus exactly ONE extra. This is CLAUDE.md's
@@ -55,6 +55,13 @@ name: Tests
 #     in strict mode: it enumerates the only skip reasons a runner may produce
 #     and fails on anything else.
 #
+#   * The two `-latest` legs install WITHOUT the lockfile and force numpy and
+#     pandas to their newest releases. Every other leg grades uv.lock, which
+#     [tool.uv] override-dependencies deliberately holds somewhere a consumer
+#     never lands; these two grade the floating resolution `pip install ibnr`
+#     actually produces. They are allowed to break when upstream ships, and
+#     that break is the point.
+#
 # On what the core leg does and does not prove about torch, because it is easy
 # to read backwards: tests/test_gallery.py's subprocess check asserts `'torch'
 # not in sys.modules` after importing ibnr.gallery. With torch ABSENT that
@@ -68,7 +75,8 @@ name: Tests
 # check it against the Actions tab. Billed job time: all 6m04, bayesian 4m19,
 # interop 2m22, nn 2m19, polars 56s, core 50s, core-py311 48s - about 18
 # runner-minutes per pull request, with wall clock set by the `all` leg at
-# roughly 6 minutes.
+# roughly 6 minutes. The two `-latest` legs add roughly a minute each and
+# neither installs torch or cmdstanpy, so they sit at the cheap end.
 #
 # Worth knowing if these numbers are ever re-derived on a laptop: the runners
 # are FASTER than the dev box for this workload, not slower. The `all` leg's
@@ -97,13 +105,13 @@ name: Tests
 #     ever run on. A real gap and a deliberate deferral: it would be the first
 #     non-ubuntu runner in the repository and belongs in its own change.
 #
-#   * An exhaustive import smoke test. The core leg only catches a hidden
-#     optional import in a module that some collected test actually imports.
-#     Making "catch hidden imports" literally true needs a test that walks the
-#     package importing every submodule, with a declared allowlist for the
-#     modules that legitimately require an extra (the network.py modules import
-#     torch at module level by design). That is a source change and a policy
-#     decision, not a workflow change.
+# No longer absent: the exhaustive import smoke test this header used to defer
+# now exists as tests/test_import_purity.py, and it is in required_files on the
+# legs where it must not silently vanish. It walks every submodule under a
+# meta_path blocker that refuses the extras, so it runs identically in every leg
+# rather than being disarmed on the one where the extras ARE installed - which
+# is the leg where a new module-level `import pymc` is most likely to be written
+# and least likely to be noticed.
 
 on:
   push:
@@ -198,7 +206,7 @@ jobs:
             forbid_skips: ""
             allow_skips: ""
             strict_skips: "false"
-            required_files: "tests/test_core.py;tests/test_transforms.py;tests/test_gallery.py;tests/test_markdown_snippets.py"
+            required_files: "tests/test_core.py;tests/test_transforms.py;tests/test_gallery.py;tests/test_markdown_snippets.py;tests/test_import_purity.py"
             # 540 passed locally, 539 on a runner - one test differs by platform.
             # That one-test gap is the reason the floors carry a real cushion
             # rather than being pinned to a local count.
@@ -226,7 +234,7 @@ jobs:
             forbid_skips: ""
             allow_skips: ""
             strict_skips: "false"
-            required_files: "tests/test_core.py;tests/test_transforms.py;tests/test_gallery.py;tests/test_markdown_snippets.py"
+            required_files: "tests/test_core.py;tests/test_transforms.py;tests/test_gallery.py;tests/test_markdown_snippets.py;tests/test_import_purity.py"
             min_tests: "500"
 
           # ---------------------------------------------------------------
@@ -370,8 +378,63 @@ jobs:
             forbid_skips: ""
             allow_skips: "gold mart;gh CLI;cmdstan"
             strict_skips: "true"
-            required_files: "tests/test_transforms.py;tests/test_deeptriangle.py;tests/test_mdn.py;tests/test_resnet.py;tests/test_nn_heldout.py;tests/test_stacking.py;tests/test_tieout_chainladder.py;tests/test_clark.py;tests/test_interop_bermuda.py;tests/test_polars_extra.py"
+            required_files: "tests/test_transforms.py;tests/test_deeptriangle.py;tests/test_mdn.py;tests/test_resnet.py;tests/test_nn_heldout.py;tests/test_stacking.py;tests/test_tieout_chainladder.py;tests/test_clark.py;tests/test_interop_bermuda.py;tests/test_polars_extra.py;tests/test_import_purity.py"
             min_tests: "860"
+
+          # ---------------------------------------------------------------
+          # THE TWO LEGS BELOW DELIBERATELY DO NOT USE THE LOCKFILE, and they
+          # are the only ones that grade what a downstream consumer actually
+          # installs. Every leg above runs `uv sync --locked`, so all seven of
+          # them grade one resolution: the one in uv.lock, which [tool.uv]
+          # override-dependencies deliberately holds at numpy 2.4.6 / pandas
+          # 2.3.3 because the extras' stale upstream pins have to be overridden
+          # for the repo to run numpy 2 at all. A consumer gets none of that.
+          # `pip install ibnr` resolves numpy 2.5.1 and pandas 3.0.5 today, and
+          # no lockfile can pin what a resolver decides on someone else's
+          # machine - so without these legs the published package's real
+          # dependency set is ungraded.
+          #
+          # They are ALLOWED to break when a new numpy or pandas ships. That
+          # break IS the signal, and it arrives here rather than in a user's
+          # traceback. Do not "fix" one by pinning it; fix the code, or add a
+          # cap to the extra that genuinely needs one.
+          #
+          # `unlocked` is a separate matrix field rather than a sentinel value
+          # in sync_args, because the two install paths take different uv
+          # subcommands and a reader must be able to see which one a leg takes
+          # without parsing an argument string.
+          - name: core-latest
+            python: "3.12"
+            cache: "false"
+            unlocked: "true"
+            sync_args: '-e . --group test "numpy>=2" "pandas>=3"'
+            expect_imports: ""
+            absent_imports: "torch;polars;pymc;numpyro;arviz;bayesblend;chainladder;bermuda;altair"
+            forbid_skips: ""
+            allow_skips: ""
+            strict_skips: "false"
+            required_files: "tests/test_core.py;tests/test_transforms.py;tests/test_gallery.py;tests/test_markdown_snippets.py;tests/test_import_purity.py"
+            # measured: 542 passed, 201 skipped on numpy 2.5.1 / pandas 3.0.5
+            min_tests: "500"
+
+          # ---------------------------------------------------------------
+          # polars-latest: the second backend on the same floating resolution.
+          # polars is the extra a core-only consumer is most likely to add, and
+          # it is the one whose 18 dual-backend files carry the largest silent
+          # skip risk - so it keeps the locked polars leg's forbid_skips rule.
+          - name: polars-latest
+            python: "3.12"
+            cache: "false"
+            unlocked: "true"
+            sync_args: '-e ".[polars]" --group test "numpy>=2" "pandas>=3"'
+            expect_imports: "polars"
+            absent_imports: "torch;pymc;chainladder"
+            forbid_skips: "polars backend not installed"
+            allow_skips: ""
+            strict_skips: "false"
+            required_files: "tests/test_transforms.py;tests/test_mack.py;tests/test_holdout.py;tests/test_polars_extra.py"
+            # measured: 670 passed, 73 skipped on numpy 2.5.1 / pandas 3.0.5
+            min_tests: "620"
 
     steps:
       - uses: actions/checkout@v6
@@ -414,8 +477,36 @@ jobs:
       # to pytest, so a plain `uv sync` can never produce a core-only
       # environment. The `test` group holds pytest and ruff and nothing else,
       # exactly as `docs` was carved out so docs.yml could avoid the dev group.
-      - name: Install
+      - name: Install (locked)
+        if: matrix.unlocked != 'true'
         run: uv sync --locked ${{ matrix.sync_args }}
+
+      # No lockfile on purpose - see the core-latest comment in the matrix.
+      # `uv venv` first so both install paths leave an identical .venv layout
+      # for the pytest step, which runs through `uv run --no-sync` either way.
+      # `uv pip install` is used rather than `uv sync --no-lock` because it is
+      # the only one that takes extra requirements on the command line, which is
+      # how these legs force numpy and pandas forward rather than merely
+      # allowing them.
+      #
+      # --no-config is LOAD-BEARING and was measured, not assumed. `uv pip
+      # install` run from the project directory reads [tool.uv] out of
+      # pyproject.toml, override-dependencies included - so without it this leg
+      # inherits the repo's own numpy<2.5 cap and installs numpy 2.4.6, exactly
+      # what the seven locked legs already grade. The one thing this leg exists
+      # to test would be silently switched off, and it would still be green.
+      # Measured on the same command: numpy 2.4.6 with config, 2.5.1 without.
+      - name: Install (floating, newest numpy/pandas)
+        if: matrix.unlocked == 'true'
+        run: |
+          uv venv --python ${{ matrix.python }}
+          uv pip install --no-config ${{ matrix.sync_args }}
+
+      # Print the resolution rather than infer it from the leg name. On the
+      # floating legs this is the only record of what was actually graded, and
+      # it is the first thing to read when one of them goes red.
+      - name: Record the resolution this leg graded
+        run: uv run --no-sync python -c "import numpy, pandas; print('numpy', numpy.__version__, 'pandas', pandas.__version__)"
 
       # Fail before pytest if the environment is not what this leg claims.
       # Cheap, and its failure message is obvious - which is exactly what a skip
