@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 
 from ibnr.gallery.entry import GalleryEntry
-from ibnr.gallery.nn._heldout import PooledMDNHeldout
+from ibnr.gallery.nn._heldout import PooledMDNHeldout, heldout_cutoff
 from ibnr.gallery.nn._scheme import norm_stats, splits
 from ibnr.gallery.nn._training import train_ensemble
 from ibnr.gallery.nn.mdn.config import MDNConfig
@@ -276,9 +276,11 @@ class MDN(GalleryEntry, PooledMDNHeldout):
 
     def _heldout_inputs(self, ci: int) -> dict:
         """One cohort's forward inputs, conditioned on everything it had at
-        as_of: context = all its observed cells, cutoff = its deepest observed
-        calendar diagonal (so the held-out diagonal sits at distance 1, the
-        most-supervised relative-calendar position - the rollout's first step)."""
+        as_of: context = all its observed cells, cutoff = the deepest calendar
+        diagonal it HELD a cell on (so the held-out diagonal sits at distance 1,
+        the most-supervised relative-calendar position - the rollout's first
+        step). The cutoff spans obs cells and anchors both - see
+        ``_heldout.heldout_cutoff`` for why obs alone is not it."""
         import torch
 
         c = self.contract_
@@ -287,7 +289,7 @@ class MDN(GalleryEntry, PooledMDNHeldout):
         x_norm = np.where(self.norm_["pinned"][:, None, :], 0.0, x_norm)
         prem_norm = (c["log_premium"][ci] - self.norm_["prem_mean"]) / self.norm_["prem_std"]
         obs = c["obs_mask"][ci]  # (n_w, n_d)
-        cut_level = int(c["cal_idx"][obs].max())
+        cut_level = heldout_cutoff(c, ci)
         dev = torch.device(self._device)
         return {
             "x": torch.tensor(x_norm[None], dtype=torch.float32, device=dev),

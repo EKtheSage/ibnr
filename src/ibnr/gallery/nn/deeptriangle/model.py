@@ -326,7 +326,14 @@ class DeepTriangle(GalleryEntry, PooledMDNHeldout):
         """One cohort's forward inputs, conditioned on everything it had at
         as_of: context = all its observed cells, so the held-out diagonal is
         the decoder's first step past each origin's context - the rollout's
-        first step, and the most supervised decoding distance."""
+        first step, and the most supervised decoding distance.
+
+        No calendar cutoff here, and that is the architecture rather than an
+        omission: relative calendar position arises structurally from the
+        recurrence (network.py), so there is no boundary scalar to place - and
+        so none of ``_heldout.heldout_cutoff``'s hole-anchored failure mode
+        either. An entry cloned from this one that DOES take a cutoff must
+        derive it there, not from ``obs_mask``."""
         import torch
 
         c = self.contract_
