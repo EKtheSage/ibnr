@@ -534,6 +534,9 @@ def _decode_cdr(body: pa.Table, header: dict, frames, arrays, nested) -> CDRResu
 
 # -- ForecastPanel -------------------------------------------------------------
 
+#: Every frame a ``ForecastPanel`` carries. The encoder, the decoder and the
+#: round-trip test all read this one tuple, so a frame added to the panel and not
+#: to this list fails loudly at encode rather than going missing on the wire.
 _PANEL_FRAMES = (
     "cells",
     "pointwise",

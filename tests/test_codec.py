@@ -621,7 +621,12 @@ def test_forecast_panel_round_trip(panel_and_board):
     can reproduce."""
     forecast_panel, _ = panel_and_board
     back = codec.from_arrow(forecast_panel.to_arrow())
-    for name in ("cells", "pointwise", "by_cohort", "coverage", "absences", "dropped", "excluded"):
+    # Read off codec._PANEL_FRAMES rather than re-listed here: a hand-copied list
+    # goes stale silently, and an eighth frame added to the panel would then be
+    # encoded and never checked. Pinned at seven so the constant shrinking is
+    # itself a failure.
+    assert len(codec._PANEL_FRAMES) == 7
+    for name in codec._PANEL_FRAMES:
         # obj=name, not a trailing `, name`: the latter is a two-element tuple
         # expression, not an assert, so the label never reaches any failure.
         pd.testing.assert_frame_equal(
