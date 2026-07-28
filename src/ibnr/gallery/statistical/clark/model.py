@@ -45,6 +45,84 @@ from ibnr.triangle.core import Triangle
 GROWTH_CURVES = ("loglogistic", "weibull")
 METHODS = ("ldf", "cape_cod")
 
+#: Objective value standing in for "this curve is infeasible" (some cell gets a
+#: non-positive expected increment). A rejection sentinel, not a deviance -
+#: :func:`_check_converged` refuses an optimum that never escaped it.
+_REJECT_PENALTY = 1e12
+
+#: Nelder-Mead simplex tolerance, on ``(log omega, log theta)``. Those stay
+#: O(1) whatever the triangle's currency and size, so an ABSOLUTE tolerance is
+#: meaningful here - and this is the criterion that actually pins the fit:
+#: 1e-8 in log space is 1e-8 relative on omega and theta.
+_XATOL = 1e-8
+
+#: ``fatol`` as a FRACTION of the objective's magnitude, never an absolute
+#: number. The concentrated Poisson deviance is ``sum(mu - inc*log(mu))`` over
+#: loss AMOUNTS, so its magnitude is set by the data: about -4.3e8 on genins and
+#: larger on a real Schedule P cohort. One ULP there is 6e-8, so the old
+#: absolute ``fatol=1e-10`` demanded agreement ~600 million times finer than the
+#: gap between adjacent representable float64s. Nelder-Mead terminates only when
+#: BOTH the simplex spread <= xatol AND max|f_i - f_0| <= fatol, so that
+#: criterion was satisfiable ONLY when every simplex vertex evaluated
+#: BIT-IDENTICALLY (measured on genins: final f-spread exactly 0.0). It usually
+#: did, by luck - until the ``pytest (all)`` CI leg, whose torch/jax/pymc
+#: install changes BLAS/OMP thread counts and therefore the summation order
+#: inside the objective, stalled to ``maxiter`` and raised on a weibull fit that
+#: had converged in 90 of 2000 iterations.
+#:
+#: Shifting or rescaling the objective does NOT fix this. The resolution floor
+#: comes from summing ~1e8-magnitude terms; subtracting ``f(x0)`` afterwards
+#: moves the value without buying back a single bit. 1e-12 of the magnitude is
+#: ~7e3 ULPs - comfortably reachable, and not the binding criterion anyway.
+_FATOL_REL = 1e-12
+
+#: Absolute floor under the scale-relative ``fatol``, for the degenerate case of
+#: an objective whose magnitude is ~0 (there is nothing to be relative to).
+_FATOL_MIN = 1e-10
+
+#: Iteration cap. The genins fits use 59 (loglogistic) and 58 (weibull), so a
+#: run anywhere near this cap is stalling rather than working. (Pre-fix they
+#: took 65 and 90 - the extra iterations were spent chasing a ``fatol`` that
+#: could not be met, not improving the answer: the fitted omega/theta/phi are
+#: unchanged and the objective at the optimum is bit-identical.)
+_MAXITER = 2000
+
+#: Fallback convergence gate. A simplex collapsed to this spread in log space
+#: has pinned omega and theta to 1e-6 relative - three orders tighter than the
+#: 2e-3 the chainladder tieout asks of them - so the fit IS converged, whatever
+#: ``res.success`` says about the criterion it could not tick.
+_SIMPLEX_XTOL = 1e-6
+
+
+def _check_converged(res) -> float:
+    """Refuse a curve MLE that did not converge; return the final simplex spread.
+
+    ``res.success`` alone is the wrong gate. Nelder-Mead succeeds only when BOTH
+    its criteria hold, so a simplex that has collapsed onto a point - parameters
+    pinned, fit finished - still reports ``maxiter`` when the function-value
+    criterion stays unmet for purely numerical reasons (see :data:`_FATOL_REL`).
+    Trusting ``res.success`` there turns a converged fit into a ``RuntimeError``:
+    that is what broke CI, and a real Schedule P cohort can stall the same way.
+    So judge the simplex directly - it is the honest statement of whether the
+    parameters have stopped moving.
+    """
+    sim, _ = res.final_simplex
+    spread = float(np.max(np.abs(sim[1:] - sim[0])))
+    if not res.success and spread > _SIMPLEX_XTOL:
+        raise RuntimeError(
+            f"Clark MLE did not converge: {res.message} (simplex spread {spread:.2e} "
+            f"after {res.nit} iterations, needs <= {_SIMPLEX_XTOL:g})"
+        )
+    if not np.isfinite(res.fun) or res.fun >= _REJECT_PENALTY:
+        # A simplex can also collapse INSIDE the rejection region and report
+        # success - a converged answer to the wrong question, which the spread
+        # check above cannot see and `res.success` never could.
+        raise RuntimeError(
+            "Clark MLE did not converge: every curve the optimizer reached gives a "
+            "non-positive expected increment in some cell"
+        )
+    return spread
+
 
 def growth(x: np.ndarray, omega: float, theta: float, curve: str) -> np.ndarray:
     """Clark's growth functions: expected fraction of ultimate paid by age x.
@@ -207,7 +285,7 @@ class Clark(GalleryEntry, PredictsHeldout):
             om, th = np.exp(logparams)
             ginc = growth(age_hi, om, th, growth_curve) - growth(age_lo, om, th, growth_curve)
             if (ginc <= 0).any() or not np.isfinite(ginc).all():
-                return 1e12  # reject curves that give non-positive increments
+                return _REJECT_PENALTY  # reject curves giving non-positive increments
             u = profiled_level(om, th)  # (n_w,)
             mu = u[w - 1] * ginc  # (len_data,) fitted cell means
             # -loglik for Poisson dropping the x-only terms: sum(mu - x*log mu).
@@ -221,14 +299,20 @@ class Clark(GalleryEntry, PredictsHeldout):
         from scipy.optimize import minimize
 
         # 2-D Nelder-Mead over the curve; init omega=1.5, theta=4 periods.
+        x0 = np.array([np.log(1.5), np.log(4 * step)])
+        # SCALE-RELATIVE function tolerance (see _FATOL_REL): the deviance's
+        # magnitude is the data's, so an absolute fatol is a lottery on float64
+        # rounding. Costs one extra objective evaluation; should x0 itself be
+        # infeasible the scale is the sentinel, which only makes fatol looser
+        # than needed, and _XATOL binds regardless.
+        fatol = max(_FATOL_MIN, _FATOL_REL * abs(negll_curve(x0)))
         res = minimize(
             negll_curve,
-            [np.log(1.5), np.log(4 * step)],
+            x0,
             method="Nelder-Mead",
-            options={"xatol": 1e-8, "fatol": 1e-10, "maxiter": 2000},
+            options={"xatol": _XATOL, "fatol": fatol, "maxiter": _MAXITER},
         )
-        if not res.success:
-            raise RuntimeError(f"Clark MLE did not converge: {res.message}")
+        simplex_spread = _check_converged(res)
         omega, theta = np.exp(res.x)
         level = profiled_level(omega, theta)  # (n_w,) per-origin ultimates at the MLE
 
@@ -248,7 +332,7 @@ class Clark(GalleryEntry, PredictsHeldout):
             om, th = np.exp(fp[-2:])
             ginc = growth(age_hi, om, th, growth_curve) - growth(age_lo, om, th, growth_curve)
             if (ginc <= 0).any() or not np.isfinite(ginc).all():
-                return 1e12
+                return _REJECT_PENALTY
             u = np.exp(fp[: c["n_w"]]) if method == "ldf" else np.exp(fp[0]) * premium
             mu = u[w - 1] * ginc  # (len_data,)
             return float((mu - inc * np.log(mu)).sum())
@@ -283,6 +367,21 @@ class Clark(GalleryEntry, PredictsHeldout):
             "log_cov": cov,
             "age_lo": age_lo,
             "age_hi": age_hi,
+            # The optimizer's own report, recorded rather than discarded: with
+            # the convergence gate now reading the simplex instead of trusting
+            # res.success, these are the numbers that say whether a cohort's fit
+            # sailed in or limped. `iterations` vs `max_iterations` is the stall
+            # detector across a 200-company retrospective, and it is what
+            # tests/test_clark.py pins on genins.
+            "optimizer": {
+                "objective": float(res.fun),
+                "fatol": float(fatol),
+                "xatol": _XATOL,
+                "iterations": int(res.nit),
+                "max_iterations": _MAXITER,
+                "simplex_spread": simplex_spread,
+                "success": bool(res.success),
+            },
         }
         return self
 

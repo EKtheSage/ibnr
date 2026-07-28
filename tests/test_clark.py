@@ -24,7 +24,13 @@ import pytest
 cl = pytest.importorskip("chainladder")
 
 from ibnr import Triangle  # noqa: E402
-from ibnr.gallery.statistical.clark.model import Clark, growth  # noqa: E402
+from ibnr.gallery.statistical.clark.model import (  # noqa: E402
+    _REJECT_PENALTY,
+    _SIMPLEX_XTOL,
+    Clark,
+    _check_converged,
+    growth,
+)
 
 pytestmark = pytest.mark.tieout
 
@@ -74,6 +80,86 @@ def test_ldf_ties_to_chainladder(genins_tri, curve):
     g_max = growth(c["n_d"] * step - step / 2, prm["omega"], prm["theta"], curve)
     ours = c["paid_to_date"] * g_max / growth(age, prm["omega"], prm["theta"], curve)
     np.testing.assert_allclose(ours, ult_ref, rtol=2e-3)
+
+
+@pytest.mark.parametrize("curve", ["loglogistic", "weibull"])
+def test_curve_mle_converges_on_its_merits(genins_tri, curve):
+    """The MLE terminates because it converged, not by a floating-point accident.
+
+    Nelder-Mead stops only when the simplex spread <= ``xatol`` AND
+    ``max|f_i - f_0| <= fatol``. The objective here is a Poisson deviance over
+    loss *amounts* - about -4.3e8 on genins - so adjacent representable float64s
+    there are ~6e-8 apart. A ``fatol`` below that gap is satisfiable only when
+    every simplex vertex evaluates BIT-IDENTICALLY, which makes termination a
+    lottery on rounding the model does not control: the ``pytest (all)`` CI leg
+    installs torch, jax and pymc together, which changes BLAS/OMP thread counts
+    and hence the summation order inside the objective, and it stalled to
+    ``maxiter`` on weibull - a spurious RuntimeError from a fit sitting at its
+    optimum - while the same test passed in the ``interop`` leg and locally.
+
+    So pin the property rather than the symptom. Asserting only that ``fit()``
+    returns passed throughout the bug, on this machine and in most CI legs.
+    """
+    _, t, field = genins_tri
+    entry = Clark().fit(t, loss_field=field, premium_field=None, method="ldf", growth_curve=curve)
+    opt = entry.params_["optimizer"]
+
+    # 1. The requested function tolerance must be reachable given where the
+    #    objective actually sits on the float64 grid. This is the assertion that
+    #    fails on the pre-fix absolute fatol=1e-10 (1e-10 vs a 6e-5 bar).
+    ulp = float(np.spacing(abs(opt["objective"])))
+    assert ulp > 1e-9, "the fixture must exercise a large-magnitude objective"
+    assert opt["fatol"] > 1e3 * ulp
+
+    # 2. Converged on the simplex, which is what the gate now reads.
+    assert opt["simplex_spread"] <= _SIMPLEX_XTOL
+
+    # 3. Substantial iteration headroom: the failure mode is a STALL, and a fit
+    #    that genuinely needs 2000 iterations is a different problem from one
+    #    that needs 90. Local runs: 65 (loglogistic), 90 (weibull).
+    assert opt["iterations"] < opt["max_iterations"] // 4
+
+
+class _FakeResult:
+    """Minimal stand-in for scipy's OptimizeResult - the gate reads 5 fields."""
+
+    def __init__(self, *, success, simplex, fun, nit=2000, message="Maximum number of iterations"):
+        self.success = success
+        self.final_simplex = (np.asarray(simplex, dtype=float), None)
+        self.fun = fun
+        self.nit = nit
+        self.message = message
+
+
+def test_gate_accepts_a_stalled_but_collapsed_simplex():
+    """``res.success`` is the wrong gate; the simplex is the honest one.
+
+    This is precisely the CI failure: Nelder-Mead reports ``maxiter`` because
+    one of its two criteria stayed unmet, while the parameters have long since
+    stopped moving. Trusting ``res.success`` raises on a converged fit.
+    Mutation checked: reverting the gate to ``if not res.success`` fails here.
+    """
+    collapsed = [[0.4, 3.9], [0.4 + 1e-12, 3.9], [0.4, 3.9 + 1e-12]]
+    spread = _check_converged(_FakeResult(success=False, simplex=collapsed, fun=-4.3e8))
+    assert spread == pytest.approx(1e-12)
+
+
+def test_gate_still_refuses_a_simplex_that_never_collapsed():
+    """The loosened gate must not become a rubber stamp - a genuinely wandering
+    simplex is still a failed fit. Mutation checked: the naive over-correction
+    (accept every non-success result) passes the test above and fails here."""
+    wandering = [[0.4, 3.9], [0.9, 3.9], [0.4, 4.7]]
+    with pytest.raises(RuntimeError, match="simplex spread"):
+        _check_converged(_FakeResult(success=False, simplex=wandering, fun=-4.3e8))
+
+
+def test_gate_refuses_an_optimum_stuck_on_the_rejection_penalty():
+    """A simplex can collapse INSIDE the infeasible region and report success -
+    a converged answer to the wrong question. ``res.success`` never saw this and
+    neither does the spread check, so it is asserted separately."""
+    collapsed = [[0.4, 3.9], [0.4 + 1e-12, 3.9], [0.4, 3.9 + 1e-12]]
+    with pytest.raises(RuntimeError, match="non-positive expected increment"):
+        _check_converged(_FakeResult(success=True, simplex=collapsed, fun=_REJECT_PENALTY))
 
 
 def test_cape_cod_elr_ties_to_chainladder(genins_tri):
