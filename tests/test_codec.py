@@ -17,8 +17,8 @@ sharper than "the values match":
   the same contents and is unhashable, so the panel raises on first groupby
   rather than at decode;
 * the payload has a size ceiling, which is what catches an accidental fall back
-  to JSON (1.9 MB) or to dictionary-encoded parquet (978 KB) on a body that
-  should be 801 KB.
+  to JSON (1,952,983 B) or to dictionary-encoded parquet (978,363 B) on a body
+  that should be 802,888 B.
 
 Each of those was checked by breaking the encoder on purpose and confirming the
 test goes red - a value-only version of any of them stays green.
@@ -30,6 +30,7 @@ import datetime as dt
 import json
 import warnings
 
+import ibis
 import numpy as np
 import pandas as pd
 import pytest
@@ -57,6 +58,12 @@ CUM = np.array(
 )
 
 TASK = "paid_next_diagonal_v1"
+
+#: Every kind ``to_arrow`` can write, read off the encoder registry rather than
+#: listed by hand. A kind that joins the registry joins the compression
+#: parametrization below in the same commit - which is precisely what did not
+#: happen for ``Triangle``, whose encoder took ``compression`` and dropped it.
+ENCODABLE_KINDS = sorted(kind for kind, _ in codec._ENCODERS.values())
 
 
 def _rows(company: str, cum: np.ndarray = CUM, start: int = 2010) -> list[dict]:
@@ -138,6 +145,50 @@ def panel_and_board():
     return forecast_panel, leaderboard(forecast_panel)
 
 
+@pytest.fixture
+def encodables(pred, panel_and_board) -> dict:
+    """One artifact of every registered kind, keyed by its kind string.
+
+    Deliberately on the default backend rather than through the ``backend_name``
+    parameterization: compression is a property of the bytes and nothing about it
+    is backend-specific, so a cross product here would double the runtime to
+    measure the same thing twice.
+    """
+    forecast_panel, board = panel_and_board
+    tri = Triangle.from_long(pd.DataFrame(_rows("CO_A")), measure="cumulative", units="usd")
+    fit = fit_mack(tri, loss_field="paid_loss")
+    bad = CUM.copy()
+    bad[:, 0] = 0.0  # a zero-volume first step, so the panel carries an error as well as a fit
+    both = Triangle.from_long(
+        pd.DataFrame(_rows("CO_A") + _rows("CO_B", cum=bad)), measure="cumulative"
+    )
+    return {
+        "PredictiveDistribution": pred,
+        "Triangle": tri,
+        "MackFit": fit,
+        "MackFitPanel": fit_mack_many(both, loss_field="paid_loss", on_error="skip"),
+        "CDRResult": one_year_cdr(fit),
+        "ForecastPanel": forecast_panel,
+        "DataFrame": board,
+    }
+
+
+def _identity(obj) -> bytes:
+    """A kind-agnostic identity for a decoded artifact: the bytes it encodes to
+    uncompressed.
+
+    Comparing encodings rather than fields is what lets one assertion serve all
+    seven kinds, including the two (``MackFitPanel``, ``ForecastPanel``) whose
+    entire payload rides in nested streams. A triangle is normalized to a sorted
+    frame first: its rows are the artifact, its row ORDER belongs to the engine,
+    and no backend promises one.
+    """
+    if isinstance(obj, Triangle):
+        frame = obj.to_pandas()
+        obj = frame.sort_values(list(frame.columns)).reset_index(drop=True)
+    return codec.to_arrow(obj)
+
+
 def _retag(data: bytes, key: bytes, value: bytes) -> bytes:
     """Rewrite one envelope metadata field, to forge input decode must refuse."""
     table = codec._read_stream(data)
@@ -153,10 +204,12 @@ def test_draws_survive_bit_for_bit(pred):
     """Every draw comes back with an identical bit pattern.
 
     Compared as raw bytes, not as numbers. The lossy encodings that would be
-    tempting here all pass an approximate check: float32 is exact to 5.9e-8 and
-    halves the payload, and 10x thinning cuts it by 90% while moving the median
-    only 2.2%. What they cost is the tail - the thinned 99.5th percentile drifts
-    5.4%, and the 99.5th percentile is what a reserve answer is read off.
+    tempting here all pass an approximate check: float32 halves the payload for
+    a maximum relative error of 6e-8 (the float32 rounding bound), and 10x
+    thinning cuts it by 90% while moving the median only 0.7%. What they cost is
+    the tail - over 200 seeds the thinned 99.5th percentile drifts a median
+    2.2%, three times as far, and the 99.5th percentile is what a reserve answer
+    is read off.
     """
     back = PredictiveDistribution.from_arrow(pred.to_arrow())
     assert back.samples.dtype == pred.samples.dtype
@@ -210,27 +263,62 @@ def test_degenerate_shapes_round_trip():
     assert back.samples.tolist() == [[42.5]]
 
 
-def test_compression_changes_the_bytes_and_not_the_answer(pred):
-    """zstd is a knob, never a default: 7% smaller for six times the encode cost
-    on draws whose mantissas are high-entropy noise. Both settings must decode to
-    the same distribution, bit for bit."""
-    plain, squeezed = pred.to_arrow(), pred.to_arrow(compression="zstd")
-    assert plain != squeezed
-    assert len(squeezed) < len(plain)
-    a = PredictiveDistribution.from_arrow(plain)
-    b = PredictiveDistribution.from_arrow(squeezed)
-    assert np.array_equal(a.samples.view(np.uint8), b.samples.view(np.uint8))
-    pd.testing.assert_frame_equal(a.targets, b.targets)
-
-
 def test_payload_stays_close_to_the_raw_bytes(pred):
     """Size guard rail. 10 targets x 10,000 draws is 800,000 B of float64 and
-    Arrow IPC adds 0.4% of framing. The ceiling is set just above that so an
-    accidental fall back to another codec fails here: JSON measured 1,941,431 B
-    and parquet at its defaults 978,213 B, because it attempts dictionary
-    encoding on doubles that are all distinct."""
+    Arrow IPC adds 0.4% of framing, for 802,888 B. The ceiling is set just above
+    that so an accidental fall back to another codec fails here: JSON measured
+    1,952,983 B and parquet at its defaults 978,363 B, because it attempts
+    dictionary encoding on doubles that are all distinct."""
     assert pred.samples.nbytes == 800_000
     assert len(pred.to_arrow()) < 900_000
+
+
+# -- compression ---------------------------------------------------------------
+
+
+def test_every_registered_kind_has_a_fixture(encodables):
+    """The parametrization below is only as complete as this mapping, so a kind
+    added to the encoder registry without a fixture fails here rather than
+    quietly not being tested at all."""
+    assert sorted(encodables) == ENCODABLE_KINDS
+
+
+@pytest.mark.parametrize("kind", ENCODABLE_KINDS)
+@pytest.mark.parametrize("compression", ["lz4", "zstd"])
+def test_compression_changes_the_bytes_and_not_the_answer(encodables, kind, compression):
+    """Compression is a knob on EVERY kind, and a knob has to turn something.
+
+    Parametrized over the whole registry rather than over the one kind whose
+    payload is big enough to be interesting, because the defect this pins is not
+    "the bytes are the wrong size" - it is an encoder that accepts ``compression``
+    and never forwards it. Nothing about the decoded answer can see that: the
+    round trip is perfect and the argument simply does nothing. ``Triangle`` did
+    exactly this, and plain, lz4 and zstd all came out byte-identical.
+    """
+    obj = encodables[kind]
+    plain = codec.to_arrow(obj)
+    squeezed = codec.to_arrow(obj, compression=compression)
+    assert plain != squeezed, f"compression={compression!r} never reached the {kind} encoder"
+    assert _identity(codec.from_arrow(plain)) == _identity(codec.from_arrow(squeezed))
+
+
+@pytest.mark.parametrize("kind", ENCODABLE_KINDS)
+def test_an_unknown_codec_is_refused(encodables, kind):
+    """The other half of the same wire. An argument that reaches pyarrow is one
+    pyarrow can reject by name; an argument that is dropped on the way accepts
+    every string there is, including a typo for ``zstd``."""
+    with pytest.raises(ValueError, match="compression"):
+        codec.to_arrow(encodables[kind], compression="not_a_codec")
+
+
+def test_compression_is_a_knob_and_never_the_default(pred):
+    """Why the default is ``None``, on the only payload here big enough for a
+    ratio to mean anything. Posterior mantissas are high-entropy noise: zstd
+    takes 7.5% off the size for about three times the encode cost, and lz4 comes
+    out LARGER than both the uncompressed envelope and the raw draws."""
+    plain = pred.to_arrow()
+    assert len(pred.to_arrow(compression="zstd")) < len(plain)
+    assert len(pred.to_arrow(compression="lz4")) > len(plain) > pred.samples.nbytes
 
 
 # -- summary mode --------------------------------------------------------------
@@ -265,6 +353,26 @@ def test_summary_nulls_out_what_json_cannot_hold():
     assert summary["mean"] == [None, 1.0]
     assert summary["sd"] == [None, None]  # ddof=1 on a single draw
     json.dumps(summary, allow_nan=False)
+
+
+def test_the_requested_quantile_grid_is_the_one_reported(pred):
+    """``quantiles=`` has to reach ``np.quantile``, not just be accepted.
+
+    The default grid has eleven levels, so a method that took the argument and
+    dropped it would return a perfectly valid summary with the wrong levels in
+    it - and a test that only read ``mean`` and ``sd`` would never notice.
+    Asserted against the default here so the two cannot be confused.
+    """
+    assert len(codec.DEFAULT_QUANTILES) > 2, "the default has to differ from the request"
+
+    summary = pred.to_summary(quantiles=(0.25, 0.75))
+    assert summary["quantile_levels"] == [0.25, 0.75]
+    assert [len(row) for row in summary["quantiles"]] == [2] * pred.n_targets
+    # and the values are the requested levels, not the first two default ones
+    expected = np.quantile(pred.samples, [0.25, 0.75], axis=0).T
+    np.testing.assert_allclose(summary["quantiles"], expected)
+
+    assert pred.to_summary()["quantile_levels"] == list(codec.DEFAULT_QUANTILES)
 
 
 def test_there_is_no_from_summary():
@@ -344,8 +452,16 @@ def test_unencodable_type_is_named():
 def test_triangle_round_trips_on_both_backends(triangle, backend_name):
     """A triangle has to make the trip in BOTH directions or the API is
     write-only. Decode goes back through ``io.from_long``, the single ingestion
-    path, so no second parser exists to drift from the first."""
+    path, so no second parser exists to drift from the first.
+
+    ``backend`` is asserted on the RESULT, not merely passed. It is the one
+    decode argument this codec takes, and a decoder that accepted it and ignored
+    it would put every triangle on duckdb while this test still went green on
+    both parameters - the whole point of the argument being decode-time is that
+    the caller, not the payload, chooses the engine.
+    """
     back = Triangle.from_arrow(triangle.to_arrow(), backend=backend_name)
+    assert ibis.get_backend(back.expr).name == backend_name
     assert back.meta == triangle.meta
     assert back.segments == triangle.segments
     left = triangle.to_pandas().sort_values(["origin_period", "dev_lag"]).reset_index(drop=True)
@@ -506,7 +622,11 @@ def test_forecast_panel_round_trip(panel_and_board):
     forecast_panel, _ = panel_and_board
     back = codec.from_arrow(forecast_panel.to_arrow())
     for name in ("cells", "pointwise", "by_cohort", "coverage", "absences", "dropped", "excluded"):
-        pd.testing.assert_frame_equal(getattr(back, name), getattr(forecast_panel, name)), name
+        # obj=name, not a trailing `, name`: the latter is a two-element tuple
+        # expression, not an assert, so the label never reaches any failure.
+        pd.testing.assert_frame_equal(
+            getattr(back, name), getattr(forecast_panel, name), obj=f"ForecastPanel.{name}"
+        )
     assert back.task == forecast_panel.task
     assert back.as_of == forecast_panel.as_of
     assert back.segments == forecast_panel.segments

@@ -8,27 +8,42 @@ open-coded at three call sites is three formats within a release.
 returns - a 10-target, 10,000-draw ``PredictiveDistribution``, 800,000 B of raw
 float64:
 
-    Arrow IPC stream, uncompressed    801,104 B    encode 0.10 ms
-    Arrow IPC stream, zstd            747,456 B    encode 0.59 ms
-    parquet, defaults                 978,213 B
-    JSON, full float repr           1,941,431 B    encode 36.99 ms
-    summary JSON                        3,510 B
+    Arrow IPC stream, uncompressed    802,888 B    encode ~0.5 ms
+    Arrow IPC stream, lz4             803,320 B    encode ~0.9 ms
+    Arrow IPC stream, zstd            742,432 B    encode ~1.4 ms
+    parquet, defaults                 978,363 B    encode ~7 ms
+    JSON, full float repr           1,952,983 B    encode ~39 ms
+    summary JSON                        3,571 B    encode ~3 ms
 
-Three of those numbers decide the design. Compression is close to useless here
-because posterior mantissas are high-entropy noise - zstd buys 7% for six times
-the CPU and lz4 comes out LARGER than the raw bytes - so compression is a knob
-and never the default. parquet's default is 22% bigger than Arrow because it
-attempts dictionary encoding on doubles that are all distinct; it is the right
-codec for a bulk triangle export and the wrong one for draws. And JSON is 2.4x
-the size at 370x the encode time, which is why the JSON mode here carries a
+Method: median of 50 encodes after 5 warmups, on a 2025 laptop-class x86 box
+(Intel Core Ultra 9 285H, Windows 11, pyarrow 24, python 3.12). The SIZES are
+deterministic and reproduce byte for byte. The TIMES are quoted to one
+significant figure because that is all that survives - re-running the same
+50-encode median moved the uncompressed row between 0.38 and 0.64 ms across
+sessions on this machine, a ~40% swing - so the ratios below are the finding
+and the absolute milliseconds are context. Every timing ratio quoted here is
+far enough from 1 that a swing that size cannot reach it.
+
+Three of those rows decide the design. Compression is close to useless because
+posterior mantissas are high-entropy noise - zstd buys 7.5% of the size for
+about three times the encode cost, and lz4 comes out LARGER than both the
+uncompressed envelope and the raw draws - so compression is a knob and never
+the default. parquet's default is 22% bigger than Arrow because it attempts
+dictionary encoding on doubles that are all distinct; it is the right codec for
+a bulk triangle export and the wrong one for draws. And JSON is 2.4x the size
+at roughly 90x the encode time, which is why the JSON mode here carries a
 SUMMARY and not the draws.
 
-**Why lossless, exactly.** float32 would halve the payload at 5.9e-8 relative
-error and thinning 10:1 would cut it by 90%, but the thinned 99.5th percentile
-drifts 5.4% - and the 99.5th percentile of a reserve distribution is the number
-the answer is about. Draws cross this boundary bit for bit or not at all; the
-tests compare ``samples.view(np.uint8)``, because an ``allclose`` assertion
-passes cleanly against a float32 encoder and would therefore be worthless.
+**Why lossless, exactly.** float32 would halve the payload for a maximum
+relative error of 6e-8 - that is just the float32 rounding bound, 2**-24 - and
+thinning 10:1 would cut it by 90%. What thinning costs is the tail. Over 200
+seeds of this payload, dropping 10,000 draws to 1,000 moves the 99.5th
+percentile by a median 2.2% (10th-90th of that spread: 1.6% to 3.1%) against
+0.7% for the median - so the number a reserve answer is actually read off
+degrades about three times faster than the middle of the distribution. Draws
+cross this boundary bit for bit or not at all; the tests compare
+``samples.view(np.uint8)``, because an ``allclose`` assertion passes cleanly
+against a float32 encoder and would therefore be worthless.
 
 Envelope, version 1. One Arrow IPC **stream** per artifact:
 
@@ -75,9 +90,16 @@ from ibnr.kernels.mack import MackFit, MackFitPanel
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.triangle.core import Triangle
 
+#: Envelope version, written into every payload and checked on the way back in.
+#: A payload from a NEWER codec is refused rather than partly decoded.
 CODEC_VERSION: int = 1
 
+#: MIME type for :func:`to_arrow` output, for an HTTP layer's ``Content-Type``
+#: and ``Accept`` negotiation.
 CONTENT_TYPE_ARROW: str = "application/vnd.apache.arrow.stream"
+
+#: MIME type for :func:`to_summary` output, which is the negotiated fallback for
+#: a caller that cannot take the draws.
 CONTENT_TYPE_JSON: str = "application/json"
 
 #: Quantile grid for :func:`to_summary`. Runs out to 0.5% / 99.5% because the
@@ -341,9 +363,9 @@ def _is_missing(value) -> bool:
 
 
 def _encode_predictive(obj: PredictiveDistribution, compression: str | None) -> bytes:
-    # One column per target rather than one flat column: measured at 800,272 B
-    # against 801,104 B, so size does not decide it, and columns are readable in
-    # any Arrow tool without knowing the layout.
+    # One column per target rather than one flat column: 802,888 B against
+    # 800,272 B on the docstring's payload, 0.3%, so size does not decide it -
+    # and columns are readable in any Arrow tool without knowing the layout.
     body = pa.table({f"t{i}": obj.samples[:, i] for i in range(obj.n_targets)})
     header = {"n_draws": obj.n_draws, "n_targets": obj.n_targets, "units": obj.units}
     return _pack(
@@ -377,7 +399,12 @@ def _encode_triangle(obj: Triangle, compression: str | None) -> bytes:
     }
     # `backend` is deliberately absent. Which engine holds a triangle is a fact
     # about the process, not about the data, so it is a decode-time argument.
-    return _pack("Triangle", pa.Table.from_pandas(obj.to_pandas(), preserve_index=False), header)
+    return _pack(
+        "Triangle",
+        pa.Table.from_pandas(obj.to_pandas(), preserve_index=False),
+        header,
+        compression=compression,
+    )
 
 
 def _decode_triangle(body: pa.Table, header: dict, frames, arrays, nested, *, backend=None):
@@ -611,9 +638,10 @@ def _encoder_for(obj):
 def to_arrow(obj, *, compression: str | None = None) -> bytes:
     """Serialize one ibnr result to an Arrow IPC stream.
 
-    ``compression`` is ``None``, ``"lz4"`` or ``"zstd"``. Leave it alone unless
-    the link is the bottleneck: on posterior draws zstd buys 7% for six times
-    the encode cost and lz4 comes out larger than the raw bytes.
+    ``compression`` is ``None``, ``"lz4"`` or ``"zstd"``; anything else is
+    refused by pyarrow. Leave it alone unless the link is the bottleneck: on
+    posterior draws zstd buys 7.5% of the size for about three times the encode
+    cost, and lz4 comes out larger than the uncompressed envelope.
     """
     _, encode = _encoder_for(obj)
     return encode(obj, compression)
@@ -632,10 +660,18 @@ def from_arrow(data: bytes, **kwargs):
 
 
 def peek_kind(data: bytes) -> str:
-    """The artifact type, read from the schema message alone.
+    """The artifact type, read from the stream's schema message.
 
-    Lets a router dispatch on the payload without paying to decode a body it is
-    about to hand somewhere else.
+    What this saves is the DECODE, not the read. A router can dispatch a payload
+    it is about to hand somewhere else without ever reconstructing the pandas
+    frames and numpy arrays inside it - but it is not a cheap peek at a small
+    prefix, and how little it reads depends entirely on the kind. For
+    ``PredictiveDistribution``, ``MackFit``, ``CDRResult`` and ``Triangle`` the
+    payload sits in record batches AFTER the schema, so this touches almost none
+    of it. For ``DataFrame``, ``ForecastPanel`` and ``MackFitPanel`` the body
+    table is empty and the entire payload rides in the schema metadata as nested
+    streams, so this reads 100% of the bytes - it simply does not unpack any of
+    them.
     """
     with pa.ipc.open_stream(pa.py_buffer(data)) as reader:
         metadata = reader.schema.metadata or {}
@@ -650,7 +686,7 @@ def peek_kind(data: bytes) -> str:
 def to_summary(obj, *, quantiles: Sequence[float] = DEFAULT_QUANTILES) -> dict:
     """A JSON-safe digest for callers that cannot take the draws.
 
-    3.5 KB against 801 KB for a 10-target, 10,000-draw distribution - a 228x
+    3,571 B against 802,888 B for a 10-target, 10,000-draw distribution - a 225x
     reduction, and the reason this is a negotiated mode rather than a size
     threshold: whether a caller gets a distribution or a description of one is
     the caller's decision to make explicitly.

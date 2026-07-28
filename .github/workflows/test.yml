@@ -241,6 +241,12 @@ jobs:
           # optional packages really are missing, so a module-level `import
           # torch` (or pymc, or chainladder) anywhere on the `import ibnr` path
           # fails here rather than shipping.
+          #
+          # tests/test_codec.py is named here because the wire format is core by
+          # construction - pyarrow is a core dependency and kernels/codec.py is
+          # the only module that imports it directly - so a codec that quietly
+          # grew an optional import would otherwise pass this leg by collapsing
+          # to a single collection skip.
           - name: core
             python: "3.12"
             cache: "false"
@@ -250,8 +256,8 @@ jobs:
             forbid_skips: ""
             allow_skips: ""
             strict_skips: "false"
-            required_files: "tests/test_core.py;tests/test_transforms.py;tests/test_gallery.py;tests/test_markdown_snippets.py;tests/test_import_purity.py"
-            # Re-measured on this tree: 557 passed, 204 skipped, on the locked
+            required_files: "tests/test_core.py;tests/test_transforms.py;tests/test_gallery.py;tests/test_markdown_snippets.py;tests/test_import_purity.py;tests/test_codec.py"
+            # Re-measured on this tree: 606 passed, 205 skipped, on the locked
             # numpy 2.4.6 / pandas 2.3.3. This is the number every other leg's
             # comment is a delta against, so it is measured first and the rest
             # are read against it.
@@ -290,7 +296,7 @@ jobs:
             forbid_skips: ""
             allow_skips: ""
             strict_skips: "false"
-            required_files: "tests/test_core.py;tests/test_transforms.py;tests/test_gallery.py;tests/test_markdown_snippets.py;tests/test_import_purity.py"
+            required_files: "tests/test_core.py;tests/test_transforms.py;tests/test_gallery.py;tests/test_markdown_snippets.py;tests/test_import_purity.py;tests/test_codec.py"
             min_tests: "500"
 
           # ---------------------------------------------------------------
@@ -470,7 +476,7 @@ jobs:
             forbid_skips: ""
             allow_skips: "gold mart;gh CLI;cmdstan"
             strict_skips: "true"
-            required_files: "tests/test_transforms.py;tests/test_deeptriangle.py;tests/test_mdn.py;tests/test_resnet.py;tests/test_nn_heldout.py;tests/test_stacking.py;tests/test_tieout_chainladder.py;tests/test_clark.py;tests/test_interop_bermuda.py;tests/test_polars_extra.py;tests/test_import_purity.py"
+            required_files: "tests/test_transforms.py;tests/test_deeptriangle.py;tests/test_mdn.py;tests/test_resnet.py;tests/test_nn_heldout.py;tests/test_stacking.py;tests/test_tieout_chainladder.py;tests/test_clark.py;tests/test_interop_bermuda.py;tests/test_polars_extra.py;tests/test_import_purity.py;tests/test_codec.py"
             # measured one base earlier: 968 passed, 7 skipped - and the 7 are
             # the allowlisted gold-mart skips above, re-counted rather than
             # assumed. The 7 is the part that must not drift; the total is the
@@ -509,11 +515,12 @@ jobs:
             forbid_skips: ""
             allow_skips: ""
             strict_skips: "false"
-            required_files: "tests/test_core.py;tests/test_transforms.py;tests/test_gallery.py;tests/test_markdown_snippets.py;tests/test_import_purity.py"
-            # measured on this tree: 557 passed, 204 skipped on numpy 2.5.1 /
+            required_files: "tests/test_core.py;tests/test_transforms.py;tests/test_gallery.py;tests/test_markdown_snippets.py;tests/test_import_purity.py;tests/test_codec.py"
+            # measured one base earlier: 557 passed, 204 skipped on numpy 2.5.1 /
             # pandas 3.0.5 - test for test identical to the locked core leg on
             # numpy 2.4.6 / pandas 2.3.3, which is the useful part of the
-            # result: the numpy and pandas generation moves nothing.
+            # result: the numpy and pandas generation moves nothing. Both legs
+            # gain the same 52 codec tests on this branch.
             min_tests: "500"
 
           # ---------------------------------------------------------------
