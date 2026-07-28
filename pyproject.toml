@@ -76,6 +76,12 @@ dependencies = [
     # test identical - the numpy generation does not move a single result.
     "numpy>=1.26",
     "pandas>=2",
+    # Declared, not added: ibis-framework[duckdb] already requires pyarrow>=10.0.1,
+    # so every install has had it all along. kernels/codec.py imports it directly
+    # rather than through ibis, and a direct import belongs in the direct
+    # dependencies - an inherited one can be dropped by an upstream release note.
+    # The floor matches the one the dev group already pinned.
+    "pyarrow>=15",
     "scipy>=1.11",
 ]
 
@@ -184,7 +190,6 @@ dev = [
     "chainladder>=0.9.2",
     "bermuda-ledger>=2.3",
     "pandas>=2",
-    "pyarrow>=15",
     # analysis notebooks (analysis/*.ipynb); matplotlib comes via chainladder/arviz
     "jupyterlab>=4",
     "nbconvert>=7",

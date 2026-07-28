@@ -142,6 +142,21 @@ reference:
       - kernels.ParityReport
       - kernels.compare_posteriors
 
+  - title: Wire format
+    desc: >
+      The single place an ibnr result becomes bytes - one Arrow IPC stream per
+      artifact, uncompressed by default, plus a one-way JSON summary for callers
+      that cannot take the draws.
+    contents:
+      - kernels.to_arrow
+      - kernels.from_arrow
+      - kernels.peek_kind
+      - kernels.to_summary
+      - kernels.CODEC_VERSION
+      - kernels.CONTENT_TYPE_ARROW
+      - kernels.CONTENT_TYPE_JSON
+      - kernels.DEFAULT_QUANTILES
+
   - title: Retrospective harness
     desc: >
       Parallel company x line backtesting with staged sampler escalation -

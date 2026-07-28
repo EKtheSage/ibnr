@@ -899,6 +899,7 @@ dependencies = [
     { name = "ibis-framework", extra = ["duckdb"] },
     { name = "numpy" },
     { name = "pandas" },
+    { name = "pyarrow" },
     { name = "scipy" },
 ]
 
@@ -934,7 +935,6 @@ dev = [
     { name = "nbconvert" },
     { name = "nbformat" },
     { name = "pandas" },
-    { name = "pyarrow" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -959,6 +959,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26" },
     { name = "numpyro", marker = "extra == 'bayesian'" },
     { name = "pandas", specifier = ">=2" },
+    { name = "pyarrow", specifier = ">=15" },
     { name = "pymc", marker = "extra == 'bayesian'", specifier = "<6" },
     { name = "scipy", specifier = ">=1.11" },
     { name = "torch", marker = "extra == 'nn'", specifier = ">=2.2" },
@@ -975,7 +976,6 @@ dev = [
     { name = "nbconvert", specifier = ">=7" },
     { name = "nbformat", specifier = ">=5" },
     { name = "pandas", specifier = ">=2" },
-    { name = "pyarrow", specifier = ">=15" },
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.16" },
 ]

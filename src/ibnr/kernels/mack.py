@@ -269,6 +269,21 @@ class MackFit:
         }
         return pd.concat([out, pd.DataFrame([total])], ignore_index=True)
 
+    # -- serialization ---------------------------------------------------------
+
+    def to_arrow(self, *, compression: str | None = None) -> bytes:
+        """Arrow IPC bytes. Carries ``n_obs`` and ``n_pos`` separately, because
+        they are different counts and the positivity contract is the difference."""
+        from ibnr.kernels import codec
+
+        return codec.to_arrow(self, compression=compression)
+
+    @classmethod
+    def from_arrow(cls, data: bytes) -> MackFit:
+        from ibnr.kernels import codec
+
+        return codec.from_arrow(data)
+
 
 def fit_mack(
     triangle: Triangle,
@@ -321,6 +336,21 @@ class MackFitPanel:
             for key, fit in self.fits.items()
         ]
         return pd.DataFrame(rows)
+
+    # -- serialization ---------------------------------------------------------
+
+    def to_arrow(self, *, compression: str | None = None) -> bytes:
+        """Arrow IPC bytes: one nested envelope per fitted cohort, plus
+        ``errors`` - which under ``on_error="skip"`` is a result, not a failure."""
+        from ibnr.kernels import codec
+
+        return codec.to_arrow(self, compression=compression)
+
+    @classmethod
+    def from_arrow(cls, data: bytes) -> MackFitPanel:
+        from ibnr.kernels import codec
+
+        return codec.from_arrow(data)
 
 
 def fit_mack_many(
