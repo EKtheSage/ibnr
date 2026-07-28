@@ -19,11 +19,15 @@ backends, tying out to chainladder-python on the public raa/clrd samples.
 import chainladder as cl
 from ibnr import Triangle
 
-t = Triangle.from_chainladder(cl.load_sample("raa"))
+t = Triangle.from_chainladder(cl.load_sample("raa"))  # needs the [interop] extra
 t.to_incremental().to_wide()
 t.as_of("1985-12-31")  # the triangle as known at year-end 1985
 t.to_chainladder()  # lossless round-trip
 ```
+
+To build one from your own data instead, see [Building a Triangle from your own
+data](#building-a-triangle-from-your-own-data) - `Triangle.from_long` needs no
+extras and is what every other constructor funnels into.
 
 **Gallery (Bayesian)**: `meyers_ccl` - Meyers' Correlated Chain Ladder in
 Stan, fit/predict/evaluate through the mandatory `GalleryEntry` contract,
@@ -80,9 +84,13 @@ so nothing here is delegated to it.
 uv add ibnr            # or: pip install ibnr
 ```
 
-The core install (`ibis-framework[duckdb,polars]` + scipy) covers the triangle
-layer, the `statistical` gallery entries, and the evaluation kernels. The
-heavier methods sit behind optional extras:
+The core install is **`ibis-framework[duckdb]` + numpy + pandas + scipy** and
+covers the triangle layer, the `statistical` and
+`deterministic` gallery entries, and the evaluation kernels. polars is *not* in
+it: the second ibis backend is fully supported but its ~176 MB runtime is 35% of
+the install that a duckdb-only caller never executes, so since 0.4.0 it sits
+behind an extra - which matters when you are sizing a serverless deployment. The
+heavier methods sit behind optional extras too:
 
 ```sh
 uv add "ibnr[bayesian]"   # cmdstanpy, numpyro, pymc, arviz, bayesblend
@@ -98,6 +106,232 @@ uv add "ibnr[polars]"     # the second ibis backend (duckdb is the default)
 > toolchain (RTools on Windows, `build-essential`/Xcode command-line tools on
 > Linux/macOS). The bundled `Dockerfile` ships CmdStan with every gallery Stan
 > model pre-compiled if you would rather not set this up locally.
+
+## Building a Triangle from your own data
+
+`Triangle.from_long` is the single ingestion path: `from_chainladder`,
+`from_bermuda` and `load_schedule_p` all reshape their input into a long frame
+and hand it here, so whatever they can express your own data can too. It is part
+of the core install and needs no extras.
+
+A **cell** is `(segments..., origin_period, dev_lag, eval_date, field)` carrying
+one `value`:
+
+| column | type | meaning |
+|---|---|---|
+| `origin_period` | date | first day of the accident/underwriting period |
+| `dev_lag` | int | **months from the origin period's start**, counting the valuation month itself - so the first annual diagonal is 12, not 0 |
+| `eval_date` | date | last day of the month the cell was valued at; a stored column, not derived, because `as_of()` backtesting slices on it |
+| `field` | str | which measure the row carries: `paid_loss`, `reported_loss`, `earned_premium`, ... |
+| `value` | float | the number |
+| anything else | | a **segment**: the cohort key (`lob`, `company`, ...) |
+
+Absent means unobserved: rows with a null `value` are dropped rather than
+stored, and nothing is densified, so the unobserved half of the square simply is
+not there. Zero, by contrast, is an explicit observation and is kept.
+
+```python
+import datetime as dt
+
+import pandas as pd
+
+from ibnr import Triangle
+
+# cumulative paid loss by accident year, at development ages 12, 24, 36... months
+paid = {
+    2018: [400, 660, 790, 870, 922],
+    2019: [830, 1290, 1560, 1750],
+    2020: [1190, 1930, 2380],
+    2021: [1620, 2510],
+    2022: [2050],
+}
+premium = {2018: 2000, 2019: 4100, 2020: 5900, 2021: 8000, 2022: 10200}
+
+
+def year_end(origin_year: int, dev_lag: int) -> dt.date:
+    """dev_lag counts the valuation month, so age 12 on a 2018 origin is 2018-12-31."""
+    return dt.date(origin_year + dev_lag // 12 - 1, 12, 31)
+
+
+rows = [
+    {
+        "lob": "auto",  # a segment column: the cohort key
+        "origin_period": dt.date(year, 1, 1),
+        "dev_lag": 12 * (d + 1),  # MONTHS from the origin period's start
+        "eval_date": year_end(year, 12 * (d + 1)),
+        "field": "paid_loss",
+        "value": float(value),
+    }
+    for year, values in paid.items()
+    for d, value in enumerate(values)
+]
+# premium is just another field, booked once per origin at its first evaluation
+rows += [
+    {
+        "lob": "auto",
+        "origin_period": dt.date(year, 1, 1),
+        "dev_lag": 12,
+        "eval_date": year_end(year, 12),
+        "field": "earned_premium",
+        "value": float(value),
+    }
+    for year, value in premium.items()
+]
+
+tri = Triangle.from_long(pd.DataFrame(rows), segments=["lob"], measure="cumulative")
+print(tri)
+print(tri.select_fields("paid_loss").to_wide())
+```
+
+```
+Triangle(grain=OYDY, measure=cumulative, units=None, segments=[lob])
+dev_lag            12      24      36      48     60
+origin_period
+2018-01-01      400.0   660.0   790.0   870.0  922.0
+2019-01-01      830.0  1290.0  1560.0  1750.0    NaN
+2020-01-01     1190.0  1930.0  2380.0     NaN    NaN
+2021-01-01     1620.0  2510.0     NaN     NaN    NaN
+2022-01-01     2050.0     NaN     NaN     NaN    NaN
+```
+
+`measure` (`"cumulative"` or `"incremental"`), `origin_grain` and `dev_grain`
+(`"Y"`, `"Q"`, `"M"`) and `units` are metadata the transforms and every gallery
+entry trust; they default to cumulative annual/annual. Pass
+`dev_lag_unit="periods"` if your dev column counts development *years* (1, 2,
+3...) rather than months - it is multiplied by the dev grain on the way in.
+
+**Accepted inputs.** Anything ibis can register: a pandas DataFrame, a polars
+DataFrame, a pyarrow Table, an ibis table expression, or a `str`/`Path` to a
+parquet file (read straight by the backend, never through pandas). An ibis
+expression keeps its own backend and is not re-registered.
+
+```python
+tri = Triangle.from_long("losses.parquet", segments=["lob"])
+```
+
+**Your own column names.** The five core names are keyword arguments, so nothing
+has to be renamed upstream:
+
+```python
+tri = Triangle.from_long(
+    my_frame,
+    origin="accident_year",
+    dev="age_months",
+    eval_date="valued_at",
+    field="measure",
+    value="amount",
+    segments=["lob"],
+)
+```
+
+**Wide input.** If your measures are columns rather than a `field`/`value` pair,
+name them with `fields=[...]` and they are unpivoted for you. Every column that
+is not a measure and not one of the three key columns is treated as a segment:
+
+```python
+# columns: lob | origin_period | dev_lag | eval_date | paid_loss | earned_premium
+tri = Triangle.from_long(wide_frame, fields=["paid_loss", "earned_premium"], segments=["lob"])
+```
+
+`segments=[...]` restricts which extra columns are kept (default: all of them).
+Drop the ones that do not identify a cohort - a stray column splits cells that
+should have been one.
+
+**Segment values must be non-null, and ingestion refuses them.** Every transform
+(`as_of`, `latest_diagonal`, `to_cumulative`, `to_incremental`) equi-joins on the
+segment columns, and SQL join equality is false for `NULL = NULL`, so one null
+segment value silently *deletes* that cohort - no error, no warning, and a clean
+`validate()`. Give those rows an explicit value (`"unknown"`), drop them, or
+leave the column out with `segments=[...]`:
+
+```
+ValueError: null segment key in lob (1 rows). Segment columns identify the cohort, so a
+null in one names no cohort and is silently dropped by every transform that joins on it
+(as_of, latest_diagonal, to_cumulative, to_incremental) - the cohort would disappear from
+results with no error. ...
+```
+
+**Which field is the loss, which is the premium.** Gallery entries do not guess:
+each `fit()` takes `loss_field=` and (where the model has an exposure term)
+`premium_field=`. The defaults are the Schedule P mart's names -
+`loss_field="paid_loss"` for the paid-basis entries, `"reported_loss"` for
+`meyers_ccl` and the NN entries, and `premium_field="earned_premium"`
+throughout - so if your fields are named anything else, pass them explicitly.
+
+Premium is genuinely required by every entry that models a loss *ratio* or
+carries a log-premium offset: `meyers_ccl`, `meyers_csr`,
+`guszcza_growth_curve`, `clark_growth_curve`, `compartmental`,
+`england_verrall_odp`, `copula_glm` and all five NN entries. `clark` needs it
+under its default `method="cape_cod"` and not under `method="ldf"`, which
+estimates a free ultimate per origin. Only `mack` and `sur` have no
+`premium_field` argument at all. A premium field that is missing,
+duplicated per origin, non-positive, or belongs to a different cohort than the
+losses is an error at fit time rather than a silent zero (`ValueError: no rows
+for premium field 'earned_premium'`) - except in the NN entries, which train
+pooled across many cohorts and so *drop* an unusable cohort from the pool
+instead of refusing the whole fit.
+
+**Bringing your own connection.** `backend=` takes `"duckdb"` (the default),
+`"polars"` (needs the `[polars]` extra), or an already-connected ibis backend -
+which is how you point ingestion at a persistent database, a tuned duckdb, or a
+connection shared with the rest of your application:
+
+```python
+import ibis
+
+con = ibis.duckdb.connect("warehouse.ddb")
+tri = Triangle.from_long("losses.parquet", segments=["lob"], backend=con)
+```
+
+**Getting the frame back.** There is no `to_long`. The triangle *is* the long
+frame, so `tri.to_pandas()` / `tri.to_polars()` materialize it in the schema
+above, `tri.expr` hands you the underlying ibis expression to push further work
+into the engine, and `tri.to_wide(field)` pivots one field to an origin x dev
+matrix for display.
+
+## Using the gallery
+
+Two things surprise every first caller. The first is that `import ibnr` does not
+give you `ibnr.gallery`:
+
+```
+>>> import ibnr
+>>> ibnr.gallery
+AttributeError: module 'ibnr' has no attribute 'gallery'
+```
+
+The second is that `gallery.get` hands back a class, not a fitted model:
+
+```python
+from ibnr import gallery  # the import that works
+
+gallery.list()  # names of every registered entry
+entry_cls = gallery.get("mack")  # a CLASS, not an instance or a fitted model
+fitted = entry_cls().fit(tri, loss_field="paid_loss")  # so: instantiate, then fit
+fitted = gallery.fit("mack", tri, loss_field="paid_loss")  # the same, in one call
+print(fitted.summary())
+```
+
+```
+       origin  latest      ultimate         ibnr   runoff_se
+0  2018-01-01   922.0    922.000000     0.000000    0.000000
+1  2019-01-01  1750.0   1854.597701   104.597701   24.926810
+2  2020-01-01  2380.0   2812.043629   432.043629   49.558833
+3  2021-01-01  2510.0   3615.332407  1105.332407   78.222432
+4  2022-01-01  2050.0   4670.333208  2620.333208  149.225144
+5       total  9612.0  13874.306946  4262.306946  233.743645
+```
+
+`ibnr/__init__.py` exports only `Triangle`, `TriangleMeta` and `__version__`;
+`gallery` is a submodule, and a submodule is an attribute of its package only
+once something has imported it. `gallery.get` mirrors that literalness: it
+returns the registered class so you can read `.card()` or `.family` without
+constructing anything, which is why the call is `gallery.get(name)()`.
+
+Evaluation is per entry, not a module-level call: `fitted.evaluate(observed)`
+scores realized outcomes against the predictive distribution, and
+`gallery.leaderboard(...)` / `gallery.stack(...)` combine several fitted entries
+over a shared panel.
 
 ## Data: the CAS Schedule P gold mart
 
