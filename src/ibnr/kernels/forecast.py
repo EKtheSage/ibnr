@@ -852,6 +852,22 @@ class ForecastPanel:
             return 1 if len(on) else 0
         return int(on.groupby(list(self.segments)).ngroups)
 
+    # -- serialization ---------------------------------------------------------
+
+    def to_arrow(self, *, compression: str | None = None) -> bytes:
+        """Arrow IPC bytes: all seven frames, both member lists and both
+        fingerprints. A score that arrived without the set it was intersected
+        over is a number nobody can reproduce, so none of that is optional."""
+        from ibnr.kernels import codec
+
+        return codec.to_arrow(self, compression=compression)
+
+    @classmethod
+    def from_arrow(cls, data: bytes) -> ForecastPanel:
+        from ibnr.kernels import codec
+
+        return codec.from_arrow(data)
+
     def __repr__(self) -> str:
         return (
             f"ForecastPanel({self.task} @ {self.as_of}, {len(self.coverage)} models, "

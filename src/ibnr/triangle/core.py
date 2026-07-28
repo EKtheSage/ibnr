@@ -215,6 +215,23 @@ class Triangle:
 
         return io.to_chainladder(self)
 
+    def to_arrow(self, *, compression: str | None = None) -> bytes:
+        """Arrow IPC bytes: the long frame plus the four TriangleMeta fields.
+
+        The wire form a triangle travels in and out of an HTTP API in. The
+        backend is NOT encoded - which engine holds a triangle is a property of
+        the process, so ``from_arrow`` takes it as an argument.
+        """
+        from ibnr.kernels import codec
+
+        return codec.to_arrow(self, compression=compression)
+
+    @classmethod
+    def from_arrow(cls, data: bytes, *, backend=None) -> Triangle:
+        from ibnr.kernels import codec
+
+        return codec.from_arrow(data, backend=backend)
+
     @classmethod
     def from_bermuda(cls, tri, **kwargs) -> Triangle:
         from ibnr.triangle import io

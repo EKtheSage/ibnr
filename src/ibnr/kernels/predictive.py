@@ -8,6 +8,7 @@ percentiles a la Meyers, summary tables).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -86,6 +87,36 @@ class PredictiveDistribution:
             out["outcome"] = obs
             out["percentile"] = self.cdf(obs) * 100.0
         return out
+
+    # -- serialization -----------------------------------------------------------
+    #
+    # Thin delegation on purpose: ``kernels/codec.py`` owns the format and this
+    # class owns nothing about it. pyarrow is imported there and never here, so
+    # the type every gallery entry returns keeps a numpy/pandas-only import path.
+
+    def to_arrow(self, *, compression: str | None = None) -> bytes:
+        """Arrow IPC bytes carrying every draw, bit for bit. See ``kernels.codec``."""
+        from ibnr.kernels import codec
+
+        return codec.to_arrow(self, compression=compression)
+
+    @classmethod
+    def from_arrow(cls, data: bytes) -> PredictiveDistribution:
+        from ibnr.kernels import codec
+
+        return codec.from_arrow(data)
+
+    def to_summary(self, *, quantiles: Sequence[float] | None = None) -> dict:
+        """JSON-safe digest - moments, quantiles, target metadata, no draws.
+
+        Two orders of magnitude smaller than the draws and deliberately
+        one-way: there is no ``from_summary``, because a summary is not a
+        distribution (CLAUDE.md decision 4).
+        """
+        from ibnr.kernels import codec
+
+        kwargs = {} if quantiles is None else {"quantiles": quantiles}
+        return codec.to_summary(self, **kwargs)
 
     # -- composition -------------------------------------------------------------
 

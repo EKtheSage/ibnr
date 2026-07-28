@@ -108,6 +108,22 @@ class CDRResult:
             )
         return out
 
+    # -- serialization ---------------------------------------------------------
+
+    def to_arrow(self, *, compression: str | None = None) -> bytes:
+        """Arrow IPC bytes. The two totals ride as shape-() float arrays rather
+        than header scalars, because a degenerate cohort's msep is legitimately
+        NaN and strict JSON cannot represent it."""
+        from ibnr.kernels import codec
+
+        return codec.to_arrow(self, compression=compression)
+
+    @classmethod
+    def from_arrow(cls, data: bytes) -> CDRResult:
+        from ibnr.kernels import codec
+
+        return codec.from_arrow(data)
+
 
 def _open_years(fit: MackFit) -> np.ndarray:
     """(n_w,) bool: origins that are not yet fully developed, i.e. the ones that
