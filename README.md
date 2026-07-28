@@ -100,6 +100,11 @@ uv add "ibnr[interop]"    # chainladder + bermuda, for to_chainladder()/to_bermu
 uv add "ibnr[polars]"     # the second ibis backend (duckdb is the default)
 ```
 
+**Python 3.11 and 3.12.** The cap is set by `[bayesian]` and `[interop]`, which
+both pin numpy below 2 through their own dependencies and so cannot install on
+3.13; the rest of the package is ready for it, and the cap lifts when those
+upstreams move.
+
 > **`[bayesian]` installs cmdstanpy, not CmdStan itself.** The Stan entries
 > compile their `model.stan` at runtime, so a CmdStan toolchain must be present.
 > Install it once with `python -m cmdstanpy.install_cmdstan` - this needs a C++

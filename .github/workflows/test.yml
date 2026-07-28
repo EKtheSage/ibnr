@@ -7,14 +7,15 @@ name: Tests
 # Running pytest is the easy half. The hard half is making a green run MEAN
 # something, because in this repository a run can look fine while telling you
 # almost nothing. Nearly every optional dependency is guarded with
-# pytest.importorskip, and a guard that fires does not fail - it skips. Six test
-# files (test_deeptriangle, test_mdn, test_nn_heldout, test_nn_transformer,
+# pytest.importorskip, and a guard that fires does not fail - it skips. NINE
+# test files (test_deeptriangle, test_mdn, test_nn_heldout, test_nn_heldout_cutoff,
+# test_nn_heldout_premium, test_nn_training_context, test_nn_transformer,
 # test_nn_transformer_ml, test_resnet) call importorskip("torch") at MODULE
 # level, and a module-level skip collapses a whole file into a single "s". A
 # developer who runs `uv sync && uv run pytest` gets a fully green run in which
 # the nn tests, the bayesian tests and the polars half of the backend matrix
-# never execute. Measured: a core-only environment reports 540 passed and 197
-# skipped, and every one of those 197 is silent.
+# never execute. Measured: a core-only environment reports 557 passed and 204
+# skipped, and every one of those 204 is silent.
 #
 # So every leg here declares what it installed and what it must run, and a check
 # step after pytest reads the JUnit XML and fails the job on any of:
@@ -26,12 +27,18 @@ name: Tests
 #   * fewer tests executed than a coarse floor.
 #
 # The middle one is the one with real teeth. Read the floors for what they are:
-# COLLAPSE DETECTORS, not delta checks. Every leg re-runs the same ~540 core
-# tests, so an extra's unique contribution (bayesian is +44) is far smaller than
-# any sane cushion on a total near 580 - no global count can notice that all
-# twelve bayesian files were deleted. That is what required_files is for, and
-# why it names every file whose absence is the thing the leg was built to
-# prevent.
+# COLLAPSE DETECTORS, not delta checks. Every leg re-runs the same ~557 core
+# tests, so an extra's unique contribution (bayesian is +45) is smaller than the
+# cushion most of these floors carry: on those legs no global count can notice
+# that all twelve bayesian files were deleted. That is what required_files is
+# for, and why it names every file whose absence is the thing the leg was built
+# to prevent.
+#
+# The bayesian leg is the single exception, and deliberately so: its floor is
+# squeezed between the core count and its own, which is the only way a global
+# count can catch a whole family of tests going missing. Read the comment on
+# that leg before touching either number - it is also the only floor here that
+# goes stale simply because CORE tests were added.
 #
 # Both skip shapes had to be handled, because they differ. A MODULE-level
 # importorskip emits a single <testcase classname="" name="tests.test_mdn">
@@ -40,7 +47,7 @@ name: Tests
 # and skip individually. "At least one executed test per named file" is the one
 # rule that covers both.
 #
-# The matrix has two halves that do different jobs:
+# The matrix has three parts that do different jobs:
 #
 #   * The isolated legs (core, core-py311, polars, nn, bayesian, interop)
 #     install the core dependencies plus exactly ONE extra. This is CLAUDE.md's
@@ -55,6 +62,13 @@ name: Tests
 #     in strict mode: it enumerates the only skip reasons a runner may produce
 #     and fails on anything else.
 #
+#   * The two `-latest` legs install WITHOUT the lockfile and force numpy and
+#     pandas to their newest releases. Every other leg grades uv.lock, which
+#     [tool.uv] override-dependencies deliberately holds somewhere a consumer
+#     never lands; these two grade the floating resolution `pip install ibnr`
+#     actually produces. They are allowed to break when upstream ships, and
+#     that break is the point.
+#
 # On what the core leg does and does not prove about torch, because it is easy
 # to read backwards: tests/test_gallery.py's subprocess check asserts `'torch'
 # not in sys.modules` after importing ibnr.gallery. With torch ABSENT that
@@ -68,7 +82,18 @@ name: Tests
 # check it against the Actions tab. Billed job time: all 6m04, bayesian 4m19,
 # interop 2m22, nn 2m19, polars 56s, core 50s, core-py311 48s - about 18
 # runner-minutes per pull request, with wall clock set by the `all` leg at
-# roughly 6 minutes.
+# roughly 6 minutes. Those are the billed times of the run that graded this
+# file's first commit; the test counts below have since grown (nn alone by 53
+# tests), so read them as the right order of magnitude rather than current to
+# the second.
+#
+# The two `-latest` legs are the one exception to that, and it is flagged rather
+# than blurred: they were added AFTER the run above and have never executed on a
+# runner at all. "Roughly a minute each" is an ESTIMATE, extrapolated from the
+# locked core and polars legs (50s and 56s) plus an unlocked resolve, and it is
+# the only number in this file that was not measured. Replace it with billed
+# time from the first run that includes them. What is not a guess: neither leg
+# installs torch or cmdstanpy, so they do belong at the cheap end.
 #
 # Worth knowing if these numbers are ever re-derived on a laptop: the runners
 # are FASTER than the dev box for this workload, not slower. The `all` leg's
@@ -77,10 +102,20 @@ name: Tests
 # wrong by roughly a factor of two.
 #
 # That price buys less new information than it looks like, and it is worth
-# being honest about the ratio. Every isolated leg re-runs the same ~540 core
-# tests; measured against the core leg's 540, the unique yield is polars +128,
-# nn +97, bayesian +44, interop +28. If that stops being worth it, narrow the
-# per-extra legs to their own files; do not cut the `all` leg or the gates.
+# being honest about the ratio. Every isolated leg re-runs the same ~557 core
+# tests; measured with every leg built the same afternoon, the unique yield is
+# nn +137, polars +128, bayesian +45, interop +29. If that stops being worth it,
+# narrow the per-extra legs to their own files; do not cut `all` or the gates.
+#
+# On the provenance of the per-leg counts below, because it decides how much
+# they can be trusted: the core and the two -latest legs were re-measured on
+# THIS tree. polars, nn, bayesian, interop and all were measured on the same
+# branch one base earlier, when the core leg stood at 553 rather than 557 -
+# three fixes have landed on main since, and each of them added tests that run
+# in every leg. So read those five totals as four-ish tests low and their DELTAS
+# against core as sound; the first CI run on this branch replaces all of them
+# with runner numbers, which is the only place they were ever going to be
+# authoritative anyway.
 #
 # Deliberately NOT here, so nobody wonders whether it was forgotten:
 #
@@ -97,13 +132,30 @@ name: Tests
 #     ever run on. A real gap and a deliberate deferral: it would be the first
 #     non-ubuntu runner in the repository and belongs in its own change.
 #
-#   * An exhaustive import smoke test. The core leg only catches a hidden
-#     optional import in a module that some collected test actually imports.
-#     Making "catch hidden imports" literally true needs a test that walks the
-#     package importing every submodule, with a declared allowlist for the
-#     modules that legitimately require an extra (the network.py modules import
-#     torch at module level by design). That is a source change and a policy
-#     decision, not a workflow change.
+#   * An `interop-latest` leg, and this one leaves a combination genuinely
+#     UNGRADED rather than merely untested twice. `pip install ibnr[interop]`
+#     resolves chainladder 0.9.2 and bermuda-ledger 2.3.0 against numpy 1.26.4
+#     and pandas 2.3.3, because bermuda caps numpy below 2 and nothing outside
+#     this repository overrides that (measured with `uv pip compile --no-config`
+#     against this tree on 3.12, not read off a changelog). No leg here runs
+#     that pair: the locked interop leg runs numpy 2.4.6,
+#     which uv.lock's override-dependencies puts there precisely to step over
+#     the cap, and the two floating legs are core and polars only and force
+#     numpy>=2 by construction. So every tie-out this repository grades runs on
+#     a numpy generation the published extra does not install. Accepted rather
+#     than fixed, for now, because the override exists exactly because that cap
+#     is stale upstream metadata on code that works, and because [interop] stops
+#     at 3.12 anyway - but if a tie-out ever fails only for a consumer, this is
+#     the first place to look, and the fix is one more unlocked leg installing
+#     `-e ".[interop]"` with no numpy pin at all.
+#
+# No longer absent: the exhaustive import smoke test this header used to defer
+# now exists as tests/test_import_purity.py, and it is in required_files on the
+# legs where it must not silently vanish. It walks every submodule under a
+# meta_path blocker that refuses the extras, so it runs identically in every leg
+# rather than being disarmed on the one where the extras ARE installed - which
+# is the leg where a new module-level `import pymc` is most likely to be written
+# and least likely to be noticed.
 
 on:
   push:
@@ -198,25 +250,37 @@ jobs:
             forbid_skips: ""
             allow_skips: ""
             strict_skips: "false"
-            required_files: "tests/test_core.py;tests/test_transforms.py;tests/test_gallery.py;tests/test_markdown_snippets.py"
-            # 540 passed locally, 539 on a runner - one test differs by platform.
-            # That one-test gap is the reason the floors carry a real cushion
-            # rather than being pinned to a local count.
+            required_files: "tests/test_core.py;tests/test_transforms.py;tests/test_gallery.py;tests/test_markdown_snippets.py;tests/test_import_purity.py"
+            # Re-measured on this tree: 557 passed, 204 skipped, on the locked
+            # numpy 2.4.6 / pandas 2.3.3. This is the number every other leg's
+            # comment is a delta against, so it is measured first and the rest
+            # are read against it.
+            #
+            # A runner reports ONE test fewer than this, and the reason is known
+            # rather than mysterious: the dev box is logged in to gh, so
+            # test_schedule_p_github's live manifest test runs here and skips
+            # there (see the allow_skips entry on the `all` leg). Every floor in
+            # this file carries a cushion large enough that a gap of that shape
+            # cannot decide a job.
             min_tests: "500"
 
           # ---------------------------------------------------------------
           # core-py311: the same leg on the oldest Python the package claims to
-          # support. requires-python is >=3.11 and the classifiers advertise
-          # 3.11, but until this file nothing had ever tested it - the only
-          # workflow touching 3.11 was the docs build.
+          # support. requires-python is >=3.11,<3.13 and the classifiers name
+          # 3.11 and 3.12, so these two legs between them cover the whole
+          # declared range - until this file nothing had ever tested 3.11, the
+          # only workflow touching it being the docs build.
           #
           # Checked before shipping, because "the lock was resolved on 3.12" was
           # the obvious way for this leg to fail on its first run for a reason
           # having nothing to do with the code: `uv sync --locked ... --python
-          # 3.11` resolves and installs cleanly, and the suite gives 540 passed
-          # / 197 skipped there, identical to 3.12. So the 3.11 claim is real,
-          # not just advertised. If this leg ever goes red the answer is to fix
-          # the code or the classifier - never to drop --locked.
+          # 3.11` resolves and installs cleanly, and the suite gave 553 passed
+          # / 204 skipped there - test for test identical to what 3.12 gave in
+          # the same sweep. That identity is the claim worth making, and unlike
+          # the totals it does not decay when a fix on main adds four tests to
+          # both. So the 3.11 claim is real, not just advertised. If this leg
+          # ever goes red the answer is to fix the code or the classifier -
+          # never to drop --locked.
           - name: core-py311
             python: "3.11"
             cache: "false"
@@ -226,14 +290,17 @@ jobs:
             forbid_skips: ""
             allow_skips: ""
             strict_skips: "false"
-            required_files: "tests/test_core.py;tests/test_transforms.py;tests/test_gallery.py;tests/test_markdown_snippets.py"
+            required_files: "tests/test_core.py;tests/test_transforms.py;tests/test_gallery.py;tests/test_markdown_snippets.py;tests/test_import_purity.py"
             min_tests: "500"
 
           # ---------------------------------------------------------------
           # polars: the second ibis backend, and the biggest silent-skip risk in
-          # the repository. 18 test files take the `backend_name` fixture from
+          # the repository. 19 test files take the `backend_name` fixture from
           # conftest.py, and without polars each runs at half coverage and
-          # reports green - test_mack.py goes 64 -> 30, test_holdout.py 38 -> 19.
+          # reports green - measured per file across this leg's junit and the
+          # core leg's, test_mack.py goes 59 -> 30 and test_holdout.py 38 -> 19.
+          # (12 of the 19 gain tests in THIS leg; the other seven need torch or
+          # chainladder as well, and get their second backend on the `all` leg.)
           # That is the largest skip category, and CLAUDE.md decision 2 says this
           # dual-backend matrix is what keeps the polars-compatible formulations
           # honest. So this leg forbids conftest.py's own skip reason: if the
@@ -248,12 +315,14 @@ jobs:
             allow_skips: ""
             strict_skips: "false"
             required_files: "tests/test_transforms.py;tests/test_mack.py;tests/test_holdout.py;tests/test_polars_extra.py"
-            # measured: 668 passed, 69 skipped
+            # measured one base earlier (core 553 there): 681 passed, 76
+            # skipped - +128 over core, the largest unique contribution of any
+            # leg. See the provenance note in the header.
             min_tests: "620"
 
           # ---------------------------------------------------------------
           # nn: the torch entries, and the leg the whole gate mechanism was
-          # written for. Six of these files guard at MODULE level, so without
+          # written for. Nine of these files guard at MODULE level, so without
           # torch each collapses to a single skip line and every test in it
           # disappears. Both gates cover it from different sides: forbidding
           # "could not import 'torch'" catches the install silently failing,
@@ -265,6 +334,14 @@ jobs:
           # but guard at function level, so they collect everywhere and are
           # deliberately NOT in required_files: they would satisfy it even with
           # torch missing.
+          #
+          # required_files names all nine module-guarded files, not the six that
+          # existed when this leg was written. test_nn_training_context.py was
+          # already missing from the list then, and test_nn_heldout_cutoff.py and
+          # test_nn_heldout_premium.py arrived with the fixes this branch rebased
+          # onto - each one pins a specific NN defect, and an unnamed file is
+          # exactly the thing this gate cannot see going away. Any new
+          # module-level importorskip("torch") file belongs here too.
           - name: nn
             python: "3.12"
             cache: "true"
@@ -274,10 +351,14 @@ jobs:
             forbid_skips: ""
             allow_skips: ""
             strict_skips: "false"
-            required_files: "tests/test_deeptriangle.py;tests/test_mdn.py;tests/test_nn_heldout.py;tests/test_nn_transformer.py;tests/test_nn_transformer_ml.py;tests/test_resnet.py"
-            # measured: 637 passed, 249 skipped. The +97 over core is smaller
-            # than the number of tests in those six files, because this leg has
-            # no polars and many of them are parametrized over both backends.
+            required_files: "tests/test_deeptriangle.py;tests/test_mdn.py;tests/test_nn_heldout.py;tests/test_nn_heldout_cutoff.py;tests/test_nn_heldout_premium.py;tests/test_nn_training_context.py;tests/test_nn_transformer.py;tests/test_nn_transformer_ml.py;tests/test_resnet.py"
+            # measured one base earlier (core 553 there): 690 passed, 253
+            # skipped - +137 over core, still smaller than the number of tests
+            # in those nine files,
+            # because this leg has no polars and many of them are parametrized
+            # over both backends. The +137 is up from +97 when this leg landed:
+            # the two NN fixes this branch rebased onto brought 614 lines of new
+            # tests with them.
             min_tests: "590"
 
           # ---------------------------------------------------------------
@@ -301,13 +382,31 @@ jobs:
             allow_skips: ""
             strict_skips: "false"
             required_files: "tests/test_heldout_scorer_ccl.py;tests/test_heldout_scorer_compartmental.py;tests/test_heldout_scorer_csr.py;tests/test_heldout_scorer_guszcza.py;tests/test_nuts_sampler.py;tests/test_parity_clark.py;tests/test_parity_compartmental.py;tests/test_parity_meyers.py;tests/test_parity_meyers_csr.py;tests/test_parity_odp.py;tests/test_predicts_heldout_odp_clark.py;tests/test_stacking.py"
-            # measured: 584 passed, 153 skipped - exactly +44 over core. The
-            # floor is deliberately set ABOVE the core baseline of 540, so if
-            # every bayesian test vanished the count would fall back to ~540 and
-            # breach it. That is the one leg where the global floor can do the
-            # job required_files does elsewhere; the cushion is correspondingly
-            # thin, and removing bayesian tests on purpose means editing it.
-            min_tests: "550"
+            # measured one base earlier: 598 passed, 159 skipped, against a core
+            # leg of 553 in the same sweep - so this extra is worth +45, and on
+            # this tree, where core is 557, the leg should land near 602.
+            # required_files, naming all twelve files, remains the PRIMARY guard
+            # here and is what makes this leg's gate real.
+            #
+            # The floor is the backstop for the one collapse required_files
+            # cannot see: files that still exist and still collect, but whose
+            # bayesian content has been gutted. For it to check anything at all
+            # it has to sit ABOVE the core baseline, because deleting every
+            # bayesian test drops this leg back to core's count - a floor at or
+            # below 557 is satisfied by an environment with no bayesian tests in
+            # it whatsoever, which is the state this leg exists to catch. 575
+            # splits the 45-test gap: 18 above the core count measured here, 23
+            # below where this leg measured, both far larger than the 1-test
+            # local/runner difference noted on the core leg.
+            #
+            # So this floor is NOT a delta check and must not be tuned like one,
+            # but it is the one floor in this file that goes stale in a specific
+            # direction: every CORE test added pushes 557 up towards 575, and
+            # when that margin is gone the line silently stops meaning anything.
+            # Re-measure both numbers together and re-split the gap. The first
+            # CI run on this branch prints both ("PASTE-BACK: this leg executed
+            # N tests"), which is the cheapest place to take them from.
+            min_tests: "575"
 
           # ---------------------------------------------------------------
           # interop: chainladder and bermuda-ledger, which back the `to_*`
@@ -324,11 +423,12 @@ jobs:
             allow_skips: ""
             strict_skips: "false"
             required_files: "tests/test_clark.py;tests/test_odp_contract.py;tests/test_tieout_chainladder.py;tests/test_interop_bermuda.py"
-            # measured: 568 passed, 201 skipped. Only +28 over core, and the
-            # skip count goes UP versus core (197 -> 201) because three files
-            # that were one collection-skip each now collect and skip a few
-            # tests individually. required_files is what protects this leg; the
-            # floor alone could not.
+            # measured one base earlier (core 553 there): 582 passed, 207
+            # skipped. Only +29 over core, and the skip count goes UP (204 ->
+            # 207) because
+            # three files that were one collection-skip each now collect and
+            # skip a few tests individually. required_files is what protects
+            # this leg; the floor alone could not.
             min_tests: "530"
 
           # ---------------------------------------------------------------
@@ -370,8 +470,73 @@ jobs:
             forbid_skips: ""
             allow_skips: "gold mart;gh CLI;cmdstan"
             strict_skips: "true"
-            required_files: "tests/test_transforms.py;tests/test_deeptriangle.py;tests/test_mdn.py;tests/test_resnet.py;tests/test_nn_heldout.py;tests/test_stacking.py;tests/test_tieout_chainladder.py;tests/test_clark.py;tests/test_interop_bermuda.py;tests/test_polars_extra.py"
+            required_files: "tests/test_transforms.py;tests/test_deeptriangle.py;tests/test_mdn.py;tests/test_resnet.py;tests/test_nn_heldout.py;tests/test_stacking.py;tests/test_tieout_chainladder.py;tests/test_clark.py;tests/test_interop_bermuda.py;tests/test_polars_extra.py;tests/test_import_purity.py"
+            # measured one base earlier: 968 passed, 7 skipped - and the 7 are
+            # the allowlisted gold-mart skips above, re-counted rather than
+            # assumed. The 7 is the part that must not drift; the total is the
+            # part the first CI run refreshes.
             min_tests: "860"
+
+          # ---------------------------------------------------------------
+          # THE TWO LEGS BELOW DELIBERATELY DO NOT USE THE LOCKFILE, and they
+          # are the only ones that grade what a downstream consumer actually
+          # installs. Every leg above runs `uv sync --locked`, so all seven of
+          # them grade one resolution: the one in uv.lock, which [tool.uv]
+          # override-dependencies deliberately holds at numpy 2.4.6 / pandas
+          # 2.3.3 because the extras' stale upstream pins have to be overridden
+          # for the repo to run numpy 2 at all. A consumer gets none of that.
+          # `pip install ibnr` resolves numpy 2.5.1 and pandas 3.0.5 today, and
+          # no lockfile can pin what a resolver decides on someone else's
+          # machine - so without these legs the published package's real
+          # dependency set is ungraded.
+          #
+          # They are ALLOWED to break when a new numpy or pandas ships. That
+          # break IS the signal, and it arrives here rather than in a user's
+          # traceback. Do not "fix" one by pinning it; fix the code, or add a
+          # cap to the extra that genuinely needs one.
+          #
+          # `unlocked` is a separate matrix field rather than a sentinel value
+          # in sync_args, because the two install paths take different uv
+          # subcommands and a reader must be able to see which one a leg takes
+          # without parsing an argument string.
+          - name: core-latest
+            python: "3.12"
+            cache: "false"
+            unlocked: "true"
+            sync_args: '-e . --group test "numpy>=2" "pandas>=3"'
+            expect_imports: ""
+            absent_imports: "torch;polars;pymc;numpyro;arviz;bayesblend;chainladder;bermuda;altair"
+            forbid_skips: ""
+            allow_skips: ""
+            strict_skips: "false"
+            required_files: "tests/test_core.py;tests/test_transforms.py;tests/test_gallery.py;tests/test_markdown_snippets.py;tests/test_import_purity.py"
+            # measured on this tree: 557 passed, 204 skipped on numpy 2.5.1 /
+            # pandas 3.0.5 - test for test identical to the locked core leg on
+            # numpy 2.4.6 / pandas 2.3.3, which is the useful part of the
+            # result: the numpy and pandas generation moves nothing.
+            min_tests: "500"
+
+          # ---------------------------------------------------------------
+          # polars-latest: the second backend on the same floating resolution.
+          # polars is the extra a core-only consumer is most likely to add, and
+          # it is the one whose 18 dual-backend files carry the largest silent
+          # skip risk - so it keeps the locked polars leg's forbid_skips rule.
+          - name: polars-latest
+            python: "3.12"
+            cache: "false"
+            unlocked: "true"
+            sync_args: '-e ".[polars]" --group test "numpy>=2" "pandas>=3"'
+            expect_imports: "polars"
+            absent_imports: "torch;pymc;chainladder"
+            forbid_skips: "polars backend not installed"
+            allow_skips: ""
+            strict_skips: "false"
+            required_files: "tests/test_transforms.py;tests/test_mack.py;tests/test_holdout.py;tests/test_polars_extra.py"
+            # measured on this tree: 685 passed, 76 skipped on numpy 2.5.1 /
+            # pandas 3.0.5. The locked polars leg above reads 681 only because
+            # it was measured one base earlier; the +4 is the same four tests
+            # the core leg gained, not a difference between the two resolutions.
+            min_tests: "620"
 
     steps:
       - uses: actions/checkout@v6
@@ -414,8 +579,41 @@ jobs:
       # to pytest, so a plain `uv sync` can never produce a core-only
       # environment. The `test` group holds pytest and ruff and nothing else,
       # exactly as `docs` was carved out so docs.yml could avoid the dev group.
-      - name: Install
+      - name: Install (locked)
+        if: matrix.unlocked != 'true'
         run: uv sync --locked ${{ matrix.sync_args }}
+
+      # No lockfile on purpose - see the core-latest comment in the matrix.
+      # `uv venv` first so both install paths leave an identical .venv layout
+      # for the pytest step, which runs through `uv run --no-sync` either way.
+      # --clear because the runner already has a .venv by this point (the
+      # setup-uv action's cache restore leaves one) and uv 0.11 ERRORS on an
+      # existing venv rather than replacing it - both -latest legs died in 9 s
+      # on their first hosted run for exactly this. A fresh venv is the point
+      # of these legs, so replacing is correct, not just convenient.
+      # `uv pip install` is used rather than `uv sync --no-lock` because it is
+      # the only one that takes extra requirements on the command line, which is
+      # how these legs force numpy and pandas forward rather than merely
+      # allowing them.
+      #
+      # --no-config is LOAD-BEARING and was measured, not assumed. `uv pip
+      # install` run from the project directory reads [tool.uv] out of
+      # pyproject.toml, override-dependencies included - so without it this leg
+      # inherits the repo's own numpy<2.5 cap and installs numpy 2.4.6, exactly
+      # what the seven locked legs already grade. The one thing this leg exists
+      # to test would be silently switched off, and it would still be green.
+      # Measured on the same command: numpy 2.4.6 with config, 2.5.1 without.
+      - name: Install (floating, newest numpy/pandas)
+        if: matrix.unlocked == 'true'
+        run: |
+          uv venv --clear --python ${{ matrix.python }}
+          uv pip install --no-config ${{ matrix.sync_args }}
+
+      # Print the resolution rather than infer it from the leg name. On the
+      # floating legs this is the only record of what was actually graded, and
+      # it is the first thing to read when one of them goes red.
+      - name: Record the resolution this leg graded
+        run: uv run --no-sync python -c "import numpy, pandas; print('numpy', numpy.__version__, 'pandas', pandas.__version__)"
 
       # Fail before pytest if the environment is not what this leg claims.
       # Cheap, and its failure message is obvious - which is exactly what a skip
@@ -590,8 +788,8 @@ jobs:
               )
 
           # The gate with real teeth. A global floor cannot notice that one file
-          # vanished, because ~540 core tests run in every leg and drown the
-          # difference - the bayesian extra's entire unique contribution is 44.
+          # vanished, because ~553 core tests run in every leg and drown the
+          # difference - the bayesian extra's entire unique contribution is 45.
           missing = []
           for path in required:
               module = path.replace("/", ".").replace("\\", ".").removesuffix(".py")
