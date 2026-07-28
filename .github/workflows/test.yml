@@ -257,11 +257,12 @@ jobs:
             allow_skips: ""
             strict_skips: "false"
             required_files: "tests/test_core.py;tests/test_transforms.py;tests/test_gallery.py;tests/test_markdown_snippets.py;tests/test_import_purity.py;tests/test_codec.py"
-            # Re-measured on this branch: 621 passed, 206 skipped, on the locked
-            # numpy 2.4.6 / pandas 2.3.3, of which tests/test_codec.py is 52
-            # executed and 8 skipped (its polars parameters). This is the number
-            # every other leg's comment is a delta against, so it is measured
-            # first and the rest are read against it.
+            # Re-measured on the codec-hardening branch: 648 passed, 208
+            # skipped, on the locked numpy 2.4.6 / pandas 2.3.3, of which
+            # tests/test_codec.py is 78 executed and 10 skipped (its polars
+            # parameters). This is the number every other leg's comment is a
+            # delta against, so it is measured first and the rest are read
+            # against it. The previous figure here was 621 / 206.
             #
             # A runner reports ONE test fewer than this, and the reason is known
             # rather than mysterious: the dev box is logged in to gh, so

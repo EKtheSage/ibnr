@@ -102,9 +102,15 @@ class PredictiveDistribution:
 
     @classmethod
     def from_arrow(cls, data: bytes) -> PredictiveDistribution:
+        """Decode draws written by :meth:`to_arrow`, refusing any other kind.
+
+        ``expect`` is what makes the classmethod mean anything: the dispatcher
+        routes on the payload's own kind, so without it this returns a Triangle
+        when handed triangle bytes.
+        """
         from ibnr.kernels import codec
 
-        return codec.from_arrow(data)
+        return codec.from_arrow(data, expect="PredictiveDistribution")
 
     def to_summary(self, *, quantiles: Sequence[float] | None = None) -> dict:
         """JSON-safe digest - moments, quantiles, target metadata, no draws.

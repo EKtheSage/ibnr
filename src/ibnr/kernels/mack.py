@@ -280,9 +280,11 @@ class MackFit:
 
     @classmethod
     def from_arrow(cls, data: bytes) -> MackFit:
+        """Decode a fit written by :meth:`to_arrow`, refusing any other kind -
+        including the ``MackFitPanel`` it may well have come out of."""
         from ibnr.kernels import codec
 
-        return codec.from_arrow(data)
+        return codec.from_arrow(data, expect="MackFit")
 
 
 def fit_mack(
@@ -348,9 +350,11 @@ class MackFitPanel:
 
     @classmethod
     def from_arrow(cls, data: bytes) -> MackFitPanel:
+        """Decode a panel written by :meth:`to_arrow`, refusing any other kind -
+        including the single ``MackFit`` a caller may have meant to send."""
         from ibnr.kernels import codec
 
-        return codec.from_arrow(data)
+        return codec.from_arrow(data, expect="MackFitPanel")
 
 
 def fit_mack_many(

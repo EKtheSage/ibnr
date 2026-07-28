@@ -26,6 +26,7 @@ test goes red - a value-only version of any of them stays green.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import json
 import warnings
@@ -36,8 +37,14 @@ import pandas as pd
 import pytest
 
 from ibnr.kernels import codec
-from ibnr.kernels.cdr import one_year_cdr
-from ibnr.kernels.forecast import Absence, CohortForecast, align_panel, leaderboard
+from ibnr.kernels.cdr import CDRResult, one_year_cdr
+from ibnr.kernels.forecast import (
+    Absence,
+    CohortForecast,
+    ForecastPanel,
+    align_panel,
+    leaderboard,
+)
 from ibnr.kernels.holdout import next_diagonal
 from ibnr.kernels.mack import MackFit, MackFitPanel, fit_mack, fit_mack_many
 from ibnr.kernels.predictive import PredictiveDistribution
@@ -375,6 +382,35 @@ def test_the_requested_quantile_grid_is_the_one_reported(pred):
     assert pred.to_summary()["quantile_levels"] == list(codec.DEFAULT_QUANTILES)
 
 
+def test_a_bad_quantile_grid_is_refused_whether_or_not_there_are_draws():
+    """The zero-draw branch never calls ``np.quantile``, so it used to be the one
+    place an impossible grid was accepted.
+
+    A distribution with no draws is not a corrupt object - it is what a refused
+    cohort produces - and it answers with a grid of nulls, one per level. Asking
+    it for the 150th percentile therefore returned a perfectly well-formed
+    summary whose ``quantile_levels`` said 1.5, while the identical call against
+    a distribution WITH draws raised from inside numpy. Same request, two
+    verdicts, decided by the data rather than the request.
+    """
+    targets = pd.DataFrame({"l": ["a", "b"]})
+    empty = PredictiveDistribution(samples=np.zeros((0, 2)), targets=targets)
+    filled = PredictiveDistribution(samples=np.ones((5, 2)), targets=targets)
+    assert empty.n_draws == 0 and filled.n_draws == 5
+
+    for dist in (empty, filled):
+        for grid in [(0.5, 1.5), (-0.01,), (float("nan"),)]:
+            with pytest.raises(ValueError, match=r"quantile levels must lie in \[0, 1\]"):
+                dist.to_summary(quantiles=grid)
+
+    # and the legitimate empty summary still answers, one null per level
+    summary = empty.to_summary(quantiles=(0.05, 0.5))
+    assert summary["quantile_levels"] == [0.05, 0.5]
+    assert summary["quantiles"] == [[None, None], [None, None]]
+    assert summary["mean"] == [None, None]
+    json.dumps(summary, allow_nan=False)
+
+
 def test_there_is_no_from_summary():
     """A summary is a description of a distribution, not a distribution. Making
     it reconstructible would let a caller score, stack or rank on eleven
@@ -444,6 +480,61 @@ def pa_table_of_ones():
 def test_unencodable_type_is_named():
     with pytest.raises(TypeError, match="no wire encoding for"):
         codec.to_arrow(object())
+
+
+#: The typed entry point for every kind that has one, read back off the classes
+#: themselves. ``DataFrame`` is deliberately absent and named separately below:
+#: the type belongs to pandas, so ``codec.from_arrow`` is the only door it has.
+TYPED_DECODERS = {
+    "PredictiveDistribution": PredictiveDistribution.from_arrow,
+    "Triangle": Triangle.from_arrow,
+    "MackFit": MackFit.from_arrow,
+    "MackFitPanel": MackFitPanel.from_arrow,
+    "CDRResult": CDRResult.from_arrow,
+    "ForecastPanel": ForecastPanel.from_arrow,
+}
+
+
+def test_every_kind_has_a_typed_decoder_or_is_named_as_having_none():
+    """Stale-duplicate guard. A kind joining the registry joins the wrong-kind
+    parametrization below in the same commit, rather than being the one entry
+    point nobody checked."""
+    assert set(TYPED_DECODERS) | {"DataFrame"} == set(codec._DECODERS)
+
+
+@pytest.mark.parametrize("kind", sorted(TYPED_DECODERS))
+def test_a_typed_decoder_refuses_every_other_kind(encodables, kind):
+    """``PredictiveDistribution.from_arrow(triangle_bytes)`` must not return a
+    Triangle.
+
+    The typed classmethods are thin delegations to the generic dispatcher, which
+    routes on the payload's own ``ibnr.kind`` - so without a check the class the
+    caller named is decoration, and the value they get back is whatever the bytes
+    happened to be. Nothing downstream necessarily notices: it is a real,
+    correctly decoded artifact of the wrong type, and the AttributeError lands
+    somewhere else entirely.
+
+    Both names are asserted to be in the message, because "this is not a
+    MackFit" without saying what it IS sends the reader back to the wire.
+    """
+    decode = TYPED_DECODERS[kind]
+    assert decode(codec.to_arrow(encodables[kind])) is not None
+
+    for other in ENCODABLE_KINDS:
+        if other == kind:
+            continue
+        with pytest.raises(ValueError, match="expected an envelope of kind") as excinfo:
+            decode(codec.to_arrow(encodables[other]))
+        message = str(excinfo.value)
+        assert kind in message and other in message, message
+
+
+def test_the_expected_kind_is_itself_checked(pred):
+    """A typo in ``expect=`` refuses every payload there is, which is a confusing
+    way to learn about a typo. It is refused by name instead, before the bytes
+    are touched."""
+    with pytest.raises(ValueError, match="unknown expected kind 'MackFitt'"):
+        codec.from_arrow(pred.to_arrow(), expect="MackFitt")
 
 
 # -- Triangle ------------------------------------------------------------------
@@ -560,6 +651,42 @@ def test_mack_panel_carries_the_cohorts_that_failed(backend_name):
     assert list(back.fits) == list(panel.fits)
     assert back.errors == panel.errors
     assert np.array_equal(back[("CO_A",)].f, panel[("CO_A",)].f)
+
+
+def test_mack_fit_cum_keeps_its_own_dtype(triangle):
+    """``cum`` is the only array on a ``MackFit`` that used to be rebuilt at a
+    hardcoded float64.
+
+    Every other one records its dtype and comes back in it - which is what keeps
+    ``obs_mask`` a bool mask rather than a float one - so a float32 triangle
+    decoded into a float64 fit that is equal to it, silently 2x the memory and
+    no longer the array that was sent. Bit-compared inside the dtype, because
+    float32 -> float64 -> float32 is lossless and an ``allclose`` check cannot
+    see the trip at all.
+    """
+    fit = dataclasses.replace(
+        fit_mack(triangle, loss_field="paid_loss"), cum=CUM.astype(np.float32)
+    )
+    back = MackFit.from_arrow(fit.to_arrow())
+    assert back.cum.dtype == np.float32
+    assert np.array_equal(back.cum.view(np.uint8), fit.cum.view(np.uint8))
+
+
+def test_a_panel_refuses_a_nested_payload_that_is_not_a_fit(encodables):
+    """The panel's children get the same check its own envelope does.
+
+    A ``MackFitPanel`` is the one kind whose payload is other envelopes, and the
+    decoder used to hand each nested blob to the generic dispatcher - which
+    routes on the blob's OWN kind. So a tampered child decoded into whatever it
+    claimed to be and went into ``fits`` under a cohort key, where the panel
+    reports it as a fitted cohort and the first ``.ultimate`` fails somewhere
+    with no reference to the wire at all.
+    """
+    panel = encodables["MackFitPanel"]
+    assert len(panel.fits) == 1, "fixture no longer has exactly one nested fit"
+    forged = _retag(panel.to_arrow(), b"ibnr.nested.0", codec.to_arrow(encodables["Triangle"]))
+    with pytest.raises(ValueError, match="expected an envelope of kind 'MackFit'"):
+        MackFitPanel.from_arrow(forged)
 
 
 # -- CDRResult -----------------------------------------------------------------
@@ -681,9 +808,7 @@ def test_object_column_of_na_does_not_become_nan(panel_and_board):
 
 
 def test_dataframe_index_and_dtypes_survive():
-    """``preserve_index=None`` is the pyarrow default and the right one: a
-    RangeIndex rides in the metadata and a named index becomes a column, so both
-    come back as they went in."""
+    """A named string index and a nullable column, together."""
     frame = pd.DataFrame(
         {"score": [1.0, 2.0], "n": pd.array([3, None], dtype="Int64")},
         index=pd.Index(["a", "b"], name="model"),
@@ -691,6 +816,93 @@ def test_dataframe_index_and_dtypes_survive():
     back = codec.from_arrow(codec.to_arrow(frame))
     pd.testing.assert_frame_equal(back, frame)
     assert back.index.name == "model"
+
+
+def test_a_nullable_index_keeps_na_apart_from_nan():
+    """The index gets the treatment the columns get, because it is data too.
+
+    An ``Int64`` index of ``[3, pd.NA]`` used to come back float64 ``[3.0, nan]``:
+    the same missing-versus-value collapse the board's columns are guarded
+    against, one axis over. Nothing about the decoded frame looks wrong - the
+    values print identically - and it is a different verdict.
+    """
+    frame = pd.DataFrame(
+        {"v": [1.0, 2.0]}, index=pd.Index(pd.array([3, None], dtype="Int64"), name="n")
+    )
+    back = codec.from_arrow(codec.to_arrow(frame))
+    pd.testing.assert_frame_equal(back, frame)
+    assert back.index.dtype == "Int64"
+    assert back.index[1] is pd.NA
+
+
+def test_a_tuple_valued_index_survives_as_tuples():
+    """A flat object index of tuples - the shape a caller gets from
+    ``set_index`` on a cohort key. ``pa.Table.from_pandas`` raises on it
+    outright (``Expected bytes, got a 'int' object``), so this was not lossy, it
+    was a frame that could not be sent at all."""
+    keys = [("wkcomp", 1988), ("othliab", 1989)]
+    frame = pd.DataFrame(
+        {"v": [1.0, 2.0]}, index=pd.Index(keys, tupleize_cols=False, name="cohort")
+    )
+    back = codec.from_arrow(codec.to_arrow(frame))
+    pd.testing.assert_frame_equal(back, frame)
+    assert isinstance(back.index[0], tuple)
+    assert back.loc[[("wkcomp", 1988)], "v"].tolist() == [1.0]
+
+
+def test_a_named_multiindex_survives_with_its_level_types():
+    """Levels, names and per-level dtypes. A MultiIndex of (str, date) is what a
+    per-cohort board is indexed by, and a date level coming back as a Timestamp
+    would silently change every join it takes part in."""
+    index = pd.MultiIndex.from_tuples(
+        [("wkcomp", dt.date(2020, 1, 1)), ("othliab", dt.date(2021, 1, 1))],
+        names=["lob", "origin"],
+    )
+    frame = pd.DataFrame({"elpd": pd.array([-1.5, None], dtype="Float64")}, index=index)
+    back = codec.from_arrow(codec.to_arrow(frame))
+    pd.testing.assert_frame_equal(back, frame)
+    assert back.index.names == ["lob", "origin"]
+    assert isinstance(back.index[0][1], dt.date)
+    assert back["elpd"].iloc[1] is pd.NA
+
+
+def test_an_index_does_not_collide_with_a_column_of_the_same_name():
+    """The index travels as an extra column, so its label has to be one no real
+    column can hold - including a column that IS the index's name."""
+    frame = pd.DataFrame({"v": [1.0, 2.0], "__ibnr_index_0__": [7, 8]}, index=pd.Index([1, 2]))
+    frame.index.name = "v"
+    back = codec.from_arrow(codec.to_arrow(frame))
+    pd.testing.assert_frame_equal(back, frame)
+    assert list(back.columns) == ["v", "__ibnr_index_0__"]
+
+
+@pytest.mark.parametrize(
+    "index",
+    [
+        pytest.param(pd.RangeIndex(2), id="range-default"),
+        pytest.param(pd.RangeIndex(5, 7), id="range-offset"),
+        pytest.param(pd.RangeIndex(0, 4, 2, name="i"), id="range-step-named"),
+        pytest.param(pd.Index([1.5, np.nan], name="f"), id="float-with-nan"),
+        pytest.param(pd.CategoricalIndex(["x", "y"], name="c"), id="categorical"),
+        pytest.param(pd.MultiIndex.from_tuples([("a", 1), ("b", 2)]), id="multiindex-unnamed"),
+        pytest.param(pd.DatetimeIndex(["2020-01-01", "2020-02-01"], name="t"), id="datetime"),
+        # The unnamed cases are their own risk, not a duplicate of the named
+        # ones: the index rides as a column that HAS a label, and pandas reads
+        # an index name off the data when none is given - so an unnamed index
+        # comes back named after the placeholder unless that is undone.
+        pytest.param(pd.Index(["a", "b"]), id="str-unnamed"),
+        pytest.param(pd.Index(pd.array([3, None], dtype="Int64")), id="nullable-unnamed"),
+    ],
+)
+def test_every_index_flavour_round_trips(index):
+    """The shapes that already worked, kept working. A RangeIndex is described
+    rather than materialized - start/stop/step in the record, no column - so the
+    empty-body kinds stay empty."""
+    frame = pd.DataFrame({"v": [1.0, 2.0]}, index=index)
+    back = codec.from_arrow(codec.to_arrow(frame))
+    pd.testing.assert_frame_equal(back, frame, check_index_type=True)
+    assert type(back.index) is type(index)
+    assert back.index.names == index.names
 
 
 def test_mixed_object_column_keeps_each_value_its_own_type():
@@ -711,3 +923,61 @@ def test_a_value_with_no_encoding_is_named_and_refused():
     frame = pd.DataFrame({"x": [{"a", "b"}]})
     with pytest.raises(TypeError, match="cannot serialize"):
         codec.to_arrow(frame)
+
+
+# -- tagged values -------------------------------------------------------------
+
+
+def test_an_unknown_tagged_value_kind_is_refused_by_name(triangle):
+    """The refuse-by-name contract has a decode side too, and it was open.
+
+    ``_untag`` dispatched on the tag and ended in a bare ``return value``, which
+    is right for the four kinds JSON already delivers correctly and is also what
+    every OTHER kind fell into. A tag of ``["set", [...]]`` therefore came back
+    as a plain list - not an error, a value - and landed in
+    ``MackFit.origin_periods``, where the first thing to notice is a report
+    labelled with a list. Forged through the header, because the encoder cannot
+    be made to write one.
+    """
+    fit = fit_mack(triangle, loss_field="paid_loss")
+    data = fit.to_arrow()
+    header = json.loads(codec._read_stream(data).schema.metadata[codec._HEADER])
+    header["origin_periods"][0] = ["set", ["1988-01-01"]]
+    forged = _retag(data, codec._HEADER, json.dumps(header).encode("utf-8"))
+
+    with pytest.raises(ValueError, match="unknown tagged value kind 'set'"):
+        MackFit.from_arrow(forged)
+
+
+def test_every_tag_the_encoder_writes_is_understood_by_the_decoder():
+    """The two halves are two hand-written dispatch tables, and the failure when
+    they drift is silent in one direction: a new ``_tag`` kind that ``_untag``
+    does not know used to fall through and come back as its JSON shape. Asserted
+    as a SET so a kind cannot be added to either side alone."""
+    # (sent, received). The two numpy entries are the deliberate normalization:
+    # JSON has one integer type and one float type, so a numpy scalar comes back
+    # as the python scalar it tags as - equal, one bit for bit, and not the same
+    # class. Everything else is expected back as itself.
+    cases = [
+        (None, None),
+        (pd.NA, pd.NA),
+        (pd.NaT, pd.NaT),
+        (("a", 1, dt.date(2020, 1, 1)), ("a", 1, dt.date(2020, 1, 1))),
+        (True, True),
+        (np.int64(3), 3),
+        (np.float64(1.5), 1.5),
+        (float("nan"), float("nan")),
+        (pd.Timestamp("2020-01-01T12:00"), pd.Timestamp("2020-01-01T12:00")),
+        (dt.datetime(2020, 1, 1, 12, 0), dt.datetime(2020, 1, 1, 12, 0)),
+        (dt.date(2020, 1, 1), dt.date(2020, 1, 1)),
+        ("text", "text"),
+    ]
+    assert {codec._tag(sent)[0] for sent, _ in cases} == set(codec._TAG_KINDS)
+
+    for sent, expected in cases:
+        back = codec._untag(codec._tag(sent))
+        assert type(back) is type(expected), sent
+        if isinstance(expected, float) and np.isnan(expected):
+            assert np.isnan(back)
+        else:
+            assert back is expected or back == expected, sent

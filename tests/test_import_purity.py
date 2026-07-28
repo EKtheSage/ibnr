@@ -1,6 +1,6 @@
 """Importing ibnr must not drag an optional extra in with it.
 
-Two separate claims, and they fail for different reasons:
+Three separate claims, and they fail for different reasons:
 
 1. **The public import paths stay light.** ``import ibnr.gallery`` registers
    every nn and bayesian entry, so a single module-level ``import torch`` (or
@@ -14,7 +14,13 @@ Two separate claims, and they fail for different reasons:
    test happens to import; this one walks the package, which is what makes
    "catch hidden imports" literally true rather than approximately true.
 
-Both run in a **subprocess**. In an environment that has the extras installed -
+3. **pyarrow is not something ibnr can defer**, however much it looks like it.
+   It is a core dependency rather than an extra, so claim 1 has nothing to say
+   about it, and ``kernels/codec.py`` imports it at module scope on a path every
+   gallery entry travels. The measurement is in ``kernels/__init__.py``'s
+   docstring; the test below is the tripwire on its premise.
+
+All three run in a **subprocess**. In an environment that has the extras installed -
 the `all` CI leg, and every dev box - torch is already in this process's
 ``sys.modules`` from an earlier test, which would mask the violation entirely. A
 clean interpreter is the only honest check, and it is also why these tests have
@@ -96,6 +102,33 @@ def test_public_import_pulls_in_no_optional_extra(target):
         f"import {target}\n"
         f"leaked = [m for m in {HEAVY!r} if m in sys.modules]\n"
         f"assert not leaked, 'importing {target} pulled in ' + repr(leaked)\n"
+    )
+    _run(code)
+
+
+def test_the_wire_format_is_not_what_a_public_import_pays_for():
+    """pandas imports pyarrow, so ibnr cannot avoid it by deferring the codec.
+
+    This pins the PREMISE, not a fix. ``kernels/codec.py`` imports pyarrow at
+    module scope and ``kernels/__init__.py`` imports the codec on a path every
+    gallery entry travels, which reads exactly like a cold-start defect worth a
+    PEP 562 ``__getattr__``. It is not one: ``pandas/compat/pyarrow.py`` runs a
+    bare ``import pyarrow`` whenever pyarrow is installed - and it always is,
+    because the codec requires it - so pyarrow is loaded before ibnr's first
+    line either way. Built and measured, interleaved, in
+    ``kernels/__init__.py``'s docstring: the lazy arm removes one module from a
+    1,098-module process and no measurable time.
+
+    When this goes red, pandas has stopped importing pyarrow and the deferral is
+    worth building for real.
+    """
+    code = (
+        "import sys\n"
+        "import pandas\n"
+        "assert 'pyarrow' in sys.modules, (\n"
+        "    'pandas no longer imports pyarrow - deferring ibnr.kernels.codec behind a\\n'\n"
+        "    'PEP 562 __getattr__ in kernels/__init__.py would now buy a real cold start'\n"
+        ")\n"
     )
     _run(code)
 
