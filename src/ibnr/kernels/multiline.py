@@ -31,6 +31,15 @@ THE CONTRACT - keys returned by ``multiline_data`` (shape; dtype; meaning):
 - ``dev_grain_months``: int - months per dev step (12 for annual triangles).
 - ``lob_column``    : str - which segment column defined the LOB axis, so a
   consumer can label its outputs without re-deriving it.
+- ``segment``       : dict - the cohort this contract describes: every NON-LOB
+  segment column and its (constant, by invariant 1) value. The multiline
+  analogue of ``contract._cohort_identity``'s ``segment``, and what
+  ``GalleryEntry.cohorts()`` hands back for SUR and the copula GLM - their
+  cohort is a COMPANY spanning lines, which is exactly what their ``predict()``
+  returns. Empty when the LOB column is the only segment.
+- ``measure``       : str - the triangle's basis, always "cumulative" here
+  (refused otherwise at construction). Carried for the same reason every other
+  contract carries it: a cell indexes identically on either basis.
 - ``units``         : str | None - carried through from Triangle metadata onto
   the eventual ``PredictiveDistribution``.
 - ``premium``       : (n_lob, n_w) float64, ONLY when ``premium_field`` is
@@ -118,6 +127,8 @@ def multiline_data(
                 f"multiple {col!r} values {sorted(map(str, values))}; "
                 "multiline models fit one company at a time - filter first"
             )
+    # the cohort identity: the check above makes taking the first row exact
+    segment = {col: df[col].iloc[0] for col in segs if col != lob_column}
 
     df = df.copy()
     df["origin_period"] = _as_date(df["origin_period"])
@@ -179,6 +190,8 @@ def multiline_data(
         "dev_grain_months": step,
         "lob_column": lob_column,
         "units": triangle.meta.units,
+        "segment": segment,
+        "measure": triangle.meta.measure,
     }
     if premium_field is not None:
         data["premium"] = _premium_by_lob_origin(triangle, premium_field, lobs, origins, lob_column)

@@ -24,6 +24,7 @@ reproduces draw by draw."""
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
@@ -307,7 +308,16 @@ class MeyersCCL(GalleryEntry, ScoresHeldout, PredictsHeldout):
             progressbar=show_progress,
         ), None
 
-    def predict(self, seed: int | None = None) -> PredictiveDistribution:
+    def cohorts(self) -> list[dict]:
+        """This fit's one cohort - the segment identity its contract was built
+        from (see :meth:`GalleryEntry.cohorts`)."""
+        if self.contract_ is None:
+            raise RuntimeError("call fit() first")
+        return [dict(self.contract_["segment"])]
+
+    def predict(
+        self, segment: Mapping | None = None, seed: int | None = None
+    ) -> PredictiveDistribution:
         """Predictive distribution of ultimates (losses at the last dev period)
         by origin year plus their total, via the monograph's simulation:
         sequentially over origins, mu[w] = logprem[w] + logelr + alpha[w]
@@ -325,6 +335,8 @@ class MeyersCCL(GalleryEntry, ScoresHeldout, PredictsHeldout):
         in turn widens the total's predictive distribution relative to summing
         independent margins).
         """
+        # a single-cohort fit: accepts None or its own key, refuses anything else
+        self.cohort_index(segment)
         if self.idata_ is None or self.contract_ is None:
             raise RuntimeError("call fit() first")
         c = self.contract_
@@ -388,7 +400,9 @@ class MeyersCCL(GalleryEntry, ScoresHeldout, PredictsHeldout):
         # is the quantity the Meyers retrospective actually tests.
         return pred.with_total()
 
-    def realized_ultimates(self, full_triangle: Triangle) -> np.ndarray:
+    def realized_ultimates(
+        self, full_triangle: Triangle, segment: Mapping | None = None
+    ) -> np.ndarray:
         """Outcomes aligned to predict()'s targets (per origin + total), taken
         from the full triangle at the final development lag.
 
@@ -398,6 +412,8 @@ class MeyersCCL(GalleryEntry, ScoresHeldout, PredictsHeldout):
         accident years beyond the training slice, and aggregating without that
         filter silently inflates the outcome (CLAUDE.md gotcha).
         """
+        # a single-cohort fit: accepts None or its own key, refuses anything else
+        self.cohort_index(segment)
         if self.contract_ is None:
             raise RuntimeError("call fit() first")
         c = self.contract_

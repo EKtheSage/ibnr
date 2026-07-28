@@ -19,6 +19,23 @@ def register(cls: type[GalleryEntry]) -> type[GalleryEntry]:
     for attr in ("name", "family"):
         if not isinstance(getattr(cls, attr, None), str):
             raise TypeError(f"{cls.__name__} must define a class-level string {attr!r}")
+    # `config_class` is checked BOTH ways. Missing, and gallery.get(name) gives a
+    # caller no route to the type fit() demands - the gap that had notebook 03
+    # importing four config classes by module path. Stale (declared by an entry
+    # whose fit() no longer takes one), and the declaration is unreachable, which
+    # is exactly as misleading.
+    takes_config = "config" in inspect.signature(cls.fit).parameters
+    declared = getattr(cls, "config_class", None)
+    if takes_config and not inspect.isclass(declared):
+        raise TypeError(
+            f"{cls.__name__}.fit takes config= but the entry declares no config_class, "
+            "so gallery.get(name) gives a caller no route to the type it must build"
+        )
+    if declared is not None and not takes_config:
+        raise TypeError(
+            f"{cls.__name__} declares config_class={getattr(declared, '__name__', declared)!s} "
+            "but its fit() takes no config=, so the declaration is unreachable"
+        )
     if not (Path(inspect.getfile(cls)).parent / "card.md").exists():
         raise TypeError(f"{cls.__name__} has no card.md; every gallery entry ships its card")
     if cls.name in _REGISTRY and _REGISTRY[cls.name] is not cls:

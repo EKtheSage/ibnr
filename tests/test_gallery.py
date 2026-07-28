@@ -98,6 +98,65 @@ def test_import_does_not_pull_heavy_scipy_subpackages(stmt):
     subprocess.run([sys.executable, "-c", code], check=True)
 
 
+#: CLAUDE.md decision 8 pins this list verbatim; an addition is a deliberate
+#: edit in both places, not something a convenience import does on its way past.
+EXPECTED_EXPORTS = {
+    "SCORE_DIRECTION",
+    "Absence",
+    "CohortForecast",
+    "GalleryEntry",
+    "align_panel",
+    "fit",
+    "get",
+    "leaderboard",
+    "list",
+    "next_diagonal",
+    "stack",
+}
+
+
+def test_gallery_exports_the_whole_leaderboard_pipeline():
+    """``__all__`` is exactly the designed set - no more, no less.
+
+    The four names beyond the 0.4.0 surface are the steps a caller must take to
+    BUILD the panel ``leaderboard()`` consumes: which cells (``next_diagonal``),
+    one model's arrays at them (``CohortForecast``), why an array is missing
+    (``Absence``), and the cross-model intersection (``align_panel``).
+    ``SCORE_DIRECTION`` joins them because the board has no default sort.
+    """
+    assert set(gallery.__all__) == EXPECTED_EXPORTS
+
+
+@pytest.mark.parametrize("name", sorted(EXPECTED_EXPORTS))
+def test_every_export_is_the_kernels_object_itself(name):
+    """Identity, not equality: a re-export must not become a copy.
+
+    ``leaderboard`` reading a different ``SCORE_DIRECTION`` than the caller
+    sorted by would be invisible until the board ranked backwards.
+    """
+    from ibnr.kernels import forecast, holdout, stacking
+
+    obj = getattr(gallery, name)
+    for module in (forecast, holdout, stacking):
+        if hasattr(module, name):
+            assert obj is getattr(module, name)
+            break
+
+
+def test_kernels_never_imports_the_gallery():
+    """Re-export direction is gallery -> kernels, and only that way.
+
+    The harness's spawn-based workers import ``kernels`` without the gallery, and
+    a kernels->gallery edge would drag every entry (and every registration) into
+    a process that needs one function.
+    """
+    code = (
+        "import sys; import ibnr.kernels; "
+        "assert 'ibnr.gallery' not in sys.modules, 'ibnr.kernels imported the gallery'"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
 def test_card_is_real():
     """`card()` returns the entry's actual card.md, not a stub.
 
@@ -117,6 +176,25 @@ def test_unknown_entry():
     """A typo'd entry name fails loudly (and the error lists what is known)."""
     with pytest.raises(KeyError, match="no gallery entry"):
         gallery.get("nope")
+
+
+class _Complete(GalleryEntry):
+    """Everything the ABC demands, and nothing that would let it register."""
+
+    name = "y"
+    family = "bayesian"
+
+    def fit(self, triangle, **kw):
+        return self
+
+    def cohorts(self):
+        return [{}]
+
+    def predict(self, segment=None, **kw):
+        raise NotImplementedError
+
+    def realized_ultimates(self, full_triangle, segment=None):
+        raise NotImplementedError
 
 
 def test_register_rejects_incomplete_entries():
@@ -146,17 +224,60 @@ def test_register_rejects_incomplete_entries():
     with pytest.raises(TypeError, match="full GalleryEntry interface"):
         register(StillAbstract)
 
-    # 3. complete interface but no card.md next to the module: every entry
-    #    ships its card (the gallery is documentation-first)
-    class NoCard(GalleryEntry):
-        name = "y"
+    # 2b. `cohorts()` is abstract too, and deliberately not defaulted: a pooled
+    #     entry that forgot to override a `contract_["segment"]` default would
+    #     get a plausible answer from a key that happens to exist.
+    class NoCohorts(GalleryEntry):
+        name = "x2"
         family = "bayesian"
 
         def fit(self, triangle, **kw):
             return self
 
-        def predict(self):
+        def predict(self, segment=None, **kw):
             raise NotImplementedError
 
+        def realized_ultimates(self, full_triangle, segment=None):
+            raise NotImplementedError
+
+    with pytest.raises(TypeError, match="full GalleryEntry interface"):
+        register(NoCohorts)
+
+    # 3. complete interface but no card.md next to the module: every entry
+    #    ships its card (the gallery is documentation-first)
     with pytest.raises(TypeError, match="card.md"):
-        register(NoCard)
+        register(_Complete)
+
+
+def test_register_rejects_a_missing_config_class():
+    """An entry whose fit() takes config= must say which type to build.
+
+    Without the declaration, a caller who found the entry through
+    ``gallery.get(name)`` has no route to its config class but a module path -
+    which is exactly what notebook 03 had to do for four NN entries.
+    """
+
+    class TakesConfig(_Complete):
+        name = "z"
+
+        def fit(self, triangle, config=None, **kw):
+            return self
+
+    with pytest.raises(TypeError, match="declares no config_class"):
+        register(TakesConfig)
+
+
+def test_register_rejects_a_stale_config_class():
+    """...and the other direction: a declaration nothing can reach.
+
+    An entry that declares ``config_class`` while its ``fit`` takes no
+    ``config=`` is exactly as misleading as one that declares none, so the
+    check runs both ways.
+    """
+
+    class Stale(_Complete):
+        name = "z2"
+        config_class = dict
+
+    with pytest.raises(TypeError, match="takes no config="):
+        register(Stale)

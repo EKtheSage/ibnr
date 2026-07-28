@@ -33,6 +33,14 @@ from ibnr.kernels.codec import (
     to_summary,
 )
 from ibnr.kernels.densities import to_amount_scale
+from ibnr.kernels.forecast import (
+    SCORE_DIRECTION,
+    Absence,
+    CohortForecast,
+    ForecastPanel,
+    align_panel,
+    leaderboard,
+)
 from ibnr.kernels.holdout import HoldoutCells, next_diagonal
 from ibnr.kernels.mack import MackFit, fit_mack, simulate_ultimates
 from ibnr.kernels.parity import ParityReport, compare_posteriors
@@ -44,14 +52,20 @@ __all__ = [
     "CONTENT_TYPE_ARROW",
     "CONTENT_TYPE_JSON",
     "DEFAULT_QUANTILES",
+    "SCORE_DIRECTION",
+    "Absence",
+    "CohortForecast",
+    "ForecastPanel",
     "HoldoutCells",
     "MackFit",
     "ParityReport",
     "PredictiveDistribution",
+    "align_panel",
     "cdr_risk_measures",
     "compare_posteriors",
     "fit_mack",
     "from_arrow",
+    "leaderboard",
     "next_diagonal",
     "one_year_cdr",
     "peek_kind",

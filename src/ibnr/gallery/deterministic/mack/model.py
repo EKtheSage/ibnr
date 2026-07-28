@@ -32,6 +32,7 @@ explicitly reserved decision (``forecast.MODEL_ABSENCE_REASONS
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Mapping
 
 import numpy as np
 
@@ -125,8 +126,16 @@ class Mack(GalleryEntry, PredictsHeldout):
             raise RuntimeError("call fit() first")
         return self.fit_
 
+    def cohorts(self) -> list[dict]:
+        """This fit's one cohort - the segment identity its contract was built
+        from (see :meth:`GalleryEntry.cohorts`)."""
+        if self.contract_ is None:
+            raise RuntimeError("call fit() first")
+        return [dict(self.contract_["segment"])]
+
     def predict(
         self,
+        segment: Mapping | None = None,
         *,
         n_draws: int = 10_000,
         seed: int | None = None,
@@ -140,6 +149,8 @@ class Mack(GalleryEntry, PredictsHeldout):
         model - see the card. ``parameter_risk`` draws the factors once per
         draw, which is what correlates the accident years.
         """
+        # a single-cohort fit: accepts None or its own key, refuses anything else
+        self.cohort_index(segment)
         return simulate_ultimates(
             self._fitted(),
             n_draws=n_draws,
@@ -197,9 +208,13 @@ class Mack(GalleryEntry, PredictsHeldout):
         """Mack's per-origin table (latest, ultimate, IBNR, run-off S.E.)."""
         return self._fitted().summary()
 
-    def realized_ultimates(self, full_triangle: Triangle) -> np.ndarray:
+    def realized_ultimates(
+        self, full_triangle: Triangle, segment: Mapping | None = None
+    ) -> np.ndarray:
         """Outcomes aligned to ``predict()``'s targets - per origin, then the
         total - read off the FULL (unsliced) triangle at its final dev lag."""
+        # a single-cohort fit: accepts None or its own key, refuses anything else
+        self.cohort_index(segment)
         fit = self._fitted()
         realized = realized_values(
             full_triangle,

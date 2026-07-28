@@ -47,6 +47,7 @@ already reserves the seam."""
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
@@ -453,7 +454,16 @@ class Compartmental(GalleryEntry, ScoresHeldout, PredictsHeldout):
             progressbar=show_progress,
         ), None
 
-    def predict(self, seed: int | None = None) -> PredictiveDistribution:
+    def cohorts(self) -> list[dict]:
+        """This fit's one cohort - the segment identity its contract was built
+        from (see :meth:`GalleryEntry.cohorts`)."""
+        if self.contract_ is None:
+            raise RuntimeError("call fit() first")
+        return [dict(self.contract_["segment"])]
+
+    def predict(
+        self, segment: Mapping | None = None, seed: int | None = None
+    ) -> PredictiveDistribution:
         """Predictive distribution of cumulative paid at the triangle's final
         development age per origin, plus the total.
 
@@ -475,6 +485,8 @@ class Compartmental(GalleryEntry, ScoresHeldout, PredictsHeldout):
         it inherits the parameter correlation across origins rather than
         assuming independence.
         """
+        # a single-cohort fit: accepts None or its own key, refuses anything else
+        self.cohort_index(segment)
         if self.idata_ is None or self.contract_ is None:
             raise RuntimeError("call fit() first")
         c = self.contract_
@@ -588,7 +600,9 @@ class Compartmental(GalleryEntry, ScoresHeldout, PredictsHeldout):
                 ults[:, j] += c["premium"][j] * rng.lognormal(np.log(mu), sigma_paid)
         return ults
 
-    def realized_ultimates(self, full_triangle: Triangle) -> np.ndarray:
+    def realized_ultimates(
+        self, full_triangle: Triangle, segment: Mapping | None = None
+    ) -> np.ndarray:
         """Outcomes aligned to predict()'s targets (per origin + total).
 
         Read off the FULL (post-training) triangle at the same dev age
@@ -596,6 +610,8 @@ class Compartmental(GalleryEntry, ScoresHeldout, PredictsHeldout):
         slice - the CLAUDE.md gotcha: taking every origin present in the full
         triangle silently scores post-study accident years.
         """
+        # a single-cohort fit: accepts None or its own key, refuses anything else
+        self.cohort_index(segment)
         if self.contract_ is None:
             raise RuntimeError("call fit() first")
         c = self.contract_

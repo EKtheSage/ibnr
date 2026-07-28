@@ -250,5 +250,5 @@ def test_unknown_segment_raises(backend_name):
     entry = NNTransformerML().fit(t, loss_field="paid_loss", config=tiny("ar"), seed=0)
     with pytest.raises(KeyError, match="unknown segment column"):
         entry.predict(segment={"nope": "x"})
-    with pytest.raises(ValueError, match="matches 0 companies"):
+    with pytest.raises(ValueError, match="matches 0 cohorts"):
         entry.predict(segment={"company_code": "9999"})

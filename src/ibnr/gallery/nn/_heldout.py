@@ -172,7 +172,10 @@ class CohortHeldout(ScoresHeldout, PredictsHeldout):
         self._entry = entry
         self._cohort = int(cohort)
         # instance attributes shadow the mixins' ClassVars; the entry is the
-        # single source of truth for both declarations
+        # single source of truth for all three declarations. `name` is what the
+        # base class's refusals identify themselves by, and a user who asked for
+        # "mdn" should read "mdn" back, not the name of a view they never built.
+        self.name = entry.name
         self.heldout_measure = entry.heldout_measure
         self.heldout_draw_scale = entry.heldout_draw_scale
         self.contract_ = cohort_contract(entry.contract_, cohort, models=(entry._loss_field,))
@@ -184,6 +187,19 @@ class CohortHeldout(ScoresHeldout, PredictsHeldout):
     @property
     def segment(self) -> dict:
         return dict(self.contract_["segment"])
+
+    def _cell_identity(self) -> dict:
+        """This cohort's FULL segment identity, wider than its contract key.
+
+        ``cohort_contract`` keys on ``nn_data``'s cohort columns, which exclude
+        display-only segments, while ``next_diagonal`` builds cells on all of the
+        triangle's. ``_keyed_to_fit`` narrows the cells onto the contract's key
+        and CHECKS each dropped column against this dict on the way - so
+        ``at_cohort(segment).log_lik_at(cells)`` verifies the display value
+        rather than discarding it, which is the whole reason it is not simply
+        ignored.
+        """
+        return dict(self._entry.cohorts()[self._cohort])
 
     def _log_lik_native(self, cells: CellIndex) -> np.ndarray:
         return self._entry._heldout_log_lik(self._cohort, cells)
@@ -269,7 +285,13 @@ class PooledMDNHeldout(ScoresHeldout, PredictsHeldout):
         mixin implementations."""
         if self.models_ is None or self.contract_ is None:
             raise RuntimeError("call fit() first")
-        return CohortHeldout(self, self._cohort_index(segment))
+        ci = self.cohort_index(segment)
+        if ci is None:
+            raise ValueError(
+                f"{self.name}: at_cohort needs a segment naming one cohort of this fit; "
+                "None names the whole pool, which cannot be scored at one diagonal"
+            )
+        return CohortHeldout(self, ci)
 
     def log_lik_at(self, cells, *, field: str | None = None) -> np.ndarray:
         """``(n_members, n_cells)`` log density on Lebesgue-on-amount.
@@ -535,14 +557,14 @@ class PooledMDNHeldout(ScoresHeldout, PredictsHeldout):
                     out.append(t[0, w0_t, d0_t].cpu().numpy())  # (n_cells, K)
         return tuple(np.stack(a) for a in acc)
 
-    def _cohort_index(self, segment: dict[str, str]) -> int:
-        cohorts = self.contract_["cohorts"]
-        mask = np.ones(len(cohorts), dtype=bool)
-        for col, value in segment.items():
-            if col not in cohorts.columns:
-                raise KeyError(f"unknown segment column {col!r}; have {list(cohorts.columns)}")
-            mask &= (cohorts[col] == value).to_numpy()
-        idx = np.nonzero(mask)[0]
-        if len(idx) != 1:
-            raise ValueError(f"segment {segment} matches {len(idx)} cohorts, need exactly 1")
-        return int(idx[0])
+    def _cell_identity(self) -> dict:
+        """The pooled entry cannot be scored without binding a cohort first.
+
+        Its ``contract_`` is the multi-cohort ``nn_data`` dict, which carries no
+        single ``segment`` - and ``log_lik_at``/``predict_at`` here delegate to a
+        :class:`CohortHeldout`, which supplies the real identity.
+        """
+        raise RuntimeError(
+            f"{self.name}'s fit spans many cohorts and has no single identity; "
+            "bind one with at_cohort(segment) first"
+        )

@@ -1,4 +1,31 @@
-"""The model gallery. Public API: list(), get(), fit(), stack(), leaderboard()."""
+"""The model gallery.
+
+Public API: ``list()``, ``get()``, ``fit()``, ``GalleryEntry``, plus the
+held-out evaluation pipeline - ``next_diagonal``, ``CohortForecast``,
+``Absence``, ``align_panel``, ``leaderboard``, ``SCORE_DIRECTION`` - and
+``stack()``.
+
+**The rule this export set follows**, so a later addition has to argue against
+it: a name is exported if a caller has to CONSTRUCT or CALL it to get from a
+fitted entry to a board row. That is ``next_diagonal`` (which cells),
+``CohortForecast`` (one model's arrays at them), ``Absence`` (why an array is
+missing - and ``CohortForecast`` refuses an absent array without one, so it is
+not optional), ``align_panel`` (the cross-model intersection) and
+``leaderboard``. ``SCORE_DIRECTION`` joins them because ``leaderboard()`` has no
+default sort and no ``sort_by=`` by design, which moves the direction question
+onto the caller.
+
+Deliberately NOT here: ``ForecastPanel`` and ``HoldoutCells`` (returned, never
+constructed), ``logmeanexp`` / ``resolve_field`` / ``CAPABILITIES`` /
+``ABSENCE_REASONS`` / ``index_into`` / ``CellIndex`` (implementation seams the
+pipeline never asks a caller to touch), and ``ScoresHeldout`` /
+``PredictsHeldout`` - a caller tests capability with ``isinstance``, and those
+two names are how an ENTRY declares one, so they stay at ``ibnr.gallery.entry``.
+They are all one import away at ``ibnr.kernels``.
+
+Re-export direction is gallery -> kernels only: ``kernels`` never imports the
+gallery, which is what lets the harness's spawn-based workers import it alone.
+"""
 
 from __future__ import annotations
 
@@ -23,7 +50,14 @@ from ibnr.gallery.nn import transformer_ml as _nn_transformer_ml  # noqa: F401
 
 # the evaluation layer is implemented once in kernels/ (design decision 5);
 # these re-exports are the gallery-facing names decision 8 promises
-from ibnr.kernels.forecast import leaderboard
+from ibnr.kernels.forecast import (
+    SCORE_DIRECTION,
+    Absence,
+    CohortForecast,
+    align_panel,
+    leaderboard,
+)
+from ibnr.kernels.holdout import next_diagonal
 from ibnr.kernels.stacking import stack
 
 get = _registry.get
@@ -35,4 +69,16 @@ def list() -> builtins.list[str]:  # noqa: A001 - mirrors the designed public AP
     return sorted(_registry.entries())
 
 
-__all__ = ["GalleryEntry", "fit", "get", "leaderboard", "list", "stack"]
+__all__ = [
+    "SCORE_DIRECTION",
+    "Absence",
+    "CohortForecast",
+    "GalleryEntry",
+    "align_panel",
+    "fit",
+    "get",
+    "leaderboard",
+    "list",
+    "next_diagonal",
+    "stack",
+]

@@ -295,7 +295,7 @@ def test_adapter_indexes_cells_correctly(fitted):
     np.testing.assert_allclose(idx.value, fitted.cells0.values)
     np.testing.assert_allclose(idx.premium, 1000.0)
     # the standalone helper builds the same dict the view carries
-    direct = cohort_contract(entry.contract_, entry._cohort_index(SEG0), models=("paid_loss",))
+    direct = cohort_contract(entry.contract_, entry.cohort_index(SEG0), models=("paid_loss",))
     np.testing.assert_array_equal(direct["w"], adapter["w"])
     np.testing.assert_array_equal(direct["d"], adapter["d"])
     assert direct["segment"] == adapter["segment"]
@@ -438,7 +438,7 @@ def test_log_lik_matches_independent_recomputation(fitted):
     got = view.log_lik_at(cells, field="paid_loss")  # (n_members, n_cells), amount scale
 
     c = entry.contract_
-    ci = entry._cohort_index(SEG0)
+    ci = entry.cohort_index(SEG0)
     norm = entry.norm_
     x_norm = (c["x"][ci] - norm["mean"][:, None, :]) / norm["std"][:, None, :]
     x_norm = np.where(norm["pinned"][:, None, :], 0.0, x_norm)
@@ -505,7 +505,7 @@ def test_density_normalizes_over_the_amount_space(fitted):
     )
     assert one.n_cells == 1  # dev step 3: unpinned
     idx = index_into(one, view.contract_, field="paid_loss")
-    ci = entry._cohort_index(SEG0)
+    ci = entry.cohort_index(SEG0)
     prem = float(idx.premium[0])
     prev = float(idx.prev_value[0])
     d0 = int(idx.d[0]) - 1

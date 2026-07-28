@@ -262,7 +262,7 @@ def test_fit_predict_contract(backend_name):
     assert {"estimate", "se", "cv", "outcome", "percentile"} <= set(table.columns)
 
     # fully developed first origin: ultimate anchored at its observed value
-    first = entry.contract_["latest_cum"][entry._cohort_index(SEG0), 0]
+    first = entry.contract_["latest_cum"][entry.cohort_index(SEG0), 0]
     np.testing.assert_allclose(pred.samples[:, 0], first)
 
 
@@ -411,7 +411,7 @@ def test_predict_at_draw_mean_matches_the_mixture(fitted):
     mean0 = float(entry.norm_["mean"][0][d0])
     std0 = float(entry.norm_["std"][0][d0])
 
-    log_pi, mu, sigma = entry._heldout_mixture(entry._cohort_index(SEG0), idx)  # (m, 1, K)
+    log_pi, mu, sigma = entry._heldout_mixture(entry.cohort_index(SEG0), idx)  # (m, 1, K)
     pi = np.exp(log_pi[:, 0, :])
     m_z = (pi * mu[:, 0, :]).sum(axis=1)  # per-member mixture mean of z
     v_z = (pi * (sigma[:, 0, :] ** 2 + mu[:, 0, :] ** 2)).sum(axis=1) - m_z**2
@@ -480,7 +480,7 @@ def test_density_normalizes_over_the_amount_space(fitted):
     )
     assert one.n_cells == 1  # dev step 3: unpinned
     idx = index_into(one, view.contract_, field="paid_loss")
-    ci = entry._cohort_index(SEG0)
+    ci = entry.cohort_index(SEG0)
     prem = float(idx.premium[0])
     prev = float(idx.prev_value[0])
     d0 = int(idx.d[0]) - 1
