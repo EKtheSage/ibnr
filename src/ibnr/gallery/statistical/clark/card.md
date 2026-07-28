@@ -61,14 +61,30 @@ is 1e-8 relative on omega and theta. Rescaling or shifting the objective is
 terms, so subtracting a constant afterwards moves the value without recovering
 a single bit.
 
-Convergence is then judged on the **simplex**, not on `res.success`. Nelder-Mead
-succeeds only when both its criteria hold, so a simplex collapsed onto a point -
-parameters pinned, fit finished - still reports `maxiter` when the function
-criterion stays unmet for numerical reasons; a spread <= 1e-6 in log space is
-accepted as converged (1e-6 relative on omega/theta, three orders tighter than
-the 2e-3 the tieout asks). An optimum still sitting on the infeasibility
-sentinel is refused separately - a simplex can collapse *inside* the rejection
-region and report success, which neither check above would notice. The
+**`res.success` is honored, with a fallback for `maxiter` only.** With a
+reachable `fatol` it is reachable again, and scipy's own pair of criteria is
+strictly tighter than anything below, so a successful result is simply accepted.
+The fallback exists for the stall above - Nelder-Mead reporting `maxiter`
+because the function criterion stayed unmet for numerical reasons while the fit
+had long since arrived - and accepting one of those takes **both** halves of the
+convergence claim:
+
+- the simplex collapsed in *coordinates*, spread <= 1e-6 in log space (1e-6
+  relative on omega/theta, three orders tighter than the 2e-3 the tieout asks) -
+  the parameters have stopped moving; **and**
+- the simplex collapsed in *objective value*, scale-relatively: spread <= 1e3 x
+  the `fatol` this objective's magnitude warrants, i.e. 1e-9 relative - the
+  vertices agree about what they found.
+
+Coordinates alone is not convergence, and that is the sharp edge here. The
+shrink steps can contract the simplex to a point against the infeasibility
+plateau, where the objective is flat because every move is *rejected*; the
+optimizer is giving up, not finishing. So every vertex of the final simplex is
+also required to be finite and off the rejection sentinel - checked whatever
+`res.success` says, since a simplex can collapse *inside* the rejection region
+and report success. Reading `res.fun` is not enough for that: it is the *best*
+vertex, so a simplex straddling the feasibility boundary (one healthy vertex,
+the rest parked on the sentinel) looks perfectly fine through it. The
 optimizer's report (`params_["optimizer"]`: objective, tolerances, iterations,
 final spread) is kept rather than discarded, so a stalling cohort in a
 200-company retrospective is visible instead of merely loud.

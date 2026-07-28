@@ -121,27 +121,61 @@ def test_curve_mle_converges_on_its_merits(genins_tri, curve):
 
 
 class _FakeResult:
-    """Minimal stand-in for scipy's OptimizeResult - the gate reads 5 fields."""
+    """Minimal stand-in for scipy's OptimizeResult.
 
-    def __init__(self, *, success, simplex, fun, nit=2000, message="Maximum number of iterations"):
+    ``final_simplex`` is scipy's ``(vertices, objective values)`` pair, and the
+    values half is load-bearing: the gate has to see EVERY vertex's objective,
+    not only the best one. A fake that drops them (``(sim, None)``) can only
+    exercise the coordinate half of the acceptance rule, which is how a simplex
+    parked on the infeasibility plateau - coordinates collapsed, objectives 1e11
+    apart - once got through. ``fun`` is derived rather than passed for the same
+    reason scipy derives it: it IS the best vertex, so the two cannot disagree.
+    """
+
+    def __init__(
+        self, *, success, simplex, fvals, nit=2000, message="Maximum number of iterations"
+    ):
         self.success = success
-        self.final_simplex = (np.asarray(simplex, dtype=float), None)
-        self.fun = fun
+        self.final_simplex = (np.asarray(simplex, dtype=float), np.asarray(fvals, dtype=float))
+        self.fun = float(np.min(fvals))
         self.nit = nit
         self.message = message
 
 
+#: A simplex that has stopped moving in the parameters - the CI failure mode.
+_COLLAPSED = [[0.4, 3.9], [0.4 + 1e-12, 3.9], [0.4, 3.9 + 1e-12]]
+#: Healthy objective values: genins scale, disagreeing only at rounding noise
+#: (~4e-6 absolute is tens of ULPs on -4.3e8).
+_QUIET_FVALS = [-4.3e8, -4.3e8 + 3e-6, -4.3e8 + 1e-6]
+
+
 def test_gate_accepts_a_stalled_but_collapsed_simplex():
-    """``res.success`` is the wrong gate; the simplex is the honest one.
+    """``res.success`` is not the only gate; a stalled-but-finished fit passes.
 
     This is precisely the CI failure: Nelder-Mead reports ``maxiter`` because
-    one of its two criteria stayed unmet, while the parameters have long since
-    stopped moving. Trusting ``res.success`` raises on a converged fit.
-    Mutation checked: reverting the gate to ``if not res.success`` fails here.
+    one of its two criteria stayed unmet, while both the parameters AND the
+    objective have long since stopped moving. Trusting ``res.success`` alone
+    raises on a converged fit. Mutation checked: dropping the ``maxiter``
+    fallback (``if not res.success: raise``) fails here.
     """
-    collapsed = [[0.4, 3.9], [0.4 + 1e-12, 3.9], [0.4, 3.9 + 1e-12]]
-    spread = _check_converged(_FakeResult(success=False, simplex=collapsed, fun=-4.3e8))
+    spread = _check_converged(_FakeResult(success=False, simplex=_COLLAPSED, fvals=_QUIET_FVALS))
     assert spread == pytest.approx(1e-12)
+
+
+def test_gate_honors_success():
+    """When scipy says it converged, that is the end of it.
+
+    Its own criteria (coordinate spread <= ``xatol`` AND ``max|f_i - f_0| <=
+    fatol``) are strictly tighter than the ``maxiter`` fallback below, so a
+    successful result is accepted without re-deriving them - the relaxed rules
+    exist only for the case scipy refuses to bless. Mutation checked: applying
+    the fallback unconditionally fails here.
+    """
+    wandering = [[0.4, 3.9], [0.9, 3.9], [0.4, 4.7]]
+    spread = _check_converged(
+        _FakeResult(success=True, simplex=wandering, fvals=_QUIET_FVALS, message="converged")
+    )
+    assert spread == pytest.approx(0.8)
 
 
 def test_gate_still_refuses_a_simplex_that_never_collapsed():
@@ -150,16 +184,52 @@ def test_gate_still_refuses_a_simplex_that_never_collapsed():
     (accept every non-success result) passes the test above and fails here."""
     wandering = [[0.4, 3.9], [0.9, 3.9], [0.4, 4.7]]
     with pytest.raises(RuntimeError, match="simplex spread"):
-        _check_converged(_FakeResult(success=False, simplex=wandering, fun=-4.3e8))
+        _check_converged(_FakeResult(success=False, simplex=wandering, fvals=_QUIET_FVALS))
 
 
-def test_gate_refuses_an_optimum_stuck_on_the_rejection_penalty():
+def test_gate_refuses_a_collapsed_simplex_whose_objective_still_disagrees():
+    """Coordinate collapse is NOT convergence on its own.
+
+    Nelder-Mead can contract the simplex to a point while its vertices still
+    evaluate to wildly different objective values - the shrink steps ran out of
+    room, not out of disagreement. Accepting on coordinates alone would take
+    that fit as finished. So the objective has to have collapsed too, and
+    SCALE-RELATIVELY: 5e3 is nothing next to 4.3e8 in absolute terms and a
+    catastrophe next to the ~4e-4 ``fatol`` this fit asks for. Mutation checked:
+    deleting the objective-spread branch fails here and nowhere else.
+    """
+    noisy = [-4.3e8, -4.3e8 + 5e3, -4.3e8 + 5e3]
+    with pytest.raises(RuntimeError, match="objective spread"):
+        _check_converged(_FakeResult(success=False, simplex=_COLLAPSED, fvals=noisy))
+
+
+@pytest.mark.parametrize("sentinel", [_REJECT_PENALTY, np.inf, np.nan])
+def test_gate_refuses_an_optimum_stuck_on_the_rejection_penalty(sentinel):
     """A simplex can collapse INSIDE the infeasible region and report success -
     a converged answer to the wrong question. ``res.success`` never saw this and
-    neither does the spread check, so it is asserted separately."""
-    collapsed = [[0.4, 3.9], [0.4 + 1e-12, 3.9], [0.4, 3.9 + 1e-12]]
+    neither does the coordinate-spread check, so it is asserted separately.
+    Parametrized over every shape an unusable vertex can take: the objective's
+    own sentinel, and the non-finite values a pathological cell could produce."""
     with pytest.raises(RuntimeError, match="non-positive expected increment"):
-        _check_converged(_FakeResult(success=True, simplex=collapsed, fun=_REJECT_PENALTY))
+        _check_converged(
+            _FakeResult(success=True, simplex=_COLLAPSED, fvals=[sentinel] * 3, message="converged")
+        )
+
+
+def test_gate_refuses_a_simplex_straddling_the_rejection_penalty():
+    """The review's reproduction, verbatim: coordinates collapsed to 5e-7, but
+    the vertex objectives are [1e11, 1e12, 1e12].
+
+    Two of the three vertices sit exactly ON the infeasibility sentinel and the
+    objective spread is 9e11 - the optimizer gave up against the rejection
+    region, it did not converge. Only ``res.fun`` (1e11, the one feasible-looking
+    vertex) is healthy, which is why a gate reading the best vertex alone
+    ACCEPTED this. Both new criteria reject it independently; the sentinel check
+    is the one that fires first and names the actual problem.
+    """
+    straddling = [[0.4, 3.9], [0.4 + 5e-7, 3.9], [0.4, 3.9 + 5e-7]]
+    with pytest.raises(RuntimeError, match="non-positive expected increment"):
+        _check_converged(_FakeResult(success=False, simplex=straddling, fvals=[1e11, 1e12, 1e12]))
 
 
 def test_cape_cod_elr_ties_to_chainladder(genins_tri):

@@ -87,39 +87,84 @@ _FATOL_MIN = 1e-10
 #: unchanged and the objective at the optimum is bit-identical.)
 _MAXITER = 2000
 
-#: Fallback convergence gate. A simplex collapsed to this spread in log space
-#: has pinned omega and theta to 1e-6 relative - three orders tighter than the
-#: 2e-3 the chainladder tieout asks of them - so the fit IS converged, whatever
-#: ``res.success`` says about the criterion it could not tick.
+#: Coordinate half of the ``maxiter`` fallback gate. A simplex collapsed to this
+#: spread in log space has pinned omega and theta to 1e-6 relative - three orders
+#: tighter than the 2e-3 the chainladder tieout asks of them - so the PARAMETERS
+#: have stopped moving, whatever ``res.success`` says about the criterion it
+#: could not tick. Necessary, NOT sufficient: see :data:`_FSPREAD_SLACK`.
 _SIMPLEX_XTOL = 1e-6
+
+#: Objective half of the ``maxiter`` fallback gate, as a multiple of the
+#: ``fatol`` the fit asked for at this objective's scale. Coordinate collapse
+#: alone is not convergence: Nelder-Mead's shrink steps can contract the simplex
+#: to a point while its vertices still evaluate orders of magnitude apart -
+#: classically against the :data:`_REJECT_PENALTY` plateau, where the objective
+#: is flat because every move is infeasible and the optimizer is giving up
+#: rather than finishing. So the objective must have collapsed too, and on ITS
+#: OWN SCALE for the reason in :data:`_FATOL_REL`. The band is deliberately the
+#: requested ``fatol`` times this slack rather than an independent number, so
+#: the two cannot drift apart: 1e3 * 1e-12 = 1e-9 relative, still nine matching
+#: significant figures across the simplex, while leaving three orders of room
+#: over the tolerance a fit stalling on rounding noise missed by (summation-order
+#: differences across a few dozen ~1e8-magnitude terms run to ~1e-14 relative,
+#: five orders inside this band).
+_FSPREAD_SLACK = 1e3
 
 
 def _check_converged(res) -> float:
     """Refuse a curve MLE that did not converge; return the final simplex spread.
 
-    ``res.success`` alone is the wrong gate. Nelder-Mead succeeds only when BOTH
-    its criteria hold, so a simplex that has collapsed onto a point - parameters
-    pinned, fit finished - still reports ``maxiter`` when the function-value
-    criterion stays unmet for purely numerical reasons (see :data:`_FATOL_REL`).
-    Trusting ``res.success`` there turns a converged fit into a ``RuntimeError``:
-    that is what broke CI, and a real Schedule P cohort can stall the same way.
-    So judge the simplex directly - it is the honest statement of whether the
-    parameters have stopped moving.
+    Acceptance, in the order the checks run:
+
+    1. EVERY vertex of the final simplex must be a real objective value - finite
+       and off :data:`_REJECT_PENALTY`. Checked whatever ``res.success`` says,
+       because a simplex can collapse INSIDE the rejection region and report
+       success (a converged answer to the wrong question). Reading ``res.fun``
+       instead is not enough: it is the BEST vertex, so a simplex straddling the
+       feasibility boundary - one healthy vertex, the rest parked on the
+       sentinel - looks perfectly fine through it.
+    2. ``res.success`` is then HONORED. With a reachable ``fatol``
+       (:data:`_FATOL_REL`) it is reachable again, and scipy's own pair of
+       criteria (coordinate spread <= ``xatol`` AND ``max|f_i - f_0| <= fatol``)
+       is strictly tighter than anything below, so there is nothing to re-derive.
+    3. Only in the ``maxiter`` case do the relaxed criteria apply - and BOTH
+       halves are required. This is the CI failure the fallback exists for:
+       Nelder-Mead reports ``maxiter`` when its function-value criterion stays
+       unmet for purely numerical reasons while the fit has long since arrived.
+       Accepting that needs the simplex collapsed in COORDINATES
+       (:data:`_SIMPLEX_XTOL` - the parameters have stopped moving) AND in
+       OBJECTIVE VALUE, scale-relatively (:data:`_FSPREAD_SLACK` - the vertices
+       agree about what they found). Coordinates alone is the hole: it accepts
+       a simplex sitting on the penalty plateau, which is the optimizer
+       surrendering, not converging.
     """
-    sim, _ = res.final_simplex
+    sim, fvals = res.final_simplex
+    fvals = np.asarray(fvals, dtype=float)
     spread = float(np.max(np.abs(sim[1:] - sim[0])))
-    if not res.success and spread > _SIMPLEX_XTOL:
+
+    unusable = ~np.isfinite(fvals) | (fvals >= _REJECT_PENALTY)
+    if unusable.any():
+        raise RuntimeError(
+            f"Clark MLE did not converge: {int(unusable.sum())} of {fvals.size} vertices of "
+            "the final simplex give a non-positive expected increment in some cell (the "
+            "objective's infeasibility sentinel), so the fit is anchored against the "
+            "rejection region rather than resting on a feasible curve"
+        )
+    if res.success:
+        return spread
+    if spread > _SIMPLEX_XTOL:
         raise RuntimeError(
             f"Clark MLE did not converge: {res.message} (simplex spread {spread:.2e} "
             f"after {res.nit} iterations, needs <= {_SIMPLEX_XTOL:g})"
         )
-    if not np.isfinite(res.fun) or res.fun >= _REJECT_PENALTY:
-        # A simplex can also collapse INSIDE the rejection region and report
-        # success - a converged answer to the wrong question, which the spread
-        # check above cannot see and `res.success` never could.
+    fspread = float(fvals.max() - fvals.min())
+    # The fatol this objective's magnitude warrants, times the fallback slack.
+    band = _FSPREAD_SLACK * max(_FATOL_MIN, _FATOL_REL * float(np.abs(fvals).max()))
+    if fspread > band:
         raise RuntimeError(
-            "Clark MLE did not converge: every curve the optimizer reached gives a "
-            "non-positive expected increment in some cell"
+            f"Clark MLE did not converge: {res.message} (the parameters stopped moving but "
+            f"the objective did not - objective spread {fspread:.2e} across the final "
+            f"simplex after {res.nit} iterations, needs <= {band:.2e})"
         )
     return spread
 
