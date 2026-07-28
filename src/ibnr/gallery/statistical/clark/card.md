@@ -45,6 +45,50 @@ Methods (`method=`):
 The curve MLE is a 2-D Nelder-Mead over `(log omega, log theta)` with the
 level parameters profiled out in closed form (Poisson MLE given the curve).
 
+**Convergence is scale-aware, and has to be.** The objective is a Poisson
+deviance over loss *amounts*, so its magnitude is the data's - about -4.3e8 on
+genins, more on a real Schedule P cohort - and one ULP there is ~6e-8. An
+*absolute* `fatol` below that gap is satisfiable only when every simplex vertex
+evaluates bit-identically, which made termination a lottery on floating-point
+rounding: the CI leg that installs torch, jax and pymc together shifts BLAS/OMP
+thread counts, hence the summation order inside the objective, and stalled a
+weibull fit that had converged in 90 of 2000 iterations into a spurious
+`RuntimeError`. So `fatol = 1e-12 * |f(x0)|` (~7e3 ULPs, reachable) while
+`xatol = 1e-8` on the log-parameters stays absolute and is the criterion that
+actually pins the fit - those are O(1) in any currency, and 1e-8 in log space
+is 1e-8 relative on omega and theta. Rescaling or shifting the objective is
+*not* an alternative: the resolution floor comes from summing 1e8-magnitude
+terms, so subtracting a constant afterwards moves the value without recovering
+a single bit.
+
+**`res.success` is honored, with a fallback for `maxiter` only.** With a
+reachable `fatol` it is reachable again, and scipy's own pair of criteria is
+strictly tighter than anything below, so a successful result is simply accepted.
+The fallback exists for the stall above - Nelder-Mead reporting `maxiter`
+because the function criterion stayed unmet for numerical reasons while the fit
+had long since arrived - and accepting one of those takes **both** halves of the
+convergence claim:
+
+- the simplex collapsed in *coordinates*, spread <= 1e-6 in log space (1e-6
+  relative on omega/theta, three orders tighter than the 2e-3 the tieout asks) -
+  the parameters have stopped moving; **and**
+- the simplex collapsed in *objective value*, scale-relatively: spread <= 1e3 x
+  the `fatol` this objective's magnitude warrants, i.e. 1e-9 relative - the
+  vertices agree about what they found.
+
+Coordinates alone is not convergence, and that is the sharp edge here. The
+shrink steps can contract the simplex to a point against the infeasibility
+plateau, where the objective is flat because every move is *rejected*; the
+optimizer is giving up, not finishing. So every vertex of the final simplex is
+also required to be finite and off the rejection sentinel - checked whatever
+`res.success` says, since a simplex can collapse *inside* the rejection region
+and report success. Reading `res.fun` is not enough for that: it is the *best*
+vertex, so a simplex straddling the feasibility boundary (one healthy vertex,
+the rest parked on the sentinel) looks perfectly fine through it. The
+optimizer's report (`params_["optimizer"]`: objective, tolerances, iterations,
+final spread) is kept rather than discarded, so a stalling cohort in a
+200-company retrospective is visible instead of merely loud.
+
 ## Uncertainty (Clark's decomposition, simulated)
 
 - `phi`: Pearson chi-square / (n - p), Clark's scale estimate.
@@ -97,6 +141,10 @@ paid-to-date per origin; `cape_cod` does not.
 
 - Tieout (`tests/test_clark.py`, fast): omega/theta, ultimates, ELR, and
   scale match chainladder's `ClarkLDF` on genins for both growth curves.
+  The same file pins convergence itself - that the requested `fatol` is
+  reachable given where the objective sits on the float64 grid, and that the
+  fit lands far short of the iteration cap. Asserting only that `fit()`
+  returns passed throughout the bug above.
 - Retrospective Meyers protocol on paid: `scripts/meyers_validation.py
   --model clark`. Results in `analysis/results/clark_validation.csv`.
   No published Meyers-monograph bar exists for Clark; the comparison set is
