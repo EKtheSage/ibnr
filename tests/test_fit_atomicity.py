@@ -137,7 +137,20 @@ def nn_triangle(start_year: int) -> Triangle:
 # -- bayesian: the sampler is the fallible step ---------------------------------
 
 
-@pytest.mark.parametrize("name", ["meyers_ccl", "meyers_csr", "clark_growth_curve"])
+#: Bayesian entries whose fallible step is the sampler, stubbed via
+#: ``entry._sample_stan``. ``england_verrall_odp`` and ``compartmental`` have
+#: their own tests below - the first because it has a REAL post-contract
+#: refusal worth using instead of a stub, the second because its torn state is
+#: bigger than the contract.
+BAYES_SAMPLER_ENTRIES = [
+    "meyers_ccl",
+    "meyers_csr",
+    "clark_growth_curve",
+    "guszcza_growth_curve",
+]
+
+
+@pytest.mark.parametrize("name", BAYES_SAMPLER_ENTRIES)
 def test_bayesian_failed_sampler_leaves_the_previous_fit_intact(name):
     entry = gallery.get(name)()
     entry._sample_stan = FitThenBoom(("idata-A", None))
@@ -245,14 +258,34 @@ def test_clark_mle_failed_dof_check_leaves_the_previous_fit_intact():
 
 # -- nn: the ensemble trainer is the fallible step ------------------------------
 
+#: every NN entry, with the module whose ``train_ensemble`` name it calls. All
+#: five share the pooled fit shape, so one parametrized test covers them - and
+#: adding a row is what an entry needs to be covered at all, which is the gap
+#: that let deeptriangle/mdn/resnet ship the bug after it was fixed everywhere
+#: else (they were cloned from the pre-fix transformer). See
+#: ``test_every_registered_entry_is_covered``.
+NN_ENTRIES = [
+    ("nn_transformer", "ibnr.gallery.nn.transformer.model.train_ensemble"),
+    ("nn_transformer_ml", "ibnr.gallery.nn.transformer_ml.model.train_ensemble"),
+    ("deeptriangle", "ibnr.gallery.nn.deeptriangle.model.train_ensemble"),
+    ("mdn", "ibnr.gallery.nn.mdn.model.train_ensemble"),
+    ("resnet", "ibnr.gallery.nn.resnet.model.train_ensemble"),
+]
 
-def test_nn_transformer_failed_training_leaves_the_previous_fit_intact(monkeypatch):
+
+@pytest.mark.parametrize("name,trainer", NN_ENTRIES, ids=[n for n, _ in NN_ENTRIES])
+def test_nn_failed_training_leaves_the_previous_fit_intact(monkeypatch, name, trainer):
+    """A failed ensemble fit must not leave the new pool's contract and
+    normalizer over the old pool's networks.
+
+    The NN entries are the most exposed of all: ``at_cohort(segment)`` builds
+    its per-cohort view straight off ``entry.contract_`` (gallery/nn/
+    _heldout.py::cohort_contract), so a torn entry hands ``index_into`` the new
+    pool's cohort identity while ``_heldout_draws`` runs the old pool's
+    networks - every guard passes and the draws are plausible."""
     pytest.importorskip("torch")
-    monkeypatch.setattr(
-        "ibnr.gallery.nn.transformer.model.train_ensemble",
-        FitThenBoom(("models-A", "history-A")),
-    )
-    entry = gallery.get("nn_transformer")()
+    monkeypatch.setattr(trainer, FitThenBoom(("models-A", "history-A")))
+    entry = gallery.get(name)()
     entry.fit(nn_triangle(2000), loss_field="paid_loss")
     before = snapshot(entry)
 
@@ -262,17 +295,60 @@ def test_nn_transformer_failed_training_leaves_the_previous_fit_intact(monkeypat
     assert_untouched(entry, before)
 
 
-def test_nn_transformer_ml_failed_training_leaves_the_previous_fit_intact(monkeypatch):
-    pytest.importorskip("torch")
-    monkeypatch.setattr(
-        "ibnr.gallery.nn.transformer_ml.model.train_ensemble",
-        FitThenBoom(("models-A", "history-A")),
+# -- the coverage gate ---------------------------------------------------------
+
+#: entries pinned by a test of their own above, each because it has a REAL
+#: post-contract refusal worth exercising in place of a stub
+NAMED_TEST_ENTRIES = {
+    "england_verrall_odp",  # pearson_phi's informative-cells dof check
+    "compartmental",  # variant switch + the lognormal keep-mask bookkeeping
+    "sur",  # the 1/sqrt(C) whitening's positivity guard
+    "copula_glm",  # the lognormal marginal's positive-increment guard
+    "clark",  # parameter count vs cells, after the curve MLE
+}
+
+#: covered end to end elsewhere rather than here: mack's failed refit is
+#: asserted straight through ``predict_at`` (cohort A's draws stay
+#: bit-identical, cohort B's cells are refused as the wrong cohort)
+COVERED_ELSEWHERE = {"mack": "tests/test_mack_heldout.py"}
+
+
+def test_every_registered_entry_is_covered():
+    """Every entry in the registry must have an atomicity test - this gate is
+    the only thing that catches a NEW one that does not.
+
+    Not paranoia. ``fit()`` was made atomic across all 11 entries that existed
+    on 2026-07-27 (PR #47), and within hours ``deeptriangle``, ``mdn`` and
+    ``resnet`` landed from parallel sessions carrying the identical pre-fix
+    ordering - they had been cloned from the transformer's source *before* the
+    fix. Nothing failed: no merge conflict (the changes were concurrent, not
+    overlapping), and CI runs lint and docs only. The hand-written entry lists
+    in this file were themselves the gap, since a new entry simply never
+    appeared in them.
+
+    So the lists above are asserted to BE the registry. Adding an entry without
+    an atomicity test now fails here, naming the entry - which is the one
+    moment the author is looking at exactly this concern.
+    """
+    covered = (
+        set(BAYES_SAMPLER_ENTRIES)
+        | {name for name, _ in NN_ENTRIES}
+        | NAMED_TEST_ENTRIES
+        | set(COVERED_ELSEWHERE)
     )
-    entry = gallery.get("nn_transformer_ml")()
-    entry.fit(nn_triangle(2000), loss_field="paid_loss")
-    before = snapshot(entry)
+    registered = set(gallery.list())
 
-    with pytest.raises(RuntimeError, match="boom"):
-        entry.fit(nn_triangle(1990), loss_field="paid_loss")
-
-    assert_untouched(entry, before)
+    missing = sorted(registered - covered)
+    assert not missing, (
+        f"gallery entries with no fit() atomicity test: {missing}. Every entry must "
+        "build its contract (and every other piece of fitted state) into LOCALS and "
+        "assign self.* only after the fallible step - sampler, estimator or trainer - "
+        "has returned; see gallery/nn/transformer/model.py or deterministic/mack. Add "
+        "the entry to BAYES_SAMPLER_ENTRIES or NN_ENTRIES if it fits that shape, else "
+        "give it a test of its own and list it in NAMED_TEST_ENTRIES."
+    )
+    stale = sorted(covered - registered)
+    assert not stale, (
+        f"these names are listed here but are not registered gallery entries: {stale}. "
+        "A renamed or removed entry leaves a row that silently tests nothing."
+    )
