@@ -18,27 +18,32 @@ out of band, and the package moved to numpy 2 and grew a test CI.
 
 ### Packaging
 
-* **Python 3.11 through 3.14.** `requires-python` is unchanged at `>=3.11` - it
-  governs the core install, and the core resolves wheels-only on every one of
-  3.11, 3.12, 3.13 and 3.14. The classifiers now say so.
-* **Two extras carry a Python 3.12 ceiling, and it is declared rather than
-  discovered at runtime.** `[bayesian]` and `[interop]` both transitively pin
-  numpy below 2 - through `arviz` 0.18 (pulled by `bayesblend` 0.0.8) and through
+* **Python 3.11 and 3.12.** `requires-python` is now `>=3.11,<3.13`, and the
+  classifiers say the same. The ceiling is a deliberate choice rather than a
+  limit of the code: the core install, `[polars]`, `[nn]` and `[viz]` were all
+  measured resolving wheels-only on 3.13 and 3.14. `[bayesian]` and
+  `[interop]` cannot follow, because both transitively pin numpy below 2 -
+  through `arviz` 0.18 (pulled by `bayesblend` 0.0.8) and through
   `bermuda-ledger` 2.3.0 - and the newest numpy under 2 is 1.26.4, which does not
-  support Python 3.13 at all. Above 3.12 those extras now fail during dependency
-  resolution with a message that names the reason, instead of installing
-  something broken or silently omitting a package and crashing at import. Caveat
-  worth knowing: on 3.12 `[bayesian]` installs but not wheels-only, because
-  `bayesblend` pins `matplotlib==3.7.2` whose newest wheel is cp311, so 3.12
-  builds it from source.
+  support Python 3.13 at all. Since packaging metadata cannot say "3.11 to 3.14
+  unless you asked for `[interop]`", the package claims one range for everything
+  it ships and a 3.13 user gets the standard "requires a different Python"
+  refusal (`pip` on a clean 3.13 venv: `Package 'ibnr' requires a different
+  Python: 3.13.13 not in '<3.13,>=3.11'`). Revisit the cap when those two
+  upstreams move. (An alternative
+  that gated the two extras on a deliberately unregistered package name was
+  built and then rejected: it only holds while nobody uploads that name.)
+  Caveat worth knowing on the versions that are supported: on 3.12 `[bayesian]`
+  installs but not wheels-only, because `bayesblend` pins `matplotlib==3.7.2`
+  whose newest wheel is cp311, so 3.12 builds it from source.
 * **numpy 2.** Development and CI now run numpy 2.4.6; a plain `pip install ibnr`
   resolves numpy 2.5.1 and pandas 3.0.5. The core floor stays `numpy>=1.26`
   because raising it to 2 would make `ibnr[interop]` and `ibnr[bayesian]`
   unsatisfiable on PyPI - the blockers are upstream metadata on code that works,
   and this repo bridges them with `[tool.uv] override-dependencies` rather than
   shipping metadata nobody can install. Measured: the core suite gives the same
-  548 passed / 0 failed on numpy 2.4.6 and on 2.5.1, both with pandas 3.0.5, and
-  all extras together give 932 passed / 0 failed.
+  557 passed / 0 failed on the locked numpy 2.4.6 + pandas 2.3.3 and on numpy
+  2.5.1 + pandas 3.0.5, and all extras together give 0 failed.
 * **pymc 5.28.5 / pytensor 2.38.3** were not an optional upgrade. pytensor
   2.31.7 unpacks numpy's `einsum_path` result as a five-tuple and numpy 2.4
   returns three, so every LKJ-based compartmental test died on "not enough
