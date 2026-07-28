@@ -14,6 +14,10 @@ Methods, per the paper:
 - ``cape_cod``: U_w = ELR * premium_w with a single profiled ELR - Clark's
   recommendation for thin triangles.
 
+``premium_field`` is read by ``cape_cod`` ONLY. An ``ldf`` fit never requests
+the column, so it runs on a premium-free triangle with no extra arguments and
+gives the same answer on a triangle that has one.
+
 Predictive distribution = Clark's own variance decomposition, simulated:
 parameter risk from the MVN with covariance phi * inverse observed Fisher
 information (log-parameter space), process risk as scaled-Poisson ODP draws,
@@ -290,7 +294,36 @@ class Clark(GalleryEntry, PredictsHeldout):
         # cohort's MLE, which index_into then accepts - predict_at would draw
         # one cohort's cells from another cohort's curve. See mack.
         train = triangle.as_of(as_of) if as_of is not None else triangle
-        contract = odp_stan_data(train, loss_field=loss_field, premium_field=premium_field)
+        # PREMIUM FOLLOWS THE METHOD, not the signature default. ``ldf`` anchors
+        # each origin on its own paid-to-date and never reads exposure, so its
+        # contract is built WITHOUT premium even when the triangle carries one:
+        # requesting a column the fitted model never uses turns every premium
+        # defect (no such field, a cohort mismatch, a non-positive value) into a
+        # failure of a method that has no premium in it. An ldf fit therefore
+        # carries no ``contract_["premium"]`` and ``predict()`` reports NaN
+        # exposure in its targets - identical to passing ``premium_field=None``,
+        # which was the workaround before this was the default.
+        #
+        # ``cape_cod`` is the opposite (U[w] = ELR * premium[w]), so it demands
+        # exposure UP FRONT and names itself in the error: the contract's own
+        # "no rows for premium field" answer does not tell a caller that the
+        # cheapest fix may be ``method="ldf"``.
+        needs_premium = method == "cape_cod"
+        if needs_premium:
+            if premium_field is None:
+                raise ValueError("cape_cod needs a premium_field (U[w] = ELR * premium[w])")
+            if premium_field not in train.fields:
+                raise ValueError(
+                    f"cape_cod needs a premium_field (U[w] = ELR * premium[w]) but the "
+                    f"triangle carries no {premium_field!r} field (it has "
+                    f"{train.fields}); name the exposure field, or use method='ldf', "
+                    "which anchors on paid-to-date and needs no premium"
+                )
+        contract = odp_stan_data(
+            train,
+            loss_field=loss_field,
+            premium_field=premium_field if needs_premium else None,
+        )
         c = contract
         w, d, inc = c["w"], c["d"], c["inc_loss"]  # ragged (len_data,) per observed cell
         step = c["dev_grain_months"]  # 12 for annual grain
@@ -303,9 +336,9 @@ class Clark(GalleryEntry, PredictsHeldout):
             row_tot = np.array([inc[w == wi].sum() for wi in range(1, c["n_w"] + 1)])
             if (row_tot <= 0).any():
                 raise ValueError("ldf method needs positive paid-to-date in every origin")
+        # None for ldf by construction (the contract was built without it); the
+        # cape_cod gate above is what guarantees this is an array when it is used.
         premium = c.get("premium")
-        if method == "cape_cod" and premium is None:
-            raise ValueError("cape_cod needs a premium_field (U[w] = ELR * premium[w])")
 
         def profiled_level(om: float, th: float) -> np.ndarray:
             """MLE of per-origin ultimates given the curve: U_w (ldf) or
