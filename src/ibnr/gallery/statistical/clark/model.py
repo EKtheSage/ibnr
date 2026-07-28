@@ -275,7 +275,12 @@ class Clark(GalleryEntry, PredictsHeldout):
         triangle: Triangle,
         *,
         loss_field: str = "paid_loss",
-        premium_field: str = "earned_premium",
+        # ``str | None``, not ``str``: ``None`` is a SUPPORTED value here (it
+        # switches exposure off, which ``ldf`` fits happily on and ``cape_cod``
+        # refuses by name below) and it is spelled that way in the README, the
+        # card and tests/test_clark_premium.py. Every other entry's
+        # premium_field is genuinely ``str`` - see tests/test_field_annotations.
+        premium_field: str | None = "earned_premium",
         as_of: dt.date | str | None = None,
         growth_curve: str = "loglogistic",
         method: str = "cape_cod",
