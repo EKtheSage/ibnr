@@ -33,8 +33,9 @@ uv run jupyter nbconvert --to notebook --execute --inplace \
     --ExecutePreprocessor.timeout=900 analysis/01_triangle_and_meyers_ccl.ipynb
 ```
 
-`03` fits the whole gallery live and takes roughly 30-45 minutes on a laptop, so
-it needs a much larger timeout than the others:
+`03` fits the whole gallery live and takes about 30 minutes on the dev box (the
+committed run's own timing table is the measurement), so it needs a much larger
+timeout than the others:
 
 ```sh
 uv run jupyter nbconvert --to notebook --execute --inplace \
