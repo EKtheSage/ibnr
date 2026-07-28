@@ -253,23 +253,52 @@ results with no error. ...
 
 **Which field is the loss, which is the premium.** Gallery entries do not guess:
 each `fit()` takes `loss_field=` and (where the model has an exposure term)
-`premium_field=`. The defaults are the Schedule P mart's names -
-`loss_field="paid_loss"` for the paid-basis entries, `"reported_loss"` for
-`meyers_ccl` and the NN entries, and `premium_field="earned_premium"`
-throughout - so if your fields are named anything else, pass them explicitly.
+`premium_field=`. The defaults are the Schedule P mart's names, and
+`premium_field` is `"earned_premium"` on every entry that has it - but
+`loss_field` is **not** one value across the gallery, so omitting it quietly
+picks a basis for you:
+
+| `loss_field` default | entries |
+|---|---|
+| `"reported_loss"` | `meyers_ccl`, `mdn`, `nn_transformer`, `nn_transformer_ml`, `resnet` |
+| `"paid_loss"` | the other ten: `clark`, `clark_growth_curve`, `compartmental`, `copula_glm`, `deeptriangle`, `england_verrall_odp`, `guszcza_growth_curve`, `mack`, `meyers_csr`, `sur` |
+
+`deeptriangle` is the one to watch: it is an NN entry but keeps the paper's
+paid-loss basis, so "the NN entries are reported-basis" is true of four of the
+five and wrong for that one. Pass `loss_field=` explicitly whenever the basis
+matters - which is always, if you are comparing entries to each other.
 
 Premium is genuinely required by every entry that models a loss *ratio* or
 carries a log-premium offset: `meyers_ccl`, `meyers_csr`,
 `guszcza_growth_curve`, `clark_growth_curve`, `compartmental`,
-`england_verrall_odp`, `copula_glm` and all five NN entries. `clark` needs it
-under its default `method="cape_cod"` and not under `method="ldf"`, which
-estimates a free ultimate per origin. Only `mack` and `sur` have no
-`premium_field` argument at all. A premium field that is missing,
+`england_verrall_odp`, `copula_glm` and all five NN entries. Only `mack` and
+`sur` have no `premium_field` argument at all. A premium field that is missing,
 duplicated per origin, non-positive, or belongs to a different cohort than the
 losses is an error at fit time rather than a silent zero (`ValueError: no rows
 for premium field 'earned_premium'`) - except in the NN entries, which train
 pooled across many cohorts and so *drop* an unusable cohort from the pool
 instead of refusing the whole fit.
+
+`clark` is the awkward case. Its default `method="cape_cod"` genuinely needs
+premium (`U[w] = ELR * premium[w]`), and `method="ldf"` estimates a free
+ultimate per origin and never uses premium - but `ldf` still *resolves*
+`premium_field` when it builds its data contract, ahead of the branch that
+would have ignored it. So on a triangle carrying no premium, choosing `ldf` is
+not enough on its own; the default argument has to go too:
+
+```python
+# `losses` here carries paid_loss and nothing else - no premium field at all.
+# ValueError: no rows for premium field 'earned_premium', raised while building
+# the data contract, before the method is looked at:
+gallery.fit("clark", losses, method="ldf")
+
+# what actually works - ldf ignores premium, so switch the default off as well:
+gallery.fit("clark", losses, method="ldf", premium_field=None)
+```
+
+(The example triangle built above does carry `earned_premium`, so `ldf` happens
+to work on it with no extra argument - which is exactly what makes this easy to
+miss until you point the same call at a triangle of losses only.)
 
 **Bringing your own connection.** `backend=` takes `"duckdb"` (the default),
 `"polars"` (needs the `[polars]` extra), or an already-connected ibis backend -
@@ -287,7 +316,11 @@ tri = Triangle.from_long("losses.parquet", segments=["lob"], backend=con)
 frame, so `tri.to_pandas()` / `tri.to_polars()` materialize it in the schema
 above, `tri.expr` hands you the underlying ibis expression to push further work
 into the engine, and `tri.to_wide(field)` pivots one field to an origin x dev
-matrix for display.
+matrix for display. `to_polars()` needs the `[polars]` extra even on a duckdb
+triangle: the call goes straight through to ibis, so on the core install it
+raises a bare `ModuleNotFoundError: No module named 'polars'` rather than the
+install hint you get from `backend="polars"`. `to_pandas()` is always
+available.
 
 ## Using the gallery
 

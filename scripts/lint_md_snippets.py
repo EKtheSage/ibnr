@@ -87,12 +87,17 @@ EXCLUDE_DIRS = {
 
 @dataclass(frozen=True)
 class Snippet:
-    """One fenced python block, located well enough to point a reader at it."""
+    """One fenced block, located well enough to point a reader at it."""
 
     path: Path
     line: int
     """1-based line of the opening fence in ``path``."""
     code: str
+    tag: str = ""
+    """The fence's language tag, ``""`` when untagged. Only ``PYTHON_TAGS`` are
+    linted, but the untagged blocks are the pasted *output* of the python ones,
+    and tests/test_markdown_snippets.py runs the README's example to check that
+    its promised output is still what the code prints."""
 
     @property
     def rel(self) -> str:
@@ -128,12 +133,16 @@ def iter_markdown_files(root: Path) -> list[Path]:
     return sorted(out)
 
 
-def extract_snippets(path: Path) -> list[Snippet]:
-    """Fenced python blocks in one markdown file, dedented to column 0.
+def iter_blocks(path: Path) -> list[Snippet]:
+    """Every fenced block in one markdown file, tag and all, dedented to column 0.
 
     A block indented under a list item is dedented by the opening fence's own
     indentation rather than by ``textwrap.dedent``, which would also strip the
     snippet's meaningful leading whitespace if every line happened to share it.
+
+    Untagged blocks are returned too, because one parser is better than two:
+    the README pairs a python block with the output it prints, and checking
+    that pairing needs both halves located the same way.
     """
     out: list[Snippet] = []
     indent: str | None = None
@@ -148,12 +157,16 @@ def extract_snippets(path: Path) -> list[Snippet]:
             continue
         # inside a block: only a fence at the opener's indentation closes it
         if m and m.group("indent") == indent and not m.group("tag"):
-            if tag in PYTHON_TAGS:
-                out.append(Snippet(path, start, "\n".join(buf)))
+            out.append(Snippet(path, start, "\n".join(buf), tag))
             indent = None
             continue
         buf.append(line.removeprefix(indent))
     return out
+
+
+def extract_snippets(path: Path) -> list[Snippet]:
+    """The fenced python blocks in one markdown file - what this linter checks."""
+    return [b for b in iter_blocks(path) if b.tag in PYTHON_TAGS]
 
 
 def repo_snippets(root: Path = REPO) -> list[Snippet]:

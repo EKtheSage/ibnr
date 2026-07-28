@@ -8,6 +8,12 @@ and which findings are real rather than artefacts of extraction.
 
 Every negative case here fails on a fixture, not on the repo - a gate that can
 only be tested by breaking the README is a gate nobody tests.
+
+The last test goes one step further and *runs* the README's end-to-end example,
+comparing what it prints against the output blocks pasted beneath it. Linting
+only proves a snippet parses and imports cleanly; it cannot notice that the
+numbers under it went stale. See the section header there for why that example
+in particular.
 """
 
 from __future__ import annotations
@@ -22,8 +28,11 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 
 from lint_md_snippets import (  # noqa: E402
+    PYTHON_TAGS,
+    Snippet,
     check,
     extract_snippets,
+    iter_blocks,
     iter_markdown_files,
     repo_snippets,
 )
@@ -158,3 +167,76 @@ def test_an_indented_block_is_dedented(tmp_path):
     (snippet,) = extract_snippets(doc)
     assert snippet.code == "if True:\n    a = 1"
     assert not check([snippet])
+
+
+def test_iter_blocks_keeps_untagged_blocks_that_the_linter_drops(tmp_path):
+    """The README's *output* blocks are untagged, so the shared parser has to
+    hand them back - while `extract_snippets`, which feeds ruff, still sees only
+    python. One parser, two consumers: a second fence reader would be free to
+    disagree with this one about where a block starts."""
+    doc = _md(tmp_path, "```python\na = 1\n```\n\n```\n1\n```\n\n```sh\nls\n```\n")
+    assert [(b.tag, b.code) for b in iter_blocks(doc)] == [
+        ("python", "a = 1"),
+        ("", "1"),
+        ("sh", "ls"),
+    ]
+    assert [s.code for s in extract_snippets(doc)] == ["a = 1"]
+
+
+# --- the README's example, actually executed ---------------------------------
+#
+# Everything above proves the doc snippets parse and lint. None of it can notice
+# that the output pasted underneath one went stale, and the README has exactly
+# one end-to-end example whose numbers a reader will check theirs against: build
+# a Triangle from a hand-written frame with `from_long`, then fit `mack` on it.
+# Between them those two blocks pin `from_long`, `Triangle.__repr__`, `to_wide`,
+# the registry lookup and the Mack kernel's summary - a wide surface for a doc
+# to be silently wrong about. It is core-only and sub-second, so just run it.
+
+
+def _readme_example(marker: str) -> tuple[Snippet, str]:
+    """The README python block containing ``marker``, paired with the untagged
+    block that follows it - the output the doc promises its reader.
+
+    ``marker`` has to identify exactly one block. A substring that matches two
+    silently grabs the wrong example and fails somewhere confusing later, so the
+    ambiguity is the error: `gallery.fit("mack", tri` also prefix-matches
+    `gallery.fit("mack", triangle` up in the Status section.
+    """
+    blocks = iter_blocks(REPO / "README.md")
+    hits = [i for i, b in enumerate(blocks) if b.tag in PYTHON_TAGS and marker in b.code]
+    where = [f"README.md:{blocks[i].line}" for i in hits]
+    assert len(hits) == 1, f"{marker!r} matches {len(hits)} README python blocks: {where}"
+    block = blocks[hits[0]]
+    output = next((b for b in blocks[hits[0] + 1 :] if not b.tag), None)
+    assert output is not None, f"no output block follows README.md:{block.line}"
+    return block, output.code
+
+
+def _comparable(text: str) -> list[str]:
+    """Lines, with trailing whitespace dropped and nothing else touched.
+
+    That one allowance is not laziness about float formatting: pandas pads the
+    index-name row of a wide frame out to the full column width, and trailing
+    spaces do not survive a round trip through an editor or a formatter into
+    markdown. Every digit is still compared exactly.
+    """
+    return [line.rstrip() for line in text.strip("\n").splitlines()]
+
+
+def test_the_readme_example_still_prints_the_output_it_pastes(capsys):
+    """Run the README's example and diff it against the two pasted blocks.
+
+    The second block is executed in the *same* namespace as the first, because
+    the README expects the reader to have `tri` in hand by then - so this also
+    checks that the narrative order works.
+    """
+    build, build_output = _readme_example("Triangle.from_long(pd.DataFrame(rows)")
+    fit, fit_output = _readme_example('entry_cls = gallery.get("mack")')
+
+    namespace: dict = {}
+    exec(compile(build.code, f"README.md:{build.line}", "exec"), namespace)
+    assert _comparable(capsys.readouterr().out) == _comparable(build_output)
+
+    exec(compile(fit.code, f"README.md:{fit.line}", "exec"), namespace)
+    assert _comparable(capsys.readouterr().out) == _comparable(fit_output)
