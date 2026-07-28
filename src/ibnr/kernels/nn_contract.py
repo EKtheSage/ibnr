@@ -123,6 +123,17 @@ def _refuse_undetermined(df: pd.DataFrame, key_cols: list[str], dropped: list[st
 
     Applies to the ``DISPLAY_COLUMNS`` default AND to an explicit
     ``segment_columns=``; the explicit path merged cohorts silently too.
+
+    **Measured against the real mart before shipping** (publish_id
+    ``20260613_041006``), because the data model derives ``company_name`` via a
+    LEFT JOIN onto ``sat_company_details`` and a null or second spelling would
+    fire this on every pooled NN fit. It does not: across all four Meyers lines
+    the mart carries 353 distinct ``company_code``s, zero null names and zero
+    codes with more than one name, so both narrowings pass - the study's pooled
+    panel (60 companies / 152 cohorts) and the full ``--nn-pool market`` pool
+    (221 companies / 405 cohorts) alike. If a later publish breaks that, this
+    refusal is still the correct answer and the remedy is an explicit
+    ``segment_columns=`` in the affected caller, not a relaxed guard.
     """
     if not dropped:
         return

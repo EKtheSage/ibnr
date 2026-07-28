@@ -212,17 +212,34 @@ def test_the_dropped_value_is_verified_not_discarded(wide):
     above and fails only this one - which is why it is here. The message names
     both schemas AND both values, because "these cells are not this cohort's" is
     the only thing the caller can act on.
+
+    ``excluded`` is re-spelled alongside ``frame``, and that is what makes this
+    test discriminate rather than merely pass. Mutating ``frame`` alone leaves
+    the one excluded cell on the original spelling, so the two spellings become
+    two distinct cohorts and ``narrowed_to``'s COLLAPSE guard raises first - with
+    a message that happens to quote both values and the column name, satisfying
+    every assertion below while the value check is never reached. Measured: with
+    ``_keyed_to_fit``'s value check disabled the file still passed 14/14. Both
+    frames re-spelled, there is exactly one cohort to narrow onto, so the value
+    check is the only thing left that can refuse.
     """
     entry, cells = wide
     import dataclasses
 
-    wrong = dataclasses.replace(cells, frame=cells.frame.assign(company_name="ACME"))
+    wrong = dataclasses.replace(
+        cells,
+        frame=cells.frame.assign(company_name="ACME"),
+        excluded=cells.excluded.assign(company_name="ACME"),
+    )
     with pytest.raises(ValueError) as excinfo:
         entry.at_cohort(FULL_KEY).log_lik_at(wrong, field=FIELD)
     message = str(excinfo.value)
     assert "ACME" in message
     assert COMPANY_NAME in message
     assert "company_name" in message
+    # the refusal is the VALUE check, not the collapse guard standing in for it
+    assert "agree with the fitted cohort" in message
+    assert "collapse" not in message
 
 
 def test_the_narrowing_never_escapes_to_the_panel(wide):

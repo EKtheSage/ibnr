@@ -52,7 +52,13 @@ answers for**, so every caller reconstructed that fact by hand.
   still sees one segment schema. Backed by a new refusal in `nn_data`: a segment
   column dropped from the key must be a *function* of the key, or two cohorts
   would collapse onto one grid - silently, whenever their cells are disjoint.
-  `nn_data`/`nn_company_data` gained `segment_columns` and `display` keys.
+  `nn_data`/`nn_company_data` gained `segment_columns` and `display` keys. That
+  refusal was measured against the real mart before shipping, since the data
+  model derives `company_name` through a LEFT JOIN and a null or second spelling
+  would fire it on every pooled fit: on publish `20260613_041006` all four
+  Meyers lines carry 353 company codes with zero null names and zero codes
+  spelled two ways, and both the study's pooled panel (60 companies /
+  152 cohorts) and the full `--nn-pool market` pool (221 / 405) build clean.
 * **`gallery.get(name).config_class`** is the dataclass an entry's
   `fit(config=...)` takes, or `None`. Registration checks the declaration both
   ways - missing when `fit` takes a config, and stale when it does not.

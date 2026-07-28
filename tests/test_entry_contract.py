@@ -13,21 +13,24 @@ signature facts here on the day it registers, not on the day somebody remembers
 to add it. The bucket census below is what keeps that honest - an entry in
 neither bucket fails HERE rather than silently skipping the behaviour tests.
 
-Fast by construction: the signature half needs no fit at all, and the behaviour
-half uses the four entries that need neither cmdstan nor torch. The NN entries'
-behaviour lives in ``test_nn_segment_contract.py`` (torch) and the Bayesian
-entries' in the ``-m slow`` leg.
+Fast by construction: the signature half needs no fit at all, the behaviour half
+uses the four entries that need neither cmdstan nor torch, and the six that do
+need cmdstan are fitted here with their sampler stubbed (last section). The NN
+entries' behaviour lives in ``test_nn_segment_contract.py`` (torch).
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import inspect
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from ibnr import gallery
 from ibnr.gallery.entry import GalleryEntry
+from ibnr.triangle import Triangle
 
 from .conftest import make_cohort_triangle, make_multiline_triangle
 
@@ -117,24 +120,63 @@ def test_cohorts_is_implemented(name):
     assert cls.cohorts is not GalleryEntry.cohorts
 
 
+def _looks_like_config(param: str) -> bool:
+    """Is ``param`` a near-miss spelling of ``config=``?
+
+    ``registry.register`` keys on the exact string ``"config"``, so a config
+    object arriving under any other name is invisible to it: the entry keeps
+    ``config_class = None``, registration is happy, and a caller who found the
+    entry through ``gallery.get(name)`` has no route to the type ``fit`` wants.
+    Case and underscores are stripped, then ``cfg`` or ``conf`` anywhere in the
+    name is enough - ``config`` itself starts with ``conf``, so the two stems
+    cover every spelling worth worrying about (``cfg``, ``_cfg``, ``Config``,
+    ``model_conf``, ``configuration``). Deliberately a substring test rather
+    than a prefix one: ``model_conf`` normalizes to ``modelconf``, which starts
+    with neither stem.
+    """
+    p = param.replace("_", "").lower()
+    return "cfg" in p or "conf" in p
+
+
+def test_the_near_miss_heuristic_catches_the_spellings_it_claims_to():
+    """The heuristic above is itself the check, so it gets its own test.
+
+    Its first version was ``p.startswith("c") and "config" in p``, which cannot
+    fire on ``cfg`` at all - ``"config" in "cfg"`` is False - so the check the
+    docstring advertised was vacuous for the exact spelling it named.
+    """
+    assert all(
+        _looks_like_config(p)
+        for p in ("config", "cfg", "_cfg", "Config", "model_conf", "configuration")
+    )
+    # and fires on none of the parameters the 15 entries' fit signatures really take
+    real = {
+        p
+        for name in gallery.list()
+        for p in inspect.signature(gallery.get(name).fit).parameters
+        if p != "config"
+    }
+    assert real and not any(_looks_like_config(p) for p in real)
+
+
 @pytest.mark.parametrize("name", gallery.list())
 def test_config_class_is_declared_exactly_when_fit_takes_one(name):
     """The route from ``gallery.get(name)`` to the type ``fit(config=)`` wants.
 
     Also pins the parameter's SPELLING: the registration check keys on
-    ``"config"``, so an entry naming it ``cfg=`` would slip past it silently.
+    ``"config"``, so an entry naming it ``cfg=`` would slip past it silently -
+    which is what :func:`_looks_like_config` is for.
     """
     cls = gallery.get(name)
-    takes_config = "config" in inspect.signature(cls.fit).parameters
+    params = inspect.signature(cls.fit).parameters
+    takes_config = "config" in params
     if takes_config:
         assert inspect.isclass(cls.config_class)
         # constructible with no arguments - it is what fit() falls back to
         assert cls.config_class() is not None
     else:
         assert cls.config_class is None
-        assert not any(
-            p.startswith("c") and "config" in p for p in inspect.signature(cls.fit).parameters
-        )
+        assert not any(_looks_like_config(p) for p in params)
 
 
 # -- behaviour of `segment=`, on the entries that need no extra ------------------
@@ -266,3 +308,132 @@ def test_cohort_index_before_fit_says_to_fit_first():
     """The order matters: unfitted is a lifecycle error, not a segment error."""
     with pytest.raises(RuntimeError, match="fit"):
         gallery.get("mack")().cohort_index({"company_code": "0001"})
+
+
+# -- delivery of `segment=` on the Bayesian entries, sampler stubbed ------------
+#
+# The six ``NEEDS_STAN`` entries had every SIGNATURE fact above checked and no
+# BEHAVIOURAL one: their only `segment=` test (``test_meyers_csr.py``) needs
+# cmdstan and the Schedule P mart, so it runs in no leg of a pull request.
+# Measured: deleting ``self.cohort_index(segment)`` from ``meyers_ccl.predict``
+# left the whole 1239-test suite green - the inert-parameter bug class, where a
+# typo'd cohort key is accepted, discarded, and answered with the fitted
+# cohort's perfectly plausible numbers.
+#
+# Stubbing the sampler is what puts these on every PR: it is the same lever
+# ``test_fit_atomicity.py`` pulls, and it works here because the refusal is
+# raised by ``cohort_index`` BEFORE ``predict`` reads the posterior. That
+# ordering is itself the thing under test - a resolver called after the
+# ``idata_ is None`` check would report "call fit() first" for a typo.
+
+STAN_ENTRIES = sorted(NEEDS_STAN)
+
+#: strictly increasing paid share of ultimate by dev year: positive increments
+#: everywhere, which the ODP and growth-curve preps require.
+_GROWTH = (0.30, 0.55, 0.75, 0.88, 0.95)
+STAN_COHORT = {"company_code": "0001"}
+
+
+def _stan_triangle(start_year: int = 2000, n: int = 5) -> Triangle:
+    """Single-cohort run-off staircase carrying paid/reported/premium AND a segment.
+
+    Shaped like ``test_fit_atomicity.bayes_triangle`` - reported > paid and every
+    increment positive, so all six data preps accept it, including
+    compartmental's joint paid+outstanding contract. The one addition is the
+    ``company_code`` column: without a segment column ``cohorts()`` answers
+    ``[{}]``, and a test built on that cannot tell a delivered segment from a
+    discarded one.
+    """
+    premium, loss_ratio, paid_share = 1000.0, 0.70, 0.80
+    rows = []
+    for i in range(n):
+        for j in range(n - i):
+            paid = premium * loss_ratio * _GROWTH[j]
+            for field, value in (
+                ("paid_loss", paid),
+                ("reported_loss", paid / paid_share),
+                ("earned_premium", premium),
+            ):
+                rows.append(
+                    {
+                        **STAN_COHORT,
+                        "origin_period": dt.date(start_year + i, 1, 1),
+                        "dev_lag": 12 * (j + 1),
+                        "eval_date": dt.date(start_year + i + j, 12, 31),
+                        "field": field,
+                        "value": value,
+                    }
+                )
+    return Triangle.from_long(pd.DataFrame(rows), measure="cumulative")
+
+
+def _stub_fitted(name: str):
+    """A Bayesian entry fitted with ``_sample_stan`` replaced by a placeholder.
+
+    No cmdstan, no compile, no MCMC. The placeholder posterior is never read:
+    every assertion below is about a refusal raised ahead of it.
+    """
+    entry = gallery.get(name)()
+    entry._sample_stan = lambda *args, **kwargs: ("stub-posterior", None)
+    return entry.fit(_stan_triangle())
+
+
+@pytest.mark.parametrize("name", STAN_ENTRIES)
+def test_stan_entry_cohorts_names_the_fitted_cohort(name):
+    """``cohorts()`` answers with the identity the triangle carried."""
+    assert _stub_fitted(name).cohorts() == [STAN_COHORT]
+
+
+@pytest.mark.parametrize("name", STAN_ENTRIES)
+def test_stan_entry_predict_refuses_a_segment_naming_no_cohort(name):
+    """Both refusals, because they come from different branches of the resolver:
+    an unknown COLUMN names the fit's schema, a known column with an unmatched
+    VALUE reports how many cohorts it hit."""
+    entry = _stub_fitted(name)
+    with pytest.raises(KeyError, match="unknown segment column"):
+        entry.predict(segment={"wrong": "x"})
+    with pytest.raises(ValueError, match="matches 0 cohorts"):
+        entry.predict(segment={"company_code": "9999"})
+
+
+@pytest.mark.parametrize("name", STAN_ENTRIES)
+def test_stan_entry_realized_ultimates_refuses_a_segment_naming_no_cohort(name):
+    """The one that would otherwise return a NUMBER for the wrong company.
+
+    ``realized_ultimates`` reads the full triangle and never touches the
+    posterior, so an unwired ``segment=`` here is silent in the strongest sense:
+    the array comes back the right shape, finite, and belonging to whoever the
+    fit was actually built on.
+    """
+    entry = _stub_fitted(name)
+    tri = _stan_triangle()
+    with pytest.raises(KeyError, match="unknown segment column"):
+        entry.realized_ultimates(tri, segment={"wrong": "x"})
+    with pytest.raises(ValueError, match="matches 0 cohorts"):
+        entry.realized_ultimates(tri, segment={"company_code": "9999"})
+
+
+@pytest.mark.parametrize("name", STAN_ENTRIES)
+def test_stan_entry_evaluate_refuses_a_segment_naming_no_cohort(name):
+    """``evaluate`` selects through ``predict``, so it must refuse identically."""
+    entry = _stub_fitted(name)
+    with pytest.raises(ValueError, match="matches 0 cohorts"):
+        entry.evaluate(np.zeros(6), segment={"company_code": "9999"})
+
+
+@pytest.mark.parametrize("name", STAN_ENTRIES)
+def test_stan_entry_accepts_its_own_key(name):
+    """The complement: the resolver is selective, not merely hostile.
+
+    Without this a ``cohort_index`` that refused every segment would pass all
+    three refusal tests above.
+    """
+    entry = _stub_fitted(name)
+    assert entry.cohort_index(STAN_COHORT) == 0
+    assert entry.cohort_index(None) is None
+    # and the outcome path runs end to end on the fitted key
+    np.testing.assert_allclose(
+        np.asarray(entry.realized_ultimates(_stan_triangle()), dtype=float),
+        np.asarray(entry.realized_ultimates(_stan_triangle(), segment=STAN_COHORT), dtype=float),
+        equal_nan=True,
+    )

@@ -67,5 +67,5 @@ committed, so three things in its cells document friction that no longer exists:
 
 All three still RUN correctly against the current code (checked by extracting
 and executing exactly those calls), which is why the notebook is not re-executed:
-its outputs are a 30-minute live gallery fit and re-running it to delete
+its outputs are the ~20-minute live gallery fit above and re-running it to delete
 three lines of workaround would change every timing in it.
