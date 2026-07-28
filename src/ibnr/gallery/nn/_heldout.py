@@ -51,9 +51,44 @@ from scipy.special import logsumexp
 from ibnr.gallery.entry import PredictsHeldout, ScoresHeldout
 from ibnr.kernels.holdout import CellIndex, HoldoutCells
 
-__all__ = ["CohortHeldout", "PooledMDNHeldout", "cohort_contract"]
+__all__ = ["CohortHeldout", "PooledMDNHeldout", "cohort_contract", "heldout_cutoff"]
 
 LOG_2PI = math.log(2.0 * math.pi)
+
+
+def heldout_cutoff(contract: dict, cohort: int) -> int:
+    """The cohort's as_of calendar diagonal: the deepest one it HELD a cell on.
+
+    Every entry whose network reads a relative calendar position derives it as
+    ``cal_idx - cutoff``, so this scalar is what places the held-out diagonal
+    at distance 1 - the most-supervised position, and the one ``_rollout``
+    steps through (``cut_b = lv - 1``).
+
+    It is the max over ``obs_mask`` UNION the per-origin anchors, and the union
+    is the whole point: ``obs_mask`` marks usable *increments*, so an anchor
+    whose predecessor is missing is absent from it even though the cohort
+    plainly held that cell - the same fact :func:`cohort_contract` unions
+    ``latest_dev`` back in for when it declares the training cells. Reading the
+    cutoff off ``obs_mask`` alone parked as_of at the last hole-free diagonal
+    instead: a cohort with cumulative values at devs {1, 2, 4} was cut at dev
+    2's diagonal, so its held-out cell arrived three diagonals out rather than
+    one, into a different ``dist_emb`` row and therefore a different predictive.
+    Anchors are the same quantity ``_rollout`` reads from ``latest_dev`` for its
+    future mask, so entry and rollout now agree on where as_of sits.
+
+    Predecessors - ``cohort_contract``'s third training set - cannot extend the
+    boundary, sitting one dev step before a cell already counted, so obs union
+    anchors is all of it. The context mask stays ``obs_mask`` alone and is not
+    widened to match: ``x`` carries incremental ratios, and a hole-anchored
+    cell has no usable increment to condition on, only a cumulative value the
+    network has no channel for.
+    """
+    obs = np.array(contract["obs_mask"][cohort], dtype=bool)  # (n_w, n_d); copied to mutate
+    latest = np.asarray(contract["latest_dev"][cohort], dtype=int)  # (n_w,) 1-based, 0 = none
+    anchored = np.nonzero(latest > 0)[0]
+    obs[anchored, latest[anchored] - 1] = True
+    # nn_data screens out cohorts with no usable increment, so obs is non-empty
+    return int(np.asarray(contract["cal_idx"])[obs].max())
 
 
 def cohort_contract(contract: dict, cohort: int, *, models: Sequence[str]) -> dict:
