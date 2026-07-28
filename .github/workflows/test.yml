@@ -586,6 +586,11 @@ jobs:
       # No lockfile on purpose - see the core-latest comment in the matrix.
       # `uv venv` first so both install paths leave an identical .venv layout
       # for the pytest step, which runs through `uv run --no-sync` either way.
+      # --clear because the runner already has a .venv by this point (the
+      # setup-uv action's cache restore leaves one) and uv 0.11 ERRORS on an
+      # existing venv rather than replacing it - both -latest legs died in 9 s
+      # on their first hosted run for exactly this. A fresh venv is the point
+      # of these legs, so replacing is correct, not just convenient.
       # `uv pip install` is used rather than `uv sync --no-lock` because it is
       # the only one that takes extra requirements on the command line, which is
       # how these legs force numpy and pandas forward rather than merely
@@ -601,7 +606,7 @@ jobs:
       - name: Install (floating, newest numpy/pandas)
         if: matrix.unlocked == 'true'
         run: |
-          uv venv --python ${{ matrix.python }}
+          uv venv --clear --python ${{ matrix.python }}
           uv pip install --no-config ${{ matrix.sync_args }}
 
       # Print the resolution rather than infer it from the leg name. On the
