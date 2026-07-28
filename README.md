@@ -272,33 +272,37 @@ Premium is genuinely required by every entry that models a loss *ratio* or
 carries a log-premium offset: `meyers_ccl`, `meyers_csr`,
 `guszcza_growth_curve`, `clark_growth_curve`, `compartmental`,
 `england_verrall_odp`, `copula_glm` and all five NN entries. Only `mack` and
-`sur` have no `premium_field` argument at all. A premium field that is missing,
-duplicated per origin, non-positive, or belongs to a different cohort than the
-losses is an error at fit time rather than a silent zero (`ValueError: no rows
-for premium field 'earned_premium'`) - except in the NN entries, which train
-pooled across many cohorts and so *drop* an unusable cohort from the pool
-instead of refusing the whole fit.
+`sur` have no `premium_field` argument at all. For the entries that do require
+it, a premium field that is missing, duplicated per origin, non-positive, or
+belongs to a different cohort than the losses is an error at fit time rather
+than a silent zero (`ValueError: no rows for premium field 'earned_premium'`) -
+except in the NN entries, which train pooled across many cohorts and so *drop*
+an unusable cohort from the pool instead of refusing the whole fit.
 
-`clark` is the awkward case. Its default `method="cape_cod"` genuinely needs
-premium (`U[w] = ELR * premium[w]`), and `method="ldf"` estimates a free
-ultimate per origin and never uses premium - but `ldf` still *resolves*
-`premium_field` when it builds its data contract, ahead of the branch that
-would have ignored it. So on a triangle carrying no premium, choosing `ldf` is
-not enough on its own; the default argument has to go too:
+`clark` is the entry where the requirement follows the **method** rather than
+the entry. Its default `method="cape_cod"` genuinely needs premium
+(`U[w] = ELR * premium[w]`); `method="ldf"` estimates a free ultimate per origin
+and never reads exposure, so it does not ask for the column at all. Choosing
+`ldf` is therefore enough on its own - no second argument, and no premium field
+in the triangle:
 
 ```python
 # `losses` here carries paid_loss and nothing else - no premium field at all.
-# ValueError: no rows for premium field 'earned_premium', raised while building
-# the data contract, before the method is looked at:
-gallery.fit("clark", losses, method="ldf")
+gallery.fit("clark", losses, method="ldf")  # fits
 
-# what actually works - ldf ignores premium, so switch the default off as well:
-gallery.fit("clark", losses, method="ldf", premium_field=None)
+# cape_cod cannot, and the error names the method and the way out:
+# ValueError: cape_cod needs a premium_field (U[w] = ELR * premium[w]) but the
+# triangle carries no 'earned_premium' field (it has ['paid_loss']); name the
+# exposure field, or use method='ldf', which anchors on paid-to-date and needs
+# no premium
+gallery.fit("clark", losses, method="cape_cod")
 ```
 
-(The example triangle built above does carry `earned_premium`, so `ldf` happens
-to work on it with no extra argument - which is exactly what makes this easy to
-miss until you point the same call at a triangle of losses only.)
+`ldf` ignores `premium_field` even when the triangle *does* carry premium, which
+is deliberate: a method with no exposure in it should not fail on a premium row
+it will never read. The fitted contract then carries no premium, so `predict()`
+reports `NaN` in its targets' `premium` column - identical to the older
+`premium_field=None` spelling, which still works and now changes nothing.
 
 **Bringing your own connection.** `backend=` takes `"duckdb"` (the default),
 `"polars"` (needs the `[polars]` extra), or an already-connected ibis backend -

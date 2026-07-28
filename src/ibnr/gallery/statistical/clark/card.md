@@ -42,6 +42,14 @@ Methods (`method=`):
   `U[w] = paid_to_date[w] / G(age[w])`), so the point ultimate is the
   truncated-LDF answer `paid * G(x_max)/G(age[w])` - n_w + 2 parameters.
 
+**`premium_field` is a `cape_cod` requirement, not an entry requirement.** The
+`ldf` method never reads exposure, so its contract is built without premium: it
+fits a premium-free triangle with no extra arguments, and on a triangle that
+has premium it ignores the column, giving the same answer as the older
+`premium_field=None` spelling. An `ldf` fit therefore carries no `premium` in
+its contract and `predict()` reports NaN exposure in its targets. `cape_cod`
+demands the field up front and names itself in the error.
+
 The curve MLE is a 2-D Nelder-Mead over `(log omega, log theta)` with the
 level parameters profiled out in closed form (Poisson MLE given the curve).
 
@@ -132,10 +140,11 @@ binomial, Tweedie) - a modelling decision, not a units conversion.
 ## Data contract
 
 `kernels.contract.odp_stan_data` - incremental cells, `paid_to_date` /
-`latest_d` anchors, premium by origin. Negative increments are rejected
-(same ODP limitation as the bootstrap; failures are recorded, not patched).
-Zero increments are fine. The `ldf` method additionally requires positive
-paid-to-date per origin; `cape_cod` does not.
+`latest_d` anchors, and premium by origin *for `cape_cod` only* (see the
+methods above). Negative increments are rejected (same ODP limitation as the
+bootstrap; failures are recorded, not patched). Zero increments are fine. The
+`ldf` method additionally requires positive paid-to-date per origin;
+`cape_cod` does not.
 
 ## Validation
 
