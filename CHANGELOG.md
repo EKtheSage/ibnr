@@ -8,7 +8,10 @@ Versions follow [semantic versioning](https://semver.org/), loosely: while the
 package is `Development Status :: 3 - Alpha`, a minor bump is free to change a
 kernel signature. The public surface named in CLAUDE.md decision 8 (`Triangle`,
 `gallery.list/fit/evaluate/stack/scaffold/leaderboard`) is the part treated as
-stable, and nothing in it changed in this release.
+stable, and nothing in it changed in this release. (As built that surface is
+`Triangle` plus `gallery.list/get/fit/stack/leaderboard` - `evaluate` is a
+method on a fitted entry and `scaffold` is planned, per the corrected
+decision 8.)
 
 ## 0.5.0 - 2026-07-27
 
@@ -105,6 +108,15 @@ out of band, and the package moved to numpy 2 and grew a test CI.
   cannot delete cells from a column it does not appear in.
 * Held-out scorers and predictors for CSR, CCL, compartmental, guszcza, ODP,
   Clark, Mack and the NN family.
+* `kernels/codec.py` - the wire format. `to_arrow`/`from_arrow` round-trip
+  `PredictiveDistribution`, `Triangle`, `MackFit`/`MackFitPanel`, the CDR
+  result, forecast panels and plain frames losslessly over Arrow IPC, with a
+  summary-only JSON mode for callers that cannot take megabytes of draws;
+  `peek_kind` routes a payload without decoding it. This promoted `pyarrow>=15`
+  from the dev group to a core dependency - no new weight, since
+  `ibis-framework[duckdb]` has always pulled it transitively, but the codec
+  imports it directly and an inherited requirement can vanish in an upstream
+  release.
 
 ### Milestone 7 - the rest of the NN family (in progress)
 
