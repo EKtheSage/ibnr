@@ -316,7 +316,7 @@ def test_fit_predict_contract(backend_name):
     assert {"estimate", "se", "cv", "outcome", "percentile"} <= set(table.columns)
 
     # fully developed first origin: ultimate anchored at its observed value
-    first = entry.contract_["latest_cum"][entry._cohort_index(seg), 0]
+    first = entry.contract_["latest_cum"][entry.cohort_index(seg), 0]
     np.testing.assert_allclose(pred.samples[:, 0], first)
 
 

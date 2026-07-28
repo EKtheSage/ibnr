@@ -283,7 +283,7 @@ def test_fit_predict_contract(backend_name):
     assert {"estimate", "se", "cv", "outcome", "percentile"} <= set(table.columns)
 
     # fully developed first origin: ultimate anchored at its observed value
-    first = entry.contract_["latest_cum"][entry._cohort_index(SEG0), 0]
+    first = entry.contract_["latest_cum"][entry.cohort_index(SEG0), 0]
     np.testing.assert_allclose(pred.samples[:, 0], first)
 
     # the aux task was live: OS normalization stats were derived and stored
@@ -485,7 +485,7 @@ def test_draws_unstandardize_in_the_right_order(fitted):
     idx = index_into(cells, view.contract_, field="paid_loss")
     native = view._draws_native(idx, rng=np.random.default_rng(3))  # (n_draws, 4)
 
-    ci = entry._cohort_index(SEG0)
+    ci = entry.cohort_index(SEG0)
     log_pi, mu, sigma = entry._heldout_mixture(ci, idx)  # (n_members, n_cells, K)
     pi = np.exp(log_pi)
     m_member = (pi * mu).sum(axis=-1)  # (n_members, n_cells) mixture means
@@ -541,7 +541,7 @@ def test_log_lik_matches_independent_recomputation(fitted):
     got = view.log_lik_at(cells, field="paid_loss")  # (n_members, n_cells), amount scale
 
     c = entry.contract_
-    ci = entry._cohort_index(SEG0)
+    ci = entry.cohort_index(SEG0)
     norm = entry.norm_
     x_norm = (c["x"][ci] - norm["mean"][:, None, :]) / norm["std"][:, None, :]
     x_norm = np.where(norm["pinned"][:, None, :], 0.0, x_norm)
@@ -587,7 +587,7 @@ def test_density_normalizes_over_the_amount_space(fitted):
     )
     assert one.n_cells == 1  # dev step 3: unpinned
     idx = index_into(one, view.contract_, field="paid_loss")
-    ci = entry._cohort_index(SEG0)
+    ci = entry.cohort_index(SEG0)
     prem = float(idx.premium[0])
     prev = float(idx.prev_value[0])
     d0 = int(idx.d[0]) - 1

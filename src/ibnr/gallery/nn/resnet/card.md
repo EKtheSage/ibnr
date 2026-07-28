@@ -141,6 +141,19 @@ from it in the encoder alone.
   degenerate scale is not an honest predictive law. The entry is
   CRPS-scorable at cells where it is not ELPD-scorable.
 
+- **Display segments are narrowed away, and verified on the way.** `nn_data`
+  keeps display-only columns (`company_name`) out of the cohort key so two
+  spellings of one company cannot become two cohorts, which makes this fit's key
+  narrower than the triangle's segment schema. `log_lik_at` / `predict_at`
+  therefore re-key the supplied `HoldoutCells` onto the fit's own schema before
+  `index_into` sees them - checking each dropped value against `cohorts()[i]`
+  first, so a cell belonging to a different spelling is refused rather than
+  quietly scored here. `index_into`'s schema equality is left exact, and the
+  narrowing never escapes: the caller keeps handing the original wide cells to
+  `CohortForecast`, so a shared board still has one segment schema. Before
+  0.5.0 there was no working route at all - `log_lik_at` raised "unknown segment
+  column 'company_name'" and `at_cohort(...)` failed one level deeper.
+
 ## Evaluate flow
 
 Global fit / per-cohort predict, identical to the transformer:

@@ -370,10 +370,54 @@ once something has imported it. `gallery.get` mirrors that literalness: it
 returns the registered class so you can read `.card()` or `.family` without
 constructing anything, which is why the call is `gallery.get(name)()`.
 
+Every fitted entry can say which cohorts it answers for, and `predict`,
+`realized_ultimates` and `evaluate` all take the same `segment` argument and mean
+the same thing by it - so one loop covers a Bayesian entry, a pooled neural one
+and a chain-ladder baseline with no `family` branch:
+
+```python
+fitted = gallery.fit("mdn", tri, as_of="1997-12-31")
+for seg in fitted.cohorts():  # one dict per cohort; length 1 for a single fit
+    pred = fitted.predict(segment=seg)
+    outcome = fitted.realized_ultimates(full_tri, segment=seg)
+    print(fitted.evaluate(outcome, segment=seg)["summary"].iloc[-1])
+```
+
+`cohorts()` hands back each cohort's full segment identity as the triangle
+carried it, and a `segment` is a *filter* on that - any subset naming exactly one
+cohort works, and one naming none raises rather than quietly scoring the fitted
+cohort. `gallery.get(name).config_class` is the type an entry's `fit(config=...)`
+takes (`None` when it takes no config object), so a caller who found an entry by
+name never needs its module path.
+
 Evaluation is per entry, not a module-level call: `fitted.evaluate(observed)`
-scores realized outcomes against the predictive distribution, and
-`gallery.leaderboard(...)` / `gallery.stack(...)` combine several fitted entries
-over a shared panel.
+scores realized outcomes against the predictive distribution. Held-out
+evaluation is four steps from a fitted entry to a leaderboard row, and all four
+are on the gallery surface:
+
+```python
+from ibnr import gallery
+
+cells = gallery.next_diagonal(tri, as_of="1997-12-31", fields="paid_loss")
+forecasts = [
+    gallery.CohortForecast(
+        model=name,
+        task="paid@1997",
+        cells=cells,
+        field="paid_loss",
+        draws=fits[name].predict_at(cells, seed=7),
+        density_absence=gallery.Absence("no_predictive_density"),
+    )
+    for name in fits
+]
+board = gallery.leaderboard(gallery.align_panel(forecasts))
+board.sort_values("crps", ascending=gallery.SCORE_DIRECTION["crps"] == "lower_is_better")
+```
+
+`align_panel` intersects the cells the models actually share, per score, and
+`leaderboard` has no default sort - `SCORE_DIRECTION` is there because the two
+score columns run in opposite directions. `gallery.stack(...)` combines several
+fitted entries over the same panel.
 
 ## Data: the CAS Schedule P gold mart
 

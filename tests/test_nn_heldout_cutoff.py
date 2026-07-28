@@ -235,7 +235,7 @@ def test_the_fixture_actually_strands_the_anchors(fitted):
     """
     entry = fitted.entries[ENTRY_NAMES[0]]
     c = entry.contract_
-    ci = entry._cohort_index(HOLE_SEG)
+    ci = entry.cohort_index(HOLE_SEG)
     obs = c["obs_mask"][ci]
 
     # origin 2002 (0-based origin index 2) in the training slice: the cells it
@@ -284,7 +284,7 @@ def test_heldout_cutoff_is_the_as_of_diagonal_not_the_last_usable_increment(name
     reintroduce the boundary under a new key and pass here by omission.
     """
     entry = fitted.entries[name]
-    ci = entry._cohort_index(HOLE_SEG)
+    ci = entry.cohort_index(HOLE_SEG)
     inputs = entry._heldout_inputs(ci)
 
     if "cutoff" not in inputs:
@@ -317,7 +317,7 @@ def test_the_cutoff_is_not_inert(name, fitted):
     Entries with no cutoff are exempt: they genuinely have no such wire.
     """
     entry = fitted.entries[name]
-    ci = entry._cohort_index(HOLE_SEG)
+    ci = entry.cohort_index(HOLE_SEG)
     if "cutoff" not in entry._heldout_inputs(ci):
         return
 

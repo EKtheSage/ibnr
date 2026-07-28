@@ -51,3 +51,21 @@ a third of it), so it needs a much larger timeout than the others:
 uv run jupyter nbconvert --to notebook --execute --inplace \
     --ExecutePreprocessor.timeout=7200 analysis/03_gallery_api_comparison.ipynb
 ```
+
+**`03`'s committed run predates the 0.5.0 API fixes it motivated.** Building it
+through the public API alone surfaced five gaps, all closed after it was
+committed, so three things in its cells document friction that no longer exists:
+
+* the `tri.with_expr(tri.expr.drop("company_name"))` cell, labelled "API
+  FRICTION" - a pooled NN fit can now be scored on cells carrying all three of
+  the mart's segments, so the drop is unnecessary;
+* `point_row`'s `is_nn = gallery.get(name).family == "nn"` branch - `predict`
+  and `realized_ultimates` take the same `segment` argument on every entry now,
+  so the branch collapses to two unconditional lines;
+* the `from ibnr.kernels.forecast import ...` / `from ibnr.kernels.holdout
+  import next_diagonal` block - all five names are on `ibnr.gallery`.
+
+All three still RUN correctly against the current code (checked by extracting
+and executing exactly those calls), which is why the notebook is not re-executed:
+its outputs are the ~20-minute live gallery fit above and re-running it to delete
+three lines of workaround would change every timing in it.

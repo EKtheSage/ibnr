@@ -13,6 +13,7 @@ normalization and split helpers are imported from it - one implementation.
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Mapping
 
 import numpy as np
 import pandas as pd
@@ -24,7 +25,7 @@ from ibnr.gallery.nn.transformer_ml.config import TransformerMLConfig
 from ibnr.gallery.registry import register
 from ibnr.kernels.contract import _as_date
 from ibnr.kernels.multiline import assemble_predictive, flatten_with_totals, multiline_targets
-from ibnr.kernels.nn_contract import nn_company_data
+from ibnr.kernels.nn_contract import cohort_identities, nn_company_data
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.triangle.core import Triangle
 
@@ -46,6 +47,9 @@ class NNTransformerML(GalleryEntry):
 
     name = "nn_transformer_ml"
     family = "nn"
+    #: the dataclass ``fit(config=...)`` takes, reachable through
+    #: ``gallery.get("nn_transformer_ml").config_class`` without importing it by path
+    config_class = TransformerMLConfig
 
     # NOTE: no held-out (milestone 6) wiring here yet, deliberately. The
     # multiline contract's (company, line, origin, dev) layout needs its own
@@ -213,9 +217,21 @@ class NNTransformerML(GalleryEntry):
         self._rollout_ults = None
         return self
 
+    def cohorts(self) -> list[dict]:
+        """One dict per COMPANY, in ``contract_["companies"]`` row order.
+
+        The cohort unit here is the company (all its lines at once), so the
+        identity carries no ``line_of_business`` - and it does carry any
+        display-only segment column the key dropped (see
+        :meth:`GalleryEntry.cohorts`).
+        """
+        if self.contract_ is None:
+            raise RuntimeError("call fit() first")
+        return cohort_identities(self.contract_, key="companies")
+
     def predict(
         self,
-        segment: dict[str, str] | None = None,
+        segment: Mapping | None = None,
         n_draws: int | None = None,
         seed: int | None = None,
     ) -> PredictiveDistribution:
@@ -225,6 +241,8 @@ class NNTransformerML(GalleryEntry):
         Without: every (company, line, origin) ultimate, no totals."""
         if self.models_ is None or self.contract_ is None:
             raise RuntimeError("call fit() first")
+        # resolve the company BEFORE the rollout: a bad segment must not cost one
+        ci = self.cohort_index(segment)
         cfg = self.config_
         n_draws = n_draws or cfg.n_draws
         # one rollout serves every company; reuse it across predict() calls
@@ -235,11 +253,10 @@ class NNTransformerML(GalleryEntry):
         ults = self._rollout_ults  # (n_draws, n_c, n_l, n_w)
         c = self.contract_
 
-        if segment is not None:
+        if ci is not None:
             # one company: emit the SUR layout over its present lines only.
             # assemble_predictive derives lob/grand totals as row-sums of the
             # SAME draws, so cross-line diversification stays coherent.
-            ci = self._company_index(segment)
             present = np.nonzero(c["line_mask"][ci])[0]  # line indices this company writes
             lobs = [c["lob_levels"][li] for li in present]
             targets = multiline_targets(
@@ -268,12 +285,13 @@ class NNTransformerML(GalleryEntry):
         return PredictiveDistribution(samples=samples, targets=pd.DataFrame(rows))
 
     def realized_ultimates(
-        self, full_triangle: Triangle, segment: dict[str, str] | None = None
+        self, full_triangle: Triangle, segment: Mapping | None = None
     ) -> np.ndarray:
         """Outcomes aligned to predict()'s targets, from the full triangle
         at the final dev lag (with lob/grand totals when a segment is given)."""
         if self.contract_ is None:
             raise RuntimeError("call fit() first")
+        ci = self.cohort_index(segment)
         c = self.contract_
         company_cols = list(c["companies"].columns)
         df = full_triangle.select_fields(self._loss_field).execute()
@@ -285,8 +303,7 @@ class NNTransformerML(GalleryEntry):
             vals = [float(by_key.get((*company_row, lob, o), np.nan)) for o in c["origin_periods"]]
             return np.asarray(vals)
 
-        if segment is not None:
-            ci = self._company_index(segment)
+        if ci is not None:
             crow = tuple(c["companies"].iloc[ci])
             present = np.nonzero(c["line_mask"][ci])[0]
             grid = np.stack([lookup(crow, c["lob_levels"][li]) for li in present])
@@ -299,18 +316,6 @@ class NNTransformerML(GalleryEntry):
         return np.concatenate(out)
 
     # -- internals ---------------------------------------------------------------
-
-    def _company_index(self, segment: dict[str, str]) -> int:
-        companies = self.contract_["companies"]
-        mask = np.ones(len(companies), dtype=bool)
-        for col, value in segment.items():
-            if col not in companies.columns:
-                raise KeyError(f"unknown segment column {col!r}; have {list(companies.columns)}")
-            mask &= (companies[col] == value).to_numpy()
-        idx = np.nonzero(mask)[0]
-        if len(idx) != 1:
-            raise ValueError(f"segment {segment} matches {len(idx)} companies, need exactly 1")
-        return int(idx[0])
 
     def _rollout(self, n_draws: int, seed: int | None) -> np.ndarray:
         """Diagonal-by-diagonal autoregressive rollout over every company.

@@ -11,6 +11,7 @@ if you want a Bayesian LDF version. NumPyro/PyMC ports arrive with milestone
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
@@ -300,12 +301,23 @@ class ClarkGrowthCurve(GalleryEntry, PredictsHeldout):
             progressbar=show_progress,
         ), None
 
-    def predict(self, seed: int | None = None) -> PredictiveDistribution:
+    def cohorts(self) -> list[dict]:
+        """This fit's one cohort - the segment identity its contract was built
+        from (see :meth:`GalleryEntry.cohorts`)."""
+        if self.contract_ is None:
+            raise RuntimeError("call fit() first")
+        return [dict(self.contract_["segment"])]
+
+    def predict(
+        self, segment: Mapping | None = None, seed: int | None = None
+    ) -> PredictiveDistribution:
         """Ultimates per origin + total: paid-to-date plus simulated future
         increments through the final age. Parameter risk from the posterior
         draws of (logelr, omega, theta); process risk as scaled-Poisson ODP
         draws - the same decomposition as the MLE entry, with the posterior
         replacing the MVN delta method."""
+        # a single-cohort fit: accepts None or its own key, refuses anything else
+        self.cohort_index(segment)
         if self.idata_ is None or self.contract_ is None:
             raise RuntimeError("call fit() first")
         c = self.contract_
@@ -350,8 +362,12 @@ class ClarkGrowthCurve(GalleryEntry, PredictsHeldout):
         pred = PredictiveDistribution(samples=ults, targets=targets)
         return pred.with_total()
 
-    def realized_ultimates(self, full_triangle: Triangle) -> np.ndarray:
+    def realized_ultimates(
+        self, full_triangle: Triangle, segment: Mapping | None = None
+    ) -> np.ndarray:
         """Outcomes aligned to predict()'s targets (per origin + total)."""
+        # a single-cohort fit: accepts None or its own key, refuses anything else
+        self.cohort_index(segment)
         if self.contract_ is None:
             raise RuntimeError("call fit() first")
         c = self.contract_

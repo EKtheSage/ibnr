@@ -21,6 +21,7 @@ cross-line dependence (that is ``nn_transformer_ml``'s job)."""
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Mapping
 
 import numpy as np
 import pandas as pd
@@ -32,7 +33,7 @@ from ibnr.gallery.nn._training import train_ensemble
 from ibnr.gallery.nn.mdn.config import MDNConfig
 from ibnr.gallery.registry import register
 from ibnr.kernels.contract import _as_date
-from ibnr.kernels.nn_contract import nn_data
+from ibnr.kernels.nn_contract import cohort_identities, nn_data
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.triangle.core import Triangle
 
@@ -44,6 +45,9 @@ MAX_ROLLOUT_BATCH = 4096
 class MDN(GalleryEntry, PooledMDNHeldout):
     name = "mdn"
     family = "nn"
+    #: the dataclass ``fit(config=...)`` takes, reachable through
+    #: ``gallery.get("mdn").config_class`` without importing it by path
+    config_class = MDNConfig
 
     #: the MDN head is a density of the STANDARDIZED incremental loss ratio;
     #: ``_heldout_log_lik`` folds the standardization Jacobian (``-log std0[d]``)
@@ -202,9 +206,20 @@ class MDN(GalleryEntry, PooledMDNHeldout):
         self._rollout_ults = None
         return self
 
+    def cohorts(self) -> list[dict]:
+        """One dict per pooled cohort, in ``contract_["cohorts"]`` row order.
+
+        The cohort KEY plus any display-only segment column ``nn_data`` kept out
+        of it, so a caller sees the identity the triangle carried rather than the
+        narrower key the pooling required (see :meth:`GalleryEntry.cohorts`).
+        """
+        if self.contract_ is None:
+            raise RuntimeError("call fit() first")
+        return cohort_identities(self.contract_)
+
     def predict(
         self,
-        segment: dict[str, str] | None = None,
+        segment: Mapping | None = None,
         n_draws: int | None = None,
         seed: int | None = None,
     ) -> PredictiveDistribution:
@@ -216,6 +231,8 @@ class MDN(GalleryEntry, PooledMDNHeldout):
         no grand total (a total across companies is meaningless)."""
         if self.models_ is None or self.contract_ is None:
             raise RuntimeError("call fit() first")
+        # resolve the cohort BEFORE the rollout: a bad segment must not cost one
+        ci = self.cohort_index(segment)
         cfg = self.config_
         n_draws = n_draws or cfg.n_draws
         key = (n_draws, seed)
@@ -225,8 +242,7 @@ class MDN(GalleryEntry, PooledMDNHeldout):
         ults = self._rollout_ults
         c = self.contract_
 
-        if segment is not None:
-            ci = self._cohort_index(segment)
+        if ci is not None:
             targets = pd.DataFrame(
                 {
                     "label": [str(o.year) for o in c["origin_periods"]],
@@ -245,12 +261,13 @@ class MDN(GalleryEntry, PooledMDNHeldout):
         return PredictiveDistribution(samples=ults.reshape(n_draws, -1), targets=targets)
 
     def realized_ultimates(
-        self, full_triangle: Triangle, segment: dict[str, str] | None = None
+        self, full_triangle: Triangle, segment: Mapping | None = None
     ) -> np.ndarray:
         """Outcomes aligned to predict(segment)'s targets, from the full
         triangle at the final dev lag (+ total when a segment is given)."""
         if self.contract_ is None:
             raise RuntimeError("call fit() first")
+        ci = self.cohort_index(segment)
         c = self.contract_
         seg_cols = list(c["cohorts"].columns)
         df = full_triangle.select_fields(self._loss_field).execute()
@@ -262,8 +279,7 @@ class MDN(GalleryEntry, PooledMDNHeldout):
             vals = [float(by_key.get((*row.tolist(), o), np.nan)) for o in c["origin_periods"]]
             return np.asarray(vals)
 
-        if segment is not None:
-            ci = self._cohort_index(segment)
+        if ci is not None:
             per_origin = lookup(c["cohorts"].iloc[ci])
             return np.append(per_origin, per_origin.sum())
         return np.concatenate([lookup(row) for _, row in c["cohorts"].iterrows()])

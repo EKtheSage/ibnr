@@ -132,6 +132,21 @@ reference:
       - name: gallery.GalleryEntry
         members: true
 
+  - title: Held-out evaluation
+    desc: >
+      The four steps between a fitted entry and a leaderboard row: which cells
+      a fit at as_of is scored on, one model's arrays at those cells, the
+      cross-model intersection, and the board.
+    contents:
+      - gallery.next_diagonal
+      - name: gallery.CohortForecast
+        members: true
+      - gallery.Absence
+      - gallery.align_panel
+      - gallery.leaderboard
+      - gallery.SCORE_DIRECTION
+      - gallery.stack
+
   - title: Evaluation kernels
     desc: >
       The unifying predictive-distribution output type and the cross-backend

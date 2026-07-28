@@ -29,6 +29,7 @@ Cross-refs: card.md (model card, estimation, bootstrap cost, limitations);
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Mapping
 
 import numpy as np
 
@@ -185,8 +186,16 @@ class CopulaGLM(GalleryEntry):
         self._latest_cum, self._latest_dev = latest_cum, latest_dev
         return self
 
+    def cohorts(self) -> list[dict]:
+        """This fit's one cohort - the segment identity its contract was built
+        from (see :meth:`GalleryEntry.cohorts`)."""
+        if self.contract_ is None:
+            raise RuntimeError("call fit() first")
+        return [dict(self.contract_["segment"])]
+
     def predict(
         self,
+        segment: Mapping | None = None,
         *,
         n_draws: int = 10_000,
         seed: int | None = None,
@@ -201,6 +210,8 @@ class CopulaGLM(GalleryEntry):
         simulated from the fitted model and spreads the draws over the
         replicates - parameter risk included. ``plugin`` uses point estimates.
         """
+        # a single-cohort fit: accepts None or its own key, refuses anything else
+        self.cohort_index(segment)
         if self.beta_ is None or self.contract_ is None:
             raise RuntimeError("call fit() first")
         if param_uncertainty not in ("bootstrap", "plugin"):
@@ -252,9 +263,13 @@ class CopulaGLM(GalleryEntry):
         # Totals are derived as row-sums of the same draws (coherent diversification).
         return assemble_predictive(ults, targets, units=c["units"])
 
-    def realized_ultimates(self, full_triangle: Triangle) -> np.ndarray:
+    def realized_ultimates(
+        self, full_triangle: Triangle, segment: Mapping | None = None
+    ) -> np.ndarray:
         """Outcomes aligned to predict()'s targets, from the full triangle at
         the final dev lag."""
+        # a single-cohort fit: accepts None or its own key, refuses anything else
+        self.cohort_index(segment)
         if self.contract_ is None:
             raise RuntimeError("call fit() first")
         c = self.contract_

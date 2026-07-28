@@ -247,6 +247,177 @@ def test_nn_company_data_masks_dropped_lines(backend_name):
     assert data["dropped"]["line_of_business"].tolist() == ["lob_b"]
 
 
+# -- the display column: kept out of the KEY, kept in the IDENTITY ---------------
+
+
+def test_display_column_rides_alongside_the_cohort_key(backend_name):
+    """``company_name`` stays out of the key and comes back in ``display``.
+
+    Keeping it out of the key is what stops two spellings of one company from
+    becoming two cohorts. Carrying it in ``display`` is what lets a held-out
+    scorer VERIFY the value instead of discarding it - without that, a pooled fit
+    simply had no working route from cells the mart's three segments carry.
+    """
+    t = make_multiline_triangle(
+        backend_name,
+        {"lob_a": CUM, "lob_b": CUM * 2.0},
+        premium_by_lob=PREMIUM,
+        company_name="Acme Insurance Co",
+    )
+    data = nn_data(t, loss_field="paid_loss", premium_field="earned_premium")
+    assert data["segment_columns"] == ("company_code", "line_of_business")
+    assert list(data["cohorts"].columns) == ["company_code", "line_of_business"]
+    assert list(data["display"].columns) == ["company_name"]
+    assert len(data["display"]) == len(data["cohorts"])
+    assert data["display"]["company_name"].tolist() == ["Acme Insurance Co"] * 2
+
+
+def test_display_is_an_empty_frame_when_nothing_was_dropped(two_cohorts):
+    """The no-display case is still row-aligned, so consumers need no branch."""
+    data = nn_data(two_cohorts, loss_field="paid_loss", premium_field="earned_premium")
+    assert data["display"].shape == (2, 0)
+    assert data["segment_columns"] == ("company_code", "line_of_business")
+
+
+def test_cohort_identities_merge_key_and_display(backend_name):
+    """``cohort_identities`` is the full identity, which is what ``cohorts()`` hands
+    back - the key a caller can filter on plus the label the triangle carried."""
+    from ibnr.kernels.nn_contract import cohort_identities
+
+    t = make_multiline_triangle(
+        backend_name,
+        {"lob_a": CUM, "lob_b": CUM * 2.0},
+        premium_by_lob=PREMIUM,
+        company_name="Acme Insurance Co",
+    )
+    data = nn_data(t, loss_field="paid_loss", premium_field="earned_premium")
+    assert cohort_identities(data) == [
+        {
+            "company_code": "0001",
+            "line_of_business": lob,
+            "company_name": "Acme Insurance Co",
+        }
+        for lob in ("lob_a", "lob_b")
+    ]
+
+
+def _two_spellings(backend_name) -> Triangle:
+    """One (company, line) cohort whose ``company_name`` differs by ORIGIN.
+
+    Deliberately disjoint cells: the two spellings never share an
+    (origin, dev) cell, so the duplicate-cell guard cannot fire and the collapse
+    would be completely silent.
+    """
+    rows = []
+    for w in range(3):
+        name = "ACME" if w < 2 else "Acme Insurance Co"
+        for dev in range(3 - w):
+            for field, value in (
+                ("paid_loss", float(CUM[w, dev])),
+                ("earned_premium", float(PREMIUM["lob_a"][w])),
+            ):
+                rows.append(
+                    {
+                        "company_code": "0001",
+                        "company_name": name,
+                        "line_of_business": "lob_a",
+                        "origin_period": dt.date(2010 + w, 1, 1),
+                        "dev_lag": 12 * (dev + 1),
+                        "eval_date": dt.date(2010 + w + dev, 12, 31),
+                        "field": field,
+                        "value": value,
+                    }
+                )
+    return Triangle.from_long(pd.DataFrame(rows), measure="cumulative", backend=backend_name)
+
+
+def test_a_display_column_that_varies_within_a_key_is_refused(backend_name):
+    """Two spellings under one cohort key must RAISE, not merge silently.
+
+    The two spellings' cells are disjoint here, so the duplicate-cell guard
+    cannot see the collapse: without this refusal the two would be pooled into a
+    single grid and the contract would look healthy. That is why the narrowing
+    which fixes the pooled-fit scoring gap is only legitimate with this check
+    beside it - otherwise the narrowing is safe by accident, invisibly.
+    """
+    with pytest.raises(ValueError) as excinfo:
+        nn_data(_two_spellings(backend_name), loss_field="paid_loss")
+    message = str(excinfo.value)
+    assert "company_name" in message
+    assert "not determined by the cohort key" in message
+    assert "ACME" in message and "Acme Insurance Co" in message
+
+
+def test_without_the_refusal_the_two_spellings_would_be_one_grid(backend_name):
+    """What the refusal is protecting: keeping the column makes them TWO cohorts.
+
+    Pins the size of the mistake rather than only its message - one grid where
+    the triangle holds two distinct cohorts.
+    """
+    kept = nn_data(
+        _two_spellings(backend_name),
+        loss_field="paid_loss",
+        segment_columns=("company_code", "company_name", "line_of_business"),
+    )
+    assert len(kept["cohorts"]) == 2
+    assert kept["display"].shape == (2, 0)
+
+
+def test_the_refusal_also_covers_an_explicit_narrow_segment_columns(backend_name):
+    """``segment_columns=`` merged cohorts silently too, so it gets the same rule."""
+    t = make_multiline_triangle(
+        backend_name,
+        {"lob_a": CUM, "lob_b": CUM * 2.0},
+        premium_by_lob=PREMIUM,
+    )
+    # line_of_business plainly varies within company_code alone
+    with pytest.raises(ValueError, match="not determined by the cohort key"):
+        nn_data(
+            t,
+            loss_field="paid_loss",
+            premium_field="earned_premium",
+            segment_columns=("company_code",),
+        )
+
+
+def test_nn_company_data_applies_the_rule_at_the_company_level(backend_name):
+    """The key narrows a SECOND time there (cohort minus LOB), so the rule runs again.
+
+    A ``company_name`` that is 1:1 with (company_code, line_of_business) can still
+    vary within the COMPANY, which would put two companies on one row of the line
+    axis - and the flat contract, whose key still holds the line, cannot see it.
+    """
+    from ibnr.kernels.nn_contract import nn_company_data
+
+    t = make_multiline_triangle(
+        backend_name,
+        {"lob_a": CUM, "lob_b": CUM * 2.0},
+        premium_by_lob=PREMIUM,
+        company_name={"lob_a": "ACME", "lob_b": "Acme Insurance Co"},
+    )
+    # fine at cohort level - one name per (company, line) - and refused above it
+    flat = nn_data(t, loss_field="paid_loss", premium_field="earned_premium")
+    assert flat["display"]["company_name"].tolist() == ["ACME", "Acme Insurance Co"]
+    with pytest.raises(ValueError, match="not determined by the cohort key"):
+        nn_company_data(t, loss_field="paid_loss", premium_field="earned_premium")
+
+
+def test_nn_company_data_carries_the_company_level_display(backend_name):
+    from ibnr.kernels.nn_contract import cohort_identities, nn_company_data
+
+    t = make_multiline_triangle(
+        backend_name,
+        {"lob_a": CUM, "lob_b": CUM * 2.0},
+        premium_by_lob=PREMIUM,
+        company_name="Acme Insurance Co",
+    )
+    data = nn_company_data(t, loss_field="paid_loss", premium_field="earned_premium")
+    assert data["segment_columns"] == ("company_code",)
+    assert cohort_identities(data, key="companies") == [
+        {"company_code": "0001", "company_name": "Acme Insurance Co"}
+    ]
+
+
 def test_cutoff_masks_partition():
     """Calendar-cutoff augmentation splits the observed cells into context (on/before
     the cutoff diagonal) and target (after), and the split must be a true partition:

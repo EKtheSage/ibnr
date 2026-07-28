@@ -71,6 +71,18 @@ n_d dev steps:
   (0 = nothing observed). Future cells are ``d_index >= latest_dev``.
 - ``cohorts``        : DataFrame, n_c rows - the segment values per cohort,
   row order == axis 0 of every array above. The join key back to the triangle.
+- ``segment_columns``: tuple[str, ...] - ``cohorts``' columns, i.e. the cohort
+  KEY schema. Named explicitly because it can be narrower than the triangle's
+  segment schema (see ``display``), and a consumer comparing the two needs to
+  read the fit's own answer rather than re-derive it.
+- ``display``        : DataFrame, n_c rows - the segment columns that were
+  DROPPED from the cohort key, one row per kept cohort, row-aligned with
+  ``cohorts``. Empty-column frame when nothing was dropped. Together
+  ``cohorts`` and ``display`` are a cohort's full segment identity as the
+  triangle carried it, which is what ``GalleryEntry.cohorts()`` hands back and
+  what lets a held-out scorer VERIFY a dropped value instead of discarding it.
+  Every dropped column is guaranteed to be a function of the key (below), so
+  the row is well defined.
 - ``dropped``        : DataFrame - screened-out cohorts + reason; a failed
   cohort is reported, never silently vanished (retro scripts log these).
 - ``origin_periods`` : list[dt.date], len n_w, ascending. ``n_w``/``n_d``:
@@ -96,6 +108,69 @@ from ibnr.triangle.core import GRAIN_MONTHS, Triangle
 
 #: segment columns that are display-only and never define a cohort
 DISPLAY_COLUMNS = ("company_name",)
+
+
+def _refuse_undetermined(df: pd.DataFrame, key_cols: list[str], dropped: list[str]) -> None:
+    """Every dropped segment column must be a FUNCTION of the kept ones.
+
+    A display column is dropped from the cohort key so that two spellings of one
+    company do not split it in two. That is only safe while the spelling is
+    determined by the key: if ``company_code`` 0086 carries two
+    ``company_name``s, the two cohorts collapse onto one key and their cells are
+    pooled into one grid - silently, whenever their (origin, dev) cells happen to
+    be disjoint, since the duplicate-cell guard cannot see it. Silent ambiguity
+    is worse than the failure the narrowing exists to remove.
+
+    Applies to the ``DISPLAY_COLUMNS`` default AND to an explicit
+    ``segment_columns=``; the explicit path merged cohorts silently too.
+
+    **Measured against the real mart before shipping** (publish_id
+    ``20260613_041006``), because the data model derives ``company_name`` via a
+    LEFT JOIN onto ``sat_company_details`` and a null or second spelling would
+    fire this on every pooled NN fit. It does not: across all four Meyers lines
+    the mart carries 353 distinct ``company_code``s, zero null names and zero
+    codes with more than one name, so both narrowings pass - the study's pooled
+    panel (60 companies / 152 cohorts) and the full ``--nn-pool market`` pool
+    (221 companies / 405 cohorts) alike. If a later publish breaks that, this
+    refusal is still the correct answer and the remedy is an explicit
+    ``segment_columns=`` in the affected caller, not a relaxed guard.
+    """
+    if not dropped:
+        return
+    for col in dropped:
+        spread = df.groupby(key_cols, dropna=False)[col].nunique()
+        bad = spread[spread > 1]
+        if not len(bad):
+            continue
+        key = bad.index[0]
+        key = key if isinstance(key, tuple) else (key,)
+        rows = df.loc[(df[key_cols] == list(key)).all(axis=1), col]
+        values = sorted(map(str, rows.unique()))
+        raise ValueError(
+            f"segment column {col!r} is not determined by the cohort key {key_cols}: "
+            f"key {key} carries {len(values)} values {values[:3]}. Dropping {col!r} from "
+            "the key would collapse those cohorts onto one, pooling their cells into a "
+            "single grid. Reconcile the values, or pass segment_columns= to keep the "
+            "column in the key"
+        )
+
+
+def cohort_identities(contract: dict[str, Any], *, key: str = "cohorts") -> list[dict]:
+    """Each cohort's FULL segment identity, in contract row order.
+
+    The cohort KEY (``cohorts``, or ``companies`` for the company-cohort
+    contract) merged with ``display``, the segment columns the key does not
+    carry. That merge is what ``GalleryEntry.cohorts()`` returns for every NN
+    entry, so a caller loops over the identities the triangle actually carried
+    rather than the narrower key the pooling required.
+    """
+    frame, display = contract[key], contract["display"]
+    if len(display) != len(frame):
+        raise ValueError(
+            f"contract['display'] has {len(display)} rows but contract[{key!r}] has "
+            f"{len(frame)}; they must be row-aligned"
+        )
+    return [{**frame.iloc[i].to_dict(), **display.iloc[i].to_dict()} for i in range(len(frame))]
 
 
 def nn_data(
@@ -130,6 +205,14 @@ def nn_data(
     seg_cols = list(segment_columns)
     if not seg_cols:
         raise ValueError("nn_data needs at least one segment column to define cohorts")
+    unknown = [c for c in seg_cols if c not in triangle.segments]
+    if unknown:
+        raise ValueError(
+            f"segment_columns {unknown} are not segment columns of this triangle "
+            f"({list(triangle.segments)})"
+        )
+    # segment columns the cohort key does NOT carry; they ride along as `display`
+    display_cols = [c for c in triangle.segments if c not in seg_cols]
 
     # channel order of axis 1: target first, then features (fixed, relied on
     # downstream as `x[:, 0]` = the prediction target)
@@ -139,6 +222,12 @@ def nn_data(
     df = triangle.select_fields(fields).execute()
     if df.empty:
         raise ValueError(f"no rows for fields {fields}")
+    # BEFORE the duplicate-cell guard below, deliberately. Both can fire on the
+    # same triangle, and "this column is not determined by the key" is the cause
+    # while "multiple rows per cell" is only the symptom - and when the merged
+    # cohorts' cells happen to be disjoint the duplicate guard does not fire at
+    # all, which is the case this exists for.
+    _refuse_undetermined(df, seg_cols, display_cols)
     df = df.copy()
     df["origin_period"] = _as_date(df["origin_period"])
     # dev_lag is months from origin start (CLAUDE.md milestone 1); d is the
@@ -183,6 +272,7 @@ def nn_data(
     )
 
     kept: list[dict] = []
+    kept_display: list[dict] = []
     dropped: list[dict] = []
     x_list, obs_list, prem_list, anchor_cum_list, anchor_dev_list = [], [], [], [], []
 
@@ -249,6 +339,9 @@ def nn_data(
                 latest_cum[w] = cum[0, w, devs[-1]]
 
         kept.append(row)
+        # _refuse_undetermined above guarantees one value per key, so .iloc[0]
+        # is exact rather than a sample
+        kept_display.append({col: sub[col].iloc[0] for col in display_cols})
         x_list.append(x)
         obs_list.append(obs)
         # normalize "no premium" to NaN (a stray 0 would divide-by-zero later)
@@ -260,6 +353,9 @@ def nn_data(
         raise ValueError("no usable cohorts after screening; see the dropped reasons")
 
     cohorts = pd.DataFrame(kept)
+    # reindex, not construct-and-hope: with no display columns the list is all
+    # empty dicts and pandas hands back a 0-row frame
+    display = pd.DataFrame(kept_display, columns=display_cols).reindex(range(len(kept)))
     premium = np.stack(prem_list)
 
     # categorical codes for embedding tables. When the column is absent the
@@ -299,6 +395,10 @@ def nn_data(
         "latest_cum": np.stack(anchor_cum_list),  # (n_c, n_w)
         "latest_dev": np.stack(anchor_dev_list),  # (n_c, n_w), 1-based
         "cohorts": cohorts,  # n_c rows, row order == axis 0 of every array
+        "segment_columns": tuple(seg_cols),  # the cohort KEY schema
+        # segment columns the key does not carry, row-aligned with `cohorts`;
+        # together they are a cohort's full identity
+        "display": display,
         # screened-out cohorts stay visible: a shrinking pool changes the fit
         "dropped": pd.DataFrame(dropped, columns=[*seg_cols, "reason"]),
         "origin_periods": origins,
@@ -332,7 +432,9 @@ def nn_company_data(
       (n_c, L, W, D), ``premium``/``latest_cum`` (n_c, L, W),
       ``latest_dev`` (n_c, L, W), ``log_premium`` (n_c, L);
     - ``line_mask`` (n_c, L) - lines actually present per company;
-    - ``companies`` - one row per company (segment columns minus the LOB).
+    - ``companies`` - one row per company (segment columns minus the LOB), with
+      ``segment_columns`` naming that schema and ``display`` carrying the
+      dropped segment columns row-aligned to it.
 
     Alignment guarantees (what makes cross-line attention meaningful):
     - The line axis is ``lob_levels`` - a GLOBAL vocabulary shared by every
@@ -366,10 +468,24 @@ def nn_company_data(
     if not company_cols:
         raise ValueError("need at least one company-identifying segment column")
 
+    # THE KEY NARROWS AGAIN HERE (cohort minus the LOB), so the same rule has to
+    # hold a second time: a display column must be determined by the COMPANY
+    # columns, or two companies would merge onto one row of the line axis.
+    display_cols = list(flat["display"].columns)
+    identity = pd.concat([cohorts, flat["display"]], axis=1)
+    _refuse_undetermined(identity, company_cols, display_cols)
+
     companies = (
         cohorts[company_cols].drop_duplicates().sort_values(company_cols).reset_index(drop=True)
     )
     row_of = {tuple(r): i for i, r in enumerate(companies.itertuples(index=False))}
+    # one display row per COMPANY, row-aligned with `companies` (a left merge, so
+    # the row order above is what survives)
+    company_display = companies.merge(
+        identity[[*company_cols, *display_cols]].drop_duplicates(subset=company_cols),
+        on=company_cols,
+        how="left",
+    ).drop(columns=company_cols)
     # L is the GLOBAL number of lines, not this company's count - every company
     # gets a full-width line axis and unwritten lines are masked off
     n_c, n_l = len(companies), len(flat["lob_levels"])
@@ -408,6 +524,8 @@ def nn_company_data(
         "latest_cum": latest_cum,  # (n_c, L, n_w) anchors
         "latest_dev": latest_dev,  # (n_c, L, n_w), 1-based
         "companies": companies,  # n_c rows, row order == axis 0
+        "segment_columns": tuple(company_cols),  # the COMPANY key schema
+        "display": company_display,  # dropped segment columns, aligned to `companies`
         "dropped": flat["dropped"],
         "origin_periods": flat["origin_periods"],
         "n_w": n_w,

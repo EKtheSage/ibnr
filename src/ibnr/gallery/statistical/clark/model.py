@@ -35,6 +35,7 @@ samples the joint posterior of the same parameters. Both emit the same
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Mapping
 
 import numpy as np
 import pandas as pd
@@ -468,10 +469,21 @@ class Clark(GalleryEntry, PredictsHeldout):
         }
         return self
 
-    def predict(self, *, n_draws: int = 10_000, seed: int | None = None) -> PredictiveDistribution:
+    def cohorts(self) -> list[dict]:
+        """This fit's one cohort - the segment identity its contract was built
+        from (see :meth:`GalleryEntry.cohorts`)."""
+        if self.contract_ is None:
+            raise RuntimeError("call fit() first")
+        return [dict(self.contract_["segment"])]
+
+    def predict(
+        self, segment: Mapping | None = None, *, n_draws: int = 10_000, seed: int | None = None
+    ) -> PredictiveDistribution:
         """Ultimates per origin + total: paid-to-date plus simulated future
         increments through the final age, with Clark's parameter risk (MVN on
         the log-parameters) and ODP process risk (scaled Poisson)."""
+        # a single-cohort fit: accepts None or its own key, refuses anything else
+        self.cohort_index(segment)
         if self.contract_ is None or self.params_ is None:
             raise RuntimeError("call fit() first")
         c, prm = self.contract_, self.params_
@@ -531,8 +543,12 @@ class Clark(GalleryEntry, PredictsHeldout):
             self.contract_, self.params_, cells, n_draws=self.n_heldout_draws, rng=rng
         )
 
-    def realized_ultimates(self, full_triangle: Triangle) -> np.ndarray:
+    def realized_ultimates(
+        self, full_triangle: Triangle, segment: Mapping | None = None
+    ) -> np.ndarray:
         """Outcomes aligned to predict()'s targets (per origin + total)."""
+        # a single-cohort fit: accepts None or its own key, refuses anything else
+        self.cohort_index(segment)
         if self.contract_ is None:
             raise RuntimeError("call fit() first")
         c = self.contract_

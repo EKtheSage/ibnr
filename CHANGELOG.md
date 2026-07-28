@@ -8,16 +8,76 @@ Versions follow [semantic versioning](https://semver.org/), loosely: while the
 package is `Development Status :: 3 - Alpha`, a minor bump is free to change a
 kernel signature. The public surface named in CLAUDE.md decision 8 (`Triangle`,
 `gallery.list/fit/evaluate/stack/scaffold/leaderboard`) is the part treated as
-stable, and nothing in it changed in this release. (As built that surface is
-`Triangle` plus `gallery.list/get/fit/stack/leaderboard` - `evaluate` is a
-method on a fitted entry and `scaffold` is planned, per the corrected
-decision 8.)
+stable. Nothing in it was removed or renamed in this release; it GREW (the
+held-out evaluation pipeline, and a `segment` argument on three entry methods).
+(As built that surface is `Triangle` plus
+`gallery.list/get/fit/stack/leaderboard/next_diagonal/CohortForecast/Absence/align_panel/SCORE_DIRECTION`
+- `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
+corrected decision 8.)
 
 ## 0.5.0 - 2026-07-27
 
 The 0.4.0 wheel on PyPI was 49 commits behind `main`, so this release is mostly a
 catch-up: milestone 5 finished, milestones 6 and 7 opened, the one-year CDR landed
 out of band, and the package moved to numpy 2 and grew a test CI.
+
+### Public API - the cohort vocabulary
+
+Five gaps found by building `analysis/03` through the public API alone, and they
+were one gap seen five times: **a fitted entry could not say which cohorts it
+answers for**, so every caller reconstructed that fact by hand.
+
+* **`GalleryEntry.cohorts()` (new, abstract)** returns every cohort the fit
+  answers for, in `predict()`'s target order, as the cohort's FULL segment
+  identity - including a column the fit's own key does not carry.
+  **`cohort_index(segment)`** is the one resolver behind it: `segment` is a
+  *filter* on this fit's cohorts, so any subset naming exactly one is accepted
+  and one naming none raises (naming the fit's key and the supplied dict) rather
+  than quietly scoring the fitted cohort.
+* **`predict`, `realized_ultimates` and `evaluate` now take the identical
+  leading `segment: Mapping | None = None`** on all 15 entries.
+  `realized_ultimates` moved onto the ABC. Previously the NN entries took a
+  segment dict and the other ten took none, so a cross-model outcome table
+  needed a `family == "nn"` branch. Every existing call site passes its
+  arguments by keyword, so no 0.4.0 caller moves.
+* **A pooled NN fit can be scored on the mart's own cells.**
+  `kernels.nn_contract` keeps display-only segments (`company_name`) out of the
+  cohort key, so a pooled fit was keyed on two columns while `next_diagonal`
+  built cells on three - and both `entry.log_lik_at(cells)` and
+  `entry.at_cohort({...}).log_lik_at(cells)` failed, the first naming a column
+  the caller had just passed. The cells are now re-keyed onto the fit's own
+  schema at the mixin boundary (`HoldoutCells.narrowed_to`), with each dropped
+  value **verified** against the fitted cohort first; `index_into`'s schema
+  equality is left exact, and the narrowing never escapes, so a shared board
+  still sees one segment schema. Backed by a new refusal in `nn_data`: a segment
+  column dropped from the key must be a *function* of the key, or two cohorts
+  would collapse onto one grid - silently, whenever their cells are disjoint.
+  `nn_data`/`nn_company_data` gained `segment_columns` and `display` keys. That
+  refusal was measured against the real mart before shipping, since the data
+  model derives `company_name` through a LEFT JOIN and a null or second spelling
+  would fire it on every pooled fit: on publish `20260613_041006` all four
+  Meyers lines carry 353 company codes with zero null names and zero codes
+  spelled two ways, and both the study's pooled panel (60 companies /
+  152 cohorts) and the full `--nn-pool market` pool (221 / 405) build clean.
+* **`gallery.get(name).config_class`** is the dataclass an entry's
+  `fit(config=...)` takes, or `None`. Registration checks the declaration both
+  ways - missing when `fit` takes a config, and stale when it does not.
+* **`ibnr.gallery.__all__` gained `next_diagonal`, `CohortForecast`, `Absence`,
+  `align_panel` and `SCORE_DIRECTION`**, the four steps that BUILD the panel
+  `leaderboard()` consumes plus the direction the board has no default sort for.
+  The rule, now written in the module docstring and CLAUDE.md decision 8: a name
+  is exported if a caller must construct or call it to get from a fitted entry
+  to a board row. `ibnr.kernels` re-exports the same names plus `ForecastPanel`;
+  `kernels` still never imports the gallery, and there is a subprocess test for it.
+* **For anyone subclassing `GalleryEntry` out of tree:** `cohorts()` and
+  `realized_ultimates()` are now abstract, so a subclass that implements neither
+  will not register. There are no such subclasses (`gallery.scaffold()` is
+  unbuilt), and the CALL surface CLAUDE.md protects is unchanged.
+* `kernels.multiline.multiline_data` now stamps `segment` and `measure`, the
+  cohort identity SUR and the copula GLM answer for.
+* Note on `analysis/03`: its committed run predates all of this. Its
+  `drop("company_name")` workaround and `family == "nn"` branch still run
+  correctly - they are simply no longer necessary.
 
 ### Packaging
 

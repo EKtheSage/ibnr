@@ -13,6 +13,7 @@ clean square triangle:
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 
 import numpy as np
@@ -560,3 +561,75 @@ def test_no_next_diagonal_is_an_error_not_an_empty_frame(tri8):
 def test_unknown_field_names_what_is_available(tri8):
     with pytest.raises(ValueError, match="has no field"):
         next_diagonal(tri8, as_of="2017-12-31", fields="incurred_loss")
+
+
+# -- narrowing the key: for a pooled fit whose cohort key is narrower ------------
+
+
+@pytest.fixture
+def display_cells(backend_name):
+    """One cohort keyed on (company_code, company_name, lob) - the mart's shape.
+
+    ``company_name`` is the display-only segment ``kernels.nn_contract`` keeps
+    out of a pooled fit's cohort key, so these cells carry one column more than
+    such a fit does.
+    """
+    seg = {"company_code": "0001", "company_name": "Acme Insurance Co", "lob": "wc"}
+    rows = staircase(5, 5, through=6, segment=seg)
+    tri = Triangle.from_long(pd.DataFrame(rows), measure="cumulative", backend=backend_name)
+    return next_diagonal(tri, as_of="2013-12-31", fields="paid_loss")
+
+
+def test_narrowed_to_changes_only_the_key(display_cells):
+    """Rows, order, values and exclusions survive; the schema is what changes.
+
+    That is the whole safety argument for narrowing inside ``log_lik_at``: an
+    ``(n_draws, n_cells)`` array built against either version lines up with the
+    other, so the caller can keep handing the ORIGINAL wide cells to
+    ``CohortForecast`` and ``align_panel`` still sees one schema on the board.
+    """
+    wide = display_cells
+    narrow = wide.narrowed_to(["company_code", "lob"])
+
+    assert narrow.segments == ("company_code", "lob")
+    assert "company_name" not in narrow.frame.columns
+    assert "company_name" not in narrow.excluded.columns
+    assert narrow.n_cells == wide.n_cells
+    np.testing.assert_allclose(narrow.values, wide.values)
+    np.testing.assert_allclose(
+        narrow.frame["prev_value"].to_numpy(float), wide.frame["prev_value"].to_numpy(float)
+    )
+    assert narrow.exclusion_counts() == wide.exclusion_counts()
+    assert (narrow.as_of, narrow.eval_date) == (wide.as_of, wide.eval_date)
+    assert narrow.train_origins == wide.train_origins
+    assert narrow.measure == wide.measure
+    assert list(narrow.frame["origin_period"]) == list(wide.frame["origin_period"])
+
+
+def test_narrowing_to_the_same_schema_is_the_identical_object(display_cells):
+    """The no-op case, which is every single-cohort entry."""
+    assert display_cells.narrowed_to(display_cells.segments) is display_cells
+
+
+def test_narrowing_that_would_collapse_two_cohorts_is_refused(display_cells):
+    """Two distinct combinations sharing one narrowed key must raise, naming both.
+
+    Built by hand rather than through ``next_diagonal``, which refuses a
+    multi-cohort triangle upstream - this is the guard for a caller that
+    assembled cells another way.
+    """
+    frame = pd.concat(
+        [display_cells.frame, display_cells.frame.assign(company_name="ACME")],
+        ignore_index=True,
+    )
+    cells = dataclasses.replace(display_cells, frame=frame)
+    with pytest.raises(ValueError) as excinfo:
+        cells.narrowed_to(["company_code", "lob"])
+    message = str(excinfo.value)
+    assert "collapse" in message
+    assert "ACME" in message and "Acme Insurance Co" in message
+
+
+def test_narrowing_to_a_column_the_cells_lack_is_refused(display_cells):
+    with pytest.raises(ValueError, match="carry no"):
+        display_cells.narrowed_to(["company_code", "not_a_column"])

@@ -129,6 +129,7 @@ def make_multiline_triangle(
     start_year: int = 2010,
     premium_by_lob: dict[str, np.ndarray] | None = None,
     company: str = "0001",
+    company_name: str | dict[str, str] | None = None,
     loss_field: str = "paid_loss",
     premium_field: str = "earned_premium",
 ) -> Triangle:
@@ -145,9 +146,16 @@ def make_multiline_triangle(
     contracts' own ``(n_w, n_d)`` grids so expected values can be written as arrays.
     NaN means unobserved and is simply not emitted - the long format never densifies
     (absent = unobserved, zero = an explicit observation).
+
+    ``company_name`` adds the mart's THIRD segment column, the display-only one
+    ``kernels.nn_contract`` keeps out of the cohort key. Pass a string for one
+    spelling, or ``{lob: name}`` to give a single company two spellings - which
+    is the ambiguity ``nn_data`` must refuse rather than silently pool.
     """
     rows = []
     for lob, cum in cum_by_lob.items():
+        name = company_name[lob] if isinstance(company_name, dict) else company_name
+        prefix = (company,) if name is None else (company, name)
         n_w, n_d = cum.shape
         for w in range(n_w):
             for dev in range(n_d):
@@ -156,12 +164,12 @@ def make_multiline_triangle(
                 origin = dt.date(start_year + w, 1, 1)
                 eval_date = dt.date(start_year + w + dev, 12, 31)
                 rows.append(
-                    (company, lob, origin, 12 * (dev + 1), eval_date, loss_field, cum[w, dev])
+                    (*prefix, lob, origin, 12 * (dev + 1), eval_date, loss_field, cum[w, dev])
                 )
                 if premium_by_lob is not None:
                     rows.append(
                         (
-                            company,
+                            *prefix,
                             lob,
                             origin,
                             12 * (dev + 1),
@@ -174,6 +182,7 @@ def make_multiline_triangle(
         rows,
         columns=[
             "company_code",
+            *([] if company_name is None else ["company_name"]),
             "line_of_business",
             "origin_period",
             "dev_lag",

@@ -77,7 +77,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
@@ -466,6 +466,63 @@ class HoldoutCells:
     def key(self) -> pd.MultiIndex:
         """Cell identity, for joining a model's scores back onto the outcomes."""
         return pd.MultiIndex.from_frame(self.frame[self.key_columns])
+
+    def narrowed_to(self, segments: Sequence[str]) -> HoldoutCells:
+        """These cells re-keyed on a SUBSET of their segment columns.
+
+        Exists for a pooled fit whose cohort key is narrower than the triangle's
+        segment schema (``kernels.nn_contract`` keeps display-only columns out of
+        the cohort key), so :func:`index_into` can keep comparing schemas for
+        equality - the check that stops a fit keyed on ``lob`` from vouching for
+        cells keyed on ``(lob, company)``.
+
+        Refuses to drop a column that leaves two distinct combinations sharing
+        one narrowed key, naming both: the narrowed cells would then describe
+        two cohorts while claiming to describe one. ``excluded`` is narrowed
+        alongside ``frame``, or ``exclusion_counts()`` and ``align_panel``'s
+        per-cohort exclusion-agreement check would see different schemas.
+
+        Rows, row order and every value column are untouched - only the key
+        columns change - so an ``(n_draws, n_cells)`` array built against either
+        version lines up with the other.
+        """
+        keep = [str(s) for s in segments]
+        missing = [s for s in keep if s not in self.segments]
+        if missing:
+            raise ValueError(
+                f"cannot narrow to {keep}: these cells carry no {missing} column(s); "
+                f"they are keyed on {list(self.segments)}"
+            )
+        if len(set(keep)) != len(keep):
+            raise ValueError(f"duplicate column(s) in {keep}")
+        ordered = [c for c in self.segments if c in set(keep)]
+        dropped = [c for c in self.segments if c not in set(keep)]
+        if not dropped:
+            return self
+
+        parts = [self.frame[list(self.segments)]]
+        if not self.excluded.empty:
+            parts.append(self.excluded[list(self.segments)])
+        combos = pd.concat(parts).drop_duplicates().reset_index(drop=True)
+        # every group of full keys sharing one narrowed key; >1 member = collapse
+        groups = combos.groupby(ordered, dropna=False) if ordered else [((), combos)]
+        clash = max((g for _, g in groups), key=len, default=combos.iloc[:0])
+        if len(clash) > 1:
+            raise ValueError(
+                f"cannot narrow to {ordered}: dropping {dropped} would collapse "
+                f"{len(clash)} distinct cohorts onto one key - "
+                f"{clash.to_dict('records')[:2]} share it"
+            )
+
+        def _drop(df: pd.DataFrame) -> pd.DataFrame:
+            return df.drop(columns=dropped, errors="ignore")
+
+        return replace(
+            self,
+            frame=_drop(self.frame),
+            excluded=_drop(self.excluded),
+            segments=tuple(ordered),
+        )
 
     def exclusion_counts(self) -> dict[str, int]:
         """How many next-diagonal cells each reason removed. Always reported -

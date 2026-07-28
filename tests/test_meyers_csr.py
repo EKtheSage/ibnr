@@ -13,6 +13,8 @@ runs only when cmdstan and the local warehouse are both available. See
 ``mart`` auto-skips when the local Schedule P gold mart is missing.
 """
 
+import datetime as dt
+
 import numpy as np
 import pytest
 
@@ -123,3 +125,51 @@ def test_evaluate_contract(fitted):
     result = entry.evaluate(entry.realized_ultimates(tri))
     assert set(result) >= {"summary", "percentiles"}
     assert len(result["percentiles"]) == 11
+
+
+def test_the_segment_contract_on_a_real_bayesian_fit(fitted):
+    """A single-cohort entry accepts its own key and refuses any other.
+
+    The same ``segment=`` everywhere is what removes the ``family == "nn"``
+    branch from a cross-model outcome table; here it is exercised on a genuine
+    cmdstan fit rather than a synthetic one. All three methods, because the trio
+    would be inconsistent one method after being made consistent in two.
+    """
+    tri, entry = fitted
+    cohort = entry.cohorts()
+    assert len(cohort) == 1
+    assert cohort[0]["company_code"] == "11347"
+
+    plain = entry.predict(seed=1)
+    keyed = entry.predict(segment=cohort[0], seed=1)
+    np.testing.assert_allclose(plain.samples, keyed.samples)
+    np.testing.assert_allclose(
+        entry.realized_ultimates(tri), entry.realized_ultimates(tri, segment=cohort[0])
+    )
+
+    wrong = {"company_code": "99999"}
+    with pytest.raises(ValueError, match="matches 0 cohorts"):
+        entry.predict(segment=wrong)
+    with pytest.raises(ValueError, match="matches 0 cohorts"):
+        entry.realized_ultimates(tri, segment=wrong)
+    with pytest.raises(ValueError, match="matches 0 cohorts"):
+        entry.evaluate(entry.realized_ultimates(tri), segment=wrong)
+
+
+def test_keyed_to_fit_is_a_no_op_when_the_schemas_agree(fitted):
+    """The narrowing that fixes the pooled-NN gap must not touch a Stan entry.
+
+    Its contract's segment schema IS the cells' schema, so ``_keyed_to_fit``
+    returns the same object and ``index_into`` sees exactly what it always did.
+    """
+    from ibnr.kernels.holdout import next_diagonal
+
+    tri, entry = fitted
+    cells = next_diagonal(
+        tri,
+        as_of="1997-12-31",
+        fields="paid_loss",
+        origins=[dt.date(y, 1, 1) for y in range(1988, 1998)],
+    )
+    assert entry._keyed_to_fit(cells) is cells
+    assert entry.log_lik_at(cells, field="paid_loss").shape[1] == cells.n_cells
