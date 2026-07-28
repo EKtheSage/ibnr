@@ -164,6 +164,15 @@ class EnglandVerrallODP(GalleryEntry, PredictsHeldout):
                 "parallel_chains / max_treedepth are stan-backend controls; "
                 f"the {backend!r} port does not take them"
             )
+        # odp_stan_data legitimately omits logprem when premium_field is None -
+        # the statistical clark entry's ldf method reads its output that way -
+        # so a None left to travel used to surface as a KeyError('logprem')
+        # only AFTER the Stan compile.
+        if premium_field is None:
+            raise ValueError(
+                "england_verrall_odp's ODP GLM takes log premium as its exposure offset, "
+                "so it cannot fit without a premium_field"
+            )
         # Backtest slice: keep only cells reported on/before the cutoff diagonal.
         train = triangle.as_of(as_of) if as_of is not None else triangle
         # Standardized incremental ODP contract (w/d lags, inc_loss, logprem,

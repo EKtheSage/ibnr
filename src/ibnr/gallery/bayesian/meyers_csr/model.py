@@ -109,6 +109,18 @@ class MeyersCSR(GalleryEntry, ScoresHeldout, PredictsHeldout):
                 "parallel_chains / max_treedepth are stan-backend controls; "
                 f"the {backend!r} port does not take them"
             )
+        # stan_data's premium is optional and it omits logprem when premium_field
+        # is None, while logprem is in STAN_DATA_KEYS - so a None left to travel
+        # used to surface as a KeyError('logprem') raised only AFTER the Stan
+        # compile. The refusal belongs to the entry rather than to stan_data:
+        # every gallery caller of that contract does require premium (guszcza,
+        # the third one, refuses None itself), but tests/test_contract.py calls
+        # it premium-free to reach its other refusals, each pinned by message.
+        if premium_field is None:
+            raise ValueError(
+                "meyers_csr anchors each origin's expected log loss on log premium "
+                "(the logprem offset), so it cannot fit without a premium_field"
+            )
         # as_of slices the triangle to the training diagonal (backtest cutoff);
         # None trains on the whole triangle as given.
         train = triangle.as_of(as_of) if as_of is not None else triangle

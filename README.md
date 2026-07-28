@@ -280,9 +280,14 @@ carries a log-premium offset: `meyers_ccl`, `meyers_csr`,
 `sur` have no `premium_field` argument at all. For the entries that do require
 it, a premium field that is missing, duplicated per origin, non-positive, or
 belongs to a different cohort than the losses is an error at fit time rather
-than a silent zero (`ValueError: no rows for premium field 'earned_premium'`) -
-except in the NN entries, which train pooled across many cohorts and so *drop*
-an unusable cohort from the pool instead of refusing the whole fit.
+than a silent zero. All twelve name the problem: `premium_field=None` gets a
+`ValueError` saying that entry cannot model a loss ratio without exposure, and
+a `premium_field` naming a column the triangle does not carry gets
+`ValueError: no rows for premium field 'earned_premium'`. The NN entries
+differ only *within* a triangle that does have the field: because they train
+pooled across many cohorts, one cohort whose own premium is missing or
+non-positive is *dropped* from the pool (and listed in the contract's
+`dropped` frame) rather than failing the whole fit.
 
 `clark` is the entry where the requirement follows the **method** rather than
 the entry. Its default `method="cape_cod"` genuinely needs premium

@@ -8,12 +8,22 @@ which is where the workaround was pinned in #63). A type-checked caller writing
 the documented call got an error on correct code.
 
 Only ``clark`` had the mismatch - the other twelve entries carrying a
-``premium_field`` genuinely refuse ``None``, each verified by running it:
+``premium_field`` genuinely refuse ``None``. Since 2026-07-28 all twelve refuse
+it the same way: a ``ValueError`` whose message names the premium requirement
+and says what to pass, raised from argument validation before any compiler,
+sampler, network or optimizer runs. ``tests/test_premium_refusal.py`` proves
+that per entry, one case each, derived from the table below.
+
+What those twelve did BEFORE that change is why the refusal is now explicit -
+each was a raw exception from wherever the ``None`` finally landed:
 
     clark_growth_curve    ValueError, "needs a premium_field (Cape Cod ultimates)"
     guszcza_growth_curve  ValueError, "cannot fit without a premium_field"
+                          (these two already refused by name; they are the
+                          voice the other ten were brought up to)
     meyers_ccl/_csr, england_verrall_odp
-                          'logprem' is in STAN_DATA_KEYS and stan_data/
+                          KeyError 'logprem' AFTER a full Stan compile -
+                          'logprem' is in STAN_DATA_KEYS while stan_data/
                           odp_stan_data omit it when premium_field is None
     copula_glm            KeyError 'premium' - the lognormal marginal divides
                           every increment by its origin's exposure
@@ -27,14 +37,18 @@ Only ``clark`` had the mismatch - the other twelve entries carrying a
 straight to ``select_fields``, so ``None`` names no column. Same for
 ``compartmental``'s ``reported_field``.
 
-Why a hand-written table rather than probing each entry: proving a refusal means
-running ``fit()``, which for the Bayesian entries compiles Stan and for the NN
-entries needs ``[nn]``. The table is the cheap gate, and
-``test_every_entry_classifies_its_field_parameters`` is what gives it teeth - it
-asserts the table IS the registry, so an entry cloned from a stale template
-cannot join the gallery without its author classifying it here. That failure
-mode is not hypothetical: see test_fit_atomicity.py's own registry gate, added
-after three NN entries landed carrying a bug that had already been fixed.
+Why a hand-written table rather than probing each entry. Probing a REFUSAL is
+now cheap - it returns before Stan or torch does anything - and
+test_premium_refusal.py does exactly that. Probing ACCEPTANCE is not: it means
+completing a fit, which is why this file's one positive row is anchored by a
+single cheap ``clark`` fit and no more. The table stays because its job is not
+to be the cheaper measurement but to force the QUESTION on a new entry's
+author: ``test_every_entry_classifies_its_field_parameters`` asserts the table
+IS the registry, so an entry cloned from a stale template cannot join the
+gallery without someone classifying it here - and test_premium_refusal.py then
+reads the same table to decide which entries owe a refusal. That failure mode is
+not hypothetical: see test_fit_atomicity.py's own registry gate, added after
+three NN entries landed carrying a bug that had already been fixed.
 """
 
 from __future__ import annotations
@@ -124,8 +138,10 @@ def test_field_annotations_match_runtime_acceptance(name):
 
     Both directions are defects. An annotation that hides None (the ``clark``
     bug) errors a type-checked caller on a documented call; one that offers None
-    where the runtime refuses it invites a call that dies at the contract
-    builder with a KeyError or a TypeError about NoneType.
+    where the runtime refuses it invites a call the entry turns down by name -
+    a ValueError about the missing premium (tests/test_premium_refusal.py),
+    which is a clean failure but still a call the annotation should never have
+    advertised.
     """
     accepts = ACCEPTS_NONE[name]
     fit = gallery.get(name).fit
