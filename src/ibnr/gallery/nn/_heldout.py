@@ -221,6 +221,11 @@ class PooledMDNHeldout(ScoresHeldout, PredictsHeldout):
     **The density's draw axis is the ENSEMBLE MEMBERS**, not posterior draws:
     ``logmeanexp`` over it is the ensemble-average predictive density, the
     deep-ensemble analogue of averaging a posterior's per-draw likelihoods.
+
+    **The exposure is the CONTRACT's**, on both hooks: they divide and multiply
+    by the premium the fit standardized against and merely VERIFY the caller's
+    against it (:meth:`_cell_premium`) - the rule ``guszcza_growth_curve`` and
+    ``compartmental`` state on the Bayesian side.
     """
 
     # -- per-entry hooks ---------------------------------------------------------
@@ -331,7 +336,9 @@ class PooledMDNHeldout(ScoresHeldout, PredictsHeldout):
         the standardization Jacobian folded in (``- log std0[d]``), leaving a
         density on the ratio - which is what ``heldout_measure = "loss_ratio"``
         declares, so the base class's ``- log premium`` completes the carry to
-        Lebesgue-on-amount (the increment/cumulative step has Jacobian 1).
+        Lebesgue-on-amount (the increment/cumulative step has Jacobian 1). The
+        divisor is the CONTRACT's premium (:meth:`_cell_premium`), the one the
+        per-dev normalizer was estimated on.
 
         The draw axis is the ENSEMBLE MEMBERS: ``logmeanexp`` over it is the
         ensemble-average predictive density, the deep-ensemble analogue of
@@ -369,7 +376,7 @@ class PooledMDNHeldout(ScoresHeldout, PredictsHeldout):
                 f"{int(np.isnan(prev).sum())} cell(s) have no training predecessor, so "
                 "no increment can be formed to evaluate the density at"
             )
-        premium = np.asarray(cells.premium, dtype=float)
+        premium = self._cell_premium(ci, cells)
         increment = np.asarray(cells.value, dtype=float) - prev
         mean0, std0 = self.norm_["mean"][0], self.norm_["std"][0]  # (n_d,)
         z = (increment / premium - mean0[d0]) / std0[d0]  # (n_cells,)
@@ -388,7 +395,8 @@ class PooledMDNHeldout(ScoresHeldout, PredictsHeldout):
         is one step past that context, the most-supervised position and the
         rollout's first step, so no rollout is needed here. Then ``mdn_sample``
         at the requested cells, un-standardized (``z * std0[d] + mean0[d]``)
-        and scaled by the cell's premium. Draws are split across members
+        and scaled by the CONTRACT's premium (:meth:`_cell_premium`) - the
+        exposure the sampled ratio is a ratio TO. Draws are split across members
         exactly as ``_rollout`` splits them; per-member torch seeds derive from
         ``rng``, so ``predict_at(seed=...)`` is reproducible.
 
@@ -415,12 +423,7 @@ class PooledMDNHeldout(ScoresHeldout, PredictsHeldout):
                 "distribution. A pinned dev has no trained head (fewer than two "
                 "training-context values reached the per-dev normalizer)"
             )
-        premium = np.asarray(cells.premium, dtype=float)
-        if np.isnan(premium).any():
-            raise ValueError(
-                f"{int(np.isnan(premium).sum())} cell(s) have no premium; draws are "
-                "premium x sampled ratio, so they cannot be formed"
-            )
+        premium = self._cell_premium(ci, cells)
         mean0, std0 = self.norm_["mean"][0], self.norm_["std"][0]  # (n_d,)
         dev = torch.device(self._device)
         inputs = self._heldout_inputs(ci)
@@ -461,6 +464,59 @@ class PooledMDNHeldout(ScoresHeldout, PredictsHeldout):
         draws = np.concatenate(pieces, axis=0)  # (n_draws, n_cells) standardized
         ratios = draws * std0[d0][None, :] + mean0[d0][None, :]
         return ratios * premium[None, :]  # incremental dollars
+
+    def _cell_premium(self, ci: int, cells: CellIndex) -> np.ndarray:
+        """``(n_cells,)`` exposure the ratio math uses: the CONTRACT's
+        per-origin premium, with the cells' own premium VERIFIED against it.
+
+        **The number the fit used is the only one either hook may divide or
+        multiply by.** ``nn_data`` forms this entry's target as
+        ``increment / premium`` from exactly this array, and ``norm_stats``
+        then estimates ``mean0``/``std0`` over the result, so an exposure from
+        anywhere else standardizes the observation on a scale the network was
+        never trained on and rescales every draw by the same factor - silently,
+        both finite, both plausible (measured on the test fixture: a x1.5
+        premium moved the ensemble log density from -3.8 to -28.7 nats/cell and
+        multiplied every incremental draw by 1.5, with no error on either path).
+
+        Verified rather than ignored, which is the rule
+        ``guszcza_growth_curve``/``compartmental`` already state: the base
+        class's measure carry legitimately divides by the CELLS' premium (the
+        holdout frame's, attached by ``next_diagonal`` from the training
+        slice), so the two sources must agree or the carried density silently
+        stops integrating to 1 - a wrong Jacobian, the bug class nothing
+        downstream can see. Cells carrying no premium (NaN) are exempt from the
+        comparison: ``index_into`` falls back to this same contract array when
+        the frame has no premium column, and the carry has its own refusal for
+        a genuinely absent one.
+
+        A NaN in the CONTRACT's premium is refused outright. ``nn_data`` writes
+        NaN for an origin the premium field never observed, and both hooks
+        would otherwise return NaN for that cell rather than say so - which is
+        exactly the read the cells' premium could paper over, since a holdout
+        frame can carry an exposure at an origin the fit had none for.
+        """
+        w0 = np.asarray(cells.w, dtype=int) - 1
+        premium = np.asarray(self.contract_["premium"][ci], dtype=float)[w0]
+        if np.isnan(premium).any():
+            raise ValueError(
+                f"{int(np.isnan(premium).sum())} cell(s) sit at an origin the fitted "
+                f"contract carries no premium for, so {self.name}'s loss ratio is "
+                "undefined there and neither a density nor a draw can be formed"
+            )
+        supplied = np.asarray(cells.premium, dtype=float)
+        mismatched = ~np.isnan(supplied) & ~np.isclose(supplied, premium)
+        if mismatched.any():
+            raise ValueError(
+                f"{int(mismatched.sum())} cell(s) carry a premium that disagrees with the "
+                "fitted contract's per-origin premium (the cells' comes from the holdout "
+                "frame, attached by next_diagonal from the training slice; the contract's "
+                "is the nn_data grid this fit standardized against). The loss ratio is "
+                "formed with the contract's number while the measure carry divides by the "
+                "cells', so a mismatch would rescale every draw and leave a density that "
+                "no longer integrates to 1"
+            )
+        return premium
 
     def _heldout_mixture(self, ci: int, cells: CellIndex) -> tuple[np.ndarray, ...]:
         """``(n_members, n_cells, K)`` MDN parameters at the cells, one forward
