@@ -34,7 +34,6 @@ import datetime as dt
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize
 
 from ibnr.gallery.entry import GalleryEntry, PredictsHeldout
 from ibnr.gallery.registry import register
@@ -213,6 +212,13 @@ class Clark(GalleryEntry, PredictsHeldout):
             mu = u[w - 1] * ginc  # (len_data,) fitted cell means
             # -loglik for Poisson dropping the x-only terms: sum(mu - x*log mu).
             return float((mu - inc * np.log(mu)).sum())
+
+        # Imported here, not at module scope: registering the gallery imports
+        # every entry's module, so a top-level ``scipy.optimize`` - which pulls
+        # ``scipy.sparse.linalg`` and ``scipy.linalg`` behind it - charges its
+        # import to every caller, including the ones that never fit a Clark
+        # curve. This one MLE call is the only use in the package.
+        from scipy.optimize import minimize
 
         # 2-D Nelder-Mead over the curve; init omega=1.5, theta=4 periods.
         res = minimize(
