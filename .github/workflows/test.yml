@@ -207,9 +207,11 @@ jobs:
             allow_skips: ""
             strict_skips: "false"
             required_files: "tests/test_core.py;tests/test_transforms.py;tests/test_gallery.py;tests/test_markdown_snippets.py;tests/test_import_purity.py"
-            # 540 passed locally, 539 on a runner - one test differs by platform.
-            # That one-test gap is the reason the floors carry a real cushion
-            # rather than being pinned to a local count.
+            # 548 passed locally as of 0.5.0 (540 when this file landed, plus
+            # test_import_purity.py); a runner measured one test fewer than the
+            # local count on the earlier figure. That one-test gap is the reason
+            # the floors carry a real cushion rather than being pinned to a
+            # local count.
             min_tests: "500"
 
           # ---------------------------------------------------------------
@@ -309,12 +311,14 @@ jobs:
             allow_skips: ""
             strict_skips: "false"
             required_files: "tests/test_heldout_scorer_ccl.py;tests/test_heldout_scorer_compartmental.py;tests/test_heldout_scorer_csr.py;tests/test_heldout_scorer_guszcza.py;tests/test_nuts_sampler.py;tests/test_parity_clark.py;tests/test_parity_compartmental.py;tests/test_parity_meyers.py;tests/test_parity_meyers_csr.py;tests/test_parity_odp.py;tests/test_predicts_heldout_odp_clark.py;tests/test_stacking.py"
-            # measured: 584 passed, 153 skipped - exactly +44 over core. The
-            # floor is deliberately set ABOVE the core baseline of 540, so if
-            # every bayesian test vanished the count would fall back to ~540 and
+            # measured at 0.5.0: 593 passed, 157 skipped - +45 over core. The
+            # floor is deliberately set ABOVE the core baseline, so if every
+            # bayesian test vanished the count would fall back to core's 548 and
             # breach it. That is the one leg where the global floor can do the
-            # job required_files does elsewhere; the cushion is correspondingly
-            # thin, and removing bayesian tests on purpose means editing it.
+            # job required_files does elsewhere; the margin is now only 2 tests,
+            # so anyone adding CORE tests must raise this floor with them or it
+            # quietly stops meaning anything. required_files names all twelve
+            # bayesian files and is what actually protects this leg.
             min_tests: "550"
 
           # ---------------------------------------------------------------
