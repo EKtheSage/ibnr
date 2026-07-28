@@ -115,11 +115,16 @@ def iter_markdown_files(root: Path) -> list[Path]:
     worktree's own ``.venv`` before discarding what it finds there. Measured on
     this checkout with two worktrees present: 1788 ms to reach the same 16 files
     that the pruned walk reaches in 2 ms.
+
+    The suffix test is case-insensitive because the walk does it by hand, where
+    the ``rglob("*.md")`` it replaced had matched ``README.MD`` for free on
+    Windows. A markdown file this function does not return is one whose python
+    blocks no gate ever reads, so a doc sample that is broken Python would pass.
     """
     out: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS]
-        out += [Path(dirpath) / f for f in filenames if f.endswith(".md")]
+        out += [Path(dirpath) / f for f in filenames if f.casefold().endswith(".md")]
     return sorted(out)
 
 

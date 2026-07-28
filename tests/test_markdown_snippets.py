@@ -72,6 +72,26 @@ def test_the_walk_still_reaches_nested_real_docs(tmp_path):
     assert iter_markdown_files(tmp_path) == [card / "card.md"]
 
 
+@pytest.mark.parametrize("name", ["README.MD", "Notes.Md"])
+def test_the_walk_matches_the_suffix_case_insensitively(tmp_path, name):
+    """A doc named README.MD is a markdown file and has to be linted like one.
+
+    The pruned walk tests each filename itself, and a plain ``endswith(".md")``
+    made that test case-sensitive - where the ``rglob("*.md")`` it replaced had
+    matched either case on Windows. A file the walk does not return is a file
+    whose broken python block nothing ever reads, so the gate stays green over
+    a doc sample that cannot run. The fixture spells the name out, so the check
+    is exercised on a case-sensitive filesystem too, not only on Windows.
+    """
+    doc = tmp_path / name
+    doc.write_text("```python\ndef f(:\n```\n", encoding="utf-8")
+
+    assert iter_markdown_files(tmp_path) == [doc]
+    failures = check([s for p in iter_markdown_files(tmp_path) for s in extract_snippets(p)])
+    assert len(failures) == 1
+    assert "does not parse" in failures[0]
+
+
 def test_a_block_that_does_not_parse_is_a_failure(tmp_path):
     """The formatter skips unparseable blocks silently, so this check is the only
     thing standing between a broken doc sample and a green pipeline."""
