@@ -340,6 +340,13 @@ def compartmental_stan_data(
     the count. Carries ``paid_to_date``/``latest_d`` (per-origin anchors)
     and per-origin ``premium`` like the other contracts.
     """
+    if premium_field is None:
+        raise ValueError(
+            "compartmental_stan_data requires a premium_field: the compartmental family "
+            "models losses per unit of premium (premium is the exposure the ODE flows "
+            "through), so pass premium_field naming a per-origin premium field - the "
+            "compartmental entry's own default is 'earned_premium'."
+        )
     if triangle.meta.measure != "cumulative":
         raise ValueError("compartmental_stan_data requires a cumulative triangle")
     df = triangle.select_fields([paid_field, reported_field]).execute()

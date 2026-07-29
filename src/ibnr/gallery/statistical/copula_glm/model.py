@@ -94,6 +94,14 @@ class CopulaGLM(GalleryEntry):
             raise ValueError(f"dev_effect must be 'factor' or 'hoerl', got {dev_effect!r}")
         if nonpositive not in ("error", "drop"):
             raise ValueError(f"nonpositive must be 'error' or 'drop', got {nonpositive!r}")
+        # multiline_data legitimately omits "premium" when premium_field is
+        # None - sur shares that contract and is premium-free - so a None left
+        # to travel used to surface as a KeyError('premium') further down.
+        if premium_field is None:
+            raise ValueError(
+                "copula_glm models log incremental loss RATIOS (increment / premium), "
+                "so it cannot fit without a premium_field"
+            )
         train = triangle.as_of(as_of) if as_of is not None else triangle
         # Canonical prep also pulls premium (the marginal's exposure denominator).
         #

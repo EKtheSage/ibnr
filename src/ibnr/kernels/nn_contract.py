@@ -195,6 +195,15 @@ def nn_data(
     run - but it must still be visible, since a shrinking pool changes what
     the pooled model learned.
     """
+    # argument validation, so it precedes every read of the triangle. This one
+    # check covers nn_company_data - and so every NN entry - because that
+    # function delegates here as its first statement.
+    if premium_field is None:
+        raise ValueError(
+            "nn_data requires a premium_field: every NN entry models incremental loss "
+            "RATIOS (increment / premium), so there is no premium-free form. Pass "
+            "premium_field naming a per-origin premium field (default 'earned_premium')."
+        )
     if triangle.meta.measure != "cumulative":
         raise ValueError("nn_data requires a cumulative triangle")
     if segment_columns is None:
@@ -257,6 +266,13 @@ def nn_data(
     # premium is an origin-level exposure measure: take its latest evaluation
     # (the booked value), same convention as contract._premium_by_origin
     premium_df = triangle.select_fields(premium_field).latest_diagonal().execute()
+    # select_fields is a filter, so a field the triangle does not carry yields
+    # an empty frame rather than an error - and every cohort would then fail the
+    # premium screen below one at a time, leaving "no usable cohorts" as the
+    # only message. Refuse by name, wording matched to contract._premium_by_origin
+    # and multiline._premium_by_lob_origin so all three contracts answer alike.
+    if premium_df.empty:
+        raise ValueError(f"no rows for premium field {premium_field!r}")
     premium_df = premium_df.copy()
     premium_df["origin_period"] = _as_date(premium_df["origin_period"])
 
