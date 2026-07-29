@@ -15,6 +15,66 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
+## Unreleased
+
+### Multi-method one-year CDR (out of band)
+
+"The one-year CDR" was one method - Mack's - because the two things it does were
+fused. They are now two axes, and only one of them is a choice.
+
+* **Axis 1, what generates next year's diagonal, is now selectable.**
+  `kernels.cdr.DiagonalGenerator` with two implementations: `MackDiagonal`
+  (Mack's conditional moments, the previous behaviour) and
+  `ODPBootstrapDiagonal` (England & Verrall's Pearson-residual bootstrap with
+  over-dispersed Poisson process noise - the generator behind R's
+  `CDR.BootChainLadder`). `simulate_one_year_cdr(fit, generator=...)` takes a
+  method name or a configured instance.
+* **Axis 2, how the reserve is re-estimated afterwards, is not a choice.**
+  `kernels.cdr.rereserve(fit, next_diagonal)` re-runs the volume-weighted chain
+  ladder on the extended triangle and differences the ultimates. One
+  implementation shared by every generator - it is the market convention and
+  what R uses for *both* of its CDR methods. It is public, so draws from any
+  model that predicts next year's cells can be re-reserved into a directly
+  comparable CDR.
+* **`kernels/odp_bootstrap.py` (new)**: the bootstrap engine as free functions
+  over plain arrays, written to be read against R's `BootstrapReserve.R` and
+  documenting each of the four places it deviates.
+* **The option surface**: `cdr_methods()` lists every route with what it
+  generates, how it re-estimates, what it returns, what it requires of the
+  cohort and - route by route - what it has actually been validated against.
+  `get_cdr_method(name)` returns the descriptor, carrying the generator
+  **class**, mirroring `gallery.get`.
+* **`merz_wuthrich` is listed but is not a generator, and asking for it as one
+  is refused by name.** The closed form linearizes the chain-ladder factor
+  update around Mack's conditional moments; there is no version of it for
+  another model. `one_year_cdr(fit)` is unchanged and remains the only way to
+  reach it.
+* **Mack's precondition moved off the shared path onto its own generator.**
+  `require_positive_open_diagonals` was applied to every simulated CDR; it is
+  Mack's (his conditional variance is proportional to the diagonal cell) and the
+  bootstrap has the opposite requirement (non-negative increments, and it
+  answers happily for an accident year with zero paid at 12 months). Each
+  generator now states and enforces its own.
+* Honest limits, stated in the card and the docstrings: the bootstrap route is
+  validated **to Monte Carlo error against R's algorithm**, not to published
+  digits - R's `CDR.BootChainLadder` example prints none, and a bootstrap is
+  stochastic. The test suite transcribes `getNYCost` literally and requires
+  agreement to 1e-10 on a shared diagonal, checks the process-only standard
+  error against a delta-method reference computed off the re-reserving Jacobian,
+  and cross-checks the fitted values against `england_verrall_odp`'s iterative
+  proportional fit. Also documented: `E[CDR] = 0` is Mack's, so
+  `simulated_msep`'s mean square about zero is the variance only on the `mack`
+  generator - R reports `sd()` for its bootstrap route for the same reason.
+
+**No published number moved.** `simulate_one_year_cdr`'s Mack path is
+bit-identical to 0.5.0's for the same seed - verified over 49 arrays spanning
+two triangles, both sigma rules, all three process laws, both `parameter_risk`
+settings and two draw budgets, compared as raw bytes - and the R MW2014 golden
+tie-out is untouched. `process`/`parameter_risk` default to `None` on the
+signature instead of `"gamma"`/`True` so that "not supplied" is distinguishable
+from "supplied"; the applied defaults are unchanged, and combining either with
+an explicit `generator=` is refused rather than left inert.
+
 ## 0.5.0 - 2026-07-27
 
 The 0.4.0 wheel on PyPI was 49 commits behind `main`, so this release is mostly a

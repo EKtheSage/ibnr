@@ -21,7 +21,17 @@ is the tripwire on the premise rather than on the fix: it goes red if pandas
 ever stops importing pyarrow, which is when the deferral would start to pay.
 """
 
-from ibnr.kernels.cdr import CDRResult, cdr_risk_measures, one_year_cdr, simulate_one_year_cdr
+from ibnr.kernels.cdr import (
+    CDRResult,
+    MackDiagonal,
+    ODPBootstrapDiagonal,
+    cdr_methods,
+    cdr_risk_measures,
+    get_cdr_method,
+    one_year_cdr,
+    rereserve,
+    simulate_one_year_cdr,
+)
 from ibnr.kernels.codec import (
     CODEC_VERSION,
     CONTENT_TYPE_ARROW,
@@ -57,18 +67,23 @@ __all__ = [
     "CohortForecast",
     "ForecastPanel",
     "HoldoutCells",
+    "MackDiagonal",
     "MackFit",
+    "ODPBootstrapDiagonal",
     "ParityReport",
     "PredictiveDistribution",
     "align_panel",
+    "cdr_methods",
     "cdr_risk_measures",
     "compare_posteriors",
     "fit_mack",
     "from_arrow",
+    "get_cdr_method",
     "leaderboard",
     "next_diagonal",
     "one_year_cdr",
     "peek_kind",
+    "rereserve",
     "simulate_one_year_cdr",
     "simulate_ultimates",
     "to_amount_scale",

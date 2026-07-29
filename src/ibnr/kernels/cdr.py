@@ -18,38 +18,57 @@ so a positive CDR is a release and a negative one a strengthening. Under the
 model E[CDR | D_I] = 0, and the risk measure is the conditional MSEP about
 zero, ``msep = E[CDR^2 | D_I]``.
 
-Two independent routes are implemented, deliberately ablatable against each
-other (they answer the same question and must agree):
+TWO INDEPENDENT AXES, because that is what the question has.
 
-``merz_wuthrich``  the closed form of Merz & Wuthrich (2008), *Modelling the
-                   claims development result for solvency purposes* (CAS
-                   E-Forum, Fall 2008) - the market-standard analytic answer,
-                   per accident year and aggregated.
-``simulate``       "actuary in the box": simulate only the next diagonal from
-                   the fitted Mack model, append it, re-run the chain ladder on
-                   the extended triangle and take the difference. Gives the full
-                   one-year CDR *distribution* (a ``PredictiveDistribution``,
-                   per CLAUDE.md decision 4), not just its second moment - and
-                   therefore the tail quantiles (``cdr_risk_measures``) that a
-                   one-year capital figure is actually read off.
+Every simulated one-year CDR is the same two-step recipe, and the two steps are
+separate choices:
+
+1. **What generates next year's diagonal?** A :class:`DiagonalGenerator`.
+   ``mack`` draws it from Mack's conditional moments; ``odp_bootstrap`` draws it
+   from an England-Verrall Pearson-residual bootstrap with over-dispersed
+   Poisson process noise. In principle anything that can draw a next-diagonal
+   cell qualifies, including a gallery entry with ``PredictsHeldout``.
+2. **How is the reserve re-estimated once that diagonal exists?** The
+   volume-weighted chain ladder - :func:`rereserve`. This is the market
+   convention and it is what R's ``ChainLadder`` uses for *both* of its CDR
+   methods, so it is one implementation shared by every generator rather than
+   an option.
+
+Before this release the two were fused to Mack inside ``simulate_one_year_cdr``.
+:func:`cdr_methods` is the discoverable list of what is available, what each
+route requires and returns, and how each one is validated.
+
+THE CLOSED FORM IS NOT ONE OPTION AMONG MANY. :func:`one_year_cdr` implements
+Merz & Wuthrich (2008), *Modelling the claims development result for solvency
+purposes* (CAS E-Forum, Fall 2008) - a linearization of the chain-ladder factor
+update around Mack's conditional moments. It is Mack-specific by construction:
+there is no ODP bootstrap version of it, and it is deliberately NOT reachable
+through a ``generator=`` argument. Asking for it there is refused by name, in
+the same spirit as the milestone-6 capability mixins - a method that cannot
+answer says so instead of returning a plausible number.
 
 The analytic and simulated second moments agree to Monte Carlo error when the
-simulation is run with the matching risk components - see
-``tests/test_cdr.py::test_analytic_matches_simulation``.
+simulation is run on the ``mack`` generator with the matching risk components -
+see ``tests/test_cdr.py::test_analytic_matches_simulation``.
 
-Cross-refs: ``kernels/mack.py`` (the fit this consumes), ``kernels/contract.py``
-(``cohort_grid``), ``gallery/deterministic/mack/card.md`` (the model card, which
-documents the estimator and its limits).
+Cross-refs: ``kernels/mack.py`` (the fit this consumes),
+``kernels/odp_bootstrap.py`` (the ODP generator's engine),
+``kernels/contract.py`` (``cohort_grid``),
+``gallery/deterministic/mack/card.md`` (the model card, which documents the
+estimators and their limits).
 """
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import ClassVar
 
 import numpy as np
 import pandas as pd
 
 from ibnr.kernels.mack import PROCESS_LAWS, MackFit, _next_step_draws
+from ibnr.kernels.odp_bootstrap import ODP_PROCESS_LAWS, draw_next_increments, fit_odp_bootstrap
 from ibnr.kernels.predictive import PredictiveDistribution
 
 
@@ -194,6 +213,13 @@ def one_year_cdr(fit: MackFit) -> CDRResult:
     Valid only for the volume-weighted (alpha = 1) chain ladder and without a
     tail factor - the same two restrictions R's ``CDR.MackChainLadder``
     enforces, and both are structural here: ``fit_mack`` estimates nothing else.
+
+    MACK-SPECIFIC BY CONSTRUCTION, and deliberately not offered as a
+    ``generator=`` option on :func:`simulate_one_year_cdr`. Every term above is
+    ``sigma_j^2 / f_j^2``: the formula is a linearization of the chain-ladder
+    factor update *around Mack's conditional moments*, so there is no ODP
+    bootstrap version of it and no version for any other model. The routes that
+    do generalize are the simulated ones - :func:`cdr_methods` lists them.
     """
     # Phi_i divides by C_{i,k_i} - the latest diagonal, the one cell class no
     # factor-side guard can see. Checked here as well as inside msep_runoff()
@@ -248,82 +274,79 @@ def one_year_cdr(fit: MackFit) -> CDRResult:
     )
 
 
-def simulate_one_year_cdr(
-    fit: MackFit,
-    *,
-    n_draws: int = 20_000,
-    seed: int | None = None,
-    process: str = "gamma",
-    parameter_risk: bool = True,
-) -> PredictiveDistribution:
-    """Actuary in the box: the one-year CDR distribution by re-reserving.
+# ---------------------------------------------------------------------------
+# axis 2: how the reserve is re-estimated once next year's diagonal exists
+# ---------------------------------------------------------------------------
 
-    One draw is one possible next year:
 
-    1. (``parameter_risk``) draw the *true* development factors from Mack's
-       estimation-error distribution, ``f_j ~ N(f_j-hat, sigma_j^2 / S_j)``;
-    2. draw the next diagonal cell of every open origin with Mack's conditional
-       moments, ``E = f_{k_i} C_{i,k_i}``, ``Var = sigma_{k_i}^2 C_{i,k_i}``,
-       independently across accident years;
-    3. append that diagonal and RE-RUN the volume-weighted chain ladder. Only
-       the factors move, and each moves by exactly one new observation:
-       ``f_j^{I+1} = (S_j f_j-hat + X_{i_j}) / (S_j + C_{i_j,j})``;
-    4. re-project each origin's ultimate off its new diagonal cell and take
-       ``CDR_i = C-hat_{i,J}^{I} - C-hat_{i,J}^{I+1}``.
+def rereserve(fit: MackFit, next_diagonal: np.ndarray) -> np.ndarray:
+    """``(n_draws, n_w)`` one-year CDR draws from simulated next-diagonal values.
 
-    ``parameter_risk`` is the ablation switch: off, the draws contain only the
-    process risk of the next diagonal (the ``Phi`` half of the Merz-Wuthrich
-    formula); on, they also carry the estimation error of the factors (its
-    ``Delta`` half). ``process`` chooses the shape of the step-2 shock among
-    ``PROCESS_LAWS`` - all three match Mack's first two moments, and only
-    ``gamma``/``lognormal`` guarantee a positive diagonal. Mack's model itself
-    fixes nothing beyond those two moments, so this choice is an assumption of
-    the simulation, not of the model; it is the reason ``normal`` is offered
-    (it is the shape the analytic linearization implicitly compares against).
+    The second axis, and it is not a choice: the reserve is re-estimated with
+    the **volume-weighted chain ladder**, which is the market convention and
+    what R's ``ChainLadder`` uses for its Mack CDR and its bootstrap CDR alike
+    (``getAvDFs(dfs, wghts)`` with the cumulative triangle as weights *is* the
+    volume-weighted factor written out). Every generator therefore shares this
+    one implementation, and a third-party diagonal - draws from any model that
+    can predict next year's cells - can be re-reserved by calling this directly.
 
-    Returns per-origin CDR draws plus a ``total`` column derived from the same
-    draws, so the diversification between accident years is in the samples.
-    A positive draw is a reserve release.
+    ``next_diagonal[:, i]`` is origin ``i``'s **cumulative** loss one year on,
+    on the same basis as ``fit.cum``. Closed origins are ignored (they have no
+    next cell, so their CDR is identically zero); pass zeros there.
+
+    What happens, per draw:
+
+    1. append the diagonal and re-run the chain ladder. Only the factors move,
+       and each moves by exactly one new observation, because on a run-off
+       staircase exactly one origin joins each development step next year::
+
+           f_j^{I+1} = (S_j f_j-hat + X_{i_j}) / (S_j + C_{i_j,j})
+
+       which is algebraically the volume-weighted factor recomputed on the
+       extended triangle - the numerator ``S_j f_j-hat`` is ``sum_i C_{i,j+1}``
+       and the denominator is ``sum_i C_{i,j}``, so adding the new pair to each
+       is the refit;
+    2. re-project each origin's ultimate off its new diagonal cell with the
+       suffix product of the UPDATED factors;
+    3. ``CDR_i = C-hat_{i,J}^{I} - C-hat_{i,J}^{I+1}``, so a positive draw is a
+       reserve release.
+
+    Only ``f``, ``s``, ``latest``, ``latest_dev`` and ``ultimate`` are read off
+    the fit - the volume-weighted chain ladder and the triangle it came from.
+    Mack's ``sigma2`` is not touched, which is why the ODP bootstrap can use
+    the identical function.
+
+    ONE MACK ASSUMPTION SURVIVES HERE AND IT IS WORTH NAMING. Step 3 differences
+    against ``fit.ultimate``, the *deterministic* chain-ladder ultimate at time
+    I. Under Mack that is exactly right and it is what makes ``E[CDR | D_I] =
+    0`` - the draws are centred on zero, so ``E[CDR^2]`` (:func:`simulated_msep`)
+    is the risk measure. Under a residual bootstrap the simulated diagonal's
+    mean is only *approximately* the chain-ladder projection, so the CDR draws
+    carry a small bootstrap bias and the mean square about zero is not quite the
+    variance. R makes the same distinction from the other side: its Mack CDR
+    reports the analytic msep (about zero) while ``CDR.BootChainLadder`` reports
+    ``sd()`` of the re-reserved amount (about its own mean). Report both when
+    the generator is not ``mack``.
     """
-    if process not in PROCESS_LAWS:
-        raise ValueError(f"process must be one of {PROCESS_LAWS}, got {process!r}")
-    if n_draws < 1:
-        raise ValueError("n_draws must be positive")
-    # step 2's Var = sigma_{k_i}^2 * C_{i,k_i} is non-positive off a non-positive
-    # diagonal, and draw_step then returns the mean exactly - an invisible point
-    # mass rather than an error, which is the one failure a simulation cannot
-    # surface on its own
-    fit.require_positive_open_diagonals()
-    rng = np.random.default_rng(seed)
+    x = np.asarray(next_diagonal, dtype=float)
+    if x.ndim != 2 or x.shape[1] != fit.n_w:
+        raise ValueError(
+            f"next_diagonal must be (n_draws, n_w={fit.n_w}) cumulative values, got "
+            f"{x.shape}. One column per origin of the fit, in its origin order"
+        )
+    n_draws = x.shape[0]
     n_w, n_d = fit.n_w, fit.n_d
     k = fit.latest_dev
     diag = fit.latest  # (n_w,) each origin's cumulative on the current diagonal
     open_ = _open_years(fit)
-
-    # 1.-2. true factors per draw (parameter risk; Var(f_j-hat) = sigma_j^2/S_j
-    # is Mack's estimation-error variance for the volume-weighted factor), then
-    # the next diagonal cell of every open origin with Mack's conditional
-    # moments. These two steps ARE the held-out one-step cell draw, so they
-    # live once in ``kernels.mack._next_step_draws``, shared with
-    # ``draw_next_cells`` - the CRPS board and the CDR cannot drift apart.
-    x = np.zeros((n_draws, n_w))
     idx = np.nonzero(open_)[0]
-    x[:, idx] = _next_step_draws(
-        fit,
-        k[idx],
-        diag[idx],
-        n_draws=n_draws,
-        rng=rng,
-        process=process,
-        parameter_risk=parameter_risk,
-    )
 
-    # 3. re-estimate every factor on the extended triangle
+    # 1. re-estimate every factor on the extended triangle
     f_new = np.tile(fit.f, (n_draws, 1))
     for j, i in _new_observation_origin(fit).items():
         f_new[:, j] = (fit.s[j] * fit.f[j] + x[:, i]) / (fit.s[j] + diag[i])
 
-    # 4. re-project: suffix products of the UPDATED factors, P[:, j] = prod_{t>=j} f_new[t]
+    # 2. re-project: suffix products of the UPDATED factors, P[:, j] = prod_{t>=j} f_new[t]
     suffix = np.ones((n_draws, n_d))
     for j in range(n_d - 2, -1, -1):
         suffix[:, j] = suffix[:, j + 1] * f_new[:, j]
@@ -332,7 +355,390 @@ def simulate_one_year_cdr(
     # closed origins never move: their CDR is identically zero
     ult_new[:, ~open_] = fit.ultimate[~open_]
 
-    cdr = fit.ultimate[None, :] - ult_new
+    # 3. the observable claims development result
+    return fit.ultimate[None, :] - ult_new
+
+
+# ---------------------------------------------------------------------------
+# axis 1: what generates next year's diagonal
+# ---------------------------------------------------------------------------
+
+
+class DiagonalGenerator(ABC):
+    """What next year's diagonal might be. The first axis of a simulated CDR.
+
+    Two methods, and the split is the point. :meth:`check` asks whether this
+    generator can answer for this cohort AT ALL and raises naming the cause if
+    not - the honest-refusal idiom the held-out capability mixins use, moved to
+    a place where the refusals genuinely differ: ``mack`` needs a strictly
+    positive open diagonal (its conditional variance is proportional to it) and
+    tolerates negative increments; ``odp_bootstrap`` is the exact reverse. That
+    asymmetry is why the guard could not stay in ``simulate_one_year_cdr``,
+    where it applied Mack's precondition to everything.
+
+    :meth:`draw` returns ``(n_draws, n_w)`` **cumulative** losses one year on,
+    zero at closed origins, ready for :func:`rereserve`.
+
+    Each generator carries its own knobs as dataclass fields rather than taking
+    them from a shared ``simulate_one_year_cdr`` signature. That is deliberate:
+    ``process``/``parameter_risk`` are Mack's vocabulary and
+    ``process_noise``/``resample_residuals`` are the bootstrap's, and a shared
+    signature would let a caller pass one generator's knob and have it silently
+    ignored by another - this repo's named inert-parameter bug class, where the
+    answer looks perfect because the argument never reached anything.
+
+    Not exported from ``ibnr.kernels``, by the same rule that keeps
+    ``ScoresHeldout``/``PredictsHeldout`` at ``ibnr.gallery.entry``: subclassing
+    it is how a generator DECLARES itself, and a caller only ever constructs the
+    concrete ones.
+    """
+
+    #: registry key, and what ``generator="..."`` accepts
+    name: ClassVar[str]
+
+    @abstractmethod
+    def check(self, fit: MackFit) -> None:
+        """Raise, naming the cause, if this generator cannot serve this cohort."""
+
+    @abstractmethod
+    def draw(self, fit: MackFit, *, n_draws: int, rng: np.random.Generator) -> np.ndarray:
+        """``(n_draws, n_w)`` cumulative loss on next year's diagonal."""
+
+
+@dataclass(frozen=True)
+class MackDiagonal(DiagonalGenerator):
+    """Next year's diagonal from Mack's conditional moments.
+
+    Per draw: optionally draw the *true* development factors from Mack's
+    estimation-error distribution ``f_j ~ N(f_j-hat, sigma_j^2 / S_j)``, then
+    draw each open origin's next cell with ``E = f_{k_i} C_{i,k_i}``,
+    ``Var = sigma_{k_i}^2 C_{i,k_i}``, independently across accident years.
+
+    ``parameter_risk`` is the ablation switch: off, the draws contain only the
+    process risk of the next diagonal (the ``Phi`` half of the Merz-Wuthrich
+    formula); on, they also carry the estimation error of the factors (its
+    ``Delta`` half). ``process`` chooses the shape of the shock among
+    ``kernels.mack.PROCESS_LAWS`` - all three match Mack's first two moments,
+    and only ``gamma``/``lognormal`` guarantee a positive diagonal. Mack's model
+    fixes nothing beyond those two moments, so this choice is an assumption of
+    the simulation, not of the model; it is the reason ``normal`` is offered
+    (it is the shape the analytic linearization implicitly compares against).
+
+    The draw itself is ``kernels.mack._next_step_draws``, shared with
+    ``draw_next_cells`` - the leaderboard's CRPS and this CDR cannot drift apart.
+    """
+
+    process: str = "gamma"
+    parameter_risk: bool = True
+
+    name = "mack"
+
+    def __post_init__(self) -> None:
+        if self.process not in PROCESS_LAWS:
+            raise ValueError(f"process must be one of {PROCESS_LAWS}, got {self.process!r}")
+
+    def check(self, fit: MackFit) -> None:
+        """``Var = sigma_{k_i}^2 C_{i,k_i}`` is non-positive off a non-positive
+        diagonal, and ``draw_step`` then returns the mean exactly - an invisible
+        point mass rather than an error, which is the one failure a simulation
+        cannot surface on its own."""
+        fit.require_positive_open_diagonals()
+
+    def draw(self, fit: MackFit, *, n_draws: int, rng: np.random.Generator) -> np.ndarray:
+        k = fit.latest_dev
+        x = np.zeros((n_draws, fit.n_w))
+        idx = np.nonzero(_open_years(fit))[0]
+        x[:, idx] = _next_step_draws(
+            fit,
+            k[idx],
+            fit.latest[idx],
+            n_draws=n_draws,
+            rng=rng,
+            process=self.process,
+            parameter_risk=self.parameter_risk,
+        )
+        return x
+
+
+@dataclass(frozen=True)
+class ODPBootstrapDiagonal(DiagonalGenerator):
+    """Next year's diagonal from an England-Verrall ODP residual bootstrap.
+
+    The generator behind R's ``CDR.BootChainLadder``: resample DoF-adjusted
+    Pearson residuals into a pseudo-triangle, refit the chain ladder on it,
+    project the next diagonal off that refit and add over-dispersed Poisson
+    process noise. The mechanics are ``kernels/odp_bootstrap.py``, where they
+    can be read against R's source; this class is the CDR-side wiring.
+
+    ``process`` is the noise law (``od_poisson`` = ``phi * Poisson(mu/phi)``,
+    the England-Verrall construction ``england_verrall_odp.predict`` also draws,
+    or ``gamma``; both have mean ``mu`` and variance ``phi * mu``). Note R's
+    ``BootChainLadder`` defaults to ``gamma``, so a like-for-like comparison
+    with R needs ``process="gamma"`` set explicitly.
+
+    ``resample_residuals`` and ``process_noise`` are the two ablation switches -
+    R's ``NYCost`` arm is both on, its ``NYParamDist`` arm is
+    ``process_noise=False``, and the process-only arm R derives by subtraction
+    is ``resample_residuals=False``. Turning both off is refused: every draw
+    would be identical, which is a degenerate answer rather than an ablation.
+
+    **The family limit is real and is refused by name.** The ODP quasi-likelihood
+    is defined on non-negative increments, so a cohort with a negative paid
+    increment cannot be bootstrapped - about half the Schedule P mart, the same
+    limitation ``england_verrall_odp`` carries. :meth:`check` raises there and
+    says so, and points at the ``mack`` generator, which has no such restriction.
+    """
+
+    process: str = "od_poisson"
+    process_noise: bool = True
+    resample_residuals: bool = True
+
+    name = "odp_bootstrap"
+
+    def __post_init__(self) -> None:
+        if self.process not in ODP_PROCESS_LAWS:
+            raise ValueError(f"process must be one of {ODP_PROCESS_LAWS}, got {self.process!r}")
+        if not (self.process_noise or self.resample_residuals):
+            raise ValueError(
+                "process_noise and resample_residuals are both off, so the bootstrap has no "
+                "risk source left and every draw would be identical. Turn one back on, or "
+                "read the point estimate off MackFit.reserve"
+            )
+
+    def check(self, fit: MackFit) -> None:
+        """Build the deterministic half of the bootstrap and discard it: it is
+        where the negative-increment refusal and the degrees-of-freedom check
+        live, and both are cheap enough to pay twice."""
+        fit_odp_bootstrap(fit.cum, fit.obs_mask, fit.latest_dev, fit.f)
+
+    def draw(self, fit: MackFit, *, n_draws: int, rng: np.random.Generator) -> np.ndarray:
+        boot = fit_odp_bootstrap(fit.cum, fit.obs_mask, fit.latest_dev, fit.f)
+        payments = draw_next_increments(
+            boot,
+            n_draws=n_draws,
+            rng=rng,
+            process=self.process,
+            process_noise=self.process_noise,
+            resample_residuals=self.resample_residuals,
+        )
+        # R's getTriangleNextYear: the simulated payments join the ORIGINAL
+        # triangle's diagonal, not the pseudo-triangle's. The pseudo-triangle
+        # only ever sets the payments' scale.
+        return np.where(_open_years(fit)[None, :], fit.latest[None, :] + payments, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# the option surface
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CDRMethod:
+    """One row of :func:`cdr_methods` - a route to a one-year CDR and its terms.
+
+    ``generator`` is the :class:`DiagonalGenerator` **class** (not an instance),
+    mirroring ``gallery.get(name)``: it is what a caller constructs to configure
+    the method, ``get_cdr_method("odp_bootstrap").generator(process="gamma")``.
+    It is ``None`` for the analytic route, which generates no diagonal at all.
+    """
+
+    name: str
+    route: str  # "analytic" | "simulation"
+    generates: str  # what produces next year's diagonal
+    re_estimates: str  # the second axis - the same for every simulation route
+    returns: str
+    entry_point: str
+    requires: str
+    validated: str
+    reference: str
+    generator: type[DiagonalGenerator] | None = None
+
+
+#: every route to a one-year CDR, keyed by name. The analytic one is listed
+#: even though ``generator=`` cannot take it: a caller asking "what are my
+#: options" must be told it exists, and told in the same breath that it is
+#: Mack-only and reached by a different call.
+CDR_METHODS: dict[str, CDRMethod] = {
+    "merz_wuthrich": CDRMethod(
+        name="merz_wuthrich",
+        route="analytic",
+        generates="nothing - the factor update is linearized, not simulated",
+        re_estimates="volume-weighted chain ladder (linearized)",
+        returns="CDRResult (msep per origin and in total, no quantiles)",
+        entry_point="one_year_cdr(fit)",
+        requires="a MackFit with a strictly positive open diagonal",
+        validated=(
+            "golden tie-out: R ChainLadder CDR(MackChainLadder(MW2014, "
+            'est.sigma="Mack")) to 7 decimals, per origin and in total'
+        ),
+        reference="Merz & Wuthrich (2008), CAS E-Forum Fall 2008",
+        generator=None,
+    ),
+    "mack": CDRMethod(
+        name="mack",
+        route="simulation",
+        generates="Mack's conditional moments, E = f*C and Var = sigma^2*C",
+        re_estimates="volume-weighted chain ladder (re-run on the extended triangle)",
+        returns="PredictiveDistribution of the CDR (quantiles, VaR/TVaR)",
+        entry_point='simulate_one_year_cdr(fit, generator="mack")',
+        requires="a MackFit with a strictly positive open diagonal",
+        validated=(
+            "agrees with the merz_wuthrich closed form to Monte Carlo error, "
+            "which is itself tied out to R to 7 decimals"
+        ),
+        reference="Mack (1993) moments; 'actuary in the box' re-reserving",
+        generator=MackDiagonal,
+    ),
+    "odp_bootstrap": CDRMethod(
+        name="odp_bootstrap",
+        route="simulation",
+        generates="ODP Pearson-residual bootstrap + over-dispersed Poisson noise",
+        re_estimates="volume-weighted chain ladder (re-run on the extended triangle)",
+        returns="PredictiveDistribution of the CDR (quantiles, VaR/TVaR)",
+        entry_point='simulate_one_year_cdr(fit, generator="odp_bootstrap")',
+        requires="a MackFit whose observed increments are all non-negative",
+        validated=(
+            "NO published digits exist - R's CDR.BootChainLadder example prints "
+            "no output and a bootstrap is stochastic. Validated instead against "
+            "R's ALGORITHM (a literal transcription of getNYCost reproduces the "
+            "draws to 1e-10) and, for the standard error, against a delta-method "
+            "reference computed off the re-reserving Jacobian, to Monte Carlo error"
+        ),
+        reference=(
+            "England & Verrall (2002) sec. 8; R ChainLadder BootChainLadder / "
+            "CDR.BootChainLadder (Crupi, Gesmann)"
+        ),
+        generator=ODPBootstrapDiagonal,
+    ),
+}
+
+
+def cdr_methods() -> pd.DataFrame:
+    """Every way to get a one-year CDR, and the terms of each.
+
+    The answer to "which method is the one-year CDR, and what else could it
+    be?": one row per route, with what generates next year's diagonal, how the
+    reserve is re-estimated afterwards, what the call returns, what it requires
+    of the cohort, and - honestly, per route - what it has actually been
+    validated against::
+
+        from ibnr.kernels.cdr import cdr_methods
+
+        cdr_methods()[["name", "route", "generates", "returns"]]
+
+    Names in the ``name`` column are what ``generator=`` accepts, except
+    ``merz_wuthrich``, whose ``entry_point`` says where it lives instead.
+    """
+    return pd.DataFrame(
+        [{k: v for k, v in vars(m).items() if k != "generator"} for m in CDR_METHODS.values()]
+    )
+
+
+def get_cdr_method(name: str) -> CDRMethod:
+    """The :class:`CDRMethod` descriptor for one route, or a KeyError naming the
+    known ones. Mirrors ``gallery.get``: what comes back describes the method
+    and carries its generator **class**, so the caller constructs and configures
+    it - ``get_cdr_method("odp_bootstrap").generator(process="gamma")``."""
+    try:
+        return CDR_METHODS[name]
+    except KeyError:
+        raise KeyError(
+            f"no CDR method named {name!r}; known: {sorted(CDR_METHODS)}. "
+            "cdr_methods() lists what each one requires and returns"
+        ) from None
+
+
+def _resolve_generator(
+    generator: DiagonalGenerator | str | None,
+    *,
+    process: str | None,
+    parameter_risk: bool | None,
+) -> DiagonalGenerator:
+    """``generator=`` plus the two legacy Mack knobs -> one generator instance.
+
+    ``generator=None`` reproduces the pre-0.6.0 signature exactly, defaults and
+    all, so every 0.5.0 call site keeps its numbers bit for bit. Supplying a
+    generator AND a Mack knob is refused rather than silently ignored: the knob
+    would otherwise be inert, which is the failure mode this repo has already
+    shipped once and now tests for by name.
+    """
+    if generator is None:
+        return MackDiagonal(
+            process="gamma" if process is None else process,
+            parameter_risk=True if parameter_risk is None else parameter_risk,
+        )
+    inert = [
+        name
+        for name, value in (("process", process), ("parameter_risk", parameter_risk))
+        if value is not None
+    ]
+    if inert:
+        given = getattr(generator, "name", generator)
+        raise ValueError(
+            f"{', '.join(inert)} is a MackDiagonal setting and cannot be combined with "
+            f"generator={given!r}; every generator carries its own knobs, so pass them to "
+            f"the generator itself (e.g. MackDiagonal(process=...)). Accepting them here "
+            "would leave the argument inert whenever the generator is not mack"
+        )
+    if isinstance(generator, DiagonalGenerator):
+        return generator
+    if isinstance(generator, str):
+        method = get_cdr_method(generator)
+        if method.generator is None:
+            raise ValueError(
+                f"{generator!r} is an {method.route} method, not a diagonal generator: it "
+                "linearizes the chain-ladder factor update around Mack's conditional "
+                "moments rather than simulating anything, so there is no version of it for "
+                f"another model. Call {method.entry_point} instead"
+            )
+        return method.generator()
+    raise TypeError(
+        "generator must be a DiagonalGenerator, a method name from cdr_methods(), or None; "
+        f"got {type(generator).__name__}"
+    )
+
+
+def simulate_one_year_cdr(
+    fit: MackFit,
+    *,
+    n_draws: int = 20_000,
+    seed: int | None = None,
+    generator: DiagonalGenerator | str | None = None,
+    process: str | None = None,
+    parameter_risk: bool | None = None,
+) -> PredictiveDistribution:
+    """Actuary in the box: the one-year CDR distribution by re-reserving.
+
+    One draw is one possible next year - :meth:`DiagonalGenerator.draw` says
+    what emerged, :func:`rereserve` re-runs the volume-weighted chain ladder on
+    the extended triangle and differences the ultimates. Returns per-origin CDR
+    draws plus a ``total`` column derived from the same draws, so the
+    diversification between accident years is in the samples; a positive draw is
+    a reserve release.
+
+    ``generator`` picks the first axis: a method name from :func:`cdr_methods`,
+    or a configured instance::
+
+        simulate_one_year_cdr(fit)                                  # Mack, defaults
+        simulate_one_year_cdr(fit, generator="odp_bootstrap")
+        simulate_one_year_cdr(fit, generator=ODPBootstrapDiagonal(process="gamma"))
+
+    ``process`` and ``parameter_risk`` are :class:`MackDiagonal`'s knobs, kept
+    on this signature because they are the published 0.5.0 API - ``None`` means
+    "that generator's default", so the defaults and every explicit call are
+    unchanged. They cannot be combined with ``generator=``; pass them to the
+    generator instead, and see :func:`_resolve_generator` for why.
+
+    ``generator="merz_wuthrich"`` is refused by name: the closed form is a
+    linearization of the chain-ladder factor update around Mack's moments, not a
+    way of generating a diagonal, and :func:`one_year_cdr` is where it lives.
+    """
+    gen = _resolve_generator(generator, process=process, parameter_risk=parameter_risk)
+    if n_draws < 1:
+        raise ValueError("n_draws must be positive")
+    gen.check(fit)
+    rng = np.random.default_rng(seed)
+    cdr = rereserve(fit, gen.draw(fit, n_draws=n_draws, rng=rng))
     targets = pd.DataFrame(
         {
             "label": [str(o) for o in fit.origin_periods],
@@ -347,7 +753,17 @@ def simulated_msep(pred: PredictiveDistribution) -> np.ndarray:
 
     Not the sample variance: the CDR risk measure is the mean square about the
     zero the model predicts, so a simulation whose mean drifts off zero is
-    penalised for it rather than being silently re-centred."""
+    penalised for it rather than being silently re-centred.
+
+    **That zero is Mack's.** ``E[CDR | D_I] = 0`` holds exactly under Mack's
+    conditional moments, so on the ``mack`` generator this is the msep the
+    Merz-Wuthrich closed form estimates. A residual bootstrap centres its
+    diagonal on the pseudo-triangle's refit rather than on the chain-ladder
+    projection, so its draws carry a small bias and this differs from their
+    variance by its square. R draws the same distinction from the other side:
+    ``CDR.MackChainLadder`` reports the analytic msep (about zero) and
+    ``CDR.BootChainLadder`` reports ``sd()`` of the re-reserved amount (about
+    its own mean). On a non-Mack generator, report both."""
     return (pred.samples**2).mean(axis=0)
 
 
