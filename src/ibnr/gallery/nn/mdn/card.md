@@ -56,8 +56,12 @@ attention. The vector concatenates:
 
 Non-context values are zeroed *before* any summary is taken, so a cell past
 the cutoff cannot influence any prediction - its own included. Body: 2
-hidden layers of 128, GELU, dropout 0.1 (~30k parameters, even smaller than
-the transformer's ~120k). Head: the same K=3 Gaussian MDN per cell on the
+hidden layers of 128, GELU, dropout 0.1 - **26,353 parameters** on an 8x8 grid,
+comfortably under the transformer's **70,121 parameters** at the same shape.
+Both figures are pinned by `tests/test_nn_parameter_counts.py`; an earlier
+revision of this card put the transformer at ~120k, a figure `transformer/card.md`
+had already corrected and which survived here only because nothing checked it.
+Head: the same K=3 Gaussian MDN per cell on the
 normalized incremental loss-ratio scale, sigma = softplus + 1e-3.
 
 ## Training

@@ -35,13 +35,15 @@ normalized log premium). Encoder: 2 pre-LN transformer layers, d_model 64,
 4 heads, FFN 128, dropout 0.15, GELU. Head: mixture density network, K=3
 Gaussians per cell on the normalized incremental loss-ratio scale.
 
-**Size: about 70k parameters** - 70,121 on a 8x8 grid with one channel and 4
-LOB levels, 70,505 on a full 10x10 Schedule P triangle (measured, not
-estimated; `analysis/03_gallery_api_comparison.ipynb` prints the per-module
-table). 66,944 of those are the two encoder layers and do not depend on the
-triangle's size at all; only the three position embeddings do, and they are
-about 2% of the count. An earlier revision of this card quoted ~120k, which
-was never the number this configuration builds.
+**Size: about 70k.** Measured, not estimated: **70,121 parameters** on an 8x8
+grid with one channel and 4 LOB levels, **70,505 parameters** on a full 10x10
+Schedule P triangle (`analysis/03_gallery_api_comparison.ipynb` prints the
+per-module table). 66,944 of those are the two encoder layers and do not depend
+on the triangle's size at all; only the three position embeddings do, and they
+are about 2% of the count. An earlier revision of this card quoted ~120k, which
+was never the number this configuration builds - and the stale figure outlived
+the correction by being copied into `mdn/card.md`, which is why both numbers
+above are now pinned by `tests/test_nn_parameter_counts.py`.
 
 **Why the calendar embedding is relative (v3):** forecasts live on calendar
 diagonals beyond the training window, where v1/v2's absolute learned
