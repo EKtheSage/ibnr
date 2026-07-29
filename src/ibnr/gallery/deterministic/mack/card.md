@@ -123,18 +123,52 @@ parameter uncertainty. The **totals are algebraically identical** (`tests/
 test_cdr.py::test_phi_delta_split_matches_the_reference_grouping` asserts it);
 only the labels differ. Quote the convention when reporting a decomposition.
 
-### Two routes, deliberately comparable
+### The one-year CDR is not one method. Two axes, and they are separate
 
-| call | what it gives | risk components |
-|---|---|---|
-| `one_year_cdr()` | closed-form msep per origin + total | `Phi` (process) + `Delta` (estimation) |
-| `cdr_distribution()` | the full CDR *distribution* (quantiles, tails) | `process=` law; `parameter_risk=` on/off |
+Every simulated one-year CDR is the same two-step recipe, and the steps are
+independent choices:
 
-`cdr_distribution()` is "actuary in the box": simulate only the next diagonal
-from the fitted model, append it, **re-run the chain ladder** on the extended
-triangle, and difference the ultimates. With `parameter_risk=True` and
-`process="normal"` it reproduces the analytic msep to Monte Carlo error
-(asserted in `tests/test_cdr.py`); `parameter_risk=False` isolates `Phi`.
+1. **what generates next year's diagonal** - a `DiagonalGenerator`;
+2. **how the reserve is re-estimated once it exists** - the volume-weighted
+   chain ladder, `kernels.cdr.rereserve`.
+
+Axis 2 is *not* a choice. It is the market convention and it is what R's
+`ChainLadder` uses for its Mack CDR and its bootstrap CDR alike (`getAvDFs`
+with the cumulative triangle as weights is the volume-weighted factor written
+out), so every generator shares one implementation. Axis 1 is the choice:
+
+```python
+from ibnr.kernels.cdr import cdr_methods
+
+cdr_methods()  # name, route, generates, re_estimates, returns, requires, validated
+```
+
+| method | route | generates next diagonal by | returns |
+|---|---|---|---|
+| `merz_wuthrich` | analytic | nothing - the factor update is linearized | `CDRResult` (msep, no quantiles) |
+| `mack` | simulation | Mack's conditional moments, `E = f*C`, `Var = sigma^2*C` | `PredictiveDistribution` |
+| `odp_bootstrap` | simulation | England-Verrall Pearson-residual bootstrap + over-dispersed Poisson noise | `PredictiveDistribution` |
+
+```python
+entry.one_year_cdr()  # merz_wuthrich (Mack only)
+entry.cdr_distribution()  # mack, defaults
+entry.cdr_distribution(generator="odp_bootstrap")  # England-Verrall
+```
+
+**`merz_wuthrich` is deliberately not reachable through `generator=`.** Every
+term in it is `sigma[j]^2/f[j]^2`: it is a linearization of the chain-ladder
+factor update *around Mack's conditional moments*, so there is no ODP version
+of it and no version for any other model. Asking for it as a generator is
+refused by name and redirected to `one_year_cdr()`, in the same spirit as the
+held-out capability mixins - a method that cannot answer says so.
+
+#### The `mack` generator
+
+"Actuary in the box": simulate only the next diagonal from the fitted model,
+append it, **re-run the chain ladder** on the extended triangle, and difference
+the ultimates. With `parameter_risk=True` and `process="normal"` it reproduces
+the analytic msep to Monte Carlo error (asserted in `tests/test_cdr.py`);
+`parameter_risk=False` isolates `Phi`.
 
 Because Mack's model constrains only two moments, the shape of the shock is an
 assumption of the *simulation*, not of the model: `gamma` (default, positive
@@ -142,6 +176,64 @@ support), `lognormal`, or `normal` (matches the analytic linearization, can go
 negative). The choice moves the tail quantiles - not the mean, and only
 slightly the variance - and it is the first thing to vary when the CDR
 distribution is used for capital.
+
+#### The `odp_bootstrap` generator
+
+The generator behind R's `CDR.BootChainLadder`: resample degrees-of-freedom
+adjusted Pearson residuals into a pseudo-triangle, refit the chain ladder on
+it, project the next diagonal off that refit and add over-dispersed Poisson
+process noise (`kernels/odp_bootstrap.py`, written to be read against R's
+source). `process=` picks the noise law - `od_poisson` (default,
+`phi*Poisson(mu/phi)`, the England-Verrall construction `england_verrall_odp`
+also draws) or `gamma`, both with mean `mu` and variance `phi*mu`. **R's
+`BootChainLadder` defaults to `gamma`**, so a like-for-like comparison needs it
+set explicitly.
+
+`resample_residuals` and `process_noise` are the two ablation switches: R's
+`NYCost` arm is both on, its `NYParamDist` arm is `process_noise=False`, and
+the process-only arm R derives by subtraction is `resample_residuals=False`.
+All three are simulated here, and their variances compose in quadrature to
+Monte Carlo error - which is the assumption R's `CDR.Process.S.E` rests on.
+
+**Validated to Monte Carlo error against the algorithm, not to published
+digits, because no published digits exist.** R's `CDR.BootChainLadder` help
+page prints no output for its example, and a bootstrap is stochastic. So the
+route is pinned by (a) a literal transcription of R's `getNYCost` in the test
+suite, which must reproduce the draws to 1e-10 when fed the same diagonal;
+(b) a delta-method variance reference computed off the re-reserving Jacobian
+for the process-only arm; (c) the Poisson-MLE property of the fitted values,
+cross-checked against `england_verrall_odp`'s iterative proportional fit. Do
+not quote this route as tied out; the Mack route is.
+
+**Family limit, refused by name.** The ODP quasi-likelihood is defined on
+non-negative increments, so a cohort with a negative paid increment cannot be
+bootstrapped - roughly half the Schedule P mart, the same limit
+`england_verrall_odp` carries. The error names the offending cells and points
+at the `mack` generator, which has no such restriction. The reverse also holds
+and is a real capability difference rather than an accident: an accident year
+with **zero paid at 12 months** has a bootstrap CDR (the variance comes off the
+fitted mean) and no Mack CDR (Mack's variance is proportional to that cell, so
+`require_positive_open_diagonals` refuses).
+
+#### One Mack assumption survives the split, and it is worth knowing
+
+`rereserve` differences against the *deterministic* chain-ladder ultimate at
+time I. Under Mack that is exactly right and is what makes `E[CDR | D_I] = 0`,
+so `kernels.cdr.simulated_msep`'s mean square **about zero** is the risk
+measure. A residual bootstrap centres its diagonal on the pseudo-triangle's
+refit, so its draws carry a small bias (measured at ~0.5% of a standard
+deviation on the test fixture, ~1.7% on MW2014) and the mean square about zero
+is no longer quite the variance. R draws the same distinction from the other
+side: `CDR.MackChainLadder` reports the analytic msep (about zero) and
+`CDR.BootChainLadder` reports `sd()` of the re-reserved amount (about its own
+mean). On a non-Mack generator, report both.
+
+#### Plugging in a third generator
+
+`rereserve(fit, next_diagonal)` is public. Anything that can draw next year's
+cumulative cells - including a gallery entry with `PredictsHeldout` - can be
+re-reserved through the same volume-weighted chain ladder and produce a CDR
+directly comparable to these two.
 
 ### Capital
 
@@ -240,14 +332,18 @@ the backtest window with `as_of=` before fitting.
   `sigma[j]^2` itself negative, hence a negative msep and a NaN standard error),
   as is a step with zero volume or with fewer than two positive origins. The
   errors name the dev step and the offending origins.
-- **The latest diagonal is checked on the variance path, not at fit time.**
-  Those cells have no observed successor, so they enter no step's estimator -
-  yet `msep_runoff`, the CDR and the simulations all divide by them. `fit_mack`
+- **The latest diagonal is checked on the variance path, not at fit time, and
+  the check belongs to Mack rather than to the CDR.** Those cells have no
+  observed successor, so they enter no step's estimator - yet `msep_runoff`,
+  the closed form and every *Mack* simulation divide by them. `fit_mack`
   therefore succeeds on a cohort with a non-positive diagonal and gives a valid
-  point estimate; `msep_runoff()` / `one_year_cdr()` / `simulate_*()` raise,
-  naming the origin. Incurred triangles net of bulk reserves are where this
-  bites. (Before this split the same cohort returned a silent `NaN` msep and a
-  `NaN` total.)
+  point estimate; `msep_runoff()` / `one_year_cdr()` / `simulate_*()` on the
+  `mack` generator raise, naming the origin. Incurred triangles net of bulk
+  reserves are where this bites. (Before this split the same cohort returned a
+  silent `NaN` msep and a `NaN` total.) The guard now lives on
+  `MackDiagonal.check`, not on `simulate_one_year_cdr`: the `odp_bootstrap`
+  generator has a *different* precondition (non-negative increments) and used
+  to inherit Mack's, which refused cohorts it could perfectly well answer for.
 - **The last step's sigma is an extrapolation**, and on a small triangle it can
   dominate the youngest accident year's uncertainty. The two rules disagree by
   design; if the answer is sensitive to which one is chosen, say so rather than

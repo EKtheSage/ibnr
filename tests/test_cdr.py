@@ -28,12 +28,18 @@ import numpy as np
 import pytest
 
 from ibnr.kernels.cdr import (
+    CDR_METHODS,
+    DiagonalGenerator,
+    MackDiagonal,
+    cdr_methods,
     cdr_risk_measures,
+    get_cdr_method,
     one_year_cdr,
+    rereserve,
     simulate_one_year_cdr,
     simulated_msep,
 )
-from ibnr.kernels.mack import fit_mack
+from ibnr.kernels.mack import PROCESS_LAWS, fit_mack
 
 from .conftest import make_cohort_triangle
 
@@ -347,3 +353,167 @@ def test_rejects_unknown_process_law(backend_name):
     )
     with pytest.raises(ValueError, match="process must be one of"):
         simulate_one_year_cdr(fit, n_draws=10, process="cauchy")
+
+
+# -- the two axes, and the option surface over them ---------------------------
+
+
+@pytest.mark.parametrize("process", PROCESS_LAWS)
+@pytest.mark.parametrize("parameter_risk", [True, False])
+def test_simulate_is_exactly_the_generator_composed_with_rereserve(process, parameter_risk):
+    """The refactor's safety property, and it is BIT identity rather than
+    agreement: the published Mack route must be the ``MackDiagonal`` generator
+    followed by :func:`rereserve`, with the same seed producing the same bytes.
+
+    A tolerance-based check would pass on a re-ordered RNG consumption that
+    quietly changes every published number, which is exactly what a refactor of
+    a released simulation must not be allowed to do.
+    """
+    fit = fit_mack(make_cohort_triangle(None, synthetic_triangle(None)), loss_field="paid_loss")
+    convenience = simulate_one_year_cdr(
+        fit, n_draws=257, seed=7, process=process, parameter_risk=parameter_risk
+    )
+    rng = np.random.default_rng(7)
+    composed = rereserve(
+        fit,
+        MackDiagonal(process=process, parameter_risk=parameter_risk).draw(
+            fit, n_draws=257, rng=rng
+        ),
+    )
+    per_origin = np.ascontiguousarray(convenience.samples[:, :-1])
+    assert np.array_equal(per_origin.view(np.uint8), composed.view(np.uint8))
+    # ... and the same numbers again through generator=, which must not re-seed
+    # or re-order anything either
+    through_generator = simulate_one_year_cdr(
+        fit,
+        n_draws=257,
+        seed=7,
+        generator=MackDiagonal(process=process, parameter_risk=parameter_risk),
+    )
+    assert np.array_equal(
+        convenience.samples.view(np.uint8), through_generator.samples.view(np.uint8)
+    )
+
+
+def test_generator_name_string_is_the_default_configured_generator(backend_name):
+    """``generator="mack"`` must be the same thing as the no-argument default,
+    not a differently-configured instance that happens to be close."""
+    fit = fit_mack(
+        make_cohort_triangle(backend_name, synthetic_triangle(backend_name)),
+        loss_field="paid_loss",
+    )
+    a = simulate_one_year_cdr(fit, n_draws=200, seed=3)
+    b = simulate_one_year_cdr(fit, n_draws=200, seed=3, generator="mack")
+    assert np.array_equal(a.samples.view(np.uint8), b.samples.view(np.uint8))
+
+
+def test_cdr_methods_is_the_discoverable_option_surface():
+    """One row per route, and the table must describe every registered method -
+    a method cannot join ``CDR_METHODS`` without appearing in the listing a user
+    reads to choose one."""
+    table = cdr_methods()
+    assert list(table["name"]) == list(CDR_METHODS)
+    for column in ("route", "generates", "re_estimates", "returns", "requires", "validated"):
+        assert column in table.columns
+        assert table[column].map(bool).all()
+    # the analytic route is listed even though generator= cannot take it, and it
+    # says where it does live
+    row = table.set_index("name").loc["merz_wuthrich"]
+    assert row["route"] == "analytic"
+    assert row["entry_point"] == "one_year_cdr(fit)"
+    # every simulation route re-estimates the reserve the same way: axis 2 is
+    # not a choice, and the table must not imply that it is
+    simulated = table[table["route"] == "simulation"]
+    assert len(simulated) >= 2
+    assert simulated["re_estimates"].nunique() == 1
+
+
+def test_registry_keys_agree_with_the_generators_they_name():
+    """A registry key, a ``CDRMethod.name`` and the generator class's own
+    ``name`` are three places one string is written; they must be one string."""
+    for key, method in CDR_METHODS.items():
+        assert key == method.name
+        assert method.route in ("analytic", "simulation")
+        if method.route == "analytic":
+            assert method.generator is None
+            continue
+        assert issubclass(method.generator, DiagonalGenerator)
+        assert method.generator.name == key
+        assert get_cdr_method(key) is method
+
+
+def test_merz_wuthrich_is_refused_as_a_generator(backend_name):
+    """The hard constraint: the closed form is a linearization around Mack's
+    conditional moments, so it is not one option among many that any fit can
+    take. Asking for it as a generator must be refused by name and redirected,
+    not silently substituted."""
+    fit = fit_mack(
+        make_cohort_triangle(backend_name, synthetic_triangle(backend_name)),
+        loss_field="paid_loss",
+    )
+    with pytest.raises(ValueError, match="analytic method, not a diagonal generator"):
+        simulate_one_year_cdr(fit, n_draws=10, generator="merz_wuthrich")
+    try:
+        simulate_one_year_cdr(fit, n_draws=10, generator="merz_wuthrich")
+    except ValueError as exc:
+        assert "one_year_cdr(fit)" in str(exc)
+
+
+def test_mack_knobs_cannot_ride_along_with_another_generator(backend_name):
+    """The inert-parameter refusal. ``process=``/``parameter_risk=`` are
+    MackDiagonal's vocabulary; accepting them beside ``generator=`` would leave
+    them doing nothing while the answer still looked perfect - this repo's named
+    bug class. Refused by name instead."""
+    fit = fit_mack(
+        make_cohort_triangle(backend_name, synthetic_triangle(backend_name)),
+        loss_field="paid_loss",
+    )
+    for kwargs in ({"process": "normal"}, {"parameter_risk": False}):
+        with pytest.raises(ValueError, match="cannot be combined with generator="):
+            simulate_one_year_cdr(fit, n_draws=10, generator="mack", **kwargs)
+    # explicitly passing the DEFAULT value is refused too: "the same as the
+    # default" is not the same as "not supplied", and only the second is inert-safe
+    with pytest.raises(ValueError, match="cannot be combined with generator="):
+        simulate_one_year_cdr(fit, n_draws=10, generator="mack", process="gamma")
+
+
+def test_unknown_generator_is_refused_by_name(backend_name):
+    fit = fit_mack(
+        make_cohort_triangle(backend_name, synthetic_triangle(backend_name)),
+        loss_field="paid_loss",
+    )
+    with pytest.raises(KeyError, match="no CDR method named"):
+        simulate_one_year_cdr(fit, n_draws=10, generator="bootstrap")
+    with pytest.raises(TypeError, match="must be a DiagonalGenerator"):
+        simulate_one_year_cdr(fit, n_draws=10, generator=object())
+    with pytest.raises(KeyError, match="no CDR method named"):
+        get_cdr_method("odp")
+
+
+def test_rereserve_refuses_a_diagonal_that_is_not_the_fits_shape(backend_name):
+    """``rereserve`` is public so a caller can re-reserve draws from any model
+    that predicts next year's cells. A column count that is not the fit's is the
+    one mistake that would otherwise index cleanly and answer for the wrong
+    origins."""
+    fit = fit_mack(
+        make_cohort_triangle(backend_name, synthetic_triangle(backend_name)),
+        loss_field="paid_loss",
+    )
+    with pytest.raises(ValueError, match="must be .*n_w="):
+        rereserve(fit, np.zeros((5, fit.n_w - 1)))
+    with pytest.raises(ValueError, match="must be .*n_w="):
+        rereserve(fit, np.zeros(fit.n_w))
+
+
+def test_rereserve_accepts_a_hand_built_diagonal(backend_name):
+    """The generic path: hand it the diagonal the chain ladder itself projects
+    and every CDR must be exactly zero, because nothing was learned that the
+    time-I estimate did not already assume."""
+    fit = fit_mack(
+        make_cohort_triangle(backend_name, synthetic_triangle(backend_name)),
+        loss_field="paid_loss",
+    )
+    k = fit.latest_dev
+    expected = np.where(k < fit.n_d - 1, fit.latest * fit.f[np.minimum(k, fit.n_d - 2)], 0.0)
+    cdr = rereserve(fit, np.tile(expected, (3, 1)))
+    np.testing.assert_allclose(cdr, 0.0, atol=1e-8)

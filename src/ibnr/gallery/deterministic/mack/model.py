@@ -16,8 +16,17 @@ next year's re-estimate move", the claims development result of Merz & Wuthrich
     entry.one_year_cdr()        analytic msep, per accident year and in total
     entry.cdr_distribution()    the full CDR distribution by re-reserving
 
-The algorithms themselves live in ``kernels/mack.py`` and ``kernels/cdr.py`` -
-this entry only wires them to the gallery contract.
+``cdr_distribution()`` takes a ``generator=``, because "the one-year CDR" is
+not one method: what emerges next year can be drawn from Mack's conditional
+moments or from an England-Verrall ODP residual bootstrap, and the reserve is
+then re-estimated the same way either side. ``kernels.cdr.cdr_methods()`` is
+the list. ``one_year_cdr()`` deliberately takes no such argument - the
+Merz-Wuthrich closed form linearizes the factor update around Mack's moments
+and has no counterpart for another model.
+
+The algorithms themselves live in ``kernels/mack.py``, ``kernels/cdr.py`` and
+``kernels/odp_bootstrap.py`` - this entry only wires them to the gallery
+contract.
 
 On the milestone-6 board this entry is a CRPS member and a permanent ELPD N/A:
 it subclasses ``PredictsHeldout`` (its one-step-ahead draws are
@@ -38,7 +47,7 @@ import numpy as np
 
 from ibnr.gallery.entry import GalleryEntry, PredictsHeldout
 from ibnr.gallery.registry import register
-from ibnr.kernels.cdr import CDRResult, one_year_cdr, simulate_one_year_cdr
+from ibnr.kernels.cdr import CDRResult, DiagonalGenerator, one_year_cdr, simulate_one_year_cdr
 from ibnr.kernels.contract import cohort_grid, realized_values
 from ibnr.kernels.holdout import CellIndex
 from ibnr.kernels.mack import MackFit, draw_next_cells, fit_mack_grid, simulate_ultimates
@@ -188,18 +197,34 @@ class Mack(GalleryEntry, PredictsHeldout):
         *,
         n_draws: int = 20_000,
         seed: int | None = None,
-        process: str = "gamma",
-        parameter_risk: bool = True,
+        generator: DiagonalGenerator | str | None = None,
+        process: str | None = None,
+        parameter_risk: bool | None = None,
     ) -> PredictiveDistribution:
         """The one-year CDR distribution by re-reserving ("actuary in the box").
 
         Same question as ``one_year_cdr()``, answered by simulation instead of
         a closed form, so it also yields quantiles - which is what a one-year
-        risk capital figure actually needs. A positive draw is a release."""
+        risk capital figure actually needs. A positive draw is a release.
+
+        ``generator`` picks what produces next year's diagonal;
+        ``kernels.cdr.cdr_methods()`` lists the options and what each requires::
+
+            entry.cdr_distribution()                            # Mack moments
+            entry.cdr_distribution(generator="odp_bootstrap")   # England-Verrall
+
+        Whichever generator is used, the reserve is re-estimated with the same
+        volume-weighted chain ladder, so the two answers are comparable. Passed
+        straight through to :func:`ibnr.kernels.cdr.simulate_one_year_cdr`,
+        including its refusal of ``process``/``parameter_risk`` beside an
+        explicit ``generator`` - they are ``MackDiagonal``'s knobs and would
+        otherwise be inert.
+        """
         return simulate_one_year_cdr(
             self._fitted(),
             n_draws=n_draws,
             seed=seed,
+            generator=generator,
             process=process,
             parameter_risk=parameter_risk,
         )
