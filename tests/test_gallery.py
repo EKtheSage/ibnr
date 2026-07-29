@@ -104,6 +104,7 @@ EXPECTED_EXPORTS = {
     "SCORE_DIRECTION",
     "Absence",
     "CohortForecast",
+    "GalleryDiagonal",
     "GalleryEntry",
     "align_panel",
     "fit",
@@ -114,6 +115,12 @@ EXPECTED_EXPORTS = {
     "stack",
 }
 
+#: exports the gallery DEFINES rather than re-exports from kernels, so
+#: ``test_every_export_is_the_kernels_object_itself`` can insist that everything
+#: else really is the kernels object and not pass vacuously on a name that
+#: quietly stopped being one.
+GALLERY_OWN_EXPORTS = {"GalleryDiagonal", "GalleryEntry", "fit", "get", "list"}
+
 
 def test_gallery_exports_the_whole_leaderboard_pipeline():
     """``__all__`` is exactly the designed set - no more, no less.
@@ -123,11 +130,16 @@ def test_gallery_exports_the_whole_leaderboard_pipeline():
     one model's arrays at them (``CohortForecast``), why an array is missing
     (``Absence``), and the cross-model intersection (``align_panel``).
     ``SCORE_DIRECTION`` joins them because the board has no default sort.
+
+    ``GalleryDiagonal`` (0.5.1) is the one name admitted on decision 8's second
+    clause - a fitted entry to a one-year CDR rather than to a board row. It has
+    to be here: ``kernels.cdr`` cannot hand it out by name the way it hands out
+    ``"mack"``, because it carries a fitted entry.
     """
     assert set(gallery.__all__) == EXPECTED_EXPORTS
 
 
-@pytest.mark.parametrize("name", sorted(EXPECTED_EXPORTS))
+@pytest.mark.parametrize("name", sorted(EXPECTED_EXPORTS - GALLERY_OWN_EXPORTS))
 def test_every_export_is_the_kernels_object_itself(name):
     """Identity, not equality: a re-export must not become a copy.
 
@@ -136,11 +148,23 @@ def test_every_export_is_the_kernels_object_itself(name):
     """
     from ibnr.kernels import forecast, holdout, stacking
 
-    obj = getattr(gallery, name)
-    for module in (forecast, holdout, stacking):
-        if hasattr(module, name):
-            assert obj is getattr(module, name)
-            break
+    modules = [m for m in (forecast, holdout, stacking) if hasattr(m, name)]
+    assert modules, (
+        f"{name} is in EXPECTED_EXPORTS but lives in no kernels module; if the gallery "
+        "now defines it, add it to GALLERY_OWN_EXPORTS deliberately"
+    )
+    assert getattr(gallery, name) is getattr(modules[0], name)
+
+
+@pytest.mark.parametrize("name", sorted(GALLERY_OWN_EXPORTS))
+def test_the_gallerys_own_exports_are_not_kernels_re_exports(name):
+    """The other side of the split. A name listed as the gallery's own must not
+    silently become a kernels re-export - that would mean ``kernels`` had grown
+    an import of something in the gallery, or the two had diverged into a copy
+    each."""
+    from ibnr.kernels import cdr, forecast, holdout, stacking
+
+    assert not any(hasattr(m, name) for m in (cdr, forecast, holdout, stacking))
 
 
 def test_kernels_never_imports_the_gallery():

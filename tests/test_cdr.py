@@ -430,16 +430,29 @@ def test_cdr_methods_is_the_discoverable_option_surface():
 
 def test_registry_keys_agree_with_the_generators_they_name():
     """A registry key, a ``CDRMethod.name`` and the generator class's own
-    ``name`` are three places one string is written; they must be one string."""
+    ``name`` are three places one string is written; they must be one string.
+
+    Since 0.5.1 a row can be a simulation route and STILL carry no generator
+    class - ``gallery`` wraps a fitted entry, which no name can supply. So the
+    invariant is stated on ``why_not_by_name`` rather than on ``route``: every
+    row either builds from its name or says why it does not, never both and
+    never neither. Read against ``route``, ``analytic`` and ``gallery`` are
+    nameless for opposite reasons, and only one of them is not a generator.
+    """
     for key, method in CDR_METHODS.items():
         assert key == method.name
         assert method.route in ("analytic", "simulation")
+        assert get_cdr_method(key) is method
+        assert (method.generator is None) == bool(method.why_not_by_name)
         if method.route == "analytic":
             assert method.generator is None
             continue
+        if method.generator is None:
+            # nameless but still a simulation: it must say how it IS reached
+            assert "simulate_one_year_cdr" in method.entry_point
+            continue
         assert issubclass(method.generator, DiagonalGenerator)
         assert method.generator.name == key
-        assert get_cdr_method(key) is method
 
 
 def test_merz_wuthrich_is_refused_as_a_generator(backend_name):

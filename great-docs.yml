@@ -147,6 +147,30 @@ reference:
       - gallery.SCORE_DIRECTION
       - gallery.stack
 
+  - title: Chain ladder & reserve risk
+    desc: >
+      The distribution-free chain ladder (Mack 1993) and its run-off MSEP,
+      plus the one-year claims development result - the Solvency II reserve-risk
+      view. cdr_methods() is the option surface: which model generates next
+      year's diagonal, how the reserve is re-estimated once it exists, and what
+      each route has actually been validated against.
+    contents:
+      - name: kernels.MackFit
+        members: true
+      - kernels.fit_mack
+      - kernels.simulate_ultimates
+      - kernels.cdr_methods
+      - kernels.get_cdr_method
+      - kernels.one_year_cdr
+      - kernels.simulate_one_year_cdr
+      - kernels.rereserve
+      - kernels.cdr_risk_measures
+      - name: kernels.CDRResult
+        members: true
+      - kernels.MackDiagonal
+      - kernels.ODPBootstrapDiagonal
+      - gallery.GalleryDiagonal
+
   - title: Evaluation kernels
     desc: >
       The unifying predictive-distribution output type and the cross-backend
