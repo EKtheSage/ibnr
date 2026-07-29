@@ -18,8 +18,10 @@ class TransformerConfig:
     exactly one place. See card.md sections "Network"/"Training"/"Prediction"
     for the reasoning behind each block."""
 
-    # network (~120k params at these sizes; deliberately tiny - the Schedule P
-    # regime is small-data and the central risk is overfitting, see card.md)
+    # network (~70k params at these sizes - 70,121 on an 8x8 grid, 70,505 on a
+    # full 10x10 Schedule P triangle, of which 66,944 are the two encoder layers
+    # and independent of the grid. Deliberately tiny: the Schedule P regime is
+    # small-data and the central risk is overfitting, see card.md)
     d_model: int = 64
     n_layers: int = 2
     n_heads: int = 4
