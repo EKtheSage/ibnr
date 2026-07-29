@@ -20,19 +20,27 @@ layers.
    cohort, and a missing origin re-reserves to a zero ultimate whose CDR is that
    origin's entire estimated ultimate - the largest wrong number available.
 
-Mutation-verified: eight deliberate breakages, all caught - dropping the
+Mutation-verified: twelve deliberate breakages, all caught - dropping the
 ``prev_value`` comparison, dropping the ``dev_lag`` comparison, reading a
 missing open origin as a closed one instead of raising, taking the cells' rows
 in frame order rather than in the fit's origin order, letting an explicit
 ``n_draws`` sit inert, scoring every field's rows rather than the resolved one,
-skipping the field-versus-fit agreement check, and seeding the entry from a
-constant rather than from the caller's ``rng``.
+skipping the field-versus-fit agreement check, seeding the entry from a constant
+rather than from the caller's ``rng``, skipping the training-history check,
+accepting a training-value disagreement, waving through a contract with no
+comparable values, and letting ``Mack.cdr_distribution`` hardcode a draw budget.
 
-The last of those was MISSED by the first round of tests and is worth the note:
-the two stubs that make byte equality possible both ignore the ``rng`` on
-purpose, so neither could see that ``seed=`` had stopped arriving - and no
-output distinguishes the two cases, since every draw is legitimate either way.
-``_NoisyEntry`` exists for that one test.
+**Two of these came from review rather than from this file**, and both are worth
+the note because they are the same shape - a check whose absence is invisible in
+the output:
+
+- *the seed*. The two stubs that make byte equality possible both ignore the
+  injected ``rng`` on purpose, so neither could see that ``seed=`` had stopped
+  arriving. Every draw is legitimate either way. ``_NoisyEntry`` exists for it.
+- *the training history*. The other alignment checks tie the CELLS to the fit;
+  nothing tied the ENTRY to either, so an entry refitted on restated interior
+  cells - latest diagonal untouched - passed everything and moved the total CDR
+  mean from 0.27 to -367.69. Measured, on this fixture, before the fix.
 """
 
 from __future__ import annotations
@@ -46,6 +54,7 @@ import pytest
 
 from ibnr.gallery.cdr import GalleryDiagonal
 from ibnr.gallery.entry import PredictsHeldout
+from ibnr.gallery.registry import get
 from ibnr.kernels.cdr import (
     CDR_METHODS,
     DEFAULT_N_DRAWS,
@@ -54,7 +63,7 @@ from ibnr.kernels.cdr import (
     get_cdr_method,
     simulate_one_year_cdr,
 )
-from ibnr.kernels.contract import stan_data
+from ibnr.kernels.contract import cohort_grid, stan_data
 from ibnr.kernels.holdout import next_diagonal
 from ibnr.kernels.mack import MackFit, _next_step_draws, fit_mack
 from ibnr.triangle.core import Triangle
@@ -115,9 +124,13 @@ class _MackEchoEntry(PredictsHeldout):
 
     heldout_draw_scale = "cumulative"
 
-    def __init__(self, fit: MackFit, *, n_draws: int, seed: int):
+    def __init__(self, fit: MackFit, *, n_draws: int, seed: int, contract: dict | None = None):
         self.fit = fit
-        self.contract_ = _contract()
+        # the contract must describe the SAME triangle as the fit, or the
+        # training-history check refuses it - which is the check working. The
+        # positivity test below passes a zeroed fit and must pass its contract
+        # with it.
+        self.contract_ = _contract() if contract is None else contract
         self._n_draws = n_draws
         self._seed = seed
 
@@ -342,6 +355,76 @@ def test_a_field_mismatch_between_the_fit_and_the_cells_is_refused():
     GalleryDiagonal(entry, both, field="paid_loss").check(fit)
 
 
+def test_an_entry_trained_on_a_different_history_is_refused():
+    """The third leg of the alignment, and the one review had to find.
+
+    The other two checks tie the CELLS to the fit. Nothing tied the ENTRY to
+    either, so a real entry refitted on RESTATED history - two interior cells
+    moved, latest diagonal untouched, so ``prev_value`` still matched perfectly
+    - sailed through. Measured before the fix on this fixture: total CDR mean
+    0.27 with the matching history, -367.69 with the restated one, seven times
+    the spread, every number finite and plausible.
+
+    Uses the real ``mack`` gallery entry rather than a stub, because the point
+    is that a legitimately-fitted entry was accepted against the wrong fit.
+    """
+    restated = FULL.copy()
+    restated[0, 1] = 1200.0  # interior cells: off every diagonal at AS_OF,
+    restated[1, 1] = 1400.0  # so the latest-diagonal check cannot see them
+    tri, tri_restated = _triangle(), make_cohort_triangle(None, restated, start_year=START_YEAR)
+
+    fit = fit_mack(tri, loss_field="paid_loss", as_of=AS_OF)
+    cells = next_diagonal(tri, as_of=AS_OF, fields="paid_loss")
+    matching = get("mack")().fit(tri.as_of(AS_OF), loss_field="paid_loss")
+    different = get("mack")().fit(tri_restated.as_of(AS_OF), loss_field="paid_loss")
+
+    # the restated fit still agrees on the latest diagonal, so the older checks
+    # genuinely cannot tell the two apart
+    other_fit = fit_mack(tri_restated, loss_field="paid_loss", as_of=AS_OF)
+    np.testing.assert_allclose(other_fit.latest, fit.latest)
+
+    GalleryDiagonal(matching, cells).check(fit)
+    with pytest.raises(ValueError, match="fitted on a different triangle"):
+        GalleryDiagonal(different, cells).check(fit)
+
+
+def test_a_contract_with_no_raw_cumulatives_is_refused_by_name():
+    """The NN case, and the honest limit of this route in 0.5.1.
+
+    ``nn_contract`` keeps its losses NORMALIZED inside ``x`` and holds only the
+    anchor diagonal in amounts, so there is no way to show an NN entry was
+    fitted on the same triangle as the MackFit. Refused by name rather than
+    assumed, because the assumption is the one measured above to move the answer
+    by orders of magnitude. Simulated with a contract stripped of both value
+    shapes, so the refusal is pinned without a torch fit.
+    """
+    fit, cells = _fit(), _cells()
+    entry = _MackEchoEntry(fit, n_draws=8, seed=1)
+    entry.contract_ = {
+        k: v for k, v in entry.contract_.items() if k not in ("loss", "cum", "obs_mask")
+    }
+    with pytest.raises(ValueError, match="states no training losses on the cumulative grid"):
+        GalleryDiagonal(entry, cells).check(fit)
+
+
+def test_a_delta_stacked_contract_is_refused_by_name():
+    """Compartmental's shape: two rows per ``(w, d)`` - outstanding and paid -
+    so a value comparison would be against whichever came first. The uniqueness
+    filter rejects every cell, and an entry with nothing left to compare is
+    refused rather than passed for free."""
+    fit, cells = _fit(), _cells()
+    entry = _MackEchoEntry(fit, n_draws=8, seed=1)
+    stacked = dict(entry.contract_)
+    n = len(stacked["w"])
+    for key in ("w", "d", "loss"):
+        stacked[key] = np.concatenate([stacked[key], stacked[key]])
+    stacked["delta"] = np.concatenate([np.zeros(n, dtype=int), np.ones(n, dtype=int)])
+    entry.contract_ = stacked
+
+    with pytest.raises(ValueError, match="unambiguously"):
+        GalleryDiagonal(entry, cells).check(fit)
+
+
 def test_an_entry_without_the_capability_is_refused_at_construction():
     class _NotAPredictor:
         pass
@@ -376,7 +459,13 @@ def test_the_mack_positivity_precondition_is_not_applied_here():
 
     with pytest.raises(ValueError, match="non-positive cumulative on the latest diagonal"):
         MackDiagonal().check(fit)
-    GalleryDiagonal(_MackEchoEntry(fit, n_draws=8, seed=1), cells).check(fit)
+    # cohort_grid, not stan_data: the zeroed cell is exactly what stan_data's
+    # lognormal positivity guard refuses, and the grid contract is the shape the
+    # deterministic entries carry anyway
+    entry = _MackEchoEntry(
+        fit, n_draws=8, seed=1, contract=cohort_grid(tri.as_of(AS_OF), loss_field="paid_loss")
+    )
+    GalleryDiagonal(entry, cells).check(fit)
 
 
 # -- the draw-count negotiation -----------------------------------------------
@@ -392,11 +481,40 @@ def test_an_explicit_draw_count_that_is_not_the_posteriors_is_refused():
     """
     fit = _fit()
     generator = _echo(fit, _cells(), n_draws=400, seed=5)
-    with pytest.raises(ValueError, match="posterior draws"):
+    with pytest.raises(ValueError, match="no way to ask for a different number"):
         simulate_one_year_cdr(fit, n_draws=20_000, generator=generator)
 
     # ... and asking for nothing in particular takes the posterior's own size
     assert simulate_one_year_cdr(fit, generator=generator).samples.shape[0] == 400
+
+    # the refusal must not tell a caller to do something they cannot: an entry
+    # whose draws are a simulation (clark, the NN heads) has no draw-count knob
+    # to refit with, because _draws_native takes no count at all
+    with pytest.raises(ValueError) as exc:
+        simulate_one_year_cdr(fit, n_draws=20_000, generator=generator)
+    assert "no way to ask for a different number" in str(exc.value)
+    assert "refit" not in str(exc.value)
+
+
+def test_the_mack_wrappers_default_does_not_defeat_the_negotiation():
+    """``Mack.cdr_distribution`` must default ``n_draws`` to None too.
+
+    A hardcoded 20_000 on the wrapper reaches the generator as an EXPLICIT
+    request, so the default call would refuse every GalleryDiagonal source -
+    the negotiation works on the kernel function and is defeated one layer up,
+    which is the inert-parameter shape with the polarity reversed.
+    """
+    import inspect
+
+    from ibnr.gallery.deterministic.mack.model import Mack
+
+    assert inspect.signature(Mack.cdr_distribution).parameters["n_draws"].default is None
+
+    tri = _triangle()
+    entry = get("mack")().fit(tri.as_of(AS_OF), loss_field="paid_loss")
+    source = _MackEchoEntry(_fit(), n_draws=64, seed=2)
+    pred = entry.cdr_distribution(generator=GalleryDiagonal(source, _cells()))
+    assert pred.samples.shape[0] == 64
 
 
 def test_the_none_default_leaves_the_simulating_generators_where_they_were():

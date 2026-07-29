@@ -5,8 +5,19 @@ two axes: what generates next year's diagonal, and how the reserve is
 re-estimated once it exists. The second is fixed (the volume-weighted chain
 ladder, ``kernels.cdr.rereserve``). The first was Mack's conditional moments or
 an ODP residual bootstrap. This module adds the third source, and it is the one
-the gallery already had lying around: **eleven entries can draw the outcome at
-held-out cells**, and the next diagonal is exactly the cells they are drawn at.
+the gallery already had lying around: an entry that can draw the outcome at
+held-out cells can draw next year's diagonal, because that is what those cells
+are.
+
+WHICH ENTRIES, EXACTLY - narrower than this module's first draft claimed. Every
+entry whose contract keeps its training losses as raw cumulatives: the
+deterministic and statistical entries (``cohort_grid``) and the stan-based
+Bayesian ones (``stan_data`` / ``odp_stan_data``). NOT the NN entries, whose
+contracts hold only normalized values plus an anchor diagonal, and NOT
+``compartmental``, whose contract delta-stacks two quantities onto one grid.
+Both are refused by name, and :func:`_training_values` says why: without raw
+cumulatives there is no way to show the entry and the ``MackFit`` were fitted on
+the same triangle, and the section below is what that assumption is worth.
 
     from ibnr import gallery
     from ibnr.kernels import fit_mack, simulate_one_year_cdr
@@ -18,6 +29,28 @@ held-out cells**, and the next diagonal is exactly the cells they are drawn at.
 
     pred = simulate_one_year_cdr(fit, generator=gallery.GalleryDiagonal(entry, cells))
     cdr_risk_measures(pred, levels=(0.995,))
+
+BACKTEST ONLY, AS SHIPPED IN 0.5.1. READ THIS BEFORE PLANNING A VALUATION ON IT.
+
+``GalleryDiagonal`` takes a :class:`~ibnr.kernels.holdout.HoldoutCells`, and
+``next_diagonal`` builds those only from cells that are ALREADY OBSERVED after
+the cutoff - it reads ``D_next`` out of the data and raises "no eval_date after
+... introduces a new cell" when there is none. So this route answers "what would
+next year's re-reserve have looked like, from where we stood at a past cutoff",
+and it cannot yet answer the same question at a CURRENT valuation, which is the
+Solvency II use the one-year CDR exists for.
+
+The two kernel generators have no such limit - ``mack`` and ``odp_bootstrap``
+manufacture the diagonal from the fit alone, so ``simulate_one_year_cdr(fit)``
+is prospective today. Only the gallery route needs cells, and only because
+``PredictsHeldout.predict_at`` is keyed on them.
+
+Nothing about the information is missing: a prospective cell is a location plus
+a training-diagonal predecessor, both known at the cutoff, and the outcome is
+the one thing a prediction does not need. What is missing is a constructor -
+``HoldoutCells`` requires a ``value`` column, and deciding what that means with
+no outcome is a design question, not a patch. Until then, the honest reading of
+a number from this route is retrospective.
 
 WHAT THIS QUANTITY IS, STATED PLAINLY, BECAUSE IT WILL BE MISQUOTED OTHERWISE.
 
@@ -62,6 +95,7 @@ class as a string - a table entry, not an import.
 from __future__ import annotations
 
 import datetime as dt
+from collections import Counter
 from dataclasses import dataclass
 
 import numpy as np
@@ -69,7 +103,7 @@ import pandas as pd
 
 from ibnr.gallery.entry import PredictsHeldout
 from ibnr.kernels.cdr import DiagonalGenerator
-from ibnr.kernels.holdout import HoldoutCells
+from ibnr.kernels.holdout import HoldoutCells, training_index
 from ibnr.kernels.mack import MackFit
 
 
@@ -89,6 +123,50 @@ def _as_date(value) -> dt.date:
     return pd.Timestamp(value).date()
 
 
+def _training_values(contract: dict, *, who: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``(w, d, value)`` 0-based training cells of a contract, or a refusal.
+
+    The gallery has three contract shapes and only two of them state their
+    training losses as raw amounts on the cumulative grid:
+
+    * ``kernels.contract.cohort_grid`` - a dense ``cum`` matrix plus
+      ``obs_mask``. The deterministic and statistical entries.
+    * ``stan_data`` / ``odp_stan_data`` / ``compartmental_stan_data`` - flat
+      ``w``/``d``/``loss``, 1-based. Compartmental's is delta-STACKED, two rows
+      per position, which the caller's uniqueness filter then rejects.
+    * ``nn_contract`` - no raw values at all. The losses live inside ``x`` as
+      **normalized** feature channels, with only ``latest_cum`` (the anchor
+      diagonal) kept in amounts. The diagonal is already checked elsewhere and
+      the interior simply is not recoverable here.
+
+    So the NN entries cannot use the gallery CDR route today, and are told so by
+    name. That is narrower than 0.5.1's first draft claimed, and it is the
+    honest position: the alternative is a number this repo has measured going
+    wrong by orders of magnitude with nothing visible in the output.
+    """
+    if "cum" in contract and "obs_mask" in contract:
+        cum = np.asarray(contract["cum"], dtype=float)
+        mask = np.asarray(contract["obs_mask"], dtype=bool)
+        w, d = np.nonzero(mask)
+        return w, d, cum[w, d]
+    if all(k in contract for k in ("w", "d", "loss")):
+        idx = training_index(contract)
+        return (
+            np.asarray(idx.w, dtype=int) - 1,
+            np.asarray(idx.d, dtype=int) - 1,
+            np.asarray(idx.value, dtype=float),
+        )
+    raise ValueError(
+        f"{who}'s contract states no training losses on the cumulative grid, so it cannot "
+        "be shown to have been fitted on the same triangle as this MackFit. The NN "
+        "contracts are the case that reaches this: their values are normalized inside "
+        "`x` and only the anchor diagonal survives in amounts. Until that changes, the "
+        "gallery CDR route serves the entries whose contracts keep raw cumulatives - use "
+        "the mack or odp_bootstrap generator, or score this entry on the leaderboard "
+        "instead"
+    )
+
+
 @dataclass(frozen=True)
 class GalleryDiagonal(DiagonalGenerator):
     """Next year's diagonal from a fitted gallery entry's posterior predictive.
@@ -102,17 +180,22 @@ class GalleryDiagonal(DiagonalGenerator):
     than one (``compartmental`` scores paid and reported together); with a
     single field it is inferred and must not be repeated.
 
-    **The alignment is checked against the fit, not assumed.** A ``MackFit`` and
-    a ``HoldoutCells`` are two objects built by two calls, and nothing about
-    their types says they describe the same cohort at the same cutoff on the
-    same field. Handed a mismatched pair, ``rereserve`` would happily return a
-    complete page of plausible dollars. So :meth:`check` requires, for every
-    OPEN origin of the fit, exactly one scorable cell, at the development lag
-    one step past that origin's diagonal, whose ``prev_value`` equals the fit's
-    own latest-diagonal cell. That last comparison is the load-bearing one: the
-    predecessor of the held-out cell and the fit's diagonal are the same number
-    read by two different code paths, so requiring them equal catches a wrong
-    cutoff, a wrong field, a wrong cohort and a wrong grain in one check.
+    **The alignment is checked against the fit, not assumed.** A ``MackFit``, a
+    ``HoldoutCells`` and a fitted entry are three objects built by three calls,
+    and nothing about their types says they describe the same cohort at the same
+    cutoff on the same field off the same history. Handed a mismatched set,
+    ``rereserve`` would happily return a complete page of plausible dollars. So
+    :meth:`check` requires, for every OPEN origin of the fit, exactly one
+    scorable cell, at the development lag one step past that origin's diagonal,
+    whose ``prev_value`` equals the fit's own latest-diagonal cell. That
+    comparison is load-bearing: the predecessor of the held-out cell and the
+    fit's diagonal are the same number read by two different code paths, so
+    requiring them equal catches a wrong cutoff, a wrong field, a wrong cohort
+    and a wrong grain in one check.
+
+    It does **not** catch a wrong history, which is why
+    :meth:`_require_same_training_history` exists as a separate third leg - the
+    first two tie the CELLS to the fit and leave the ENTRY unbound to either.
 
     **An excluded cell is fatal here, and is not on a leaderboard.** A cohort
     whose next diagonal is short a cell simply scores on fewer cells for CRPS -
@@ -183,6 +266,73 @@ class GalleryDiagonal(DiagonalGenerator):
             )
         return present[0]
 
+    def _require_same_training_history(self, fit: MackFit) -> int:
+        """The entry and the fit must have been trained on the SAME triangle.
+
+        Returns how many cells were compared. The other two alignment checks tie
+        the CELLS to the fit; nothing tied the ENTRY to either, and that gap is
+        not theoretical. Measured on the test fixture: a ``mack`` entry refitted
+        on a triangle with two restated INTERIOR cells - same latest diagonal,
+        so ``prev_value`` still matched perfectly - was accepted, and the total
+        CDR mean moved from 0.27 to -367.69 with seven times the spread. Every
+        number finite, every number plausible, no warning anywhere.
+
+        It matters because the two halves of the difference come from different
+        places. ``fit.ultimate`` and the updated factors are the chain ladder's,
+        off the fit's triangle; the diagonal is the entry's, off the entry's. If
+        those triangles differ the subtraction is between two estimates of
+        different things, and what comes out is not a development result.
+
+        Compares the entry's own training values against ``fit.cum``, at every
+        cell the entry indexes **unambiguously** - exactly one training row per
+        ``(w, d)``. That qualifier is load-bearing rather than cautious:
+        ``compartmental_stan_data`` delta-stacks two quantities onto one grid, so
+        each ``(w, d)`` carries an outstanding row AND a paid row and a value
+        comparison would be against whichever came first. Where nothing is
+        unambiguous the entry is refused by name rather than waved through - the
+        finding above is what an unverified pass is worth.
+        """
+        contract = getattr(self.entry, "contract_", None)
+        if not isinstance(contract, dict):
+            raise ValueError(
+                f"{type(self.entry).__name__} carries no contract_, so its training data "
+                "cannot be compared with the fit's. Both halves of a CDR must come from "
+                "one triangle and there is no way to check that here"
+            )
+        w, d, value = _training_values(contract, who=type(self.entry).__name__)
+        positions = list(zip(w.tolist(), d.tolist(), strict=True))
+        seen = Counter(positions)
+        usable = (
+            np.array([seen[p] == 1 for p in positions], dtype=bool) & (w < fit.n_w) & (d < fit.n_d)
+        )
+        if not usable.any():
+            raise ValueError(
+                f"{type(self.entry).__name__}'s contract indexes no cell of this fit "
+                f"unambiguously ({len(w)} training rows over {len(seen)} distinct (w, d) "
+                "positions), so its training history cannot be checked against the fit's. "
+                "A stacked contract - compartmental puts paid and outstanding on one grid - "
+                "reaches this. Re-reserving anyway would rest on an assumption measured to "
+                "be worth orders of magnitude on the answer"
+            )
+
+        got = value[usable]
+        want = fit.cum[w[usable], d[usable]]
+        bad = ~(np.isclose(got, want, rtol=1e-9, atol=0.0) | (np.isnan(got) & np.isnan(want)))
+        if bad.any():
+            first = int(np.nonzero(bad)[0][0])
+            cells_w, cells_d = w[usable][first], d[usable][first]
+            raise ValueError(
+                f"{type(self.entry).__name__} was fitted on a different triangle from this "
+                f"MackFit: {int(bad.sum())} of {int(usable.sum())} compared training cells "
+                f"disagree, the first at origin {fit.origin_periods[cells_w]} dev index "
+                f"{cells_d}, where the entry has {got[first]:.10g} and the fit has "
+                f"{want[first]:.10g}. The diagonal and the factors would come from different "
+                "loss histories - a restatement that leaves the latest diagonal untouched "
+                "passes every other check here and still moves the answer by orders of "
+                "magnitude"
+            )
+        return int(usable.sum())
+
     def _align(self, fit: MackFit) -> tuple[str, np.ndarray, np.ndarray]:
         """``(field, open_origin_indices, columns)`` tying cells to the fit.
 
@@ -198,6 +348,7 @@ class GalleryDiagonal(DiagonalGenerator):
                 f"{resolved!r}. The chain-ladder factors and the drawn diagonal would be "
                 "two different loss fields, which re-reserves cleanly and means nothing"
             )
+        self._require_same_training_history(fit)
 
         # predict_at's columns are the frame's rows for this field, in frame
         # order - index_into filters the same way and neither narrowing nor
@@ -285,8 +436,15 @@ class GalleryDiagonal(DiagonalGenerator):
         and a 99.5th percentile that appears to rest on 100 observations when it
         rests on however many distinct draws there really were.
 
-        An explicit count is not ignored - :meth:`draw` refuses one that is not
-        the posterior's, rather than letting it sit there inert.
+        The same applies, for a different reason, to an entry whose draws are a
+        SIMULATION rather than a posterior - ``clark``'s parametric bootstrap,
+        an NN mixture head. Those could in principle produce any count, but
+        ``PredictsHeldout._draws_native(cells, rng)`` takes no count argument, so
+        there is no way to ask; the number is fixed by the entry's own
+        configuration either way.
+
+        An explicit count is not ignored - :meth:`draw` refuses one it cannot
+        honour, rather than letting it sit there inert.
         """
         return requested
 
@@ -306,12 +464,15 @@ class GalleryDiagonal(DiagonalGenerator):
         )
         if n_draws is not None and draws.shape[0] != n_draws:
             raise ValueError(
-                f"n_draws={n_draws} was requested but {type(self.entry).__name__} has "
-                f"{draws.shape[0]} posterior draws. A fitted posterior is not a Monte "
-                "Carlo budget: resampling it to the requested size would add noise and "
-                "no information, and refitting to it is not something this call can do. "
-                "Pass n_draws=None to take the posterior's own size, or refit the entry "
-                "with the draw count you want"
+                f"n_draws={n_draws} was requested but {type(self.entry).__name__} produced "
+                f"{draws.shape[0]} draws, and PredictsHeldout has no way to ask for a "
+                "different number: `_draws_native(cells, rng)` takes no count. That is a "
+                "limit of the capability, not of this entry - for an MCMC entry the count "
+                "IS the posterior's, and for a simulator-backed one (clark, the NN heads) "
+                "it is whatever the entry's own configuration produces. Pass n_draws=None "
+                "to accept it. Resampling to the requested size is deliberately not done: "
+                "it would add Monte Carlo noise and no information while making the answer "
+                "look as precise as the larger number"
             )
 
         x = np.zeros((draws.shape[0], fit.n_w))
