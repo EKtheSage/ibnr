@@ -741,7 +741,7 @@ def _resolve_generator(
 ) -> DiagonalGenerator:
     """``generator=`` plus the two legacy Mack knobs -> one generator instance.
 
-    ``generator=None`` reproduces the pre-0.6.0 signature exactly, defaults and
+    ``generator=None`` reproduces the 0.5.0 signature exactly, defaults and
     all, so every 0.5.0 call site keeps its numbers bit for bit. Supplying a
     generator AND a Mack knob is refused rather than silently ignored: the knob
     would otherwise be inert, which is the failure mode this repo has already
