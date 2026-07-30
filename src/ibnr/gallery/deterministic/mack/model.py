@@ -195,7 +195,7 @@ class Mack(GalleryEntry, PredictsHeldout):
     def cdr_distribution(
         self,
         *,
-        n_draws: int = 20_000,
+        n_draws: int | None = None,
         seed: int | None = None,
         generator: DiagonalGenerator | str | None = None,
         process: str | None = None,
@@ -219,6 +219,15 @@ class Mack(GalleryEntry, PredictsHeldout):
         including its refusal of ``process``/``parameter_risk`` beside an
         explicit ``generator`` - they are ``MackDiagonal``'s knobs and would
         otherwise be inert.
+
+        ``n_draws=None`` means "this generator's own count", exactly as on the
+        kernel function, and it is the DEFAULT here rather than a literal
+        20_000. A hardcoded default would have defeated the negotiation from
+        this side: it reaches the generator as an explicit request, so
+        ``entry.cdr_distribution(generator=GalleryDiagonal(...))`` would have
+        refused every entry whose draw count is not 20_000 - which is all of
+        them. The two simulating generators still resolve None to 20_000, so no
+        existing call changes.
         """
         return simulate_one_year_cdr(
             self._fitted(),

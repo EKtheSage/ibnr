@@ -26,8 +26,10 @@ separate choices:
 1. **What generates next year's diagonal?** A :class:`DiagonalGenerator`.
    ``mack`` draws it from Mack's conditional moments; ``odp_bootstrap`` draws it
    from an England-Verrall Pearson-residual bootstrap with over-dispersed
-   Poisson process noise. In principle anything that can draw a next-diagonal
-   cell qualifies, including a gallery entry with ``PredictsHeldout``.
+   Poisson process noise. Anything that can draw a next-diagonal cell qualifies,
+   and as of 0.5.1 that includes every gallery entry with ``PredictsHeldout`` -
+   ``ibnr.gallery.GalleryDiagonal``, which lives in the gallery because
+   ``kernels`` never imports it (design decision 8).
 2. **How is the reserve re-estimated once that diagonal exists?** The
    volume-weighted chain ladder - :func:`rereserve`. This is the market
    convention and it is what R's ``ChainLadder`` uses for *both* of its CDR
@@ -70,6 +72,12 @@ import pandas as pd
 from ibnr.kernels.mack import PROCESS_LAWS, MackFit, _next_step_draws
 from ibnr.kernels.odp_bootstrap import ODP_PROCESS_LAWS, draw_next_increments, fit_odp_bootstrap
 from ibnr.kernels.predictive import PredictiveDistribution
+
+#: draws a generator produces when the caller names no count. A Monte Carlo
+#: budget, so it belongs to the generators that HAVE one - a generator wrapping
+#: a fitted posterior does not, and says so by returning None from
+#: :meth:`DiagonalGenerator.resolve_n_draws`.
+DEFAULT_N_DRAWS = 20_000
 
 
 @dataclass(frozen=True)
@@ -327,6 +335,12 @@ def rereserve(fit: MackFit, next_diagonal: np.ndarray) -> np.ndarray:
     reports the analytic msep (about zero) while ``CDR.BootChainLadder`` reports
     ``sd()`` of the re-reserved amount (about its own mean). Report both when
     the generator is not ``mack``.
+
+    Under a GALLERY generator the drift is not a nuisance at all - it is the
+    model saying next year's diagonal will land somewhere other than where the
+    chain ladder puts it, which is most of what a separate model is FOR. It is
+    still not part of a variance, so the same rule applies with more force:
+    ``mean`` and ``sd`` separately, never ``E[CDR^2]`` alone.
     """
     x = np.asarray(next_diagonal, dtype=float)
     if x.ndim != 2 or x.shape[1] != fit.n_w:
@@ -401,8 +415,30 @@ class DiagonalGenerator(ABC):
         """Raise, naming the cause, if this generator cannot serve this cohort."""
 
     @abstractmethod
-    def draw(self, fit: MackFit, *, n_draws: int, rng: np.random.Generator) -> np.ndarray:
-        """``(n_draws, n_w)`` cumulative loss on next year's diagonal."""
+    def draw(self, fit: MackFit, *, n_draws: int | None, rng: np.random.Generator) -> np.ndarray:
+        """``(n_draws, n_w)`` cumulative loss on next year's diagonal.
+
+        ``n_draws`` is whatever :meth:`resolve_n_draws` returned, so a generator
+        that never returns None from there can read it as an ``int``.
+        """
+
+    def resolve_n_draws(self, requested: int | None) -> int | None:
+        """How many draws to ask :meth:`draw` for, given what the caller asked.
+
+        Default: the caller's number, or :data:`DEFAULT_N_DRAWS` when they named
+        none. That is right for any generator whose draw count is a **Monte
+        Carlo budget** - ``mack`` and ``odp_bootstrap`` both simulate as many
+        diagonals as they are asked for, and more of them only buys precision.
+
+        It is wrong for a generator whose draws are a **fitted posterior**,
+        where the count is a property of the fit and not of this call. Such a
+        generator returns ``None`` for "however many the source has" and refuses
+        a mismatched explicit count, rather than resampling posterior draws with
+        replacement - which would add Monte Carlo noise and no information while
+        making the answer look like it had the precision of the larger number.
+        ``ibnr.gallery.GalleryDiagonal`` is the case this exists for.
+        """
+        return DEFAULT_N_DRAWS if requested is None else requested
 
 
 @dataclass(frozen=True)
@@ -539,7 +575,15 @@ class CDRMethod:
     ``generator`` is the :class:`DiagonalGenerator` **class** (not an instance),
     mirroring ``gallery.get(name)``: it is what a caller constructs to configure
     the method, ``get_cdr_method("odp_bootstrap").generator(process="gamma")``.
-    It is ``None`` for the analytic route, which generates no diagonal at all.
+
+    ``generator is None`` and ``why_not_by_name`` go together, and exactly one
+    of the two states is legal for any row: either the class is here and
+    ``generator="<name>"`` builds it, or it is absent and ``why_not_by_name``
+    says why a name cannot. **The two reasons a row is nameless are different
+    and ``route`` tells them apart.** ``merz_wuthrich`` is ``route="analytic"``:
+    it generates no diagonal at all, so there is nothing to name. ``gallery`` is
+    ``route="simulation"``: it is a perfectly good generator, but it wraps a
+    FITTED entry and the cells it predicts at, and no string can carry those.
     """
 
     name: str
@@ -552,12 +596,18 @@ class CDRMethod:
     validated: str
     reference: str
     generator: type[DiagonalGenerator] | None = None
+    #: why ``generator="<this name>"`` is refused, or None when it is accepted.
+    #: Reads as the middle of a sentence - see :func:`_resolve_generator`.
+    why_not_by_name: str | None = None
 
 
-#: every route to a one-year CDR, keyed by name. The analytic one is listed
-#: even though ``generator=`` cannot take it: a caller asking "what are my
-#: options" must be told it exists, and told in the same breath that it is
-#: Mack-only and reached by a different call.
+#: every route to a one-year CDR, keyed by name. The two routes ``generator=``
+#: cannot take are listed anyway: a caller asking "what are my options" must be
+#: told they exist, and told in the same breath how each is actually reached.
+#:
+#: The ``gallery`` row names a class in ``ibnr.gallery`` as a STRING and imports
+#: nothing - decision 8's re-export direction is gallery -> kernels only, and
+#: this table is documentation, not a registry that constructs anything.
 CDR_METHODS: dict[str, CDRMethod] = {
     "merz_wuthrich": CDRMethod(
         name="merz_wuthrich",
@@ -573,6 +623,11 @@ CDR_METHODS: dict[str, CDRMethod] = {
         ),
         reference="Merz & Wuthrich (2008), CAS E-Forum Fall 2008",
         generator=None,
+        why_not_by_name=(
+            "it is an analytic method, not a diagonal generator: it linearizes the "
+            "chain-ladder factor update around Mack's conditional moments rather than "
+            "simulating anything, so there is no version of it for another model"
+        ),
     ),
     "mack": CDRMethod(
         name="mack",
@@ -609,6 +664,36 @@ CDR_METHODS: dict[str, CDRMethod] = {
             "CDR.BootChainLadder (Crupi, Gesmann)"
         ),
         generator=ODPBootstrapDiagonal,
+    ),
+    "gallery": CDRMethod(
+        name="gallery",
+        route="simulation",
+        generates=(
+            "the posterior predictive of any fitted gallery entry with "
+            "PredictsHeldout, at the next diagonal's cells"
+        ),
+        re_estimates="volume-weighted chain ladder (re-run on the extended triangle)",
+        returns="PredictiveDistribution of the CDR (quantiles, VaR/TVaR)",
+        entry_point=(
+            "from ibnr.gallery import GalleryDiagonal; simulate_one_year_cdr("
+            "fit, generator=GalleryDiagonal(entry, cells))"
+        ),
+        requires=(
+            "a MackFit and a HoldoutCells describing the SAME cohort, field and "
+            "cutoff, with one scorable cell for every open origin of the fit"
+        ),
+        validated=(
+            "the wiring, not the model: a generator that reproduces Mack's own "
+            "conditional draws is shown to reproduce the mack route's CDR exactly, "
+            "so the entry-to-diagonal path adds nothing of its own. What a given "
+            "ENTRY's diagonal is worth is the leaderboard's CRPS question, not this one"
+        ),
+        reference="R ChainLadder's getNYCost structure with a third diagonal source",
+        generator=None,
+        why_not_by_name=(
+            "it wraps a FITTED entry and the held-out cells it predicts at, and a name "
+            "carries neither. Build it and pass the instance"
+        ),
     ),
 }
 
@@ -656,7 +741,7 @@ def _resolve_generator(
 ) -> DiagonalGenerator:
     """``generator=`` plus the two legacy Mack knobs -> one generator instance.
 
-    ``generator=None`` reproduces the pre-0.6.0 signature exactly, defaults and
+    ``generator=None`` reproduces the 0.5.0 signature exactly, defaults and
     all, so every 0.5.0 call site keeps its numbers bit for bit. Supplying a
     generator AND a Mack knob is refused rather than silently ignored: the knob
     would otherwise be inert, which is the failure mode this repo has already
@@ -686,10 +771,8 @@ def _resolve_generator(
         method = get_cdr_method(generator)
         if method.generator is None:
             raise ValueError(
-                f"{generator!r} is an {method.route} method, not a diagonal generator: it "
-                "linearizes the chain-ladder factor update around Mack's conditional "
-                "moments rather than simulating anything, so there is no version of it for "
-                f"another model. Call {method.entry_point} instead"
+                f"{generator!r} cannot be named as a generator: {method.why_not_by_name}. "
+                f"Use: {method.entry_point}"
             )
         return method.generator()
     raise TypeError(
@@ -701,7 +784,7 @@ def _resolve_generator(
 def simulate_one_year_cdr(
     fit: MackFit,
     *,
-    n_draws: int = 20_000,
+    n_draws: int | None = None,
     seed: int | None = None,
     generator: DiagonalGenerator | str | None = None,
     process: str | None = None,
@@ -723,6 +806,13 @@ def simulate_one_year_cdr(
         simulate_one_year_cdr(fit, generator="odp_bootstrap")
         simulate_one_year_cdr(fit, generator=ODPBootstrapDiagonal(process="gamma"))
 
+    ``n_draws=None`` means "this generator's own count", which is
+    :data:`DEFAULT_N_DRAWS` for the two simulating generators and the fitted
+    posterior's own size for ``ibnr.gallery.GalleryDiagonal`` - see
+    :meth:`DiagonalGenerator.resolve_n_draws`. It replaced a literal ``20_000``
+    default in 0.5.1 and changes no number: both simulating generators resolve
+    ``None`` to exactly that.
+
     ``process`` and ``parameter_risk`` are :class:`MackDiagonal`'s knobs, kept
     on this signature because they are the published 0.5.0 API - ``None`` means
     "that generator's default", so the defaults and every explicit call are
@@ -732,13 +822,15 @@ def simulate_one_year_cdr(
     ``generator="merz_wuthrich"`` is refused by name: the closed form is a
     linearization of the chain-ladder factor update around Mack's moments, not a
     way of generating a diagonal, and :func:`one_year_cdr` is where it lives.
+    ``generator="gallery"`` is refused too, for the opposite reason - it IS a
+    generator, but it wraps a fitted entry that no string can carry.
     """
     gen = _resolve_generator(generator, process=process, parameter_risk=parameter_risk)
-    if n_draws < 1:
+    if n_draws is not None and n_draws < 1:
         raise ValueError("n_draws must be positive")
     gen.check(fit)
     rng = np.random.default_rng(seed)
-    cdr = rereserve(fit, gen.draw(fit, n_draws=n_draws, rng=rng))
+    cdr = rereserve(fit, gen.draw(fit, n_draws=gen.resolve_n_draws(n_draws), rng=rng))
     targets = pd.DataFrame(
         {
             "label": [str(o) for o in fit.origin_periods],
@@ -763,7 +855,13 @@ def simulated_msep(pred: PredictiveDistribution) -> np.ndarray:
     variance by its square. R draws the same distinction from the other side:
     ``CDR.MackChainLadder`` reports the analytic msep (about zero) and
     ``CDR.BootChainLadder`` reports ``sd()`` of the re-reserved amount (about
-    its own mean). On a non-Mack generator, report both."""
+    its own mean). On a non-Mack generator, report both.
+
+    On ``ibnr.gallery.GalleryDiagonal`` the gap can be large and is not noise:
+    it is the entry's own view of next year's diagonal disagreeing with the
+    chain ladder's. Quoting this number alone there reports a model's
+    disagreement as though it were its volatility. ``cdr_risk_measures`` returns
+    ``mean_cdr`` and ``sd_cdr`` side by side for exactly that reason."""
     return (pred.samples**2).mean(axis=0)
 
 

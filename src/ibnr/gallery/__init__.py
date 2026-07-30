@@ -2,18 +2,26 @@
 
 Public API: ``list()``, ``get()``, ``fit()``, ``GalleryEntry``, plus the
 held-out evaluation pipeline - ``next_diagonal``, ``CohortForecast``,
-``Absence``, ``align_panel``, ``leaderboard``, ``SCORE_DIRECTION`` - and
-``stack()``.
+``Absence``, ``align_panel``, ``leaderboard``, ``SCORE_DIRECTION`` -
+``GalleryDiagonal``, and ``stack()``.
 
 **The rule this export set follows**, so a later addition has to argue against
 it: a name is exported if a caller has to CONSTRUCT or CALL it to get from a
-fitted entry to a board row. That is ``next_diagonal`` (which cells),
-``CohortForecast`` (one model's arrays at them), ``Absence`` (why an array is
-missing - and ``CohortForecast`` refuses an absent array without one, so it is
-not optional), ``align_panel`` (the cross-model intersection) and
-``leaderboard``. ``SCORE_DIRECTION`` joins them because ``leaderboard()`` has no
-default sort and no ``sort_by=`` by design, which moves the direction question
-onto the caller.
+fitted entry to a **published result** - a leaderboard row or a one-year CDR.
+That is ``next_diagonal`` (which cells), ``CohortForecast`` (one model's arrays
+at them), ``Absence`` (why an array is missing - and ``CohortForecast`` refuses
+an absent array without one, so it is not optional), ``align_panel`` (the
+cross-model intersection) and ``leaderboard``. ``SCORE_DIRECTION`` joins them
+because ``leaderboard()`` has no default sort and no ``sort_by=`` by design,
+which moves the direction question onto the caller.
+
+``GalleryDiagonal`` (0.5.1) is the one name the rule admitted on its second
+clause. It is the same shape of thing as ``CohortForecast`` - the caller builds
+it out of a fitted entry and the held-out cells - but it feeds
+``kernels.simulate_one_year_cdr`` rather than a board. It cannot be reached by
+name from ``kernels.cdr.cdr_methods()`` the way ``"mack"`` can, precisely
+because it carries a fitted entry, so if it were not exported here there would
+be no short way to write it down at all.
 
 Deliberately NOT here: ``ForecastPanel`` and ``HoldoutCells`` (returned, never
 constructed), ``logmeanexp`` / ``resolve_field`` / ``CAPABILITIES`` /
@@ -41,6 +49,7 @@ from ibnr.gallery.bayesian import england_verrall_odp as _england_verrall_odp  #
 from ibnr.gallery.bayesian import guszcza_growth_curve as _guszcza_growth_curve  # noqa: F401
 from ibnr.gallery.bayesian import meyers_ccl as _meyers_ccl  # noqa: F401
 from ibnr.gallery.bayesian import meyers_csr as _meyers_csr  # noqa: F401
+from ibnr.gallery.cdr import GalleryDiagonal
 from ibnr.gallery.entry import GalleryEntry
 from ibnr.gallery.nn import deeptriangle as _nn_deeptriangle  # noqa: F401
 from ibnr.gallery.nn import mdn as _nn_mdn  # noqa: F401
@@ -73,6 +82,7 @@ __all__ = [
     "SCORE_DIRECTION",
     "Absence",
     "CohortForecast",
+    "GalleryDiagonal",
     "GalleryEntry",
     "align_panel",
     "fit",
