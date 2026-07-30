@@ -78,10 +78,12 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+import importlib.util
 import inspect
 import json
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -99,6 +101,7 @@ from ibnr.data.schedule_p import (
 from ibnr.kernels.forecast import Absence, CohortForecast, align_panel, leaderboard
 from ibnr.kernels.harness import (
     _DIAG_KEYS,
+    ConvergenceGates,
     RetroTask,
     SamplerSettings,
     precompile,
@@ -190,6 +193,12 @@ UNAVAILABLE_MODELS: dict[str, str] = {
 }
 
 ALL_MODELS = [*WORKER_MODELS, POOLED_MODEL, *UNAVAILABLE_MODELS]
+
+#: which entries need the [bayesian] extra, DERIVED from the registry rather
+#: than listed here - a hand-written list is how a newly-added entry gets
+#: missed, and this repo has the scar (tests/test_nuts_sampler.py's hardcoded
+#: port list, which is why guszcza landed portless without CI noticing).
+BAYESIAN_ENTRIES = frozenset(n for n in gallery.list() if gallery.get(n).family == "bayesian")
 
 
 # -- the clamp and the cells ---------------------------------------------------
@@ -333,6 +342,114 @@ def absence_forecast(
         field=FIELD,
         density_absence=density_absence,
         draws_absence=absence,
+    )
+
+
+def stacking_payload(
+    *,
+    stacking: StackingResult | None,
+    stack_error: str | None,
+    publish: str,
+    models: Sequence[str],
+) -> dict:
+    """The ``heldout_stacking.json`` body - written on success AND on failure.
+
+    Writing it only on success left the PREVIOUS run's weights sitting beside
+    this run's freshly-overwritten CSVs: a subset run or a stacking failure
+    produced an output directory that looked complete and self-consistent and
+    was not, with nothing in it saying which run the weights came from.
+
+    Deleting the file instead would lose the reason. A payload that records the
+    failure describes THIS run either way, which is the property the directory
+    needs - every other file in it is unconditionally rewritten.
+    """
+    common = {
+        "mart_publish_id": publish,
+        "clamp": CLAMP,
+        "task": TASK,
+        "models_requested": list(models),
+    }
+    if stacking is None:
+        return {
+            **common,
+            "weights": None,
+            "error": stack_error
+            or "no stacking was attempted (a single cutoff, or no eligible model)",
+        }
+    return {
+        **common,
+        "method": stacking.method,
+        "model": stacking.model,
+        "weights": stacking.weights,
+        "n_cells_weight_fit": stacking.n_cells_weight_fit,
+        "n_floored_neg_inf": stacking.n_floored_neg_inf,
+        "weights_as_of": str(stacking.weights_as_of),
+        "weights_fingerprint": stacking.weights_fingerprint,
+    }
+
+
+def missing_extras(
+    worker_models: Sequence[str], *, run_nn: bool
+) -> list[tuple[str, str, list[str]]]:
+    """``(extra, import name, models needing it)`` for extras this run lacks.
+
+    The default ``--models`` is every board entry, which needs ``[bayesian]``
+    AND ``[nn]`` - and a plain ``uv sync`` installs neither, so the documented
+    default invocation could not run as written. It failed late and per worker,
+    inside a spawned process, as an ImportError about ``cmdstanpy`` with no hint
+    that an extra was the answer; the compute image omits ``[nn]`` too.
+
+    Checked with ``importlib.util.find_spec``, which does not execute the
+    module - importing torch here would cost seconds and defeat the module-level
+    import ban the gallery is tested for.
+    """
+    needed: list[tuple[str, str, list[str]]] = []
+    bayesian = [m for m in worker_models if WORKER_MODELS[m].entry in BAYESIAN_ENTRIES]
+    if bayesian and importlib.util.find_spec("cmdstanpy") is None:
+        needed.append(("bayesian", "cmdstanpy", bayesian))
+    if run_nn and importlib.util.find_spec("torch") is None:
+        needed.append(("nn", "torch", [POOLED_MODEL]))
+    return needed
+
+
+def _gate_detail(row: dict, gates: ConvergenceGates) -> str:
+    """Which diagnostics failed, and against what, for the absence's detail."""
+    checks = (
+        ("max_rhat", row.get("max_rhat"), f"> {gates.max_rhat}"),
+        ("divergence_frac", row.get("divergence_frac"), f"> {gates.max_divergence_frac}"),
+        ("min_ess_bulk", row.get("min_ess_bulk"), f"< {gates.min_ess_bulk}"),
+    )
+    seen = ", ".join(f"{k}={v:.4g} ({limit})" for k, v, limit in checks if v is not None)
+    return f"failed convergence gates at the final escalation stage: {seen or 'no diagnostics'}"
+
+
+def as_gated_forecast(
+    model: str, spec: BoardModel, row: dict, gates: ConvergenceGates
+) -> CohortForecast | None:
+    """The row's forecast, or an absence when its fit failed the gates.
+
+    ``run_retro`` uses the gates to decide which tasks to RE-RUN at the next
+    escalation stage. It does not - and should not - discard a fit that still
+    fails at the last one; that is the caller's decision. Taking the forecast
+    unconditionally, as this script did, was the wrong decision: a fit with
+    R-hat 1.4 or a wall of divergences contributed draws to a PUBLISHED board,
+    with nothing in the board saying so.
+
+    Downgraded to ``fit_failed`` rather than dropped, and the distinction is
+    load-bearing. Dropping the cohort would shrink the panel - and since
+    ``align_panel`` intersects, one model's silent drop deletes those cells from
+    every other model's column too, so a badly-converged fit would make the
+    board LOOK better while quietly costing everyone coverage. An absence keeps
+    the cohort, names the reason, and is counted in the census.
+    ``COHORT_ABSENCE_REASONS["fit_failed"]`` already reads "the fit raised, or
+    failed its convergence gates" - the vocabulary anticipated this; the script
+    simply never used it that way.
+    """
+    forecast = row.get("forecast")
+    if forecast is None or gates.passes(row):
+        return forecast
+    return absence_forecast(
+        model, spec, forecast.cells, Absence("fit_failed", _gate_detail(row, gates))
     )
 
 
@@ -736,9 +853,17 @@ class FitLog:
 def _print_progress(fitlog: FitLog):
     def progress(row: dict, stage: int, done: int, total: int) -> None:
         fitlog.write(row, stage=stage)
+        # .get, not [], and the reason is not defensiveness. run_retro emits a
+        # row for POOL MACHINERY failures too (an unpicklable result, a killed
+        # worker), and that row carries only model/line/company_code/error - no
+        # as_of, because the task never got far enough to have one. Indexing it
+        # raised KeyError *inside the progress callback*, which aborted the
+        # whole study and hid the machinery failure behind a traceback about a
+        # missing dict key.
         where = (
-            f"  [{done}/{total} stage{stage}] {row['model']} {row['as_of']} "
-            f"{row['line']} {row['company_code']}"
+            f"  [{done}/{total} stage{stage}] {row.get('model', '?')} "
+            f"{row.get('as_of', '(no cutoff)')} "
+            f"{row.get('line', '?')} {row.get('company_code', '?')}"
         )
         if row.get("error") is not None:
             print(f"{where}: FAILED {row['error']}", flush=True)
@@ -809,6 +934,18 @@ def main() -> int:
     run_nn = POOLED_MODEL in args.models
     unavailable = [m for m in args.models if m in UNAVAILABLE_MODELS]
 
+    missing = missing_extras(worker_models, run_nn=run_nn)
+    if missing:
+        print(
+            "this run needs optional extras that are not installed: "
+            + "; ".join(
+                f"{extra} (for {', '.join(models)}) -> uv sync --extra {name}"
+                for name, extra, models in missing
+            ),
+            file=sys.stderr,
+        )
+        return 2
+
     mart = active_mart_path(args.warehouse)
     # pinned + cache-warmed so pool workers never resolve @latest or call gh
     source = pinned_source(args.warehouse)
@@ -824,6 +961,10 @@ def main() -> int:
 
     fitlog = FitLog(args.out_dir / "heldout_fits.csv", mart_publish_id=publish)
     progress = _print_progress(fitlog)
+    # ONE gates object: run_retro escalates on it and as_gated_forecast judges
+    # the final row against it. Two instances could drift into a fit that was
+    # escalated for failing and then accepted for passing.
+    gates = ConvergenceGates()
 
     # run_retro only precompiles for its OWN runner; with a custom one the
     # spawned workers would race the cmdstan compiler over one executable
@@ -852,13 +993,14 @@ def main() -> int:
         rows = run_retro(
             tasks,
             stages=stages_for(spec.entry, args),
+            gates=gates,
             max_workers=args.workers,
             executor="serial" if args.serial else "process",
             runner=run_cohort,
             progress=progress,
         )
         for row in rows:
-            forecast = row.get("forecast")
+            forecast = as_gated_forecast(model, spec, row, gates)
             if forecast is not None:
                 forecasts_by_cutoff[row["as_of"]].append(forecast)
 
@@ -918,23 +1060,15 @@ def main() -> int:
         frame.to_csv(path, index=False)
         print(f"wrote {path} ({len(frame)} rows)")
 
-    if out.stacking is not None:
-        s = out.stacking
-        payload = {
-            "method": s.method,
-            "model": s.model,
-            "weights": s.weights,
-            "n_cells_weight_fit": s.n_cells_weight_fit,
-            "n_floored_neg_inf": s.n_floored_neg_inf,
-            "weights_as_of": str(s.weights_as_of),
-            "weights_fingerprint": s.weights_fingerprint,
-            "mart_publish_id": publish,
-            "clamp": CLAMP,
-            "task": TASK,
-        }
-        path = args.out_dir / "heldout_stacking.json"
-        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        print(f"wrote {path}")
+    # ALWAYS written, success or not - see stacking_payload.
+    s = out.stacking
+    payload = stacking_payload(
+        stacking=s, stack_error=out.stack_error, publish=publish, models=args.models
+    )
+    path = args.out_dir / "heldout_stacking.json"
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    print(f"wrote {path}")
+    if s is not None:
         print(f"stacking weights ({s.method}): {s.weights}")
     if out.stack_error is not None:
         print(f"STACKING FAILED (base boards unaffected): {out.stack_error}")
