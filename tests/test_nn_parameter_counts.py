@@ -41,8 +41,27 @@ from ibnr.gallery.registry import get
 
 torch = pytest.importorskip("torch")
 
-#: the one format a card discloses a parameter count in
+#: The PINNED format, and the only one a value is ever read from: an exact
+#: bolded count that :func:`test_disclosed_parameter_counts_are_what_the_networks_build`
+#: rebuilds and compares.
 CLAIM = re.compile(r"\*\*([\d,]+) parameters\*\*")
+
+#: Anything that READS as a parameter count, pinned or not - DETECTION only,
+#: and deliberately wider than :data:`CLAIM`.
+#:
+#: The two must be separate, and review found out why. Asking "does this card
+#: disclose a count?" with the pinned pattern answers "no" for
+#: ``~30k parameters`` - which is not a hypothetical, it is the EXACT string
+#: this module was written to stamp out (``mdn/card.md`` said "~30k parameters,
+#: even smaller than the transformer's ~120k", and the ~120k had already been
+#: retracted). So a card could revert to unpinned prose, sit in
+#: ``NO_COUNT_DISCLOSED``, and pass.
+#:
+#: Requires the literal word "parameters" after the number, which is what keeps
+#: it off the historical mentions the cards legitimately carry - "quoted ~120k,
+#: which was never the number", "**Size: about 70k.**", "~37k each" - none of
+#: which assert a count.
+LOOSE_COUNT = re.compile(r"~?\s*\d[\d,.]*\s*[kKmM]?\s+parameters\b")
 
 #: reference cohort shape shared by every builder: 4 LOB levels, one channel.
 #: The grid (n_w, n_d) varies per claim and is the thing that actually moves a
@@ -164,10 +183,35 @@ def test_cards_listed_as_making_no_size_claim_really_do_not(name):
     ``NO_COUNT_DISCLOSED`` is an unpinned number AND a false statement about
     itself - strictly worse than an entry nobody has classified yet.
     """
-    found = CLAIM.findall(get(name).card())
+    found = LOOSE_COUNT.findall(get(name).card())
     assert not found, (
         f"{name}/card.md now discloses parameter count(s) {found}; move it into "
-        "DISCLOSED with a builder per claim"
+        "DISCLOSED with a builder per claim, in the pinned **N parameters** format"
+    )
+
+
+@pytest.mark.parametrize("name", sorted(DISCLOSED))
+def test_a_disclosed_card_states_every_count_in_the_pinned_format(name):
+    """No unpinned prose count may hide on a card that also has pinned ones.
+
+    The other direction of the same gap. ``LOOSE_COUNT`` keeps
+    ``NO_COUNT_DISCLOSED`` honest; this keeps ``DISCLOSED`` honest, by requiring
+    every count-shaped phrase on those cards to sit inside a bolded claim that
+    a builder rebuilds. Without it a card could pin two figures and add a third
+    in prose, and only the two would be checked - which is how ``mdn`` carried a
+    retracted transformer figure in the first place.
+    """
+    card = get(name).card()
+    pinned = [m.span() for m in CLAIM.finditer(card)]
+    stray = [
+        m.group(0).strip()
+        for m in LOOSE_COUNT.finditer(card)
+        if not any(lo <= m.start() and m.end() <= hi for lo, hi in pinned)
+    ]
+    assert not stray, (
+        f"{name}/card.md states {stray} outside the pinned **N parameters** format, so "
+        "nothing rebuilds them. Bold them and add a Claim, or reword so they do not read "
+        "as a disclosed count"
     )
 
 
