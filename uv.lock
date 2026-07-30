@@ -893,7 +893,7 @@ polars = [
 
 [[package]]
 name = "ibnr"
-version = "0.5.1"
+version = "0.5.2"
 source = { editable = "." }
 dependencies = [
     { name = "ibis-framework", extra = ["duckdb"] },

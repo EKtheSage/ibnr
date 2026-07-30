@@ -15,6 +15,60 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
+## 0.5.2 - 2026-07-29
+
+Two review findings against 0.5.1's own work, no public surface change and no
+shipped behaviour change - both defects are in a study script and a test guard.
+Released rather than held because one of them would have put unreliable MCMC
+draws on a published leaderboard.
+
+### The parameter-count guard could not see an unpinned count
+
+0.5.1 pinned every parameter count the NN cards disclose. The regex that read
+those values was also answering "does this card disclose a count?", and in that
+role it could not see `~30k parameters` - the exact prose format the guard was
+written to stamp out, and the one `mdn/card.md` had carried alongside a
+transformer figure the transformer's own card had already retracted. A card
+could revert to prose, sit in the "discloses nothing" list, and pass.
+
+Detection is now a separate, wider pattern, used both ways: a card listed as
+disclosing nothing must contain no count-shaped phrase at all, and a card that
+DOES disclose must have every such phrase inside a bolded claim that a builder
+rebuilds. It requires the literal word "parameters" after the number, which is
+what keeps it off the historical mentions the cards legitimately carry ("quoted
+~120k, which was never the number").
+
+### Four defects between the worker pool and the published board
+
+All in `scripts/heldout_leaderboard.py`, found by review of the script that
+lands milestone 6's study. Two would have corrupted its output and two would
+have aborted or misreported it.
+
+* **A fit that failed its convergence gates at the final escalation stage was
+  scored onto the board.** `run_retro` uses the gates to decide what to
+  *re-run*; it does not discard a fit that still fails at the last stage,
+  because that is the caller's decision - and this script was not making it. A
+  fit with R-hat 1.4 contributed draws to a published board with nothing saying
+  so. It is now downgraded to a `fit_failed` absence rather than dropped:
+  `align_panel` intersects, so a silent drop would delete those cells from
+  every OTHER model's column, making a badly-converged fit look good while
+  costing everyone coverage. One `ConvergenceGates` instance is shared with
+  `run_retro` so escalation and judgement cannot drift.
+* **`heldout_stacking.json` was written only on success**, leaving a previous
+  run's weights beside freshly-overwritten CSVs - an output directory that
+  looked complete and self-consistent and was not. Written either way now, with
+  the failure payload naming the reason.
+* **A pool-machinery failure crashed the progress callback.** Those rows carry
+  no `as_of` (the task never got far enough to have one), so indexing it raised
+  `KeyError` inside the callback, aborting the study and hiding the real
+  failure behind a missing-key traceback.
+* **The documented default invocation could not run.** It selects every board
+  entry, needing `[bayesian]` and `[nn]`, and a plain `uv sync` installs
+  neither; it failed late inside a spawned worker as an `ImportError` about
+  cmdstanpy. A preflight now names the extra and the models that want it and
+  exits before the mart is touched, checking with `find_spec` so torch is never
+  imported. The entry-to-extra map is derived from the registry.
+
 ## 0.5.1 - 2026-07-29
 
 A patch in version number only where the CDR is concerned: the one-year CDR
