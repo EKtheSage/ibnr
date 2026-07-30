@@ -7,7 +7,9 @@ supported it since the ports were written, but until now no ENTRY exposed it -
 so ``gallery.fit(..., backend="pymc")`` could only reach the native path. On
 ``compartmental`` that path costs ~0.6-0.9 s/iteration against NumPyro's
 ~0.007, i.e. it is effectively unrunnable, which made the gallery's pymc
-backend a trap for that entry.
+backend a trap for that entry. ``guszcza_growth_curve`` is the second such
+entry - at the ``adapt_delta = 0.999`` its source specifies, native PyTensor
+took 860 s against NumPyro's 6.7 s on the identical graph.
 
 Two design points these tests pin, both deliberate:
 
@@ -34,14 +36,29 @@ import pytest
 from ibnr import gallery
 from ibnr.triangle import Triangle
 
-#: every entry with a PyMC port
-ENTRIES = [
-    "meyers_ccl",
-    "meyers_csr",
-    "england_verrall_odp",
-    "clark_growth_curve",
-    "compartmental",
-]
+#: Every Bayesian entry, DERIVED from the registry rather than written out.
+#:
+#: Every entry in the family has a PyMC port, and CLAUDE.md's milestone-5 rule is
+#: that a new Bayesian entry is not done until it has both ports - so deriving
+#: this list is what makes that rule enforceable rather than advisory. A
+#: Stan-only entry joining the family fails these tests on its first CI run,
+#: which is exactly what a hardcoded list did NOT do: `guszcza_growth_curve`
+#: landed two days after milestone 5 closed and sat portless, absent from this
+#: list and from scripts/parity_gallery.py, with nothing going red.
+ENTRIES = sorted(name for name in gallery.list() if gallery.get(name).family == "bayesian")
+
+
+def test_the_entry_list_is_the_whole_bayesian_family():
+    """The list above must BE the family, and must not be able to collapse.
+
+    Set equality stops it drifting; the floor stops a registry that failed to
+    import from turning every parametrized test below into a silent pass on zero
+    cases - the failure mode CI's own count gates exist to catch one level up.
+    """
+    from_registry = {name for name in gallery.list() if gallery.get(name).family == "bayesian"}
+    assert set(ENTRIES) == from_registry
+    assert len(ENTRIES) >= 6, f"the bayesian family cannot have shrunk: {sorted(ENTRIES)}"
+
 
 #: strictly increasing share of ultimate paid by development year. Increments are
 #: positive at every step, which ODP requires and the lognormal entries prefer.
@@ -54,7 +71,8 @@ def tiny_triangle() -> Triangle:
 
     Carries all three fields the family reads under their default names
     (``paid_loss`` / ``reported_loss`` / ``earned_premium``) on identical cells,
-    so one triangle drives the dispatch test for all five entries. Reported is
+    so one triangle drives the dispatch test for every entry in the family.
+    Reported is
     paid grossed up, so compartmental's derived OS = reported - paid is positive.
     Nothing here is sampled - it only has to survive ``stan_data()``.
     """
