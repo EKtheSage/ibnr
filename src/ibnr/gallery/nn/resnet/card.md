@@ -63,15 +63,16 @@ imported from `gallery/nn/transformer/network.py` so the three bodies share
 one head implementation.
 
 **Why 32 channels and not 64.** Width was cut from the first draft's 64
-after measuring: at 64 the trunk carries 230,057 parameters (each residual
-block holds two 64x64x3x3 convs, ~37k each), roughly 3x the 70,505 the
-transformer's default network carries at the same shape. That made the
+after measuring: at 64 the trunk carries **230,057 parameters** (each residual
+block holds two 64x64x3x3 convs, ~37k each), roughly 3x the **70,505 parameters**
+the transformer's default network carries at the same shape. That made the
 "deliberately tiny" claim above false and turned a body ablation into a
 capacity comparison. Depth was kept at 3 blocks because depth IS the
 architectural claim here - it sets the receptive field - and only width,
-which is pure capacity, was reduced. The disclosed count is pinned by
-`tests/test_resnet.py::test_disclosed_parameter_count`, which reads the
-number out of this card, so the two cannot drift apart again.
+which is pure capacity, was reduced. All three counts on this card - including
+the hypothetical 64-channel one and the cross-reference to another entry's
+network - are pinned by `tests/test_nn_parameter_counts.py`, which reads them
+out of the card and rebuilds each, so none can drift.
 
 **Why GroupNorm, never BatchNorm.** Under calendar-cutoff augmentation every
 cohort in a batch is conditioned at its OWN drawn cutoff. BatchNorm's batch
