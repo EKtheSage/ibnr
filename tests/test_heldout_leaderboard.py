@@ -17,6 +17,8 @@ needs the mart, cmdstan, or torch.
 from __future__ import annotations
 
 import datetime as dt
+import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -642,3 +644,141 @@ def test_study_constants_match_the_locked_design():
         SimpleNamespace(no_escalate=False, chains=4, warmup=1000, draws=2500),
     )
     assert len(stages) == 2 and stages[0].target_accept == 0.9
+
+
+# -- review of #77: four defects between the pool and the published board ------
+
+
+def test_a_fit_failing_the_gates_at_the_final_stage_becomes_an_absence(rng):
+    """THE P1. ``run_retro`` uses the gates to decide what to RE-RUN; it does not
+    discard a fit that still fails at the last escalation stage, and this script
+    used to append that forecast to a PUBLISHED board with nothing saying so.
+
+    Downgraded rather than dropped, and the difference is not cosmetic: dropping
+    shrinks the panel, and ``align_panel`` INTERSECTS, so one model's silent drop
+    deletes those cells from every other model's column - a badly-converged fit
+    would make the board look better while costing everyone coverage.
+    """
+    cells = _cells()
+    good = _forecast("meyers_ccl", cells, rng=rng)
+    gates = hl.ConvergenceGates()
+    spec = hl.WORKER_MODELS["meyers_ccl"]
+
+    passing = {"forecast": good, "max_rhat": 1.001, "divergence_frac": 0.0, "min_ess_bulk": 900.0}
+    assert hl.as_gated_forecast("meyers_ccl", spec, passing, gates) is good
+
+    failed = {**passing, "max_rhat": 1.42}
+    out = hl.as_gated_forecast("meyers_ccl", spec, failed, gates)
+    assert out is not good
+    assert out.draws is None and out.draws_absence.reason == "fit_failed"
+    assert "max_rhat=1.42" in out.draws_absence.detail
+    # the cohort is KEPT, on the same cells, so the panel does not shrink
+    assert out.cells is cells
+
+
+def test_the_gated_downgrade_respects_a_model_level_density_reason(rng):
+    """A draws-only entry keeps ``no_predictive_density`` on the density axis.
+
+    Stamping ``fit_failed`` there for one cohort would contradict a model-level
+    claim and make align_panel refuse the whole model - the same rule
+    ``absence_forecast`` already encodes, which is why this reuses it.
+    """
+    cells = _cells()
+    forecast = _forecast("mack", cells, rng=rng, density=False)
+    row = {"forecast": forecast, "max_rhat": 9.9}
+    out = hl.as_gated_forecast("mack", hl.WORKER_MODELS["mack"], row, hl.ConvergenceGates())
+    assert out.density_absence.reason == "no_predictive_density"
+    assert out.draws_absence.reason == "fit_failed"
+
+
+def test_progress_survives_a_pool_machinery_row(capsys):
+    """``run_retro`` emits a row for POOL machinery failures carrying only
+    model/line/company_code/error - no ``as_of``, because the task never got one.
+    Indexing it raised KeyError inside the progress callback, which aborted the
+    whole study and hid the real failure behind a missing-key traceback."""
+    written = []
+    fitlog = SimpleNamespace(write=lambda row, stage: written.append(row))
+    progress = hl._print_progress(fitlog)
+
+    machinery = {
+        "model": "meyers_ccl",
+        "line": "workers_compensation",
+        "company_code": "CO_A",
+        "error": "worker: BrokenProcessPool: killed",
+    }
+    progress(machinery, 1, 1, 1)  # must not raise
+    out = capsys.readouterr().out
+    assert "FAILED" in out and "BrokenProcessPool" in out
+    assert written == [machinery]
+
+
+def test_the_stacking_json_always_describes_this_run(tmp_path, rng):
+    """Written only on success, it left the PREVIOUS run's weights beside this
+    run's freshly-overwritten CSVs - a directory that looked complete and
+    self-consistent and was not. Now the failure case writes a payload naming
+    the reason, so the file always describes the run that produced the CSVs."""
+    stale = tmp_path / "heldout_stacking.json"
+    stale.write_text(json.dumps({"weights": {"meyers_csr": 1.0}}), encoding="utf-8")
+
+    payload = hl.stacking_payload(
+        stacking=None, stack_error="bayesblend blew up", publish="pub1", models=["mack"]
+    )
+    stale.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    back = json.loads(stale.read_text(encoding="utf-8"))
+    assert back["weights"] is None
+    assert back["error"] == "bayesblend blew up"
+    assert back["mart_publish_id"] == "pub1" and back["models_requested"] == ["mack"]
+
+    # and with no stacking AND no error - a single-cutoff run - it still says so
+    quiet = hl.stacking_payload(stacking=None, stack_error=None, publish="pub1", models=["mack"])
+    assert quiet["weights"] is None and "no stacking was attempted" in quiet["error"]
+
+
+def test_missing_extras_names_the_extra_and_the_models():
+    """The documented default invocation runs every board entry, which needs
+    [bayesian] AND [nn] - and a plain `uv sync` installs neither. It used to
+    fail late, inside a spawned worker, as an ImportError about cmdstanpy with
+    no hint that an extra was the answer."""
+    needed = dict((extra, models) for extra, _, models in hl.missing_extras(["mack"], run_nn=False))
+    assert needed == {}, "mack is a core entry and must not demand an extra"
+
+    bayes = hl.missing_extras(["meyers_ccl", "mack"], run_nn=False)
+    have_cmdstanpy = importlib.util.find_spec("cmdstanpy") is not None
+    if have_cmdstanpy:
+        assert bayes == []
+    else:
+        assert [e for e, _, _ in bayes] == ["bayesian"]
+        assert bayes[0][2] == ["meyers_ccl"]  # named, and mack is not implicated
+
+    # the entry->extra map is DERIVED from the registry, not hand-listed
+    assert "guszcza_growth_curve" in hl.BAYESIAN_ENTRIES
+    assert "mack" not in hl.BAYESIAN_ENTRIES
+
+
+def test_main_actually_runs_the_preflight_before_touching_the_mart(monkeypatch, capsys):
+    """The DELIVERY test, and the mutation pass is why it exists.
+
+    Testing ``missing_extras`` alone left the preflight unwired: deleting its
+    call from ``main`` kept every other test green. That is this repo's named
+    inert-parameter bug class - a signature test proves a wire exists, not that
+    it is connected - so this drives the real entry point and asserts main
+    STOPS, before ``active_mart_path`` is reached.
+    """
+    called = {}
+
+    def fake_missing(worker_models, *, run_nn):
+        called["args"] = (list(worker_models), run_nn)
+        return [("bayesian", "cmdstanpy", ["meyers_ccl"])]
+
+    def exploding_mart(*a, **k):  # pragma: no cover - must never be reached
+        raise AssertionError("main reached the mart despite a missing extra")
+
+    monkeypatch.setattr(hl, "missing_extras", fake_missing)
+    monkeypatch.setattr(hl, "active_mart_path", exploding_mart)
+    monkeypatch.setattr(
+        sys, "argv", ["heldout_leaderboard.py", "--models", "meyers_ccl", "--out-dir", "."]
+    )
+
+    assert hl.main() == 2
+    assert called["args"] == (["meyers_ccl"], False)
+    assert "uv sync --extra bayesian" in capsys.readouterr().err
