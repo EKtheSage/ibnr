@@ -15,7 +15,12 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
-## Unreleased
+## 0.5.1 - 2026-07-29
+
+A patch in version number only where the CDR is concerned: the one-year CDR
+became multi-method and then gallery-wide, `guszcza_growth_curve` closed the
+last parity gap, and two drift guards landed. Nothing was removed or renamed and
+no published number moved; `ibnr.gallery.__all__` grew by one name.
 
 ### Multi-method one-year CDR (out of band)
 
@@ -74,6 +79,59 @@ tie-out is untouched. `process`/`parameter_risk` default to `None` on the
 signature instead of `"gamma"`/`True` so that "not supplied" is distinguishable
 from "supplied"; the applied defaults are unchanged, and combining either with
 an explicit `generator=` is refused rather than left inert.
+
+### The one-year CDR opens to the gallery
+
+`rereserve` being public was the door. **`ibnr.gallery.GalleryDiagonal`** is a
+third `DiagonalGenerator` that takes a fitted entry with `PredictsHeldout` and
+re-reserves the draws it already produces for the leaderboard's CRPS column, so
+CCL, CSR, ODP, Clark and Mack reach a one-year CDR with no new theory. It lives
+in the gallery rather than `kernels`, since it imports `PredictsHeldout` and the
+re-export direction is gallery -> kernels only; `cdr_methods()` still lists the
+route, naming the class as a string.
+
+* **What the number is, because it will be misquoted.** It is the *chain
+  ladder's* one-year CDR under model M's view of next year, not "model M's
+  one-year CDR". Both differenced ultimates are chain-ladder ultimates and only
+  the diagonal between them is the model's - the structure R's
+  `CDR.BootChainLadder` already has. The honest alternative refits M on the
+  extended triangle once per draw; it is not offered rather than approximated.
+  Consequently `E[CDR|D_I] = 0` does **not** hold here (it is Mack's result), so
+  read `mean_cdr` and `sd_cdr` from `cdr_risk_measures` and not
+  `simulated_msep`, which folds a disagreement between two methods into
+  something that reads as volatility.
+* **Two limits, both refused by name rather than assumed.** The route is
+  **backtest only** - `next_diagonal` builds cells only from observations that
+  already exist after the cutoff, so a *current* valuation is not reachable this
+  way (the `mack` and `odp_bootstrap` generators are unaffected and remain
+  prospective). And it excludes the **NN entries and `compartmental`**, whose
+  contracts keep no raw cumulatives for the training-history check below.
+* **All three objects are bound to each other, not two of them.** A `MackFit`, a
+  `HoldoutCells` and a fitted entry come from three calls. Two checks tie the
+  cells to the fit; the third ties the entry to both, by comparing its own
+  contract values against `fit.cum`. Without it, an entry refitted on restated
+  *interior* history - latest diagonal untouched, so every other check passed -
+  was accepted, and the total CDR mean moved from 0.27 to -367.69 with seven
+  times the spread, every number finite. Found by review.
+* `simulate_one_year_cdr(n_draws=...)` and `Mack.cdr_distribution(n_draws=...)`
+  now default to `None`, meaning "this generator's own count".
+  `DiagonalGenerator.resolve_n_draws` is the seam: a Monte Carlo budget for the
+  two simulating generators (both resolve `None` to the previous literal 20,000,
+  so no existing call changes) and the source's own size for a fitted posterior,
+  which refuses a mismatched explicit count instead of resampling to it.
+
+### Documentation and drift guards
+
+* **A "Chain ladder & reserve risk" reference section** on the docs site. The
+  CDR and Mack kernels had no reference page at all, so `cdr_methods()` - the
+  discoverability feature - was not discoverable. Thirteen entries, all
+  resolving statically under `dynamic: false`.
+* **Every parameter count an NN card discloses is pinned to the network that
+  builds it.** `transformer/card.md` had retracted a `~120k` figure and the
+  retraction never reached `mdn/card.md`, which had copied the comparison; mdn's
+  own "~30k" was 26,353. Cross-card references get a builder each, every `nn`
+  entry must be classified as disclosing a count or not, and the "does not
+  disclose" list is verified against the cards rather than trusted.
 
 ### Milestone 5 - `guszcza_growth_curve` joins the parity gate
 
