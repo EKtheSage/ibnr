@@ -34,7 +34,7 @@ pinned GitHub release by default; point at a local warehouse with
 |---|---|
 | `01_triangle_and_meyers_ccl.ipynb` | Milestones 1-2: the Triangle layer & chainladder tie-out (both backends), the Schedule P adapter, a live CCL fit, and the 200-insurer Meyers validation (gross vs net of bulk). |
 | `02_transformer_vs_statistical.ipynb` | Milestone 3: the NN family against the statistical dependence baselines, read off the published `compare_gallery*.csv` retrospectives over 152 cohorts. |
-| `03_gallery_api_comparison.ipynb` | Two things at once. (a) Milestone 6, live: every number from a real fit through `gallery.fit` -> `log_lik_at`/`predict_at` -> `align_panel` -> `gallery.leaderboard`, on a 25-cohort Schedule P panel at the 1997 cutoff, accident years 1990-1997. Reads no CSVs. Shows the two-capability split (ELPD for density-eligible entries, CRPS for all), what the intersection costs, PIT calibration (descriptive at cell level, tested at cohort level) and the multiline entries' ultimate-level appendix. (b) The gallery's **introduction to the neural family**: a section placed immediately before the NN fits opens `nn_transformer` up - the `nn_data` contract on the panel's own grid, `TriangleTransformer.__init__` and `forward` with the tensor shapes captured from a live forward pass, the measured parameter count, the MDN head and `mdn_nll`, the calendar-date validation split and the pinned per-dev standardization, and the cutoff augmentation. Every code block there is printed with `inspect.getsource` from `src/ibnr/gallery/nn/`, so it cannot drift. A follow-up after the fits shows the same cell's learned mixture (checked against `log_lik_at`) and the autoregressive rollout. |
+| `03_gallery_api_comparison.ipynb` | Two things at once. (a) Milestone 6, live: every number from a real fit through `gallery.fit` -> `log_lik_at`/`predict_at` -> `align_panel` -> `gallery.leaderboard`, on a 25-cohort Schedule P panel at the 1997 cutoff, accident years 1990-1997. Reads no CSVs. Shows the two-capability split (ELPD for density-eligible entries, CRPS for all), what the intersection costs, PIT calibration (descriptive at cell level, tested at cohort level) and the multiline entries' ultimate-level appendix. (b) The gallery's **introduction to the neural family**: a section placed immediately before the NN fits opens `nn_transformer` up - the `nn_data` contract on the panel's own grid, `TriangleTransformer.__init__` and `forward` with the tensor shapes captured from a live forward pass, the measured parameter count, the MDN head and `mdn_nll`, the calendar-date validation split and the pinned per-dev standardization, and the cutoff augmentation. The source it quotes - the contract builder, `forward`, the MDN head, `mdn_nll`, `norm_stats`, `splits` and the augmentation - is printed with `inspect.getsource` from `src/ibnr/gallery/nn/` rather than retyped, so those seven blocks cannot drift from the code; the section's other eleven code cells are the notebook's own analysis of them, and drift there is caught only by re-executing. A follow-up after the fits shows the same cell's learned mixture (checked against `log_lik_at`) and the autoregressive rollout. |
 
 To re-execute a notebook headless (e.g. after a data refresh):
 
@@ -52,20 +52,25 @@ uv run jupyter nbconvert --to notebook --execute --inplace \
     --ExecutePreprocessor.timeout=7200 analysis/03_gallery_api_comparison.ipynb
 ```
 
-**`03`'s committed run predates the 0.5.0 API fixes it motivated.** Building it
-through the public API alone surfaced five gaps, all closed after it was
-committed, so three things in its cells document friction that no longer exists:
+**`03` motivated the 0.5.0 API fixes, and as of 0.5.2 it is written against
+them.** Building it through the public API alone surfaced five gaps; three
+showed up as workarounds in its own cells. Two are gone. **The third is still
+load-bearing, and that was established by removing it and watching the
+re-execution fail** - see the long comment on the `drop("company_name")` cell,
+which now says exactly which two call paths still need one schema and why
+0.5.0's narrowing does not reach them (`index_into` demands exact schema
+equality by design, and the pooled contract carries no single-cohort identity
+to verify a dropped value against). The two that are gone:
 
-* the `tri.with_expr(tri.expr.drop("company_name"))` cell, labelled "API
-  FRICTION" - a pooled NN fit can now be scored on cells carrying all three of
-  the mart's segments, so the drop is unnecessary;
 * `point_row`'s `is_nn = gallery.get(name).family == "nn"` branch - `predict`
   and `realized_ultimates` take the same `segment` argument on every entry now,
-  so the branch collapses to two unconditional lines;
+  so the branch collapsed to two unconditional lines;
 * the `from ibnr.kernels.forecast import ...` / `from ibnr.kernels.holdout
-  import next_diagonal` block - all five names are on `ibnr.gallery`.
+  import next_diagonal` block - all five names are on `ibnr.gallery`, which is
+  the export set this notebook is the motivating caller for.
 
-All three still RUN correctly against the current code (checked by extracting
-and executing exactly those calls), which is why the notebook is not re-executed:
-its outputs are the ~20-minute live gallery fit above and re-running it to delete
-three lines of workaround would change every timing in it.
+The notebook was re-executed end to end on 0.5.2 to land those changes, so its
+outputs, its timings and the `ibnr` version it prints are all from one run
+against current code. Every timing in it therefore differs from the 0.5.0 run;
+the numbers that are not timings should not, and a diff that shows an estimate
+moving is worth reading rather than waving through.
