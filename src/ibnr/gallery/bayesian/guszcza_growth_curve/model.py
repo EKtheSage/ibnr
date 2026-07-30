@@ -37,9 +37,12 @@ parameters (the entity-level ``student_t(3, 0, 1)`` sd goes with the level),
 which is the over-confident direction; the card states the size and the
 ablation that would answer it.
 
-Stan-only in this branch; the NumPyro/PyMC ports and their parity gates are a
-follow-up task, matching how milestones 4 -> 5 sequenced the rest of the
-family. The ``backend`` argument already reserves the seam.
+Three posterior backends, all fitting the identical Stan ``data`` block:
+``model.stan`` (cmdstanpy, the reference), ``model_numpyro.py`` and
+``model_pymc.py``. See ``card.md`` for the parity and convergence tables and
+``model_numpyro``'s docstring for the two hazards a port of this model has to
+get right - Stan's implicit rejection of a non-positive ``ulr``, and the
+zero-age branch this growth curve deliberately does NOT have.
 """
 
 from __future__ import annotations
@@ -67,11 +70,9 @@ STAN_FILE = Path(__file__).parent / "model.stan"
 #: curve it fits (same convention as clark_growth_curve)
 CURVE_CODES = {"loglogistic": 1, "weibull": 2}
 
-#: posterior backends this entry can dispatch to. Stan-only for now: the
-#: NumPyro/PyMC ports (and their parity gates) are a follow-up task, and
-#: accepting a backend that does not exist yet would be a wire without a
-#: connection.
-BACKENDS = ("stan",)
+#: posterior backends this entry can dispatch to. Stan is ground truth (design
+#: decision 7); the two ports are gated against it by ``kernels.parity``.
+BACKENDS = ("stan", "numpyro", "pymc")
 
 
 def pooled(idata, name: str) -> np.ndarray:
@@ -129,6 +130,7 @@ class GuszczaGrowthCurve(GalleryEntry, ScoresHeldout, PredictsHeldout):
         target_accept: float = 0.999,
         max_treedepth: int = 15,
         parallel_chains: int = 1,
+        nuts_sampler: str = "pymc",
         show_progress: bool = False,
     ) -> GuszczaGrowthCurve:
         """Fit one cohort (single company x line) as of a training diagonal.
@@ -143,6 +145,27 @@ class GuszczaGrowthCurve(GalleryEntry, ScoresHeldout, PredictsHeldout):
         """
         if backend not in BACKENDS:
             raise ValueError(f"backend must be one of {BACKENDS}, got {backend!r}")
+        # nuts_sampler selects the NUTS IMPLEMENTATION over the PyMC graph; it
+        # is meaningless for the other backends, so asking for one there is an
+        # error rather than a silently ignored argument.
+        if backend != "pymc" and nuts_sampler != "pymc":
+            raise ValueError(
+                f"nuts_sampler={nuts_sampler!r} is a pymc-backend control; "
+                f"the {backend!r} backend does not take it"
+            )
+        # parallel_chains is a cmdstan-level control the retro harness
+        # escalates on, and the ports have no analogue. Validated BEFORE any
+        # data prep: a port that accepted it silently would report an escalated
+        # fit that never ran.
+        #
+        # max_treedepth is deliberately NOT on this list. All three samplers
+        # have it, this entry's default of 15 differs from NumPyro's and PyMC's
+        # own default of 10, and holding it constant across backends is part of
+        # what parity means - so it is a shared control that reaches every one.
+        if backend != "stan" and parallel_chains != 1:
+            raise ValueError(
+                f"parallel_chains is a stan-backend control; the {backend!r} port does not take it"
+            )
         if growth_curve not in CURVE_CODES:
             raise ValueError(
                 f"growth_curve must be one of {tuple(CURVE_CODES)}, got {growth_curve!r}"
@@ -168,7 +191,21 @@ class GuszczaGrowthCurve(GalleryEntry, ScoresHeldout, PredictsHeldout):
             "y": y,
             "curve": CURVE_CODES[growth_curve],
         }
-        idata, cmdstan_fit = self._sample_stan(
+        sampler = {
+            "stan": self._sample_stan,
+            "numpyro": self._sample_numpyro,
+            "pymc": self._sample_pymc,
+        }[backend]
+        extra = {"parallel_chains": parallel_chains} if backend == "stan" else {}
+        # nuts_sampler is the pymc-side analogue and has to REACH _sample_pymc:
+        # accepting it here and dropping it would sample with that method's own
+        # "pymc" default while the caller believed a foreign NUTS ran.
+        if backend == "pymc":
+            extra["nuts_sampler"] = nuts_sampler
+        # All three return (comparable arviz.InferenceData, raw cmdstan fit or
+        # None), so predict(), the scorers and convergence() stay
+        # backend-agnostic - and fit() stays the single writer of entry state.
+        idata, cmdstan_fit = sampler(
             stan_block,
             chains=chains,
             iter_warmup=iter_warmup,
@@ -176,8 +213,8 @@ class GuszczaGrowthCurve(GalleryEntry, ScoresHeldout, PredictsHeldout):
             seed=seed,
             target_accept=target_accept,
             max_treedepth=max_treedepth,
-            parallel_chains=parallel_chains,
             show_progress=show_progress,
+            **extra,
         )
         # atomic assignment: nothing above touched self
         self.contract_ = contract
@@ -249,6 +286,77 @@ class GuszczaGrowthCurve(GalleryEntry, ScoresHeldout, PredictsHeldout):
         idata.attrs["runtime_s"] = runtime_s
         idata.attrs["backend"] = "stan"
         return idata, fit
+
+    def _sample_numpyro(
+        self,
+        stan_block,
+        *,
+        chains,
+        iter_warmup,
+        iter_sampling,
+        seed,
+        target_accept,
+        max_treedepth,
+        show_progress,
+    ):
+        """NumPyro (JAX) port; returns ``(idata, None)`` - there is no cmdstan
+        fit object. Same parameterization, same data block, same init strategy.
+
+        The two things a port of this model has to get right are documented in
+        ``model_numpyro``: Stan's implicit rejection of a non-positive ``ulr``
+        (reproduced as a ``-inf`` factor, with the safe substitution inside the
+        ``log`` so the gradient survives), and the zero-age branch this growth
+        curve deliberately does not have.
+        """
+        from ibnr.gallery.bayesian.guszcza_growth_curve import model_numpyro
+
+        idata = model_numpyro.sample(
+            stan_block,
+            chains=chains,
+            iter_warmup=iter_warmup,
+            iter_sampling=iter_sampling,
+            seed=seed,
+            target_accept=target_accept,
+            max_treedepth=max_treedepth,
+            progress_bar=show_progress,
+        )
+        return idata, None
+
+    def _sample_pymc(
+        self,
+        stan_block,
+        *,
+        chains,
+        iter_warmup,
+        iter_sampling,
+        seed,
+        target_accept,
+        max_treedepth,
+        show_progress,
+        nuts_sampler="pymc",
+    ):
+        """PyMC port; returns ``(idata, None)``.
+
+        ``nuts_sampler`` selects the NUTS implementation run over the PyMC
+        graph ("pymc" for PyTensor's own, "numpyro"/"blackjax" for a JAX one).
+        The graph is the thing being compared either way, which is what makes
+        the escape hatch legitimate - see ``compartmental``, where the native
+        sampler is impractical and the identical graph runs via NumPyro.
+        """
+        from ibnr.gallery.bayesian.guszcza_growth_curve import model_pymc
+
+        idata = model_pymc.sample(
+            stan_block,
+            chains=chains,
+            iter_warmup=iter_warmup,
+            iter_sampling=iter_sampling,
+            seed=seed,
+            target_accept=target_accept,
+            max_treedepth=max_treedepth,
+            nuts_sampler=nuts_sampler,
+            progressbar=show_progress,
+        )
+        return idata, None
 
     def cohorts(self) -> list[dict]:
         """This fit's one cohort - the segment identity its contract was built
@@ -386,7 +494,12 @@ class GuszczaGrowthCurve(GalleryEntry, ScoresHeldout, PredictsHeldout):
         if "sample_stats" in self.idata_ and "diverging" in self.idata_.sample_stats:
             diverging = int(np.asarray(self.idata_.sample_stats["diverging"].values).sum())
         return {
-            "backend": self.backend_,
+            # the SAMPLER's own label, not the backend argument: a pymc fit run
+            # through a foreign NUTS reports "pymc:numpyro", and this entry is
+            # one that has to be run that way (model_pymc's docstring measures
+            # the ~130x). Recording only "pymc" would publish a convergence row
+            # that does not say what produced it.
+            "backend": self.idata_.attrs.get("backend", self.backend_),
             "runtime_s": float(self.idata_.attrs.get("runtime_s", np.nan)),
             "n_draws": n_draws,
             "max_rhat": float(summ["r_hat"].max()),

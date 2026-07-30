@@ -57,6 +57,17 @@ ODP_PARITY_VARS = ("c", "alpha", "beta")
 #: when the fitted development pattern looks similar.
 CLARK_PARITY_VARS = ("logelr", "omega", "theta")
 
+#: Hierarchical growth curve (Guszcza / Gesmann). The population intercepts, the
+#: curve's shape and scale, the hierarchical spread and the residual scale - plus
+#: ``ulr`` itself, the per-accident-year ultimate loss ratios, because they are
+#: what ``predict()`` and the held-out scorer actually consume (the same reason
+#: CCL compares ``alpha``). The raw ``z_ulr`` is deliberately excluded: it is the
+#: non-centered nuisance whose only content is ``ulr``, exactly as CCL excludes
+#: ``a_ig``. Comparing in MCSE units is what makes including ``ulr`` safe - a
+#: late origin with two cells has a large ``mcse_sd``, so its noisier estimate is
+#: tolerated automatically rather than tripping a fixed band.
+GUSZCZA_PARITY_VARS = ("ulr_pop", "sd_ulr", "ulr", "omega", "theta", "sigma")
+
 #: Hierarchical compartmental. Deliberately the POPULATION-level scalars plus
 #: the two residual scales and the reserving-cycle correlation - the set both
 #: variants expose under the same names, in all three backends. The per-accident

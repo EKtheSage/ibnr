@@ -78,6 +78,7 @@ from ibnr.kernels.parity import (
     CLARK_PARITY_VARS,
     COMPARTMENTAL_PARITY_VARS,
     CSR_PARITY_VARS,
+    GUSZCZA_PARITY_VARS,
     ODP_PARITY_VARS,
 )
 
@@ -143,6 +144,14 @@ def _fit_backends(triangle, backends, args):
         # The loss field is part of the MODEL, not of this run: each entry's
         # Stan reference posterior is defined on one field (CCL on Meyers'
         # incurred net of bulk, CSR on paid), so it comes from MODELS.
+        #
+        # nuts_sampler is the one argument that does NOT go to every backend,
+        # and it does not break the parity invariant because it is meaningless
+        # anywhere else - the entries reject it on a non-pymc backend by name.
+        # It selects the NUTS implementation run over the PyMC graph, which
+        # matters for the entries whose native PyTensor sampler is impractical
+        # (compartmental, guszcza_growth_curve at adapt_delta = 0.999).
+        extra = {"nuts_sampler": args.nuts_sampler} if backend == "pymc" else {}
         entry = entry_cls().fit(
             triangle,
             loss_field=spec["loss_field"],
@@ -153,6 +162,7 @@ def _fit_backends(triangle, backends, args):
             iter_sampling=args.draws,
             seed=args.seed,
             target_accept=args.target_accept,
+            **extra,
         )
         fitted[backend] = entry
     return fitted
@@ -335,6 +345,65 @@ def _synthetic_odp_triangle(seed: int):
     return Triangle.from_long(df, measure="cumulative")
 
 
+def _synthetic_guszcza_triangle(seed: int):
+    """A Guszcza-simulated single-cohort triangle (paid_loss + premium) as a Triangle.
+
+    The hierarchical growth curve's own generative model: each accident year has
+    its own ultimate loss ratio drawn about a population value, and the
+    CUMULATIVE paid loss ratio at development age ``t`` years is lognormal about
+    ``ulr[w] * G(t; omega, theta)``::
+
+        ulr[w] ~ normal(ulr_pop, sd_ulr)
+        C[w,d] = premium[w] * ulr[w] * G(t_d) * exp(normal(0, sigma))
+
+    with ``t_d = d`` years on the annual grain, matching the entry's own
+    ``t = d * dev_grain_months / 12``. Drawing from the model being fitted means
+    a parity failure can only be an implementation bug, never misspecification.
+
+    ``sd_ulr`` is deliberately small relative to ``ulr_pop`` (0.05 against 0.65),
+    which is where the mart's companies sit and, more importantly, keeps every
+    drawn ``ulr`` positive: the model's unbounded ``ulr`` makes the negative
+    region a rejection, and a fixture that generated data from it would be
+    simulating something the posterior cannot reach.
+    """
+    import datetime as dt
+
+    from ibnr import Triangle
+
+    rng = np.random.default_rng(seed)
+    n_w = n_d = 10
+    prem = rng.uniform(8000, 20000, n_w)
+    # the priors' own centres: ulr_pop ~ lognormal(log .6, log 2) sits at 0.6,
+    # omega ~ normal(2, 1) at 2, theta ~ normal(4, 1) at 4 years
+    ulr_pop, sd_ulr, omega, theta, sigma = 0.65, 0.05, 2.0, 4.0, 0.08
+    ulr = ulr_pop + sd_ulr * rng.normal(size=n_w)
+    assert np.all(ulr > 0), "the fixture must stay inside the model's support"
+
+    t = np.arange(1, n_d + 1, dtype=float)  # development age in YEARS
+    g = 1.0 / (1.0 + (theta / t) ** omega)  # loglogistic, the entry's default
+    # (n_w, n_d) cumulative paid loss ratios, lognormal about ulr[w] * G(t)
+    ratio = ulr[:, None] * g[None, :] * np.exp(rng.normal(0.0, sigma, size=(n_w, n_d)))
+    cum = prem[:, None] * ratio
+
+    rows = []
+    for w in range(n_w):
+        for d in range(n_d):
+            origin = dt.date(1988 + w, 1, 1)
+            # dev_lag is months from origin START (first diagonal 12); eval_date
+            # is the year-end that (origin + dev_lag) lands in - CLAUDE.md
+            eval_date = dt.date(1988 + w + d, 12, 31)
+            rows.append(
+                ("synthetic", origin, 12 * (d + 1), eval_date, "paid_loss", float(cum[w, d]))
+            )
+            rows.append(
+                ("synthetic", origin, 12 * (d + 1), eval_date, "earned_premium", float(prem[w]))
+            )
+    df = pd.DataFrame(
+        rows, columns=["company_code", "origin_period", "dev_lag", "eval_date", "field", "value"]
+    )
+    return Triangle.from_long(df, measure="cumulative")
+
+
 #: Per-model wiring, and the ONLY place it lives. Everything else in this
 #: script is model-agnostic on purpose, so the CSR table is produced by exactly
 #: the protocol that produced the CCL one.
@@ -372,6 +441,18 @@ MODELS = {
         "target_accept": 0.8,
         "stem": "odp",
         "simulate": _synthetic_odp_triangle,
+    },
+    "guszcza_growth_curve": {
+        "loss_field": "paid_loss",
+        "parity_vars": GUSZCZA_PARITY_VARS,
+        # the magesblog post's own control list (adapt_delta 0.999); this
+        # nonlinear hierarchy diverges at brms defaults, and the model is small
+        # enough - n_w + 5 parameters - that the setting is cheap. The matching
+        # max_treedepth of 15 is the entry's default and reaches all three
+        # backends, so it is not a knob here.
+        "target_accept": 0.999,
+        "stem": "guszcza",
+        "simulate": _synthetic_guszcza_triangle,
     },
     "meyers_ccl": {
         "loss_field": "reported_loss",
@@ -479,6 +560,14 @@ def main() -> int:
     # whose gamma x beta interaction is harder). Raising it further hides
     # divergences the convergence comparison is meant to expose.
     ap.add_argument("--target-accept", type=float, default=None)
+    # Which NUTS implementation runs over the PYMC GRAPH. Only the pymc leg sees
+    # it - the entries reject it by name on any other backend - and the graph is
+    # what parity compares either way, which is what makes the escape hatch
+    # legitimate rather than a shortcut. Needed for the entries whose native
+    # PyTensor sampler is impractical at a high adapt_delta: compartmental
+    # (>2000 s, did not finish) and guszcza_growth_curve (~130x NumPyro on the
+    # same graph). Whatever ran is recorded in the convergence CSV's `backend`.
+    ap.add_argument("--nuts-sampler", default="pymc", choices=["pymc", "numpyro"])
     ap.add_argument("--seed", type=int, default=20260708)
     ap.add_argument("--synthetic", action="store_true", help="simulate a triangle; skip the mart")
     ap.add_argument("--out-dir", type=Path, default=RESULTS)

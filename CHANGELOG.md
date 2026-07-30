@@ -75,6 +75,37 @@ signature instead of `"gamma"`/`True` so that "not supplied" is distinguishable
 from "supplied"; the applied defaults are unchanged, and combining either with
 an explicit `generator=` is refused rather than left inert.
 
+### Milestone 5 - `guszcza_growth_curve` joins the parity gate
+
+The entry landed 2026-07-27, two days after milestone 5 was declared complete, so
+it was the only Bayesian entry without NumPyro and PyMC ports and the only one
+absent from `scripts/parity_gallery.py`. Its card had recorded the ports as a
+follow-up task, so this was a deferral rather than a deliberate exclusion.
+
+* **Both ports added** - `model_numpyro.py` and `model_pymc.py`, plus `_shared.py`
+  for the pieces that are not PPL-specific (curve codes, tree depth, the data
+  guard) so the two cannot drift apart. `BACKENDS` is now
+  `("stan", "numpyro", "pymc")`.
+* **4 of 4 parity against the Stan reference**, two WC companies as of
+  1997-12-31, 4 chains x 2500 draws: every z-score below 2.4 against a tolerance
+  of 4, zero divergences in every backend on every cohort, R-hat 1.00. Published
+  in `analysis/results/{parity,convergence}_guszcza.csv` and tabulated in the
+  card. New `kernels.parity.GUSZCZA_PARITY_VARS`.
+* **`scripts/parity_gallery.py` gained `--nuts-sampler`**, which reaches the
+  `pymc` leg only. This entry needs it: at the `adapt_delta = 0.999` its source
+  specifies, PyMC's native PyTensor NUTS runs ~130x slower than the identical
+  graph through JAX (measured 860 s against 6.7 s), the same situation
+  `compartmental` documents. `convergence()` now reports the sampler's own label
+  (`pymc:numpyro`) rather than the backend argument, so a published row says
+  what produced it.
+* **`max_treedepth` is a shared control on this entry**, not a cmdstan-only one:
+  its default of 15 differs from both PPLs' default of 10, and holding it
+  constant is part of what parity means. Only `parallel_chains` is refused by
+  the ports.
+* A standing requirement is now recorded in CLAUDE.md: a new `bayesian` entry is
+  not done until it has both ports and a published parity row. What expired with
+  this gap was the milestone number, not decision 7.
+
 ## 0.5.0 - 2026-07-27
 
 The 0.4.0 wheel on PyPI was 49 commits behind `main`, so this release is mostly a
