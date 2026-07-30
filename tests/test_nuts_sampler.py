@@ -59,6 +59,7 @@ def test_the_entry_list_is_the_whole_bayesian_family():
     assert set(ENTRIES) == from_registry
     assert len(ENTRIES) >= 6, f"the bayesian family cannot have shrunk: {sorted(ENTRIES)}"
 
+
 #: strictly increasing share of ultimate paid by development year. Increments are
 #: positive at every step, which ODP requires and the lognormal entries prefer.
 _G = (0.30, 0.55, 0.75, 0.88, 0.95)
@@ -70,7 +71,8 @@ def tiny_triangle() -> Triangle:
 
     Carries all three fields the family reads under their default names
     (``paid_loss`` / ``reported_loss`` / ``earned_premium``) on identical cells,
-    so one triangle drives the dispatch test for all five entries. Reported is
+    so one triangle drives the dispatch test for every entry in the family.
+    Reported is
     paid grossed up, so compartmental's derived OS = reported - paid is positive.
     Nothing here is sampled - it only has to survive ``stan_data()``.
     """
