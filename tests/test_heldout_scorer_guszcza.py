@@ -17,9 +17,11 @@ post). Layers mirror ``test_heldout_scorer_csr.py``:
    integrates to premium instead of 1. ``predict_at`` is a pass-through
    (cumulative draws on a cumulative triangle) and threads its seed.
 
-Plus the entry-level contracts this branch introduces: Stan-only backend
-validation, curve validation, and ATOMIC ``fit()`` - a failed refit must not
-leave the entry torn between an old posterior and a new contract.
+Plus the entry-level contracts this branch introduces: backend and per-backend
+control validation, curve validation, and ATOMIC ``fit()`` - a failed refit must
+not leave the entry torn between an old posterior and a new contract. Backend
+validation was Stan-only until the milestone-5 ports landed; cross-backend
+parity itself lives in ``tests/test_parity_guszcza.py``.
 """
 
 from __future__ import annotations
@@ -318,10 +320,11 @@ def test_predict_refuses_a_nonpositive_ulr_rather_than_emitting_nan(contract, mo
     ``log(ulr * G)`` unguarded: a single bad draw produced NaN ultimates that
     flowed into ``PredictiveDistribution``, ``evaluate()``'s summary /
     percentiles / CRPS, and any retro CSV, behind nothing louder than an
-    "invalid value encountered in log" warning. Unreachable from Stan today,
-    but the entry ships a BACKENDS seam and tells port authors to re-expose
-    ``ulr`` - a port attaching its likelihood via factor/Potential rather than
-    exception-rejection produces exactly this posterior.
+    "invalid value encountered in log" warning. Unreachable from Stan, which
+    rejects such a proposal outright - but the ports reproduce that rejection as
+    a ``-inf`` factor/Potential rather than by exception, so this is exactly the
+    posterior a port would hand back if its safe substitution were dropped. See
+    ``tests/test_parity_guszcza.py`` for the measurement.
     """
     post = fake_posterior(contract, n_draws=16)
     entry = _StubGuszcza(contract, post)
@@ -481,7 +484,9 @@ def test_entry_is_registered_with_its_declarations():
     assert cls.family == "bayesian"
     assert cls.heldout_measure == "loss_ratio"
     assert cls.heldout_draw_scale == "cumulative"
-    assert BACKENDS == ("stan",)
+    # all three since the milestone-5 ports landed; the parity gate that makes
+    # the two ports admissible is tests/test_parity_guszcza.py
+    assert BACKENDS == ("stan", "numpyro", "pymc")
     assert cls.card()  # card.md ships with the entry
 
     # TWO validators police the curve argument - the entry's CURVE_CODES (which
@@ -494,12 +499,24 @@ def test_entry_is_registered_with_its_declarations():
 
 def test_fit_validates_before_touching_a_sampler():
     """Backend, curve and premium validation must fire without cmdstanpy
-    installed - and without leaving any state behind."""
+    installed - and without leaving any state behind.
+
+    ``jags`` rather than ``numpyro`` for the unknown-backend case: numpyro is a
+    real backend since the ports landed, so asking for it here would sample
+    (and fail on a missing arviz in a core environment) instead of exercising
+    the validator. The two port-only control validations are checked here too,
+    for the same reason the rest of this test exists - they have to fire before
+    anything is imported or compiled.
+    """
     tri = _triangle(through=N_W)
     entry = GuszczaGrowthCurve()
 
     with pytest.raises(ValueError, match="backend must be one of"):
-        entry.fit(tri, backend="numpyro")
+        entry.fit(tri, backend="jags")
+    with pytest.raises(ValueError, match="pymc-backend control"):
+        entry.fit(tri, backend="numpyro", nuts_sampler="numpyro")
+    with pytest.raises(ValueError, match="stan-backend control"):
+        entry.fit(tri, backend="numpyro", parallel_chains=4)
     with pytest.raises(ValueError, match="growth_curve must be one of"):
         entry.fit(tri, growth_curve="gompertz")
     with pytest.raises(ValueError, match="premium_field"):
