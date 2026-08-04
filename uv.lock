@@ -952,6 +952,7 @@ docs = [
     { name = "great-docs" },
 ]
 test = [
+    { name = "cas-schedule-p" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -992,6 +993,7 @@ dev = [
 ]
 docs = [{ name = "great-docs", specifier = ">=0.15" }]
 test = [
+    { name = "cas-schedule-p", specifier = ">=2026.6.13" },
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.16" },
 ]

@@ -178,7 +178,14 @@ Issues = "https://github.com/EKtheSage/ibnr/issues"
 # older ruff would leave those blocks unformatted and then disagree with CI.
 # tests/test_lint_pins.py keeps this floor, the lockfile and the version CI runs
 # in agreement, and asserts the floor is declared exactly ONCE across all groups.
-test = ["pytest>=8", "ruff>=0.16"]
+#
+# cas-schedule-p is here, not in dev, because the suite IMPORTS it: two test
+# modules import scripts (compare_gallery, heldout_leaderboard), and the scripts
+# get the Meyers screen from cas_schedule_p.screens. Every CI leg syncs only
+# this group, so a dev-group placement broke collection on all of them at once.
+# It cannot contaminate the core-isolation proof: a pure-data wheel with zero
+# runtime dependencies, and ibnr itself never imports it - only scripts/ does.
+test = ["pytest>=8", "ruff>=0.16", "cas-schedule-p>=2026.6.13"]
 dev = [
     # dev is test plus everything a contributor needs; the floors above are not
     # repeated here, so there is still only one place to bump them.
@@ -195,7 +202,6 @@ dev = [
     "nbconvert>=7",
     "nbformat>=5",
     "ipykernel>=6",
-    "cas-schedule-p>=2026.6.13",
 ]
 # Documentation site (Quarto-based; needs the `quarto` CLI installed separately).
 # Build with: uv run --group docs great-docs build
