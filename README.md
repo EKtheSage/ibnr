@@ -433,10 +433,11 @@ publishes). This package never touches raw Schedule P - it consumes only the
 published mart, from either source:
 
 ```python
-# default - no argument needed: the newest GitHub release of the data repo
-# (needs `gh auth login` once; the repo is private). @latest resolves to a
-# concrete publish_id, downloads ~5 MB to ~/.cache/ibnr, sha256-verified,
-# then reads locally forever after:
+# default - no argument needed: the newest GitHub release of the data repo.
+# The repo is public, so this is plain anonymous HTTPS - no gh, no login, no
+# token (the gh CLI is used only as a fallback if that request fails).
+# @latest resolves to a concrete publish_id, downloads ~5 MB to ~/.cache/ibnr,
+# sha256-verified, then reads locally forever after:
 tri = load_schedule_p()
 
 # pin an exact publish (what experiment runs should do):
@@ -484,13 +485,16 @@ services can call it with zero startup cost:
 
 ```sh
 docker build -t ibnr .
-docker run --rm -e GH_TOKEN=<token> -e IBNR_MAX_WORKERS=8 --cpus 8 \
+docker run --rm -e IBNR_MAX_WORKERS=8 --cpus 8 \
   -v ibnr-cache:/data/ibnr-cache -v "$PWD/results:/app/analysis/results" \
   ibnr python scripts/meyers_validation.py --model compartmental --per-line 50
 ```
 
-`GH_TOKEN` authenticates the gold-mart release download (private data repo);
-set `IBNR_MAX_WORKERS` to match `--cpus`, since a cpu-limited container still
+The gold-mart release download needs no credential - the data repo is public
+and the adapter fetches it over anonymous HTTPS. Pass `-e GH_TOKEN=<token>`
+only if you are running enough containers behind one egress IP to hit GitHub's
+unauthenticated API rate limit, which sends the adapter to its `gh` fallback.
+Set `IBNR_MAX_WORKERS` to match `--cpus`, since a cpu-limited container still
 reports the host's core count to Python.
 
 ## Related repositories

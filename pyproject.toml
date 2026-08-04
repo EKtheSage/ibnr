@@ -195,6 +195,7 @@ dev = [
     "nbconvert>=7",
     "nbformat>=5",
     "ipykernel>=6",
+    "cas-schedule-p>=2026.6.13",
 ]
 # Documentation site (Quarto-based; needs the `quarto` CLI installed separately).
 # Build with: uv run --group docs great-docs build
@@ -257,12 +258,20 @@ packages = ["src/ibnr"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-m \"not slow\""  # slow (cmdstan) tests run explicitly: pytest -m slow
+# slow (cmdstan) and network tests run explicitly: pytest -m slow / -m network.
+# `network` is excluded the same way `slow` is - by deselection here, not by a
+# skipif - because whether a test should reach the internet is a property of the
+# RUN, not of the machine: a box with working DNS is not consent to hit
+# api.github.com in every `uv run pytest`. The `mart` marker is different on
+# purpose; it auto-skips on data availability because a cached mart costs
+# nothing to read.
+addopts = "-m \"not slow and not network\""
 markers = [
     "tieout: results match an external reference - chainladder-python on raa/clrd, or R ChainLadder's published CDR output",
     "parity: cross-backend posterior matching",
     "slow: cmdstan compilation; separate CI job",
     "mart: requires the local CAS Schedule P gold mart",
+    "network: really talks to the internet; deselected by default via addopts",
 ]
 
 [tool.ruff]

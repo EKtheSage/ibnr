@@ -26,18 +26,29 @@ resolved to its concrete publish_id up front):
 2. a GitHub release spec ``github://<owner>/<repo>@<publish_id>`` - the data
    repo publishes each gold promote as a release tagged with its publish_id,
    carrying every gold table plus a ``manifest.json`` (asset name, sha256,
-   bytes per table). Assets are downloaded once via the ``gh`` CLI (which
-   supplies auth for the private repo) into a local cache
+   bytes per table). Assets are downloaded once into a local cache
    (``~/.cache/ibnr`` or IBNR_CACHE_DIR), sha256-verified, then read locally.
+
+Transport: the data repo is PUBLIC, so the primary path is plain anonymous
+HTTPS from the standard library - no ``gh``, no auth, no login. The ``gh`` CLI
+is kept only as a FALLBACK, tried when the anonymous request fails, which in
+practice means one of two things: GitHub's API rate limit on unauthenticated
+callers (60 requests/hour/IP, and only ``@latest`` resolution touches the API
+at all), or a repo that has gone private. So a fresh clone with no GitHub
+tooling installed works, and an authenticated developer keeps a way through a
+rate limit. When both paths fail the error names both and the fix for each.
 """
 
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import shutil
 import subprocess
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import ibis
@@ -51,11 +62,17 @@ GITHUB_SCHEME = "github://"
 TRAINING_MART = "mart_reserving_model_training"
 
 #: where the data comes from when nothing else is specified: the newest gold
-#: publish on GitHub. ``@latest`` resolves to a concrete publish_id through gh
-#: before anything is cached or read, so results artifacts always stamp the
-#: exact publish even in default-configured dev.
+#: publish on GitHub. ``@latest`` resolves to a concrete publish_id before
+#: anything is cached or read, so results artifacts always stamp the exact
+#: publish even in default-configured dev.
 DEFAULT_SOURCE = "github://EKtheSage/cas-schedule-p-data-model@latest"
 LATEST = "latest"
+
+#: GitHub's API rejects requests that send no User-Agent.
+_USER_AGENT = "ibnr (python-urllib)"
+#: seconds before a stalled connection raises instead of hanging a study run
+_HTTP_TIMEOUT = 60
+_CHUNK = 1 << 20
 
 #: mart column -> triangle field name. Loss fields are cumulative; premiums,
 #: reserves and bulk are eval-date snapshots carried along as fields.
@@ -119,8 +136,8 @@ def pinned_source(warehouse: str | Path | None = None, mart: str = TRAINING_MART
     asset is downloaded into the cache up front. The parallel harness hands
     THIS string to its workers, so they never re-resolve ``@latest`` (a race
     against a release published mid-run would split the study across two data
-    versions) and never call gh concurrently - they only read the local cache.
-    Local warehouse paths pass through unchanged.
+    versions) and never hit the network concurrently - they only read the
+    local cache. Local warehouse paths pass through unchanged.
     """
     source = _resolve_source(warehouse)
     if _is_github_spec(source):
@@ -133,9 +150,15 @@ def pinned_source(warehouse: str | Path | None = None, mart: str = TRAINING_MART
 # -- GitHub release consumption ---------------------------------------------------
 #
 # The data repo publishes each gold promote as an immutable release tagged with
-# its publish_id; assets are the gold tables plus manifest.json. We download
-# through the gh CLI (it carries auth for the private repo), cache per
-# (repo, publish_id), and verify sha256 against the manifest.
+# its publish_id; assets are the gold tables plus manifest.json. We cache per
+# (repo, publish_id) and verify sha256 against the manifest.
+#
+# Two transports, in this order, behind `_latest_tag` and `_download_asset`:
+#   1. anonymous HTTPS (stdlib urllib) - the repo is public, so this needs no
+#      tooling and no credentials;
+#   2. the gh CLI - only when (1) raised, which is the API rate limit or a repo
+#      that has gone private.
+# Nothing else in this module knows which one answered.
 
 
 def _is_github_spec(source: str | Path) -> bool:
@@ -162,24 +185,63 @@ def _parse_github_spec(spec: str) -> tuple[str, str]:
 _LATEST_TAGS: dict[str, str] = {}
 
 
+def _api_latest_tag(repo: str) -> str:
+    """The newest release's tag, straight off the public API. No auth."""
+    request = urllib.request.Request(
+        f"https://api.github.com/repos/{repo}/releases/latest",
+        headers={"User-Agent": _USER_AGENT, "Accept": "application/vnd.github+json"},
+    )
+    with urllib.request.urlopen(request, timeout=_HTTP_TIMEOUT) as response:  # noqa: S310
+        payload = json.loads(response.read())
+    tag = str(payload.get("tag_name") or "").strip()
+    if not tag:
+        raise RuntimeError(f"the latest release of {repo} carries no tag_name")
+    return tag
+
+
+def _gh_latest_tag(repo: str) -> str:
+    """The same answer through the gh CLI - the authenticated fallback."""
+    if shutil.which("gh") is None:
+        raise RuntimeError("the GitHub CLI (gh) is not installed")
+    result = subprocess.run(
+        ["gh", "release", "view", "--repo", repo, "--json", "tagName", "--jq", ".tagName"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "gh returned nothing")
+    return result.stdout.strip()
+
+
 def _latest_tag(repo: str) -> str:
+    """Resolve ``@latest`` to a concrete publish_id, cached per process.
+
+    Anonymous HTTPS first; gh only if that raised. The API call is the ONLY
+    unauthenticated request this module makes against api.github.com, so it is
+    also the only one exposed to the 60/hour rate limit - which is exactly why
+    a published run should pin ``@<publish_id>`` and never resolve at all.
+    """
     if repo not in _LATEST_TAGS:
-        if shutil.which("gh") is None:
-            raise RuntimeError(
-                f"resolving @{LATEST} for {repo} needs the GitHub CLI (gh); "
-                "install it and run `gh auth login`, or pin a publish_id"
-            )
-        result = subprocess.run(
-            ["gh", "release", "view", "--repo", repo, "--json", "tagName", "--jq", ".tagName"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            raise RuntimeError(
-                f"could not resolve the latest release of {repo}: "
-                f"{result.stderr.strip() or result.stdout.strip()}"
-            )
-        _LATEST_TAGS[repo] = result.stdout.strip()
+        try:
+            _LATEST_TAGS[repo] = _api_latest_tag(repo)
+        except (OSError, http.client.HTTPException, ValueError, RuntimeError) as http_error:
+            # Deliberately wide: URLError and mid-stream ConnectionResetError are
+            # OSError, a garbage API payload is json's ValueError, and a payload
+            # with no tag_name is _api_latest_tag's own RuntimeError - every way
+            # the anonymous route can fail should reach the fallback, not the user.
+            try:
+                _LATEST_TAGS[repo] = _gh_latest_tag(repo)
+            except Exception as gh_error:
+                raise RuntimeError(
+                    f"could not resolve @{LATEST} for {repo} by either route.\n"
+                    f"  anonymous HTTPS (api.github.com) failed: {http_error}\n"
+                    f"    fix: pin a concrete publish_id instead of @{LATEST} "
+                    "(no API call at all), or wait out GitHub's 60/hour "
+                    "unauthenticated rate limit, or check network access.\n"
+                    f"  gh CLI fallback failed: {gh_error}\n"
+                    "    fix: install the GitHub CLI and run `gh auth login`."
+                ) from gh_error
     return _LATEST_TAGS[repo]
 
 
@@ -189,12 +251,39 @@ def _cache_dir(repo: str, tag: str) -> Path:
     return root / repo.replace("/", "__") / tag
 
 
+def _asset_url(repo: str, tag: str, asset: str) -> str:
+    return f"https://github.com/{repo}/releases/download/{tag}/{asset}"
+
+
+def _http_download(url: str, dest: Path) -> None:
+    """Stream one asset to ``dest``, written atomically.
+
+    The bytes land in a ``.part`` sibling and are renamed only after the
+    response has been read to the end, so an interrupted download can never be
+    mistaken for a complete one by the size pre-check in ``_release_asset``.
+    Content is NOT verified here - the manifest is the authority for that, and
+    it lives one level up where it always has.
+    """
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+    try:
+        with (
+            urllib.request.urlopen(request, timeout=_HTTP_TIMEOUT) as response,  # noqa: S310
+            tmp.open("wb") as fh,
+        ):
+            while chunk := response.read(_CHUNK):
+                fh.write(chunk)
+        tmp.replace(dest)
+    finally:
+        # after a successful replace the temp name is gone, so this only ever
+        # clears the leavings of a failed or interrupted download
+        tmp.unlink(missing_ok=True)
+
+
 def _gh_download(repo: str, tag: str, pattern: str, dest: Path) -> None:
+    """The authenticated fallback transport. Not the default path."""
     if shutil.which("gh") is None:
-        raise RuntimeError(
-            "the GitHub CLI (gh) is required to fetch data releases from the "
-            f"private {repo} repo; install it and run `gh auth login`"
-        )
+        raise RuntimeError("the GitHub CLI (gh) is not installed")
     dest.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(
         [
@@ -212,19 +301,48 @@ def _gh_download(repo: str, tag: str, pattern: str, dest: Path) -> None:
         ],
         capture_output=True,
         text=True,
+        timeout=600,
     )
     if result.returncode != 0:
-        raise RuntimeError(
-            f"gh release download failed for {repo}@{tag} ({pattern}): "
-            f"{result.stderr.strip() or result.stdout.strip()}"
-        )
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "gh returned nothing")
+
+
+def _download_asset(repo: str, tag: str, asset: str, dest: Path) -> None:
+    """Fetch one release asset into the cache directory ``dest``.
+
+    Anonymous HTTPS first (the repo is public); gh only if that raised. Both
+    write the file under its published name, so the caller - and the sha256
+    check in ``_release_asset`` - cannot tell which route answered.
+    """
+    dest.mkdir(parents=True, exist_ok=True)
+    url = _asset_url(repo, tag, asset)
+    try:
+        _http_download(url, dest / asset)
+        return
+    except (OSError, http.client.HTTPException, ValueError) as http_error:
+        # Wide on purpose: a connection reset mid-stream is OSError and an
+        # IncompleteRead is HTTPException - the flaky-network cases the fallback
+        # exists for must actually reach it. Atomicity holds regardless
+        # (_http_download's finally clears the .part file).
+        try:
+            _gh_download(repo, tag, asset, dest)
+        except Exception as gh_error:
+            raise RuntimeError(
+                f"could not download {asset!r} from release {repo}@{tag} by either route.\n"
+                f"  anonymous HTTPS ({url}) failed: {http_error}\n"
+                "    fix: check network/proxy access to github.com, and that the "
+                "release and that asset exist.\n"
+                f"  gh CLI fallback failed: {gh_error}\n"
+                "    fix: install the GitHub CLI and run `gh auth login` (needed "
+                "only if the repo is private or anonymous access is blocked)."
+            ) from gh_error
 
 
 def _release_manifest(repo: str, tag: str) -> tuple[dict, Path]:
     cache = _cache_dir(repo, tag)
     path = cache / "manifest.json"
     if not path.exists():
-        _gh_download(repo, tag, "manifest.json", cache)
+        _download_asset(repo, tag, "manifest.json", cache)
     manifest = json.loads(path.read_text())
     if str(manifest["publish_id"]) != tag:
         raise ValueError(
@@ -244,7 +362,7 @@ def _release_asset(repo: str, tag: str, table: str) -> Path:
         ) from None
     path = cache / entry["asset"]
     if not path.exists() or path.stat().st_size != int(entry["bytes"]):
-        _gh_download(repo, tag, entry["asset"], cache)
+        _download_asset(repo, tag, entry["asset"], cache)
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         if digest != entry["sha256"]:
             path.unlink(missing_ok=True)

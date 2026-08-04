@@ -40,14 +40,18 @@ _active_manifest.json              kernels: CRPS, PIT/KS, contracts       R/ggpl
   publish resolved through `_active_manifest.json`);
 - a **GitHub release spec** `github://EKtheSage/cas-schedule-p-data-model@<publish_id>`
   (consumer side: the data repo publishes each gold promote as an immutable
-  release tagged with its publish_id via `pipeline/release.py`; ibnr fetches
-  through the authenticated `gh` CLI into `~/.cache/ibnr`, verifies sha256
-  against the release `manifest.json`, and reads locally thereafter).
+  release tagged with its publish_id via `pipeline/release.py`; the data repo
+  is public, so ibnr fetches over anonymous HTTPS into `~/.cache/ibnr` - the
+  `gh` CLI is a fallback, not a requirement - verifies sha256 against the
+  release `manifest.json`, and reads locally thereafter).
 
 The harness scripts stamp `mart_publish_id` into every results CSV, so any
 figure in the paper traces to an exact data publish. Marco needs neither the
-vault pipeline nor a warehouse clone - `gh auth login` plus the ~5 MB release
-download is the entire data dependency.
+vault pipeline nor a warehouse clone: the ~5 MB release download is the entire
+data dependency, and it needs no account, no token and no tooling. (The
+`cas-schedule-p` PyPI package is the other zero-setup route - `pip install
+cas-schedule-p` carries one gold publish inside the wheel, plus the Meyers
+company screen in `cas_schedule_p.screens`.)
 
 ## Contract 2 - modeling → manuscript (the proposal)
 

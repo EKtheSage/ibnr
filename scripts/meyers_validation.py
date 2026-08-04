@@ -17,14 +17,31 @@ own non-positive cells. Company selection applies both Table A.1 screens
 
 METHODOLOGY (this script produces published results - read before changing)
 
-1. Cohort-data parity. `select_companies` runs the identical mechanical
-   screen for every model, so any two entries validated here are scored on
-   the same insurers. That is why `meyers_csr` carries Meyers' floor-of-1
-   paid clamp: without it the lognormal would reject cohorts the incurred
-   study kept, and the two studies would no longer be comparable. Model
-   differences must come from the models, not from who they were allowed
-   to see. `compare_gallery.py` reuses `select_companies` for the same
-   reason.
+1. Cohort-data parity, and where the screen lives. `select_companies` runs
+   the identical mechanical screen for every model, so any two entries
+   validated here are scored on the same insurers. That is why `meyers_csr`
+   carries Meyers' floor-of-1 paid clamp: without it the lognormal would
+   reject cohorts the incurred study kept, and the two studies would no
+   longer be comparable. Model differences must come from the models, not
+   from who they were allowed to see. `compare_gallery.py` and
+   `parity_gallery.py` reuse `select_companies` for the same reason.
+
+   The screen is no longer DEFINED here. It moved into
+   `cas_schedule_p.screens` - the data's own PyPI package, built from the
+   same repository as the gold mart and released alongside it - and this
+   module re-exports its nine names so every existing
+   `from meyers_validation import ...` keeps working unchanged.
+
+   That is a stronger no-drift guarantee than the old one, not just a
+   tidier one. The old argument was "there is exactly one copy of the
+   screen, in this script, so import the script"; but that copy lived in a
+   different repository from the mart it queries, so nothing tied the two
+   together - a mart column could be renamed, or a screen constant edited,
+   and only a run would notice. Now the constants, the SQL and the parquet
+   are one release artifact with one version number, and this repo pins it
+   (`cas-schedule-p>=2026.6.13`, dev group). A published run's cohort is
+   therefore reproducible from two pins - the package version and the
+   mart's publish_id - rather than from a git commit of this file.
 
 2. Training slice vs realized outcomes. Each entry fits
    `as_of="1997-12-31"` - the upper triangle a reserving actuary could have
@@ -91,8 +108,25 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
-import duckdb
 import pandas as pd
+
+# The Meyers company screen, in the data's own package (see the METHODOLOGY
+# note above). Six of these nine are unused in this module and imported purely
+# so that `from meyers_validation import <name>` keeps resolving: notebook 03
+# and `compare_gallery.py` / `parity_gallery.py` / `heldout_leaderboard.py`
+# all reach for them by that path, and moving the definition must not move
+# where callers find it.
+from cas_schedule_p.screens import (
+    AS_OF,
+    CV1_LIMITS,  # noqa: F401 - re-exported for callers of this module
+    CV2_LIMITS,  # noqa: F401 - re-exported
+    EXCLUDED_GROUPS,  # noqa: F401 - re-exported
+    MEYERS_LINES,
+    MIN_LOSS,  # noqa: F401 - re-exported
+    MIN_PREMIUM,  # noqa: F401 - re-exported
+    TRAIN_AYS,  # noqa: F401 - re-exported (heldout_leaderboard.py reads it)
+    select_companies,
+)
 
 from ibnr.data.schedule_p import active_mart_path, active_publish_id, pinned_source
 from ibnr.kernels.calibration import ks_uniformity
@@ -120,119 +154,6 @@ MODEL_LOSS_FIELDS = {
 #: unclamped data (a clamp would silently alter increments); its negative-
 #: increment failures are recorded, exactly like the bootstrap ODP's.
 MODELS_WITH_PAID_CLAMP = {"meyers_csr"}
-
-MEYERS_LINES = [
-    "commercial_auto",
-    "private_passenger_auto",
-    "workers_compensation",
-    "other_liability",
-]
-
-#: Table A.1 limits: CV1 on net earned premium, CV2 on the net/direct premium ratio
-CV1_LIMITS = {
-    "commercial_auto": 0.795,
-    "private_passenger_auto": 1.003,
-    "workers_compensation": 0.772,
-    "other_liability": 0.628,
-}
-CV2_LIMITS = {
-    "commercial_auto": 0.125,
-    "private_passenger_auto": 0.125,
-    "workers_compensation": 0.300,
-    "other_liability": 0.15,
-}
-
-EXCLUDED_GROUPS = {"38997"}  # excluded by Meyers after provisional testing
-
-#: the monograph's study window: accident years 1988-1997, so the as_of
-#: 1997-12-31 slice is a full 10x10 upper triangle and the realized lower half
-#: is available in later statement years. Any origin outside this range is
-#: post-study and must never enter an outcome aggregate (see module docstring).
-TRAIN_AYS = (1988, 1997)
-# Monograph appendix: "minimum annual premium of greater than $20,000 and
-# minimum annual incurred loss of greater than $4,000", with Schedule P
-# entries in $1,000s - i.e. 20 and 4 in data units. (Reading them as $20M/$4M
-# leaves only ~10 WC companies, far short of Meyers' 50; this reading leaves
-# 72 passing the WC CV screen, of which he took the top 50.)
-MIN_PREMIUM = 20.0
-MIN_LOSS = 4.0
-
-
-def select_companies(mart_path: Path, line: str, per_line: int) -> pd.DataFrame:
-    """Mechanical selection per the monograph appendix (incl. the CV2 screen).
-
-    Deliberately mechanical: no judgement, no per-model tuning, so the cohort
-    is reproducible and identical across every entry validated here (the
-    cohort-data parity rule). The screens select insurers whose book was
-    STABLE over the study window - Meyers' point is that a reserving model
-    should be tested where the data is well behaved, not where growth or
-    reinsurance churn confounds development.
-
-    - CV1: coefficient of variation of net earned premium across accident
-      years - rejects rapidly growing/shrinking books.
-    - CV2: CV of the net/direct premium ratio - rejects books whose
-      reinsurance program changed materially over the window.
-    - complete 10x10 square: the company must have all 100 cells, so the
-      realized outcome exists for every training origin.
-
-    Rows come back ordered by cv1 ascending; ``per_line`` then takes the top
-    n (Meyers' "top 50"), so the cap is deterministic, not a random sample.
-    """
-    # Runs against the mart parquet directly rather than through the Triangle
-    # layer: this is cohort selection, not modelling, and it needs raw
-    # Schedule P columns (bulk_loss, direct premium) the triangle does not carry.
-    #
-    # Notes on the query below:
-    #   * `incurred_loss - bulk_loss` is Meyers' "incurred", NET of bulk+IBNR.
-    #     That definition is load-bearing, not cosmetic: gross-of-bulk incurred
-    #     fails the WC KS test badly (D=36.7). See CLAUDE.md milestone 2.
-    #   * `n_cells = 100` is 10 accident years x 10 development ages - anything
-    #     less means some training origin has no realized outcome to score.
-    #   * the `prem` CTE reads statement_year = 1997 only: premium and the
-    #     latest-diagonal loss as BOOKED at the as_of date, so selection uses
-    #     no information from after the training cutoff.
-    q = f"""
-    with base as (
-        select company_code, accident_year, development_age, statement_year,
-               incurred_loss - bulk_loss as reported_loss,
-               earned_prem_net, earned_prem_direct
-        from read_parquet('{mart_path.as_posix()}')
-        where line_of_business = '{line}'
-          and accident_year between {TRAIN_AYS[0]} and {TRAIN_AYS[1]}
-    ),
-    square as (
-        select company_code,
-               count(*) as n_cells,
-               -- positivity needed only where the lognormal model trains
-               min(case when statement_year <= 1997 then reported_loss end) as min_train_cell
-        from base group by 1
-    ),
-    prem as (  -- premium and latest-diagonal loss per AY as booked in the 1997 statement
-        select company_code,
-               min(earned_prem_net) as min_prem,
-               min(reported_loss) as min_ay_loss,
-               stddev_samp(earned_prem_net) / avg(earned_prem_net) as cv1,
-               stddev_samp(earned_prem_net / nullif(earned_prem_direct, 0))
-                   / avg(earned_prem_net / nullif(earned_prem_direct, 0)) as cv2
-        from base where statement_year = 1997 group by 1
-    )
-    select s.company_code, p.cv1, p.cv2
-    from square s join prem p using (company_code)
-    where s.n_cells = 100            -- complete 10x10 square incl. outcomes
-      and s.min_train_cell > 0       -- lognormal needs positive training cells
-      and p.min_prem > {MIN_PREMIUM}
-      and p.min_ay_loss > {MIN_LOSS}
-      and p.cv1 < {CV1_LIMITS[line]}
-      and p.cv2 < {CV2_LIMITS[line]}
-    order by p.cv1 asc
-    """
-    out = duckdb.sql(q).df()
-    out = out[~out["company_code"].isin(EXCLUDED_GROUPS)]
-    return out.head(per_line).reset_index(drop=True)
-
-
-#: the monograph's training cutoff: the diagonal visible at year-end 1997
-AS_OF = "1997-12-31"
 
 #: two-stage sampler escalation per model (kernels.harness). Stage 1 is the
 #: cheap first pass, stage 2 re-fits only the companies that fail the
@@ -385,6 +306,15 @@ def main() -> int:
     source = pinned_source(args.warehouse)
 
     # one cohort per line; the same cohort every model sees (see docstring)
+    #
+    # `mart` is passed EXPLICITLY and must stay that way. `select_companies`
+    # now lives in cas_schedule_p and defaults to the mart bundled in that
+    # wheel, which is a fixed publish - convenient for a caller who wants
+    # exactly that vintage, and wrong here. A retrospective has to screen on
+    # the publish it FITS, or the cohort comes from one dataset and the
+    # triangles from another; --warehouse would silently stop reaching the
+    # screen, and a run pinned to an old @publish_id would be selected by a
+    # newer one. Same rule in compare_gallery.py and parity_gallery.py.
     tasks: list[RetroTask] = []
     for line in args.lines:
         companies = select_companies(mart, line, args.per_line)
