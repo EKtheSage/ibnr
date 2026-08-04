@@ -17,8 +17,11 @@
 FROM python:3.12-slim
 
 # build-essential: cmdstan is compiled into the image below (and gallery
-# models compile against it). gh: fetches gold-mart releases at runtime from
-# the private data repo (auth via GH_TOKEN).
+# models compile against it). gh: the FALLBACK transport for gold-mart
+# releases. The data repo is public and the adapter fetches over anonymous
+# HTTPS, so gh is not needed for a normal run; it is kept because it is the
+# only way past the GitHub API's unauthenticated rate limit (set GH_TOKEN),
+# which a container fleet sharing one egress IP can realistically hit.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential curl ca-certificates \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \

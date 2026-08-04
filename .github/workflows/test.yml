@@ -178,23 +178,23 @@ env:
   # Point the Schedule P adapter at a path that cannot exist. Without this,
   # tests/test_schedule_p.py evaluates `MART_AVAILABLE = mart_available()` at
   # IMPORT time - during collection, in every job - which resolves the default
-  # source `github://EKtheSage/cas-schedule-p-data-model@latest` by shelling out
-  # to the `gh` CLI (preinstalled on GitHub runners) with no timeout, and on a
-  # cold cache downloads a parquet. Six more test modules import that flag and
-  # inherit the behaviour. With this set to a plain path the github branch is
-  # never taken and the mart tests skip immediately with a clear reason.
+  # source `github://EKtheSage/cas-schedule-p-data-model@latest` over the
+  # network, and on a cold cache downloads a parquet. Six more test modules
+  # import that flag and inherit the behaviour. With this set to a plain path
+  # the github branch is never taken and the mart tests skip immediately with a
+  # clear reason.
   #
-  # This does NOT stop every gh subprocess. tests/test_schedule_p_github.py's
-  # `_gh_authed()` is evaluated as a decorator argument at import time and runs
-  # `gh auth status` during collection in every leg regardless of this variable.
-  # That call is fast and harmless, and it is why test_live_manifest_fetch skips
-  # on CI - see the allow_skips entry on the `all` leg.
+  # (Until 2026-08-04 that resolution shelled out to the `gh` CLI, preinstalled
+  # on GitHub runners, with no timeout. It is now an anonymous HTTPS request
+  # with a 60 s timeout, so the worst case is milder - but this variable is
+  # still what keeps collection off the network entirely.)
   IBNR_SCHEDULE_P_WAREHOUSE: /nonexistent/schedule-p-mart
 
-  # Do NOT add GH_TOKEN or GITHUB_TOKEN to this workflow. `gh auth status`
-  # exiting 0 is exactly what test_schedule_p_github.py's skipif tests, so a
-  # token would un-skip test_live_manifest_fetch, which then tries to read a
-  # PRIVATE data repository this repository's token cannot see, and fails.
+  # No GH_TOKEN or GITHUB_TOKEN is needed and none should be added. The data
+  # repo is public and the adapter reaches it anonymously; the one test that
+  # really talks to GitHub carries the `network` marker and is deselected by
+  # pyproject's addopts on every leg, so a token could not change any outcome
+  # here - it would only be a credential in a workflow with no use for one.
 
   # Pin the thread count so neural-network and BLAS-heavy tests take a
   # comparable time on any runner, which keeps --durations output and the floors
@@ -265,12 +265,12 @@ jobs:
             # delta against, so it is measured first and the rest are read
             # against it. The previous figure here was 621 / 206.
             #
-            # A runner reports ONE test fewer than this, and the reason is known
-            # rather than mysterious: the dev box is logged in to gh, so
-            # test_schedule_p_github's live manifest test runs here and skips
-            # there (see the allow_skips entry on the `all` leg). Every floor in
-            # this file carries a cushion large enough that a gap of that shape
-            # cannot decide a job.
+            # A runner used to report ONE test fewer than this, because the dev
+            # box is logged in to gh and test_schedule_p_github's live manifest
+            # test ran here and skipped there. It is `network`-marked and
+            # deselected everywhere as of 2026-08-04, so both machines now agree.
+            # Every floor in this file still carries a cushion large enough that
+            # a gap of that shape could not decide a job either way.
             min_tests: "500"
 
           # ---------------------------------------------------------------
@@ -456,15 +456,16 @@ jobs:
           #
           #   - "gold mart"  the 7 measured skips - the mart is not on a runner
           #                  (see IBNR_SCHEDULE_P_WAREHOUSE above)
-          #   - "gh CLI"     could not be observed from the dev box, which IS
-          #                  logged in to gh, so test_live_manifest_fetch runs
-          #                  there and skips on a runner instead. Listed on that
-          #                  reasoning, and the first CI run confirmed it: the
-          #                  runner skipped test_schedule_p_github.py:206 with
-          #                  "needs gh CLI authenticated to GitHub". Without
-          #                  this entry the leg would have gone red on arrival.
           #   - "cmdstan"    belt and braces for the mart+cmdstan test, whose
           #                  reason already contains "gold mart" today.
+          #
+          # A "gh CLI" entry used to sit here, for a live-fetch test that was
+          # gated on `gh auth status` and therefore ran on the dev box and
+          # skipped on a runner. That test now carries the `network` marker and
+          # is DESELECTED by addopts everywhere, so it produces no skip on any
+          # machine and the entry was removed rather than left to rot: an
+          # allowlist entry that can never match teaches a future reader a
+          # behaviour that no longer exists.
           #
           # If this leg goes red on a skip reason not listed here, that is the
           # gate working. Read the reason it prints, and either fix the cause or
@@ -478,7 +479,7 @@ jobs:
             expect_imports: "torch;polars;pymc;numpyro;arviz;bayesblend;chainladder;bermuda;altair"
             absent_imports: ""
             forbid_skips: ""
-            allow_skips: "gold mart;gh CLI;cmdstan"
+            allow_skips: "gold mart;cmdstan"
             strict_skips: "true"
             required_files: "tests/test_transforms.py;tests/test_deeptriangle.py;tests/test_mdn.py;tests/test_resnet.py;tests/test_nn_heldout.py;tests/test_stacking.py;tests/test_tieout_chainladder.py;tests/test_clark.py;tests/test_interop_bermuda.py;tests/test_polars_extra.py;tests/test_import_purity.py;tests/test_codec.py"
             # measured one base earlier: 968 passed, 7 skipped - and the 7 are
