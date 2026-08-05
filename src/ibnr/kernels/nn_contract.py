@@ -22,19 +22,30 @@ CORE CONVENTIONS
 - Grids are (n_w, n_d): origin index ``w`` (sorted origins, SHARED across all
   cohorts so a cohort missing an origin is simply masked out) x 1-based dev
   step ``d = dev_lag // dev_grain_months`` stored at index ``d - 1``.
-- ``x`` holds INCREMENTAL LOSS RATIOS - incremental loss / that origin's
-  premium. Dividing by premium is the cross-cohort normalizer that lets one
-  network pool a $2M company with a $2B one; incrementals (rather than
-  cumulatives) keep successive cells from being near-perfectly autocorrelated.
-  The first dev's increment IS its cumulative, and later increments are taken
-  against the IMMEDIATE predecessor dev only (mirroring
-  ``transforms.to_incremental``), so a cell whose predecessor is missing has
-  no usable increment and counts as unobserved.
-- ``obs_mask`` therefore marks cells with a *usable increment*, NOT raw cell
-  presence. Reviewers should not read it as "the triangle has a value here".
-- Absent cells are represented as x = 0.0 AND obs_mask = False. The zero is
-  padding for the tensor only - it is never a claim that the increment was
-  zero, and every consumer must gate on the mask, never on ``x != 0``.
+- ``x`` holds LOSS RATIOS - the channel's value / that origin's premium.
+  Dividing by premium is the cross-cohort normalizer that lets one network
+  pool a $2M company with a $2B one. Channels are INCREMENTAL unless declared
+  otherwise (below); incrementals (rather than cumulatives) keep successive
+  cells from being near-perfectly autocorrelated. The first dev's increment IS
+  its cumulative, and later increments are taken against the IMMEDIATE
+  predecessor dev only (mirroring ``transforms.to_incremental``), so a cell
+  whose predecessor is missing has no usable increment.
+- A channel named in ``level_fields`` is the EXCEPTION: it is carried
+  UNDIFFERENCED, as a ratio of the snapshot itself to premium. Some fields are
+  eval-date snapshots rather than amounts that accumulate - ``case_reserve``
+  is the motivating one, whose difference is the case *movement* while the
+  informative quantity is the outstanding level. ``field_kinds`` records which
+  channel is which; channel 0, the prediction target, is always an increment
+  (a level cannot be the emergence being predicted, and is refused by name).
+- ``obs_mask`` therefore marks cells with a *usable channel-0 increment*, NOT
+  raw cell presence. Reviewers should not read it as "the triangle has a value
+  here". ``x_obs`` is the per-channel form and is what a consumer of any
+  feature channel must gate on: a feature can be missing where the target is
+  observed, and present where it is not.
+- An unusable cell is represented as x = 0.0 AND x_obs = False (channel 0's
+  x_obs IS ``obs_mask``). The zero is padding for the tensor only - it is
+  never a claim that the value was zero, and every consumer must gate on the
+  masks, never on ``x != 0``.
 - ``latest_cum``/``latest_dev`` are the per-origin ANCHORS: ultimate =
   latest_cum + premium * (sum of predicted future incremental loss ratios).
   Predicting ratios and re-anchoring on the observed cumulative is what keeps
@@ -48,12 +59,19 @@ THE CONTRACT - keys returned by ``nn_data`` (shape; dtype; meaning). n_c =
 kept cohorts, n_f = channels (= 1 + len(feature_fields)), n_w origins,
 n_d dev steps:
 
-- ``x``              : (n_c, n_f, n_w, n_d) float64 - incremental loss ratios.
-  Channel 0 is ALWAYS ``loss_field`` (the prediction target); channels 1..
-  follow ``feature_fields`` order. NaN-free by construction: unusable cells
-  are zero-filled (see the mask rule above).
+- ``x``              : (n_c, n_f, n_w, n_d) float64 - loss ratios, incremental
+  except on the channels named in ``level_fields``. Channel 0 is ALWAYS
+  ``loss_field`` (the prediction target); channels 1.. follow
+  ``feature_fields`` order. NaN-free by construction: unusable cells are
+  zero-filled (see the mask rule above).
+- ``x_obs``          : (n_c, n_f, n_w, n_d) bool - per-channel usable VALUE.
+  ``x_obs[:, 0]`` equals ``obs_mask`` exactly. An increment channel is usable
+  where the cell and its predecessor are both present (first dev: the cell
+  alone); a level channel where the cell is present. Every channel also needs
+  its origin's premium, which is the ratio's denominator.
 - ``obs_mask``       : (n_c, n_w, n_d) bool - usable channel-0 increments;
-  True = observed/trainable, False = to be predicted or absent.
+  True = observed/trainable, False = to be predicted or absent. The
+  target-channel vocabulary the splits, cutoffs and held-out scorers speak.
 - ``cal_idx``        : (n_w, n_d) int - 1-based diagonal number; shared by all
   cohorts (calendar time is a property of the grid, not of a cohort).
 - ``premium``        : (n_c, n_w) float64 - booked earned premium per origin,
@@ -87,13 +105,16 @@ n_d dev steps:
   cohort is reported, never silently vanished (retro scripts log these).
 - ``origin_periods`` : list[dt.date], len n_w, ascending. ``n_w``/``n_d``:
   int sizes. ``fields``: list[str], the channel order of axis 1.
+- ``field_kinds``    : tuple[str, ...], aligned with ``fields`` - each channel's
+  kind, ``"increment"`` or ``"level"``. Element 0 is always ``"increment"``.
 - ``dev_grain_months``: int - months per dev step.
 
 INVARIANTS consumers rely on: the triangle must be cumulative and pre-sliced
 with ``as_of(...)`` (this module uses every row it is given); one row per
 (cohort, field, origin, dev) - duplicates mean several evaluation dates
-survived; and axis 0 alignment between ``x``, ``obs_mask``, ``premium``,
-``latest_cum``, ``latest_dev``, ``lob_idx``, ``company_idx`` and ``cohorts``.
+survived; and axis 0 alignment between ``x``, ``x_obs``, ``obs_mask``,
+``premium``, ``latest_cum``, ``latest_dev``, ``lob_idx``, ``company_idx`` and
+``cohorts``.
 """
 
 from __future__ import annotations
@@ -178,6 +199,7 @@ def nn_data(
     *,
     loss_field: str = "reported_loss",
     feature_fields: tuple[str, ...] = (),
+    level_fields: tuple[str, ...] = (),
     premium_field: str = "earned_premium",
     segment_columns: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
@@ -187,6 +209,11 @@ def nn_data(
     contract for every NN entry. Slice training data with
     ``triangle.as_of(...)`` before calling: this function uses every row it
     sees, so an unsliced triangle silently trains on the future.
+
+    ``level_fields`` names feature channels carried UNDIFFERENCED - eval-date
+    snapshots such as ``case_reserve``, whose difference is the case movement
+    rather than the quantity itself. They are still divided by premium and
+    standardized like any channel; only the differencing is skipped.
 
     Unlike the Stan/multiline contracts, unusable COHORTS are dropped rather
     than raised on (missing/non-positive premium, no usable increments) and
@@ -228,6 +255,26 @@ def nn_data(
     fields = [loss_field, *feature_fields]
     if len(set(fields)) != len(fields):
         raise ValueError(f"duplicate fields in loss_field + feature_fields: {fields}")
+    # the target is the EMERGENCE the network predicts and the anchor rebuild
+    # (latest_cum + premium * sum of future increments) is only defined for an
+    # increment, so a level target is refused rather than differenced anyway
+    if loss_field in level_fields:
+        raise ValueError(
+            f"loss_field {loss_field!r} cannot be in level_fields: channel 0 is the "
+            "incremental emergence the network predicts, and the ultimate is rebuilt "
+            "by summing it onto latest_cum. Model a level as a feature channel"
+        )
+    not_features = [f for f in level_fields if f not in feature_fields]
+    if not_features:
+        raise ValueError(
+            f"level_fields {not_features} are not in feature_fields {list(feature_fields)}: "
+            "level_fields declares the KIND of a feature channel, it does not add one. "
+            "Name the field in both"
+        )
+    # aligned with `fields`, so a consumer reads a channel's kind off the same
+    # index it reads the channel off
+    field_kinds = tuple("level" if f in level_fields else "increment" for f in fields)
+    level_idx = [k for k, kind in enumerate(field_kinds) if kind == "level"]
     df = triangle.select_fields(fields).execute()
     if df.empty:
         raise ValueError(f"no rows for fields {fields}")
@@ -291,6 +338,7 @@ def nn_data(
     kept_display: list[dict] = []
     dropped: list[dict] = []
     x_list, obs_list, prem_list, anchor_cum_list, anchor_dev_list = [], [], [], [], []
+    x_obs_list: list[np.ndarray] = []
 
     for key in cohort_keys:
         sub = grouped[key]
@@ -314,6 +362,9 @@ def nn_data(
         incr = np.full_like(cum, np.nan)  # (n_f, n_w, n_d)
         incr[:, :, 0] = cum[:, :, 0]
         incr[:, :, 1:] = cum[:, :, 1:] - cum[:, :, :-1]
+        # a level channel is the snapshot itself, so it needs no predecessor and
+        # is usable wherever its own cell is present
+        incr[level_idx] = cum[level_idx]
         obs = ~np.isnan(incr[0])  # (n_w, n_d) usable TARGET-channel increments
 
         # screen 1: every origin that has losses must have positive premium -
@@ -329,17 +380,23 @@ def nn_data(
             dropped.append({**row, "reason": f"no usable {loss_field!r} increments"})
             continue
 
-        # incremental LOSS RATIOS: divide by the origin's premium so cohorts of
-        # wildly different size share one scale (the NN's cross-cohort
-        # normalizer, cf. logprem in stan_data). NaN/inf here only arise on
-        # cells the mask already excludes.
+        # LOSS RATIOS: divide by the origin's premium so cohorts of wildly
+        # different size share one scale (the NN's cross-cohort normalizer, cf.
+        # logprem in stan_data). NaN/inf here only arise on cells the masks
+        # already exclude.
         with np.errstate(invalid="ignore", divide="ignore"):
             ratios = incr / premium[None, :, None]  # (n_f, n_w, n_d)
-        x = np.where(np.isnan(ratios), 0.0, ratios)
-        # non-target channels may be missing where the target is observed; zero-fill
-        # so `x` is NaN-free. This zero is PADDING, not a zero increment -
-        # consumers must gate on obs_mask, never on `x != 0`.
-        x[:, ~obs] = 0.0
+        # per-channel usable VALUE: the channel's own numerator AND the premium
+        # that denominates it. Channel 0 reduces to `obs` exactly - screen 1
+        # above guarantees premium > 0 on every origin the target writes - which
+        # is the tested x_obs[0] == obs_mask invariant.
+        x_obs = ~np.isnan(incr) & (premium > 0)[None, :, None]  # (n_f, n_w, n_d)
+        # PER CHANNEL, not blanket at ~obs: a feature can be present where the
+        # target is not, and destroying that value while x_obs still called it
+        # usable would hand the network a fabricated zero. The zero is PADDING -
+        # consumers gate on x_obs (obs_mask on channel 0), never on `x != 0`.
+        # Also what keeps `x` free of the inf a zero premium would divide into.
+        x = np.where(x_obs, ratios, 0.0)
 
         # per-origin anchors from the CUMULATIVE grid (not the increments): the
         # deepest observed dev and its cumulative loss. Ultimate is rebuilt as
@@ -360,6 +417,7 @@ def nn_data(
         kept_display.append({col: sub[col].iloc[0] for col in display_cols})
         x_list.append(x)
         obs_list.append(obs)
+        x_obs_list.append(x_obs)
         # normalize "no premium" to NaN (a stray 0 would divide-by-zero later)
         prem_list.append(np.where(premium > 0, premium, np.nan))
         anchor_cum_list.append(latest_cum)
@@ -397,6 +455,8 @@ def nn_data(
     # see the module docstring for the per-key contract
     return {
         "x": np.stack(x_list),  # (n_c, n_f, n_w, n_d)
+        # per-channel usable values; x_obs[:, 0] IS obs_mask (invariant)
+        "x_obs": np.stack(x_obs_list),  # (n_c, n_f, n_w, n_d)
         "obs_mask": np.stack(obs_list),  # (n_c, n_w, n_d)
         "cal_idx": w_grid + d_grid + 1,  # (n_w, n_d), shared by all cohorts
         "premium": premium,  # (n_c, n_w)
@@ -421,6 +481,7 @@ def nn_data(
         "n_w": n_w,
         "n_d": n_d,
         "fields": fields,
+        "field_kinds": field_kinds,  # aligned with `fields`; [0] is always "increment"
         "dev_grain_months": step,
     }
 
@@ -430,6 +491,7 @@ def nn_company_data(
     *,
     loss_field: str = "reported_loss",
     feature_fields: tuple[str, ...] = (),
+    level_fields: tuple[str, ...] = (),
     premium_field: str = "earned_premium",
     segment_columns: tuple[str, ...] | None = None,
     lob_column: str = "line_of_business",
@@ -444,9 +506,10 @@ def nn_company_data(
     not write (or that were dropped) are all-zero and ``line_mask``-ed out.
 
     Adds over the flat contract:
-    - arrays gain a line axis: ``x`` (n_c, L, F, W, D), ``obs_mask``
-      (n_c, L, W, D), ``premium``/``latest_cum`` (n_c, L, W),
-      ``latest_dev`` (n_c, L, W), ``log_premium`` (n_c, L);
+    - arrays gain a line axis: ``x`` (n_c, L, F, W, D), ``x_obs``
+      (n_c, L, F, W, D), ``obs_mask`` (n_c, L, W, D),
+      ``premium``/``latest_cum`` (n_c, L, W), ``latest_dev`` (n_c, L, W),
+      ``log_premium`` (n_c, L);
     - ``line_mask`` (n_c, L) - lines actually present per company;
     - ``companies`` - one row per company (segment columns minus the LOB), with
       ``segment_columns`` naming that schema and ``display`` carrying the
@@ -461,10 +524,10 @@ def nn_company_data(
       to all of a company's lines at once (which is what makes a company a
       single joint training example).
     - Absent lines are all-zero across ``x``/``premium``/anchors and False in
-      ``line_mask``; as in the flat contract those zeros are padding, so a
-      consumer MUST gate on ``line_mask`` (and ``obs_mask``) rather than on
-      the values. ``log_premium`` is 0 there too - a padding value, not a
-      $1 premium.
+      ``line_mask``, ``obs_mask`` and ``x_obs``; as in the flat contract those
+      zeros are padding, so a consumer MUST gate on ``line_mask`` (and
+      ``x_obs``/``obs_mask``) rather than on the values. ``log_premium`` is 0
+      there too - a padding value, not a $1 premium.
     - Unlike ``kernels.multiline``, lines here are NOT required to share an
       observed-cell pattern: the mask is what the attention consumes, so
       ragged lines are representable rather than an error.
@@ -473,6 +536,7 @@ def nn_company_data(
         triangle,
         loss_field=loss_field,
         feature_fields=feature_fields,
+        level_fields=level_fields,
         premium_field=premium_field,
         segment_columns=segment_columns,
     )
@@ -509,6 +573,7 @@ def nn_company_data(
 
     # zero/False prefill IS the "line absent" representation (see docstring)
     x = np.zeros((n_c, n_l, n_f, n_w, n_d))
+    x_obs = np.zeros((n_c, n_l, n_f, n_w, n_d), dtype=bool)
     obs = np.zeros((n_c, n_l, n_w, n_d), dtype=bool)
     premium = np.full((n_c, n_l, n_w), np.nan)
     log_premium = np.zeros((n_c, n_l))
@@ -522,6 +587,7 @@ def nn_company_data(
         ci = row_of[tuple(cohorts.iloc[k][company_cols])]
         li = int(flat["lob_idx"][k])
         x[ci, li] = flat["x"][k]
+        x_obs[ci, li] = flat["x_obs"][k]
         obs[ci, li] = flat["obs_mask"][k]
         premium[ci, li] = flat["premium"][k]
         log_premium[ci, li] = flat["log_premium"][k]
@@ -531,6 +597,7 @@ def nn_company_data(
 
     return {
         "x": x,  # (n_c, L, n_f, n_w, n_d)
+        "x_obs": x_obs,  # (n_c, L, n_f, n_w, n_d) per-channel usable values
         "obs_mask": obs,  # (n_c, L, n_w, n_d) usable target increments
         "line_mask": line_mask,  # (n_c, L) lines this company writes
         "cal_idx": flat["cal_idx"],  # (n_w, n_d), shared by companies AND lines
@@ -547,6 +614,7 @@ def nn_company_data(
         "n_w": n_w,
         "n_d": n_d,
         "fields": flat["fields"],
+        "field_kinds": flat["field_kinds"],
         "dev_grain_months": flat["dev_grain_months"],
     }
 
