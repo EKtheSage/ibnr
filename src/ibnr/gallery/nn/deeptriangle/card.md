@@ -14,7 +14,7 @@ per-step masked dispatch between the encoder and decoder GRU cells.
 ## Data
 
 `kernels.nn_contract.nn_data`, exactly as `nn_transformer`: a *cohort* is one
-company x line of business; targets are **incremental loss ratios**
+company x line of business; the target is an **incremental loss ratio**
 (incremental loss / origin premium), the cross-cohort normalizer. Default
 channels follow Kuo's two tasks: `loss_field="paid_loss"` (the target) plus
 `feature_fields=("reported_loss",)`, from which the auxiliary outstanding
@@ -26,26 +26,43 @@ deepest) have standardized value 0 by definition, and rollout draws there are
 forced to 0, i.e. the pooled dev mean. The auxiliary channel gets its own
 per-dev stats under the same rule.
 
-One derived-target caveat, disclosed: the contract masks usable increments
-for the TARGET channel only, so the auxiliary OS increment is trained on
-`obs_mask` cells and is distorted wherever the reported channel is padding at
-an observed paid cell. The blast radius is TWO auxiliary targets per missing
-reported cell, not one: increments are differenced against the immediate
-predecessor dev, so a hole at dev d corrupts the aux target at dev d (the
-padding zero is read as the reported cumulative) and again at dev d + 1
-(which differences against that same zero). The target channel is untouched
-either way. On the Schedule P mart paid and reported are booked on the same
-cells, so the masks coincide in practice.
+**Conditioning is per channel.** The context mask handed to the network is the
+contract's `x_obs` - per-channel usable values, whose channel 0 IS `obs_mask` -
+so a channel's value is read only where that channel has a value of its own,
+and each channel's per-dev statistics are estimated on its own cells. A feature
+missing at a cell the target holds is masked rather than read as a zero
+increment, and the auxiliary OS target is trained only where BOTH channels are
+real (`x_obs[1] & x_obs[0]`).
+
+That fixes a distortion this card used to disclose. Before 0.5.4 the mask was
+one flag per CELL, the target's, so a hole in reported at an observed paid cell
+corrupted TWO auxiliary targets rather than one: increments are differenced
+against the immediate predecessor dev, so the padding zero was read as the
+reported cumulative at dev d and differenced against at dev d + 1. Those cells
+are now dropped from the auxiliary loss instead of fabricated. On the Schedule P
+mart paid and reported are booked on the same cells, so the two masks coincide
+there and the fix bites on ragged data - and on the rollout (below), where it
+bites always.
+
+**`fit(level_fields=...)`** names feature channels carried UNDIFFERENCED - an
+eval-date snapshot such as `case_reserve`, whose difference is the case movement
+while the informative quantity is the outstanding level. It declares the KIND of
+a channel already named in `feature_fields` rather than adding one;
+`kernels/nn_contract.py` owns the semantics and the refusals. The default
+channel pair does not use it: reported loss genuinely accumulates, so
+differencing it is right.
 
 ## Network
 
 Per origin, the dev sequence is processed by a **GRU encoder/decoder pair**
 (hidden 64, shared learned initial state): per-step input =
-`Linear([channel values * flag, flag])` + dev-lag embedding + broadcast
-cohort conditioning (LOB embedding, optional company embedding, normalized
-log premium). Steps inside the conditioning context run the ENCODER cell on
-the true values; steps outside run the DECODER cell on the same input with
-values zeroed - position + conditioning only, so the state rolls forward
+`Linear([channel values * channel flags, channel flags])` - 2F wide, one flag
+per channel - + dev-lag embedding + broadcast cohort conditioning (LOB
+embedding, optional company embedding, normalized log premium). The
+encoder/decoder dispatch reads CHANNEL 0's flag, since a step is a step of the
+target: steps inside the target's conditioning context run the ENCODER cell on
+the input as built; steps outside run the DECODER cell on it with the target's
+value zeroed - position + conditioning dominating, so the state rolls forward
 open-loop, which is Kuo's decoder emitting the remaining dev steps. The
 masked per-step dispatch (rather than pack/pad split sequences) is what lets
 one batch mix cutoffs and predecessor holes. Heads read the state AFTER each
@@ -123,9 +140,10 @@ Identical scheme to the transformer, via the shared machinery:
 
 Autoregressive **diagonal-by-diagonal rollout**, mirroring the transformer's:
 sample every future cell on the next calendar diagonal from the target head,
-promote the samples to context (they become encoder steps), re-encode,
-continue - so the decoder only ever runs one step past genuine-or-sampled
-context, the distance the augmentation supervises most. Ultimates = anchor
+promote the samples to context on the TARGET channel only (nothing was sampled
+for a feature, so its flag stays off), re-encode, continue - so the decoder only
+ever runs one step past genuine-or-sampled context, the distance the
+augmentation supervises most. Ultimates = anchor
 cumulative + premium x summed sampled future increments; draws are pooled
 over the ensemble members and cached per (n_draws, seed).
 `predict(segment=...)` slices the cached global rollout.
@@ -143,8 +161,9 @@ training-overlap guards apply unchanged. The entry-level methods resolve the
 cohort from the cells' own segment values and delegate.
 
 DeepTriangle supplies the two per-entry hooks: `_heldout_inputs` (its
-conditioning takes a company embedding index rather than a calendar cutoff)
-and `_forward_mixture`, which is where the **auxiliary head is dropped** - the
+conditioning takes a company embedding index rather than a calendar cutoff, and
+per-channel flags straight off `x_obs`, the same mask fit trains on) and
+`_forward_mixture`, which is where the **auxiliary head is dropped** - the
 network returns `(mixture, aux)` and only the mixture is a predictive density.
 The auxiliary claims-outstanding task is a training-time regularizer and is
 never consulted at scoring time.
@@ -197,12 +216,20 @@ pred.summary(observed=realized)
   weight decay, cutoff augmentation, eval_date early stopping, ensembling.
   The company embedding is a known memorization vector kept because it is the
   paper's design - flag it off if validation NLL diverges.
-- Feature channels are not simulated during rollout - future cells feed back
-  the target channel only, so deep-lag predictions condition on an
-  increasingly stale reported channel (inherited from the transformer, same
-  disclosure).
+- **Feature channels are still not simulated during rollout, and the
+  disclosure is now sharper rather than smaller.** A promoted cell turns on the
+  target channel's flag alone, so a future cell no longer presents the
+  contract's padding zero as an observed reported increment - which it did at
+  every forecast cell before 0.5.4, and "stale" was the wrong word for it: the
+  value was fabricated, not old. What replaces the fabrication is an honest
+  absence, so the rollout conditions on FEWER observed features the deeper it
+  goes, and past as_of the reported channel is unobserved everywhere.
+  Simulating the features forward is a different model, not a patch to this
+  one.
 - Per-line draws are independent: no cross-line dependence, no diversified
   company total (see `nn_ml_*`).
 - Origins with no observed cells get pure-extrapolation ultimates (anchor 0);
   origins without premium produce NaN ultimates.
-- The auxiliary OS target inherits the target channel's mask; see "Data".
+- The auxiliary OS target exists only where BOTH channels are observed, so a
+  cohort whose reported development is ragged trains its OS head on fewer cells
+  than its paid head; see "Data".

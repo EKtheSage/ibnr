@@ -13,11 +13,13 @@ mixture math per package, per the shared-machinery rule.
 Kuo's DeepTriangle, adapted to this package's contract: each origin's
 development history is a sequence; a GRU ENCODER consumes the observed steps
 and a GRU DECODER takes over from the encoder's state to emit the remaining
-steps. The two cells are dispatched per dev step by the context mask, which
-generalizes the paper's clean encode-then-decode split to ragged conditioning
-boundaries (each origin's context ends at a different dev for a given
-calendar cutoff) and to predecessor holes. Model writeup: card.md. Data
-contract feeding it: kernels/nn_contract.py."""
+steps. The two cells are dispatched per dev step by the TARGET channel's
+context flag, which generalizes the paper's clean encode-then-decode split to
+ragged conditioning boundaries (each origin's context ends at a different dev
+for a given calendar cutoff) and to predecessor holes. The mask itself is per
+channel, so a feature is conditioned on only where it has a usable value of
+its own. Model writeup: card.md. Data contract feeding it:
+kernels/nn_contract.py."""
 
 from __future__ import annotations
 
@@ -30,16 +32,21 @@ from ibnr.gallery.nn.deeptriangle.config import DeepTriangleConfig
 class DeepTriangleGRU(nn.Module):
     """GRU encoder/decoder over each origin's dev sequence of one cohort.
 
-    Per dev step the input is ``Linear([channel values * flag, flag])`` plus a
-    dev-lag embedding and broadcast cohort conditioning (LOB embedding +
-    optional company embedding + normalized log premium). Steps where the
-    context mask is True run the ENCODER cell on that input (the true values);
-    steps where it is False run the DECODER cell on the same input with the
-    values zeroed - position + conditioning only, so the state rolls forward
-    open-loop, which IS Kuo's decoder emitting the remaining dev steps. Both
-    MDN heads read the state AFTER each step; only decoded (non-context) cells
-    are ever scored, so a head never reads a state that consumed the cell's
-    own value.
+    Per dev step the input is ``Linear([channel values * channel flags, channel
+    flags])`` plus a dev-lag embedding and broadcast cohort conditioning (LOB
+    embedding + optional company embedding + normalized log premium). The
+    context mask is PER CHANNEL, so a channel's value is consumed only where
+    that channel has a usable value of its own (``nn_data``'s ``x_obs``): a
+    feature missing at a cell the target holds is masked rather than read as a
+    zero increment, and a rollout cell promoted after sampling turns on the
+    target's flag alone. The ENCODER/DECODER dispatch takes CHANNEL 0's flag -
+    the target's - because it is one structural decision per cell: steps where
+    it is True run the encoder cell on that input, steps where it is False run
+    the decoder cell on the same input with position + conditioning dominating,
+    so the state rolls forward open-loop, which IS Kuo's decoder emitting the
+    remaining dev steps. Both MDN heads read the state AFTER each step; only
+    decoded (non-context) cells are ever scored, so a head never reads a state
+    that consumed the cell's own value.
 
     There is NO calendar input of any kind - no absolute calendar embedding
     (the v1/v2 transformer defect: untrained parameters injected exactly at
@@ -66,10 +73,12 @@ class DeepTriangleGRU(nn.Module):
         # lags; each origin is one sequence of n_d steps.
         self.n_w, self.n_d = n_w, n_d
         d = cfg.hidden_dim
-        # value_proj: per-step [channel values, context flag] -> hidden_dim.
-        # The +1 input dim is the context flag itself, fed as a feature so the
-        # step encodes "this cell is / is not conditioning data".
-        self.value_proj = nn.Linear(n_features + 1, d)
+        # value_proj: per-step [channel values, channel flags] -> hidden_dim.
+        # 2F, not F+1: every channel carries its OWN flag, so the step encodes
+        # "this channel is / is not conditioning data here" per channel rather
+        # than once per cell. At F = 1 the two widths coincide and the layer is
+        # the same function it always was.
+        self.value_proj = nn.Linear(2 * n_features, d)
         # dev-lag identity per step. Development position, not calendar - a
         # dev embedding is trained wherever any cohort has data at that dev.
         self.dev_emb = nn.Embedding(n_d, d)
@@ -110,7 +119,7 @@ class DeepTriangleGRU(nn.Module):
     def forward(
         self,
         x: torch.Tensor,  # (B, F, W, D) normalized values (junk allowed off-context)
-        context_mask: torch.Tensor,  # (B, W, D) bool
+        context_mask: torch.Tensor,  # (B, F, W, D) bool - PER CHANNEL
         lob_idx: torch.Tensor,  # (B,) long
         company_idx: torch.Tensor,  # (B,) long (ignored when the flag is off)
         log_premium: torch.Tensor,  # (B,) normalized
@@ -122,15 +131,15 @@ class DeepTriangleGRU(nn.Module):
         ``(log_pi, mu, sigma)`` with shape (B, W, D, K): the target head is a
         K-Gaussian mixture over the normalized incremental loss ratio of every
         cell, the aux head the same over the normalized incremental
-        outstanding ratio. Only ``context_mask``-true cells contribute their
-        values (encoder steps); the rest are zeroed and run the decoder."""
+        outstanding ratio. A channel contributes its value only where its OWN
+        flag is true; the encoder/decoder dispatch reads channel 0's."""
         b = x.shape[0]
         d_model = self.cfg.hidden_dim
-        flag = context_mask.unsqueeze(1).to(x.dtype)  # (B, 1, W, D)
-        # zero out non-context values; per-cell input = [values, flag] with
-        # channels last: (B, F, W, D) -> (B, W, D, F+1)
-        vals = (x * flag).permute(0, 2, 3, 1)  # (B, W, D, F)
-        inp = torch.cat([vals, flag.permute(0, 2, 3, 1)], dim=-1)  # (B, W, D, F+1)
+        flags = context_mask.to(x.dtype)  # (B, F, W, D)
+        # zero out off-context values CHANNEL BY CHANNEL; per-cell input =
+        # [values, flags] with channels last: (B, F, W, D) -> (B, W, D, 2F)
+        vals = (x * flags).permute(0, 2, 3, 1)  # (B, W, D, F)
+        inp = torch.cat([vals, flags.permute(0, 2, 3, 1)], dim=-1)  # (B, W, D, 2F)
         tok = self.value_proj(inp) + self.dev_emb.weight[None, None, :, :]  # (B, W, D, d)
         # per-cohort conditioning, broadcast to every step of every origin
         cond_parts = [self.lob_emb(lob_idx), log_premium.unsqueeze(-1)]
@@ -141,7 +150,9 @@ class DeepTriangleGRU(nn.Module):
 
         # each origin is an independent sequence: fold origins into the batch
         seq = tok.reshape(b * self.n_w, self.n_d, d_model)
-        is_ctx = context_mask.reshape(b * self.n_w, self.n_d)
+        # channel 0's flag: one cell is one encoder-or-decoder step, and the
+        # target is what the step is a step of
+        is_ctx = context_mask[:, 0].reshape(b * self.n_w, self.n_d)
         h = self.h0.expand(b * self.n_w, d_model)
         states = []
         for t in range(self.n_d):

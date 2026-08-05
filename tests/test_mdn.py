@@ -13,7 +13,16 @@ What this file protects, in three layers:
    everything except the encoder body is genuinely shared: the head loss and
    sampler must BE the transformer's (identity check, not behavioral), and the
    module must contain no attention/recurrence to ablate around.
-3. **Held-out wiring.** The transformer's exact pattern over the shared
+3. **Per-channel conditioning (0.5.4).** The mask is one flag per (channel,
+   cell), not one per cell: a value is never consumed without its own
+   channel's flag, each channel's summary mean divides by its own context
+   count, the structural flags (the per-dev fraction, the origin row's flag
+   vector) are channel 0's, the fit's context is ``x_obs`` under the calendar
+   gate, and a promoted rollout cell gains channel 0's flag alone. With one
+   channel every one of those reduces to the pre-0.5.4 function, so the
+   fixtures here deliberately hole a feature field where the target is
+   present - the only configuration in which the two differ at all.
+4. **Held-out wiring.** The transformer's exact pattern over the shared
    per-cohort adapter: draw shape/seed/anchor semantics, the standardization
    Jacobian (pinned by integrating the density over the amount space - the only
    check that catches a wrong change of variable), the un-standardization order
@@ -33,11 +42,15 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
+import pandas as pd
 import pytest
 
 torch = pytest.importorskip("torch")
 
+from ibnr import Triangle  # noqa: E402
 from ibnr.gallery.entry import PredictsHeldout, ScoresHeldout  # noqa: E402
+from ibnr.gallery.nn._scheme import norm_stats, splits  # noqa: E402
+from ibnr.gallery.nn.mdn import model as mdn_model  # noqa: E402
 from ibnr.gallery.nn.mdn import network as mdn_net  # noqa: E402
 from ibnr.gallery.nn.mdn.config import MDNConfig  # noqa: E402
 from ibnr.gallery.nn.mdn.model import MDN  # noqa: E402
@@ -97,6 +110,44 @@ def synthetic_triangle(backend_name, seed=0):
     )
 
 
+#: (origin, dev step) cells where lob_0 reports ``paid_loss`` and NOT
+#: ``case_reserve``. Both are inside the ``AS_OF`` upper triangle, and each
+#: costs the feature channel a second cell (the successor whose increment loses
+#: its predecessor), so four cells separate the two channels' observedness.
+FEATURE_HOLES = ((0, 0), (2, 1))
+
+
+def feature_triangle(backend_name: str) -> Triangle:
+    """Two-LOB triangle carrying ``paid_loss`` AND ``case_reserve`` (+ premium),
+    with case_reserve HOLED on lob_0 at :data:`FEATURE_HOLES`.
+
+    The holes are the whole point. Per-channel and per-cell conditioning are the
+    same function wherever the channels share an observed pattern, so a fixture
+    without them would let every assertion in the per-channel section pass on
+    the pre-0.5.4 code. lob_1 is left whole, so the pool also holds a cohort
+    whose channels agree.
+    """
+    paid = _matrices()
+    reserve = 0.4 * paid
+    for w, d0 in FEATURE_HOLES:
+        reserve[0, w, d0] = np.nan
+    prem = np.full(6, 1000.0)
+    t_paid = make_multiline_triangle(
+        backend_name,
+        {"lob_0": paid[0], "lob_1": paid[1]},
+        premium_by_lob={"lob_0": prem, "lob_1": prem},
+        start_year=START,
+    )
+    t_reserve = make_multiline_triangle(
+        backend_name,
+        {"lob_0": reserve[0], "lob_1": reserve[1]},
+        loss_field="case_reserve",
+        start_year=START,
+    )
+    df = pd.concat([t_paid.execute(), t_reserve.execute()], ignore_index=True)
+    return Triangle.from_long(df, measure="cumulative", backend=backend_name)
+
+
 # -- network -------------------------------------------------------------------
 
 
@@ -109,7 +160,7 @@ def test_forward_shapes_and_validity():
     model = TriangleMDN(cfg, n_lob=3, n_features=2, n_w=5, n_d=4)
     b = 7
     x = torch.randn(b, 2, 5, 4)
-    ctx = torch.rand(b, 5, 4) > 0.5
+    ctx = torch.rand(b, 2, 5, 4) > 0.5
     lob = torch.randint(0, 3, (b,))
     prem = torch.randn(b)
     cutoff = torch.randint(1, 8, (b,))
@@ -156,7 +207,7 @@ def test_context_summary_no_leak():
     b = 3
     x = torch.randn(b, 2, 5, 5)
     cal = torch.arange(5)[:, None] + torch.arange(5)[None, :] + 1  # (W, D) diagonals
-    ctx = (cal <= 3)[None].expand(b, 5, 5).clone()  # context = diagonals 1..3
+    ctx = (cal <= 3)[None, None].expand(b, 2, 5, 5).clone()  # context = diagonals 1..3
     lob = torch.zeros(b, dtype=torch.long)
     prem = torch.zeros(b)
     cutoff = torch.full((b,), 3, dtype=torch.long)
@@ -165,7 +216,7 @@ def test_context_summary_no_leak():
 
         # poison a future cell (diagonal 5 > cutoff 3, not in ctx)
         x_poisoned = x.clone()
-        assert not ctx[0, 2, 2]
+        assert not ctx[0, :, 2, 2].any()
         x_poisoned[:, :, 2, 2] = 1e6
         leaked = model(x_poisoned, ctx, lob, prem, cutoff)
         for a, c in zip(base, leaked, strict=True):
@@ -173,10 +224,129 @@ def test_context_summary_no_leak():
 
         # guard the guard: a poisoned CONTEXT cell must change the output
         x_ctx = x.clone()
-        assert ctx[0, 1, 1]
+        assert ctx[0, :, 1, 1].all()
         x_ctx[:, :, 1, 1] = 1e6
         changed = model(x_ctx, ctx, lob, prem, cutoff)
     assert not torch.allclose(base[1], changed[1])
+
+
+def test_forward_masks_each_channel_against_its_own_flag():
+    """A value is never consumed without ITS OWN channel's flag.
+
+    Poison a feature-channel value at a cell whose TARGET flag is on and whose
+    feature flag is off: nothing may move. Then turn that one feature flag on
+    and require the output to change, so the first half cannot pass by the
+    input being ignored altogether.
+
+    The mutation this catches is the pre-0.5.4 mask shape - one flag per cell,
+    broadcast across channels - under which channel 0's flag admitted the
+    feature's contract padding as an observed value. That padding is a zero the
+    triangle never reported, which is the defect per-channel masking exists to
+    remove.
+    """
+    torch.manual_seed(0)
+    model = TriangleMDN(TINY, n_lob=2, n_features=2, n_w=5, n_d=5)
+    model.eval()
+    b = 3
+    x = torch.randn(b, 2, 5, 5)
+    lob = torch.zeros(b, dtype=torch.long)
+    prem = torch.zeros(b)
+    cutoff = torch.full((b,), 3, dtype=torch.long)
+    ctx = torch.ones(b, 2, 5, 5, dtype=torch.bool)
+    ctx[:, 1, 2, 2] = False  # the feature is missing here; the target is not
+
+    with torch.no_grad():
+        base = model(x, ctx, lob, prem, cutoff)
+        poisoned = x.clone()
+        poisoned[:, 1, 2, 2] = 1e6
+        masked = model(poisoned, ctx, lob, prem, cutoff)
+        for a, c in zip(base, masked, strict=True):
+            torch.testing.assert_close(a, c, atol=0.0, rtol=0.0)
+
+        # guard the guard: flag that one feature cell and the output must move
+        live = ctx.clone()
+        live[:, 1, 2, 2] = True
+        changed = model(poisoned, live, lob, prem, cutoff)
+    assert not torch.allclose(base[1], changed[1])
+
+
+def test_a_per_cell_mask_is_refused_by_name():
+    """A caller left on the pre-0.5.4 (B, W, D) mask must be told, not served.
+
+    That mask BROADCASTS against ``x`` rather than raising whenever the batch
+    and channel counts line up - here B = F = 2, so ``x * flags`` succeeds and
+    every cohort in the batch is masked with another channel's flags. The rank
+    is therefore checked rather than trusted.
+    """
+    b = n_f = 2
+    model = TriangleMDN(TINY, n_lob=2, n_features=n_f, n_w=5, n_d=5)
+    x = torch.randn(b, n_f, 5, 5)
+    per_cell = torch.ones(b, 5, 5, dtype=torch.bool)
+    # the silent path this guard closes: the product is well-formed
+    assert (x * per_cell.to(x.dtype)).shape == x.shape
+    with pytest.raises(ValueError, match="per channel"):
+        model(
+            x,
+            per_cell,
+            torch.zeros(b, dtype=torch.long),
+            torch.zeros(b),
+            torch.full((b,), 3, dtype=torch.long),
+        )
+
+
+def test_summary_counts_are_per_channel_and_the_flag_vectors_are_the_targets():
+    """Read the MLP's own input vector back and rebuild the masked blocks.
+
+    Two claims, and neither is visible at the output: each channel's summary
+    mean divides by ITS OWN context count (a count taken from channel 0 - the
+    pre-0.5.4 shape - divides a feature's masked sum by the wrong number
+    wherever the channels' observedness differs), and the two places a single
+    structural flag is needed (the per-dev context fraction, the origin row's
+    flag vector) use channel 0's, the target's.
+
+    The rebuild is against the network's input to ``body``, captured by a
+    pre-hook, because the MLP is opaque afterwards: an output-level comparison
+    can only show that two inputs differ, not which arithmetic produced them.
+    """
+    torch.manual_seed(0)
+    n_f, n_w, n_d = 2, 5, 4
+    model = TriangleMDN(TINY, n_lob=2, n_features=n_f, n_w=n_w, n_d=n_d)
+    model.eval()
+    x = torch.randn(1, n_f, n_w, n_d)
+    ctx = torch.rand(1, n_f, n_w, n_d) > 0.4
+    assert (ctx[0, 0] != ctx[0, 1]).any(), "the channels agree; the rebuild would be vacuous"
+
+    captured: list[torch.Tensor] = []
+
+    def grab(_module, args) -> None:
+        captured.append(args[0])
+
+    handle = model.body.register_forward_pre_hook(grab)
+    try:
+        with torch.no_grad():
+            model(
+                x,
+                ctx,
+                torch.zeros(1, dtype=torch.long),
+                torch.zeros(1),
+                torch.ones(1, dtype=torch.long),
+            )
+    finally:
+        handle.remove()
+    feat = captured[0]  # (1, W, D, feat_dim)
+
+    flags = ctx.to(x.dtype)
+    counts = flags.sum(dim=2)  # (1, F, D) - each channel's own
+    means = (x * flags).sum(dim=2) / counts.clamp(min=1.0)  # (1, F, D)
+    cohort = torch.cat([means.flatten(1), counts[:, 0] / float(n_w)], dim=1)  # (1, F*D + D)
+    width = n_f * n_d + n_d
+
+    torch.testing.assert_close(feat[0, 0, 0, :width], cohort[0])
+    # and it really is a COHORT summary: the same block at every cell
+    assert (feat[..., :width] == feat[0, 0, 0, :width]).all()
+
+    rows = torch.cat([(x * flags).permute(0, 2, 1, 3).flatten(2), flags[:, 0]], dim=2)
+    torch.testing.assert_close(feat[0, :, 0, width : 2 * width], rows[0])
 
 
 def test_overfit_one_batch():
@@ -188,9 +358,9 @@ def test_overfit_one_batch():
     torch.manual_seed(3)
     model = TriangleMDN(TINY, n_lob=1, n_features=1, n_w=4, n_d=4)
     x = torch.randn(8, 1, 4, 4)
-    ctx = torch.zeros(8, 4, 4, dtype=torch.bool)
-    ctx[:, :, :2] = True  # first two dev lags are context; the rest are targets
-    tgt = ~ctx
+    ctx = torch.zeros(8, 1, 4, 4, dtype=torch.bool)
+    ctx[:, :, :, :2] = True  # first two dev lags are context; the rest are targets
+    tgt = ~ctx[:, 0]
     y = x[:, 0]
     lob = torch.zeros(8, dtype=torch.long)
     prem = torch.zeros(8)
@@ -254,6 +424,222 @@ def test_predict_caches_rollout_and_is_reproducible(backend_name):
     entry2 = MDN().fit(t, loss_field="paid_loss", config=TINY, seed=0)
     a2 = entry2.predict(segment=SEG0, seed=7)
     np.testing.assert_allclose(a.samples, a2.samples)
+
+
+# -- per-channel conditioning (0.5.4) ------------------------------------------
+
+
+@pytest.fixture(scope="module", params=BACKENDS)
+def featured(request):
+    """One TINY pooled fit over :func:`feature_triangle`, at ``AS_OF``.
+
+    Two channels whose observedness genuinely differs, and an ``as_of`` slice so
+    the rollout has future cells to promote. Module-scoped: every test against
+    it is read-only.
+    """
+    t = feature_triangle(request.param)
+    entry = MDN().fit(
+        t,
+        loss_field="paid_loss",
+        feature_fields=("case_reserve",),
+        as_of=AS_OF,
+        config=TINY,
+        seed=0,
+    )
+    assert (entry.contract_["x_obs"][:, 0] != entry.contract_["x_obs"][:, 1]).any(), (
+        "the fixture's channels share an observedness, so nothing here is testing "
+        "per-channel behavior"
+    )
+    return entry
+
+
+def test_fit_conditions_every_channel_on_its_own_cells(backend_name, monkeypatch):
+    """What reaches the network during fit is ``x_obs`` under the calendar gate.
+
+    ``tests/test_nn_training_context.py`` pins the calendar half of that mask for
+    the family; this pins the channel half for this entry, on both passes.
+    Training: each channel's own usable cells at or before the batch's augmented
+    cutoff. Validation: each channel's own usable cells at or before the
+    validation cutoff.
+
+    The mutation it must catch is the pre-0.5.4 form ``obs_mask[idx] & gate``,
+    which hands every channel the TARGET's observedness - so a cell the target
+    reports and the feature does not arrives flagged, and the network reads the
+    contract's padding zero as a reported case reserve. The fixture holes the
+    feature where the target is present, and the loop asserts the two masks
+    actually diverge on some batch, so the check cannot pass vacuously.
+    """
+    calls: list[tuple[np.ndarray, tuple | None]] = []
+    live: dict[str, tuple | None] = {"batch": None}
+    real_train = mdn_model.train_ensemble
+    real_forward = TriangleMDN.forward
+
+    def spy_train(n_cohorts, *, train_loss, **kwargs):
+        def wrapped(model, idx, cutoffs):
+            live["batch"] = (idx.cpu().numpy().copy(), cutoffs.cpu().numpy().copy())
+            try:
+                return train_loss(model, idx, cutoffs)
+            finally:
+                live["batch"] = None
+
+        return real_train(n_cohorts, train_loss=wrapped, **kwargs)
+
+    def spy_forward(self, x, context_mask, *rest, **kwargs):
+        calls.append((context_mask.cpu().numpy().copy(), live["batch"]))
+        return real_forward(self, x, context_mask, *rest, **kwargs)
+
+    monkeypatch.setattr(mdn_model, "train_ensemble", spy_train)
+    monkeypatch.setattr(TriangleMDN, "forward", spy_forward)
+    entry = MDN().fit(
+        feature_triangle(backend_name),
+        loss_field="paid_loss",
+        feature_fields=("case_reserve",),
+        as_of=AS_OF,
+        config=TINY,
+        seed=0,
+    )
+
+    c = entry.contract_
+    x_obs, cal = c["x_obs"], c["cal_idx"]
+    _, _, val_cutoff = splits(c["obs_mask"], cal, TINY.val_diagonals)
+
+    training = [(mask, batch) for mask, batch in calls if batch is not None]
+    assert training, "no forward pass ran inside train_loss; the spy is wired to nothing"
+    diverged = False
+    for mask, (idx, cutoffs) in training:
+        gate = cal[None, None] <= cutoffs[:, None, None, None]  # (B, 1, W, D)
+        np.testing.assert_array_equal(
+            mask,
+            x_obs[idx] & gate,
+            err_msg=(
+                "the training context is not each channel's own usable cells at or "
+                "before the augmented cutoff"
+            ),
+        )
+        diverged |= bool((mask[:, 0] != mask[:, 1]).any())
+    assert diverged, (
+        "no training batch had a cell where the two channels' context differs, so the "
+        "assertion above holds for the target-only mask too"
+    )
+
+    validation = [mask for mask, batch in calls if batch is None]
+    assert validation, "no validation pass was recorded; early stopping's context is unchecked"
+    for mask in validation:
+        np.testing.assert_array_equal(
+            mask,
+            x_obs & (cal <= val_cutoff),
+            err_msg="the validation context is not each channel's own training-window cells",
+        )
+
+
+def test_normalizer_estimates_each_channel_on_its_own_cells(featured):
+    """A feature channel's per-dev mean and std come from the cells where THAT
+    channel has a value.
+
+    ``_scheme.norm_stats`` still accepts the target-only masks and reproduces
+    the pre-0.5.4 numbers from them bit for bit, so this mutation is one
+    argument wide and changes no shape anywhere. It is caught by rebuilding
+    both forms: the fit must match the per-channel one AND differ from the
+    target-only one. The second half is what makes the first non-vacuous, and
+    the difference is the defect itself - the target-only form averages the
+    feature's padding zeros in as though they were reported values.
+    """
+    entry = featured
+    c = entry.contract_
+    _, _, val_cutoff = splits(c["obs_mask"], c["cal_idx"], TINY.val_diagonals)
+    gate = c["cal_idx"] <= val_cutoff
+    per_channel = norm_stats(c["x"], c["x_obs"] & gate, c["x_obs"])
+    target_only = norm_stats(c["x"], c["obs_mask"] & gate, c["obs_mask"])
+    for key, expected in zip(("mean", "std", "pinned"), per_channel, strict=True):
+        np.testing.assert_array_equal(entry.norm_[key], expected, err_msg=key)
+    assert not np.array_equal(per_channel[0], target_only[0]), (
+        "the two forms agree on this fixture, so matching the per-channel one proves "
+        "nothing about which masks the fit passed"
+    )
+
+
+def test_rollout_promotes_only_the_target_channel(featured, monkeypatch):
+    """A promoted rollout cell carries the sampled TARGET and no feature flag.
+
+    Before 0.5.4 the rollout promoted the whole cell (``ctx = ctx | cells``)
+    against a per-cell mask, so every cell it sampled also declared its feature
+    channels observed - at the contract's standardized padding, a value no
+    triangle ever reported. The feature flags must therefore stay exactly the
+    contract's ``x_obs`` for the whole rollout, while channel 0's grow by cells
+    that are all in the future region.
+
+    Recorded through ``predict()``, the public path, and the last assertion
+    requires promotion to have happened at all - otherwise a rollout that never
+    sampled anything would satisfy every claim above.
+    """
+    entry = featured
+    c = entry.contract_
+    n_c = c["x"].shape[0]
+    future = np.arange(c["n_d"])[None, None, :] >= c["latest_dev"][:, :, None]
+
+    masks: list[np.ndarray] = []
+    real_forward = TriangleMDN.forward
+
+    def spy_forward(self, x, context_mask, *rest, **kwargs):
+        masks.append(context_mask.cpu().numpy().copy())
+        return real_forward(self, x, context_mask, *rest, **kwargs)
+
+    monkeypatch.setattr(TriangleMDN, "forward", spy_forward)
+    entry._rollout_key = None  # the cached rollout would make no forward call
+    entry.predict(segment=SEG0, seed=0)
+    entry._rollout_key = None  # leave no mask-recording rollout behind for other tests
+    entry._rollout_ults = None
+    assert masks, "predict() made no forward pass; the rollout never ran"
+
+    promoted_any = False
+    for mask in masks:
+        chunk = mask.shape[0] // n_c
+        np.testing.assert_array_equal(
+            mask[:, 1:],
+            np.repeat(c["x_obs"][:, 1:], chunk, axis=0),
+            err_msg=(
+                "a feature channel's flags moved during the rollout - next year's "
+                "features are unobserved and promoting them presents padding as data"
+            ),
+        )
+        obs = np.repeat(c["obs_mask"], chunk, axis=0)
+        assert not (obs & ~mask[:, 0]).any(), "the rollout dropped an observed target cell"
+        promoted = mask[:, 0] & ~obs
+        assert not (promoted & ~np.repeat(future, chunk, axis=0)).any(), (
+            "a promoted cell sits outside the future region"
+        )
+        promoted_any |= bool(promoted.any())
+    assert promoted_any, "no cell was ever promoted, so the feature-flag claim is vacuous"
+
+
+def test_level_fields_reach_the_contract_undifferenced(backend_name):
+    """``fit(level_fields=...)`` is delivered, not merely accepted.
+
+    A signature test proves a wire exists; this reads the channel back off two
+    fits of the SAME triangle. The target channel must be untouched and the
+    feature channel must change - from the period-to-period movement to the
+    snapshot itself - with ``field_kinds`` saying which is which. On the
+    hole-free cohort the level channel is exactly the running sum of the
+    increment channel, which is what "undifferenced" means and what an inert
+    keyword could not produce.
+    """
+    t = feature_triangle(backend_name)
+    common = dict(loss_field="paid_loss", feature_fields=("case_reserve",), config=TINY, seed=0)
+    incr = MDN().fit(t, **common)
+    level = MDN().fit(t, level_fields=("case_reserve",), **common)
+
+    assert incr.contract_["field_kinds"] == ("increment", "increment")
+    assert level.contract_["field_kinds"] == ("increment", "level")
+    np.testing.assert_allclose(level.contract_["x"][:, 0], incr.contract_["x"][:, 0])
+    assert not np.allclose(level.contract_["x"][:, 1], incr.contract_["x"][:, 1])
+
+    ci = level.cohort_index(SEG1)  # lob_1, the cohort with no feature holes
+    assert level.contract_["x_obs"][ci, 1].all()
+    np.testing.assert_allclose(
+        level.contract_["x"][ci, 1],
+        np.cumsum(incr.contract_["x"][ci, 1], axis=-1),
+        rtol=1e-10,
+    )
 
 
 # -- held-out wiring -----------------------------------------------------------
@@ -324,6 +710,24 @@ def test_entry_declares_both_capabilities(fitted):
     assert isinstance(view, ScoresHeldout) and isinstance(view, PredictsHeldout)
     assert view.heldout_measure == "loss_ratio"
     assert view.heldout_draw_scale == "incremental"
+
+
+def test_heldout_inputs_condition_each_channel_on_its_own_cells(featured):
+    """The held-out forward conditions on ``x_obs``, per channel - the same mask
+    fit() builds, not the target's flag reused for every channel.
+
+    Pre-0.5.4 this dict carried ``obs_mask``, so on a cohort whose feature is
+    holed the density and the draws were formed against a context claiming a
+    case reserve the triangle never reported. The cohort asserted on is one
+    where the two channels genuinely disagree, so the equality has teeth.
+    """
+    entry = featured
+    ci = entry.cohort_index(SEG0)
+    c = entry.contract_
+    ctx = entry._heldout_inputs(ci)["ctx"]
+    assert tuple(ctx.shape) == (1, c["x"].shape[1], c["n_w"], c["n_d"])
+    np.testing.assert_array_equal(ctx.cpu().numpy()[0], c["x_obs"][ci])
+    assert (c["x_obs"][ci, 0] != c["x_obs"][ci, 1]).any()
 
 
 def test_predict_at_shape_seed_and_variance(fitted):
@@ -459,7 +863,7 @@ def test_log_lik_matches_independent_recomputation(fitted):
     cutoff = int(c["cal_idx"][obs].max())  # the as_of diagonal
     assert cutoff == 6
     xt = torch.tensor(x_norm[None], dtype=torch.float32)
-    ctx = torch.tensor(obs[None])
+    ctx = torch.tensor(c["x_obs"][ci][None])  # per-channel; channel 0 IS obs here
     lob = torch.tensor([c["lob_idx"][ci]], dtype=torch.long)
     prem_feat = torch.tensor(
         [(c["log_premium"][ci] - norm["prem_mean"]) / norm["prem_std"]], dtype=torch.float32

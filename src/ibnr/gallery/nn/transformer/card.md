@@ -16,8 +16,22 @@ the cross-cohort normalizer. Inputs may carry extra channels
 (`feature_fields`, e.g. paid alongside reported). Increments require an
 immediate-predecessor observation; the anchor for ultimates is each origin's
 latest observed *cumulative* value. Cohorts with unusable premium are dropped
-and reported. Per-(channel, dev) standardization statistics are computed from
-training-context cells only (never the validation diagonals). Devs with
+and reported.
+
+**Observedness is per channel** (`x_obs`), and so is the context the network
+conditions on. A feature can be missing where the target is observed, and
+observed where the target is missing; the contract's zero at an unusable cell
+is padding, and the channel's own flag is what says so. Before this the single
+per-cell flag was the target's, so a feature hole was read as an observed zero
+increment - and every cell the rollout promoted claimed observed feature values
+it never had (see "Prediction"). A field named in `level_fields` is carried
+UNDIFFERENCED - an eval-date snapshot such as `case_reserve`, whose difference
+is the case movement while the informative quantity is the outstanding level;
+it is a subset of `feature_fields` (it declares a channel's kind, it does not
+add one) and `nn_data` owns the semantics and the refusals.
+
+Per-(channel, dev) standardization statistics are computed from that channel's
+own training-context cells only (never the validation diagonals). Devs with
 fewer than two context values - in practice the deepest dev, observed only
 on the held-out diagonal - are **pinned**: their standardized value is 0 by
 definition (mean from all observed cells at that dev, std 1), and rollout
@@ -28,10 +42,14 @@ tails (worst for PPA in the first backtest).
 
 ## Network
 
-Token = `Linear([channel values * flag, flag])` + origin embedding + dev
-embedding + **relative calendar embedding** (distance past the conditioning
-cutoff, clamped to [0, n_d]) + broadcast conditioning (LOB embedding +
-normalized log premium). Encoder: 2 pre-LN transformer layers, d_model 64,
+Token = `Linear([channel values * channel flags, channel flags])` + origin
+embedding + dev embedding + **relative calendar embedding** (distance past the
+conditioning cutoff, clamped to [0, n_d]) + broadcast conditioning (LOB
+embedding + normalized log premium). One flag per channel, so a value is never
+read without the flag that says whether it is real; with a single channel (the
+default, no `feature_fields`) that is the same projection over the same numbers
+as the earlier per-cell flag, which is why the sizes below are unchanged.
+Encoder: 2 pre-LN transformer layers, d_model 64,
 4 heads, FFN 128, dropout 0.15, GELU. Head: mixture density network, K=3
 Gaussians per cell on the normalized incremental loss-ratio scale.
 
@@ -101,7 +119,9 @@ documented opt-in lever, not the headline. Compare arm:
   cutoff uniformly in `[min_cutoff, val_cutoff - 1]`; condition on the
   sub-triangle, score NLL on later observed training cells. Every triangle
   yields ~5 distinct "predict the future diagonals" tasks per epoch - the
-  main small-data multiplier.
+  main small-data multiplier. The cutoff gates every channel, so training
+  teaches the network exactly the conditioning the rollout and the held-out
+  path give it: a feature past the cutoff is masked, not read.
 - **Validation by eval_date:** the trailing `val_diagonals=1` observed
   calendar diagonal of the *training window* is excluded from all training
   contexts and targets; early stopping (patience 25) on its NLL, best
@@ -121,6 +141,13 @@ sampled future increments. Draws are pooled over the ensemble members
 (default 1000 total). `predict(segment=...)` slices the cached global
 rollout - fit once, score every company.
 
+Promotion raises **the target channel's flag only**. The sampled value is a
+target increment; the feature channels at that cell are genuinely unobserved,
+so their flags stay off and the network sees a future cell the way it was
+trained to - target known, features absent. Raising the whole cell (the
+pre-0.5.4 per-cell flag) handed the network the contract's padding zero as an
+observed feature increment at every cell the rollout filled.
+
 ## Held-out scoring (milestone 6)
 
 The entry mixes in `PooledMDNHeldout` (`gallery/nn/_heldout.py`), which holds
@@ -139,6 +166,9 @@ training-overlap guards apply unchanged. The entry-level
 `log_lik_at`/`predict_at` resolve the cohort from the cells' own segment
 values and delegate.
 
+- **Conditioning: everything the cohort held at as_of, per channel.**
+  `_heldout_inputs` hands the network the contract's `x_obs` for that cohort,
+  so each channel conditions on its own observed cells exactly as in training.
 - **Draw scale: `incremental`.** A draw is one forward pass per ensemble
   member at cutoff = the cohort's as_of diagonal (the held-out diagonal sits
   at distance 1, the most-supervised relative-calendar position - no rollout),
@@ -187,6 +217,15 @@ Global fit / per-cohort predict inverts the meyers_ccl loop:
 
 ```python
 entry = gallery.fit("nn_transformer", tri, as_of="1997-12-31")
+# or with case reserves as an undifferenced level channel beside paid loss:
+entry = gallery.fit(
+    "nn_transformer",
+    tri,
+    loss_field="paid_loss",
+    feature_fields=("case_reserve",),
+    level_fields=("case_reserve",),
+    as_of="1997-12-31",
+)
 pred = entry.predict(segment={"company_code": code, "line_of_business": line})
 realized = entry.realized_ultimates(tri, segment={...})
 pred.summary(observed=realized)  # same Meyers-style table as every entry
@@ -197,8 +236,19 @@ pred.summary(observed=realized)  # same Meyers-style table as every entry
 - Small-data regime is the central risk; mitigations: tiny network, dropout,
   weight decay, cutoff augmentation, eval_date early stopping, ensembling,
   no company embedding. First lever if validation NLL diverges: d_model 32.
-- Feature channels are not simulated during rollout - future cells feed back
-  the target channel only.
+- **Feature channels are not simulated during rollout, and the rollout now
+  says so rather than faking it.** Only the target channel is sampled and fed
+  back, so at each successive future diagonal the model conditions on one more
+  observed target cell and on no new feature values at all: the deeper the
+  rollout runs, the fewer of its inputs are features. That is a real
+  limitation - a joint model that simulates every channel forward is a
+  different entry - but it is now the honest version of one. Before, the
+  promoted cell claimed observed features whose value was contract padding, so
+  the deep-lag cells were conditioned on fabricated zeros rather than on
+  nothing.
+- `level_fields` changes what a channel MEANS, not how it is scored: a level
+  channel is still divided by premium and standardized per (channel, dev), and
+  channel 0 - the emergence being predicted - cannot be one.
 - Origins with no observed cells get pure-extrapolation ultimates (anchor 0);
   origins without premium produce NaN ultimates.
 - Total-ultimate calibration may still be too narrow (per-cell MDN +

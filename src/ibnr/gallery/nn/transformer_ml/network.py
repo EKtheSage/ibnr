@@ -38,12 +38,19 @@ LOG_2PI = math.log(2.0 * math.pi)
 class TriangleTransformerML(nn.Module):
     """Encoder over the full (line, origin, dev) grid of one company.
 
-    Token = [channel values * context flag, context flag] projected to
-    d_model, plus line / origin / dev embeddings, a relative calendar
-    embedding (distance past the conditioning cutoff - supervised by the
-    cutoff augmentation, unlike absolute positions), and per-line premium
+    Token = [channel values * per-channel context flags, those flags]
+    projected to d_model, plus line / origin / dev embeddings, a relative
+    calendar embedding (distance past the conditioning cutoff - supervised by
+    the cutoff augmentation, unlike absolute positions), and per-line premium
     conditioning. Absent lines are excluded from attention via the padding
     mask and from every loss via the masks the entry passes in.
+
+    The context mask is PER CHANNEL - one flag per (line, channel, cell), not
+    one per cell - so a value is never consumed without its own channel's
+    flag. A feature can be missing where the target is observed, and a cell
+    the rollout has just sampled carries a target value with no feature value
+    at all; a single per-cell flag turned the contract's padding zero into an
+    observed zero increment on every feature channel there.
     """
 
     def __init__(
@@ -61,8 +68,10 @@ class TriangleTransformerML(nn.Module):
         self.cfg = cfg
         self.n_l, self.n_w, self.n_d = n_lines, n_w, n_d
         d = cfg.d_model
-        # value_proj takes [F normalized channel values * context flag, flag] -> d
-        self.value_proj = nn.Linear(n_features + 1, d)
+        # value_proj takes [F gated channel values, F channel flags] -> d. At
+        # F = 1 that is the same two inputs (and the same layer) as the single
+        # per-cell flag this replaced.
+        self.value_proj = nn.Linear(2 * n_features, d)
         # additive positional/identity embeddings, one per token (all shape d):
         self.line_emb = nn.Embedding(n_lines, d)  # which line of business
         self.origin_emb = nn.Embedding(n_w, d)  # accident/origin period
@@ -119,7 +128,7 @@ class TriangleTransformerML(nn.Module):
     def encode(
         self,
         x: torch.Tensor,  # (B, L, F, W, D) normalized values
-        context_mask: torch.Tensor,  # (B, L, W, D) bool
+        context_mask: torch.Tensor,  # (B, L, F, W, D) bool, per channel
         line_mask: torch.Tensor,  # (B, L) bool
         log_premium: torch.Tensor,  # (B, L) normalized (0 where absent)
         cutoff: torch.Tensor,  # (B,) long, 1-based conditioning diagonal
@@ -127,15 +136,24 @@ class TriangleTransformerML(nn.Module):
         """Run the encoder; return token states h: (B, L, W, D, d_model).
 
         The (L, W, D) grid is flattened to a length-T sequence (T = L*W*D),
-        one token per cell. Off-context cells are zeroed and flagged so the
-        model can tell a masked-out cell from a genuine zero increment.
+        one token per cell. Off-context values are zeroed and flagged CHANNEL
+        BY CHANNEL, so the model can tell a masked-out channel from a genuine
+        zero increment and a cell can be conditioned on for one channel while
+        another channel of the same cell is unobserved.
         """
         b = x.shape[0]
-        # zero the channel values wherever the cell is not in context, and
-        # carry the flag itself as an extra channel
-        flag = context_mask.unsqueeze(2).to(x.dtype)  # (B, L, 1, W, D)
+        # a mask of x's own shape, so nothing here can broadcast a channel's
+        # flag onto a channel it does not describe
+        if context_mask.shape != x.shape:
+            raise ValueError(
+                f"context_mask has shape {tuple(context_mask.shape)}; expected x's own "
+                f"{tuple(x.shape)} - the mask is per (line, channel, cell), not per cell"
+            )
+        # zero each channel's value wherever THAT channel is not in context,
+        # and carry the flags themselves as F further inputs
+        flag = context_mask.to(x.dtype)  # (B, L, F, W, D)
         vals = (x * flag).permute(0, 1, 3, 4, 2).reshape(b, -1, x.shape[2])  # (B, T, F)
-        flags = flag.permute(0, 1, 3, 4, 2).reshape(b, -1, 1)  # (B, T, 1)
+        flags = flag.permute(0, 1, 3, 4, 2).reshape(b, -1, x.shape[2])  # (B, T, F)
         tok = self.value_proj(torch.cat([vals, flags], dim=-1))  # (B, T, d)
         # distance of each token's diagonal past the conditioning cutoff
         dist = (self.cal_idx[None, :] - cutoff[:, None]).clamp(0, self.n_d)  # (B, T)

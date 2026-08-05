@@ -501,7 +501,9 @@ def test_log_lik_matches_independent_recomputation(fitted):
     cutoff = int(c["cal_idx"][obs].max())  # the as_of diagonal
     assert cutoff == 6
     xt = torch.tensor(x_norm[None], dtype=torch.float32)
-    ctx = torch.tensor(obs[None])
+    # the entry conditions on per-channel observedness, so the independent
+    # recomputation must hand the network the same (F, W, D) mask it gets
+    ctx = torch.tensor(c["x_obs"][ci][None])
     lob = torch.tensor([c["lob_idx"][ci]], dtype=torch.long)
     prem_feat = torch.tensor(
         [(c["log_premium"][ci] - norm["prem_mean"]) / norm["prem_std"]], dtype=torch.float32

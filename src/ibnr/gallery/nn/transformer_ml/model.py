@@ -79,6 +79,7 @@ class NNTransformerML(GalleryEntry):
         *,
         loss_field: str = "reported_loss",
         feature_fields: tuple[str, ...] = (),
+        level_fields: tuple[str, ...] = (),
         premium_field: str = "earned_premium",
         as_of: dt.date | str | None = None,
         config: TransformerMLConfig | None = None,
@@ -87,7 +88,15 @@ class NNTransformerML(GalleryEntry):
         show_progress: bool = False,
     ) -> NNTransformerML:
         """Pooled fit across every company in the triangle; each company's
-        lines are one joint training example."""
+        lines are one joint training example.
+
+        ``feature_fields`` names further triangle fields carried as input
+        channels beside the target (channel 0); ``level_fields`` declares
+        which of them are eval-date SNAPSHOTS carried undifferenced -
+        ``case_reserve`` is the motivating one, whose difference is the case
+        movement while the informative quantity is the outstanding level.
+        Both are the contract's vocabulary; see
+        ``kernels.nn_contract.nn_data`` for the semantics and the refusals."""
         import torch
 
         from ibnr.gallery.nn.transformer import network as net1
@@ -102,6 +111,7 @@ class NNTransformerML(GalleryEntry):
             train,
             loss_field=loss_field,
             feature_fields=feature_fields,
+            level_fields=level_fields,
             premium_field=premium_field,
         )
         device_str = device or "cpu"
@@ -114,19 +124,27 @@ class NNTransformerML(GalleryEntry):
         obs_any = c["obs_mask"].any(axis=1)  # (n_c, n_w, n_d): any line observed
         _, _, val_cutoff = splits(obs_any, c["cal_idx"], cfg.val_diagonals)
         cal = c["cal_idx"]  # (n_w, n_d) 1-based diagonal index
-        ctx_elig = c["obs_mask"] & (cal[None, None] <= val_cutoff)  # cells trainable as context
+        ctx_elig = c["obs_mask"] & (cal[None, None] <= val_cutoff)  # target cells trainable
         val_tgt = c["obs_mask"] & (cal[None, None] > val_cutoff)  # held-out validation targets
+        # what the network CONDITIONS on: each channel's own usable values under
+        # the same calendar constraint the target context uses. The target
+        # vocabulary above stays target-only - it selects prediction targets,
+        # which are always channel 0.
+        chan_elig = c["x_obs"] & (cal[None, None, None] <= val_cutoff)  # (n_c, L, F, W, D)
 
         # pinned per-(line, channel, dev) standardization - run the single-line
         # helper once per line so the rules are identical by construction. A dev
         # with <2 context values is "pinned": standardized value forced to 0 and
         # rollout draws there replaced by the pooled dev mean (v2 fix, see card).
+        # Stats come from each channel's OWN observed cells, so a feature that is
+        # missing where the target is observed is not standardized against the
+        # contract's padding zeros.
         mean = np.zeros((n_l, n_f, n_d))
         std = np.ones((n_l, n_f, n_d))
         pinned = np.zeros((n_l, n_f, n_d), dtype=bool)
         for li in range(n_l):
             mean[li], std[li], pinned[li] = norm_stats(
-                c["x"][:, li], ctx_elig[:, li], c["obs_mask"][:, li]
+                c["x"][:, li], chan_elig[:, li], c["x_obs"][:, li]
             )
         # normalize log premium over the lines actually present (absent = 0 later)
         lp = c["log_premium"][c["line_mask"]]
@@ -150,9 +168,10 @@ class NNTransformerML(GalleryEntry):
         dev = torch.device(device_str)
         xt = torch.tensor(x_norm, dtype=torch.float32, device=dev)  # (n_c, L, F, W, D)
         yt = xt[:, :, 0]  # (n_c, L, W, D) target channel
-        obs_t = torch.tensor(c["obs_mask"], device=dev)
+        xobs_t = torch.tensor(c["x_obs"], device=dev)  # (n_c, L, F, W, D)
         cal_t = torch.tensor(cal, device=dev)
         ctx_elig_t = torch.tensor(ctx_elig, device=dev)
+        chan_elig_t = torch.tensor(chan_elig, device=dev)
         val_tgt_t = torch.tensor(val_tgt, device=dev)
         lm_t = torch.tensor(c["line_mask"], device=dev)
         prem_t = torch.tensor(prem_norm, dtype=torch.float32, device=dev)
@@ -178,8 +197,10 @@ class NNTransformerML(GalleryEntry):
         def train_loss(model, idx, cutoffs):
             # cells on/before the augmented cutoff are context, later observed
             # cells are the prediction targets - this teaches the model to
-            # forecast future diagonals
-            ctx = obs_t[idx] & (cal_t[None, None] <= cutoffs[:, None, None, None])
+            # forecast future diagonals. The context is per channel and the
+            # targets are channel 0's, under one calendar gate: a feature past
+            # the augmented cutoff is masked exactly as the rollout masks it.
+            ctx = xobs_t[idx] & (cal_t[None, None, None] <= cutoffs[:, None, None, None, None])
             tgt = ctx_elig_t[idx] & (cal_t[None, None] > cutoffs[:, None, None, None])
             if not bool(tgt.any()):
                 return None
@@ -188,7 +209,7 @@ class NNTransformerML(GalleryEntry):
         def val_loss(model):
             # condition on all trainable cells, score the held-out trailing
             # diagonals at the fixed val_cutoff
-            return float(nll(model, xt, ctx_elig_t, lm_t, prem_t, val_cut_t, yt, val_tgt_t))
+            return float(nll(model, xt, chan_elig_t, lm_t, prem_t, val_cut_t, yt, val_tgt_t))
 
         # deep ensemble via the shared loop (gallery/nn/_training.py):
         # cfg.ensemble_size independently-seeded fits; their draws are pooled
@@ -325,6 +346,10 @@ class NNTransformerML(GalleryEntry):
         back before the next - cross-line dependence via conditioning.
         "joint": one forward per diagonal; every (origin, dev) cell-group's
         line vector is drawn jointly from the multivariate mixture.
+
+        Either way only the TARGET channel is fed back: feature channels are
+        not simulated forward, so the rollout conditions on progressively
+        fewer observed channels as it goes deeper (see card.md).
         """
         import torch
 
@@ -357,7 +382,7 @@ class NNTransformerML(GalleryEntry):
             0.0,
         )
         xt = torch.tensor(x_norm, dtype=torch.float32, device=dev)
-        obs_t = torch.tensor(c["obs_mask"], device=dev)
+        xobs_t = torch.tensor(c["x_obs"], device=dev)  # (n_c, L, F, W, D)
         fut_t = torch.tensor(future, device=dev)
         cal_t = torch.tensor(c["cal_idx"], device=dev)
         lm_t = torch.tensor(c["line_mask"], device=dev)
@@ -387,13 +412,15 @@ class NNTransformerML(GalleryEntry):
                 # replicate each company `chunk` times -> batch B = n_c * chunk,
                 # one independent posterior draw per replica
                 xb = xt.repeat_interleave(chunk, dim=0).clone()
-                ctx = obs_t.repeat_interleave(chunk, dim=0).clone()
+                ctx = xobs_t.repeat_interleave(chunk, dim=0).clone()  # (B, L, F, W, D)
                 futb = fut_t.repeat_interleave(chunk, dim=0)
                 lmb = lm_t.repeat_interleave(chunk, dim=0)
                 premb = prem_t.repeat_interleave(chunk, dim=0)
                 with torch.no_grad():
-                    # fill one calendar diagonal at a time; sampled cells become
-                    # context (ctx) before the next diagonal is encoded
+                    # fill one calendar diagonal at a time; a sampled cell's
+                    # TARGET channel becomes context before the next diagonal is
+                    # encoded - its feature channels stay unobserved, since
+                    # nothing simulates them forward
                     for lv in cal_levels:
                         cells = futb & (cal_t[None, None] == lv)  # (B, L, W, D) cells on this diag
                         if not bool(cells.any()):
@@ -418,7 +445,11 @@ class NNTransformerML(GalleryEntry):
                                 # pinned devs are unsupervised -> force pooled mean (0 std)
                                 sample = sample.masked_fill(pin_t[None, :, None, :], 0.0)
                                 xb[:, li, 0][cells_l] = sample[:, li][cells_l]
-                                ctx[:, li] |= cells_l
+                                # promote the TARGET channel only: next year's
+                                # features are genuinely unobserved, and flagging
+                                # them would present the contract's padding zero
+                                # as an observed value
+                                ctx[:, li, 0][cells_l] = True
                         else:
                             # explicit dependence: one forward draws every cell-
                             # group's whole line vector jointly, so all lines of
@@ -428,7 +459,8 @@ class NNTransformerML(GalleryEntry):
                             sample = sample.permute(0, 3, 1, 2)  # (B, W, D, L) -> (B, L, W, D)
                             sample = sample.masked_fill(pin_t[None, :, None, :], 0.0)
                             xb[:, :, 0][cells] = sample[cells]
-                            ctx = ctx | cells
+                            # target channel only, as in the "ar" branch
+                            ctx[:, :, 0][cells] = True
                 # denormalize the target channel back to incremental loss ratios
                 ratios = (
                     xb[:, :, 0].cpu().numpy() * std0[None, :, None, :] + mean0[None, :, None, :]

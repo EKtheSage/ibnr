@@ -32,13 +32,19 @@ RAW_P_INIT = math.log(math.expm1(1.0))
 class TriangleTransformer(nn.Module):
     """Encoder over the full origin x dev grid of one cohort.
 
-    Every cell is a token: [channel values * context flag, context flag]
+    Every cell is a token: [channel values * channel flags, channel flags]
     projected to d_model, plus learned origin / dev embeddings, a *relative*
     calendar embedding (distance past the conditioning cutoff, clamped to
     [0, n_d]) and broadcast cohort conditioning (LOB embedding + normalized
     log premium). The MDN head reads a distribution over the *normalized
     incremental loss ratio* of every cell; the loss is evaluated only where
     the target mask says so.
+
+    The context flags are PER CHANNEL: a channel's value is only ever read
+    behind its own flag, so a feature missing where the target is observed is
+    masked rather than read as the contract's padding zero. With one channel
+    (no ``feature_fields``) the per-channel and per-cell forms are the same
+    layer over the same numbers.
 
     Why relative, not absolute, calendar position: forecasting happens on
     calendar diagonals beyond the training window, where an absolute learned
@@ -57,10 +63,11 @@ class TriangleTransformer(nn.Module):
         # lags; the grid has n_w * n_d cells and each cell is one token.
         self.n_w, self.n_d = n_w, n_d
         d = cfg.d_model
-        # value_proj: per-cell [channel values, context flag] -> d_model. The
-        # +1 input dim is the context flag itself, fed as a feature so the token
-        # encodes "this cell is/ isn't conditioning data", not just its value.
-        self.value_proj = nn.Linear(n_features + 1, d)
+        # value_proj: per-cell [masked channel values, channel flags] -> d_model.
+        # 2F inputs, one flag per channel, fed as features so the token encodes
+        # "this channel is/ isn't conditioning data here", not just its value.
+        # At F = 1 this is the same Linear(2, d) the single per-cell flag built.
+        self.value_proj = nn.Linear(2 * n_features, d)
         # learned positional structure: an origin (row) and a dev-lag (column)
         # embedding placed additively on every token.
         self.origin_emb = nn.Embedding(n_w, d)
@@ -114,7 +121,7 @@ class TriangleTransformer(nn.Module):
     def forward(
         self,
         x: torch.Tensor,  # (B, F, W, D) normalized values (junk allowed off-context)
-        context_mask: torch.Tensor,  # (B, W, D) bool
+        context_mask: torch.Tensor,  # (B, F, W, D) bool - PER CHANNEL
         lob_idx: torch.Tensor,  # (B,) long
         log_premium: torch.Tensor,  # (B,) normalized
         cutoff: torch.Tensor,  # (B,) long - 1-based conditioning diagonal
@@ -124,17 +131,26 @@ class TriangleTransformer(nn.Module):
         B = cohorts in the batch, F = channels, W = origins, D = dev lags,
         T = W*D tokens, K = mixture components. Returns log_pi, mu, sigma each
         (B, W, D, K) - a K-Gaussian mixture over the normalized incremental
-        loss ratio of every cell. Only ``context_mask``-true cells contribute
-        their values; the rest are zeroed, so their tokens carry position +
-        conditioning only (the model must predict them, not read them)."""
+        loss ratio of every cell. Only ``context_mask``-true (channel, cell)
+        pairs contribute their values; the rest are zeroed, so a token carries
+        position + conditioning plus whichever of its channels are conditioning
+        data (the model must predict the rest, not read them)."""
         b = x.shape[0]
-        flag = context_mask.unsqueeze(1).to(x.dtype)  # (B, 1, W, D)
-        # zero out non-context values, then flatten grid -> token sequence:
-        # (B, F, W, D) -> (B, F, T) -> (B, T, F). Row-major over (W, D) so token
-        # order matches the w_idx/d_idx/cal_idx buffers built in __init__.
+        if context_mask.dim() != x.dim():
+            raise ValueError(
+                f"context_mask has {context_mask.dim()} dimensions; it is PER CHANNEL, so "
+                f"it must be (B, F, W, D) = {tuple(x.shape)} like x. A (B, W, D) per-cell "
+                "mask is the pre-0.5.4 form, under which a feature channel was conditioned "
+                "on wherever the TARGET was observed - reading contract padding as a value"
+            )
+        flag = context_mask.to(x.dtype)  # (B, F, W, D)
+        # zero out each channel's non-context values, then flatten grid -> token
+        # sequence: (B, F, W, D) -> (B, F, T) -> (B, T, F). Row-major over (W, D)
+        # so token order matches the w_idx/d_idx/cal_idx buffers built in __init__.
         vals = (x * flag).flatten(2).transpose(1, 2)  # (B, T, F)
-        # append the context flag as an extra input feature -> (B, T, F+1),
-        # projected to (B, T, d_model).
+        # append every channel's own flag -> (B, T, 2F), projected to
+        # (B, T, d_model). A value never travels without the flag that says
+        # whether it is real.
         tok = self.value_proj(torch.cat([vals, flag.flatten(2).transpose(1, 2)], dim=-1))
         # relative calendar position of each token: diagonals past the cutoff,
         # clamped to [0, n_d]. cutoff is the last conditioning diagonal.

@@ -13,13 +13,17 @@ share one MDN so a leaderboard difference is attributable to the encoder.
 Leakage discipline, spelled out because a conv body makes it easy to get
 wrong: convolutions see the WHOLE grid - unlike an attention mask there is no
 architectural way to hide a cell from the receptive field. What protects
-against conditioning on the future is the INPUT construction: value channels
-are zeroed outside the context mask, and the mask itself rides along as an
-explicit input channel so the network can tell "zero because padding/future"
-from "zero because a zero increment was observed" (the contract's zeros are
-padding, never data - every consumer gates on the mask). The no-leak test in
-tests/test_resnet.py poisons a beyond-cutoff cell and asserts bit-identical
-outputs; it is the load-bearing test for this body.
+against conditioning on the future is the INPUT construction: each value
+channel is zeroed outside ITS OWN context mask, and the F masks ride along as
+explicit input channels so the network can tell "zero because
+padding/future/unobserved" from "zero because a zero increment was observed"
+(the contract's zeros are padding, never data - every consumer gates on
+``x_obs``). The mask is per channel and not per cell because a feature can be
+missing where the target is observed, and a single flag would present the
+contract's padding as an observed zero. The no-leak tests in
+tests/test_resnet.py poison a beyond-cutoff cell and a masked-off feature
+channel and assert bit-identical outputs; they are the load-bearing tests for
+this body.
 
 Model writeup: card.md. Data contract feeding it: kernels/nn_contract.py."""
 
@@ -65,11 +69,13 @@ class TriangleResNet(nn.Module):
 
     Input is an image-like stack of per-cell channels:
 
-    - the F standardized value channels, ZEROED outside the context mask
-      (the model must predict non-context cells, not read them);
-    - the context mask itself as an explicit 0/1 channel - the only way the
-      network can distinguish an observed zero from padding, since the
-      contract's zeros are never data;
+    - the F standardized value channels, each ZEROED outside ITS OWN context
+      mask (the model must predict non-context cells, not read them);
+    - those F masks as explicit 0/1 channels - the only way the network can
+      distinguish an observed zero from padding, since the contract's zeros
+      are never data. One per value channel, because observedness is per
+      channel (``nn_contract``'s ``x_obs``): a feature missing at a cell whose
+      target is observed must not be read as a feature of zero;
     - the RELATIVE calendar channel: distance past the conditioning cutoff,
       clamped to [0, n_d] exactly like the transformer's dist_emb, then
       scaled by 1/n_d. Relative, never absolute: forecast diagonals lie past
@@ -99,9 +105,10 @@ class TriangleResNet(nn.Module):
         # broadcast onto every cell. No company embedding on purpose (~600
         # companies x ~55 cells would just memorize; card.md).
         self.lob_emb = nn.Embedding(n_lob, cfg.lob_embedding_dim)
-        # input stack: F values + context flag + relative-calendar channel
-        # + lob embedding + log premium, all as per-cell channels
-        in_channels = n_features + 1 + 1 + cfg.lob_embedding_dim + 1
+        # input stack: F values + F context flags (one per value channel) +
+        # relative-calendar channel + lob embedding + log premium, all as
+        # per-cell channels. At F = 1 this is the width the per-cell flag gave.
+        in_channels = 2 * n_features + 1 + cfg.lob_embedding_dim + 1
         self.stem = nn.Conv2d(in_channels, cfg.channels, kernel_size=3, padding=1)
         # channel dropout (whole feature maps), the conv analogue of the
         # transformer's token dropout
@@ -123,7 +130,7 @@ class TriangleResNet(nn.Module):
     def forward(
         self,
         x: torch.Tensor,  # (B, F, W, D) normalized values (junk allowed off-context)
-        context_mask: torch.Tensor,  # (B, W, D) bool
+        context_mask: torch.Tensor,  # (B, F, W, D) bool - per channel
         lob_idx: torch.Tensor,  # (B,) long
         log_premium: torch.Tensor,  # (B,) normalized
         cutoff: torch.Tensor,  # (B,) long - 1-based conditioning diagonal
@@ -133,16 +140,17 @@ class TriangleResNet(nn.Module):
         B = cohorts in the batch, F = channels, W = origins, D = dev lags,
         K = mixture components. Returns log_pi, mu, sigma each (B, W, D, K) -
         a K-Gaussian mixture over the normalized incremental loss ratio of
-        every cell. Only ``context_mask``-true cells contribute their values;
-        the rest are zeroed BEFORE the first convolution, so no receptive
-        field ever touches a non-context value (the model must predict those
-        cells, not read them)."""
+        every cell. Only ``context_mask``-true cells contribute their values,
+        CHANNEL BY CHANNEL; the rest are zeroed BEFORE the first convolution,
+        so no receptive field ever touches a value the mask does not declare
+        observed (the model must predict those cells, not read them)."""
         b = x.shape[0]
-        flag = context_mask.unsqueeze(1).to(x.dtype)  # (B, 1, W, D)
+        flags = context_mask.to(x.dtype)  # (B, F, W, D)
         # zero out non-context values: the ONLY thing standing between a conv
         # body and reading the future (see the module docstring). The flag
-        # channel rides along so "zeroed" is distinguishable from "zero".
-        vals = x * flag  # (B, F, W, D)
+        # channels ride along so "zeroed" is distinguishable from "zero", one
+        # per value channel so an absent feature is not an observed zero.
+        vals = x * flags  # (B, F, W, D)
         # relative calendar position of each cell: diagonals past the cutoff,
         # clamped to [0, n_d] (the transformer's dist_emb clamp), scaled to
         # [0, 1] so the channel is on the same order as the standardized values.
@@ -151,7 +159,7 @@ class TriangleResNet(nn.Module):
         # per-cohort conditioning (LOB + size), broadcast onto every cell
         cond = torch.cat([self.lob_emb(lob_idx), log_premium.unsqueeze(-1)], dim=-1)  # (B, E+1)
         cond_ch = cond[:, :, None, None].expand(-1, -1, self.n_w, self.n_d)
-        inp = torch.cat([vals, flag, dist_ch, cond_ch], dim=1)  # (B, F+E+3, W, D)
+        inp = torch.cat([vals, flags, dist_ch, cond_ch], dim=1)  # (B, 2F+E+2, W, D)
         h = self.drop(self.stem(inp))  # (B, channels, W, D)
         for block in self.blocks:
             h = block(h)  # residual local mixing; +2 cells of receptive field per conv

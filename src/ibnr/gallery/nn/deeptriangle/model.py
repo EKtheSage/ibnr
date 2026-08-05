@@ -85,6 +85,7 @@ class DeepTriangle(GalleryEntry, PooledMDNHeldout):
         *,
         loss_field: str = "paid_loss",
         feature_fields: tuple[str, ...] = ("reported_loss",),
+        level_fields: tuple[str, ...] = (),
         premium_field: str = "earned_premium",
         as_of: dt.date | str | None = None,
         config: DeepTriangleConfig | None = None,
@@ -101,7 +102,14 @@ class DeepTriangle(GalleryEntry, PooledMDNHeldout):
         derived as ``feature_fields[0] - loss_field`` on the ratio scale
         (OS = reported - paid, so incremental OS = incremental reported -
         incremental paid). With no feature fields, or ``config.aux_weight = 0``,
-        the entry trains single-task."""
+        the entry trains single-task.
+
+        ``level_fields`` names feature channels carried UNDIFFERENCED - an
+        eval-date snapshot such as ``case_reserve``, whose difference is the
+        case movement while the informative quantity is the outstanding level.
+        It must name fields already in ``feature_fields`` (it declares a
+        channel's kind, it does not add one); ``kernels.nn_contract.nn_data``
+        owns the semantics and the refusals."""
         import torch
 
         from ibnr.gallery.nn.deeptriangle import network as net
@@ -120,6 +128,7 @@ class DeepTriangle(GalleryEntry, PooledMDNHeldout):
             train,
             loss_field=loss_field,
             feature_fields=feature_fields,
+            level_fields=level_fields,
             premium_field=premium_field,
         )
         device_str = device or "cpu"
@@ -130,10 +139,13 @@ class DeepTriangle(GalleryEntry, PooledMDNHeldout):
         # eval_date validation split + per-(channel, dev) normalization, both
         # computed from training-context cells only so the held-out diagonal
         # never leaks into the split, the normalizer, or the premium stats.
-        context_elig, val_target, val_cutoff = splits(
-            c["obs_mask"], c["cal_idx"], cfg.val_diagonals
-        )
-        mean, std, pinned = norm_stats(c["x"], context_elig, c["obs_mask"])
+        target_elig, val_target, val_cutoff = splits(c["obs_mask"], c["cal_idx"], cfg.val_diagonals)
+        # the CONTEXT is per channel: every channel gets the target's calendar
+        # constraint but its OWN observedness, so a feature is conditioned on
+        # (and standardized) only where it has a usable value. Channel 0 of
+        # this IS `target_elig`, so a single-channel fit is unchanged.
+        context_elig = c["x_obs"] & (c["cal_idx"] <= val_cutoff)[None, None]  # (n_c,n_f,n_w,n_d)
+        mean, std, pinned = norm_stats(c["x"], context_elig, c["x_obs"])
         prem_mean = float(np.mean(c["log_premium"]))
         prem_std = float(np.std(c["log_premium"]))
         if prem_std < 1e-8:
@@ -148,15 +160,16 @@ class DeepTriangle(GalleryEntry, PooledMDNHeldout):
 
         # auxiliary task: incremental OUTSTANDING ratio = reported - paid on
         # the ratio scale, standardized per dev with the same pinning rule as
-        # the target. Its increments are usable exactly where the target's are
-        # (obs_mask); where the feature channel is padding the derived OS is
-        # distorted - disclosed in card.md, and moot on the mart, where paid
-        # and reported are booked on the same cells.
+        # the target. A DIFFERENCE of two channels is real only where both are:
+        # at a cell where the feature is padding, `x[:, 1] - x[:, 0]` reads the
+        # padding zero as a reported value and the derived OS is fabricated,
+        # so the aux target is masked there rather than trained on.
         has_aux = n_f >= 2 and cfg.aux_weight > 0
         if has_aux:
             os_ratio = c["x"][:, 1] - c["x"][:, 0]  # (n_c, n_w, n_d)
+            aux_obs = c["x_obs"][:, 1] & c["x_obs"][:, 0]  # (n_c, n_w, n_d)
             aux_mean, aux_std, aux_pinned = norm_stats(
-                os_ratio[:, None], context_elig, c["obs_mask"]
+                os_ratio[:, None], aux_obs & (c["cal_idx"] <= val_cutoff), aux_obs
             )
             norm["aux_mean"] = aux_mean[0]
             norm["aux_std"] = aux_std[0]
@@ -171,9 +184,10 @@ class DeepTriangle(GalleryEntry, PooledMDNHeldout):
         dev = torch.device(device_str)
         xt = torch.tensor(x_norm, dtype=torch.float32, device=dev)  # (n_c, n_f, n_w, n_d)
         yt = xt[:, 0]  # (n_c, n_w, n_d) - target channel, normalized (channel 0)
-        obs_t = torch.tensor(c["obs_mask"], device=dev)
+        x_obs_t = torch.tensor(c["x_obs"], device=dev)  # (n_c, n_f, n_w, n_d)
         cal_t = torch.tensor(c["cal_idx"], device=dev)
-        ctx_elig_t = torch.tensor(context_elig, device=dev)
+        ctx_elig_t = torch.tensor(context_elig, device=dev)  # (n_c, n_f, n_w, n_d)
+        tgt_elig_t = torch.tensor(target_elig, device=dev)  # (n_c, n_w, n_d)
         val_tgt_t = torch.tensor(val_target, device=dev)
         lob_t = torch.tensor(c["lob_idx"], dtype=torch.long, device=dev)
         comp_t = torch.tensor(c["company_idx"], dtype=torch.long, device=dev)
@@ -184,6 +198,7 @@ class DeepTriangle(GalleryEntry, PooledMDNHeldout):
             os_norm = (os_ratio - norm["aux_mean"][None, None, :]) / norm["aux_std"][None, None, :]
             os_norm = np.where(norm["aux_pinned"][None, None, :], 0.0, os_norm)
             y_aux_t = torch.tensor(os_norm, dtype=torch.float32, device=dev)  # (n_c, n_w, n_d)
+            aux_obs_t = torch.tensor(aux_obs, device=dev)  # (n_c, n_w, n_d)
 
         # augmented cutoffs are drawn from [min_cutoff, val_cutoff); clamp the
         # floor so at least one earlier diagonal remains to condition on.
@@ -201,16 +216,22 @@ class DeepTriangle(GalleryEntry, PooledMDNHeldout):
 
         def train_loss(model, idx, cutoffs):
             # condition on cells on/before the augmented cutoff, score the
-            # observed training cells strictly after it (card.md "Training")
-            ctx = obs_t[idx] & (cal_t[None] <= cutoffs[:, None, None])  # (B, W, D)
+            # observed training cells strictly after it (card.md "Training").
+            # The cutoff gates every channel; each channel's own observedness
+            # decides the rest, so the network is trained on exactly the
+            # conditioning the rollout and the held-out path hand it.
+            ctx = x_obs_t[idx] & (cal_t[None, None] <= cutoffs[:, None, None, None])  # (B,F,W,D)
             # targets are context-eligible (never validation) cells past the cutoff
-            tgt = ctx_elig_t[idx] & (cal_t[None] > cutoffs[:, None, None])  # (B, W, D)
+            tgt = tgt_elig_t[idx] & (cal_t[None] > cutoffs[:, None, None])  # (B, W, D)
             if not bool(tgt.any()):
                 return None
             target_params, aux_params = model(xt[idx], ctx, lob_t[idx], comp_t[idx], prem_t[idx])
             loss = mdn_nll(*target_params, yt[idx], tgt)
             if has_aux:
-                loss = loss + cfg.aux_weight * mdn_nll(*aux_params, y_aux_t[idx], tgt)
+                # the derived OS target exists only where both channels do
+                loss = loss + cfg.aux_weight * mdn_nll(
+                    *aux_params, y_aux_t[idx], tgt & aux_obs_t[idx]
+                )
             return loss
 
         def val_loss(model):
@@ -340,9 +361,10 @@ class DeepTriangle(GalleryEntry, PooledMDNHeldout):
 
     def _heldout_inputs(self, ci: int) -> dict:
         """One cohort's forward inputs, conditioned on everything it had at
-        as_of: context = all its observed cells, so the held-out diagonal is
-        the decoder's first step past each origin's context - the rollout's
-        first step, and the most supervised decoding distance.
+        as_of: context = each channel's own usable cells (``x_obs``), so the
+        held-out diagonal is the decoder's first step past each origin's
+        context - the rollout's first step, and the most supervised decoding
+        distance.
 
         No calendar cutoff here, and that is the architecture rather than an
         omission: relative calendar position arises structurally from the
@@ -357,11 +379,11 @@ class DeepTriangle(GalleryEntry, PooledMDNHeldout):
         x_norm = (c["x"][ci] - self.norm_["mean"][:, None, :]) / self.norm_["std"][:, None, :]
         x_norm = np.where(self.norm_["pinned"][:, None, :], 0.0, x_norm)
         prem_norm = (c["log_premium"][ci] - self.norm_["prem_mean"]) / self.norm_["prem_std"]
-        obs = c["obs_mask"][ci]  # (n_w, n_d)
+        x_obs = c["x_obs"][ci]  # (n_f, n_w, n_d) per-channel usable values
         dev = torch.device(self._device)
         return {
             "x": torch.tensor(x_norm[None], dtype=torch.float32, device=dev),
-            "ctx": torch.tensor(obs[None], device=dev),
+            "ctx": torch.tensor(x_obs[None], device=dev),
             "lob": torch.tensor([c["lob_idx"][ci]], dtype=torch.long, device=dev),
             "comp": torch.tensor([c["company_idx"][ci]], dtype=torch.long, device=dev),
             "prem": torch.tensor([prem_norm], dtype=torch.float32, device=dev),
@@ -378,9 +400,12 @@ class DeepTriangle(GalleryEntry, PooledMDNHeldout):
         Re-encoding after every sampled diagonal means the decoder only ever
         runs one step past genuine-or-sampled context - the same distance-1
         discipline the cutoff augmentation supervises. Feature channels (and
-        the auxiliary OS head) are NOT simulated: future cells feed back the
-        target channel only (card.md "Limitations"). Returns
-        (n_draws, n_c, n_w): a draw of ultimate loss per (cohort, origin)."""
+        the auxiliary OS head) are NOT simulated: a promoted cell turns on the
+        TARGET channel's flag alone, so the feature channels stay unobserved
+        there rather than presenting their padding as data, and the rollout
+        conditions on progressively fewer observed features as it goes deeper
+        (card.md "Limitations"). Returns (n_draws, n_c, n_w): a draw of
+        ultimate loss per (cohort, origin)."""
         import torch
 
         from ibnr.gallery.nn.transformer.network import mdn_sample
@@ -411,7 +436,7 @@ class DeepTriangle(GalleryEntry, PooledMDNHeldout):
         # definition, so sampled draws are forced to 0 -> pooled dev mean
         pin_t = torch.tensor(self.norm_["pinned"][0], device=dev)  # (n_d,) target-channel pins
         xt = torch.tensor(x_norm, dtype=torch.float32, device=dev)  # (n_c, n_f, n_w, n_d)
-        obs_t = torch.tensor(c["obs_mask"], device=dev)  # (n_c, n_w, n_d)
+        x_obs_t = torch.tensor(c["x_obs"], device=dev)  # (n_c, n_f, n_w, n_d)
         fut_t = torch.tensor(future, device=dev)  # (n_c, n_w, n_d)
         cal_t = torch.tensor(c["cal_idx"], device=dev)  # (n_w, n_d)
         lob_t = torch.tensor(c["lob_idx"], dtype=torch.long, device=dev)  # (n_c,)
@@ -442,7 +467,7 @@ class DeepTriangle(GalleryEntry, PooledMDNHeldout):
                 # (chunk*n_c, n_f, n_w, n_d); xb/ctx are mutated in-place as the
                 # rollout fills future cells, so they are cloned.
                 xb = xt.repeat_interleave(chunk, dim=0).clone()  # (chunk*n_c, n_f, n_w, n_d)
-                ctx = obs_t.repeat_interleave(chunk, dim=0).clone()  # (chunk*n_c, n_w, n_d)
+                ctx = x_obs_t.repeat_interleave(chunk, dim=0).clone()  # (chunk*n_c,n_f,n_w,n_d)
                 futb = fut_t.repeat_interleave(chunk, dim=0)  # (chunk*n_c, n_w, n_d)
                 lobb = lob_t.repeat_interleave(chunk, dim=0)  # (chunk*n_c,)
                 compb = comp_t.repeat_interleave(chunk, dim=0)  # (chunk*n_c,)
@@ -462,9 +487,12 @@ class DeepTriangle(GalleryEntry, PooledMDNHeldout):
                         # pinned devs -> 0 (pooled dev mean after unstandardizing)
                         sample = sample.masked_fill(pin_t[None, None, :], 0.0)
                         # write sampled cells into the target channel and promote
-                        # them to context for the next diagonal (autoregression)
+                        # them to context for the next diagonal (autoregression).
+                        # ONLY channel 0's flag: nothing was sampled for a
+                        # feature channel, and flagging it would hand the network
+                        # the contract's padding zero as an observed increment.
                         xb[:, 0][cells] = sample[cells]
-                        ctx = ctx | cells
+                        ctx[:, 0][cells] = True
                 # unstandardize the target channel back to loss ratios, then sum
                 # only the future increments per (row, origin).
                 ratios = xb[:, 0].cpu().numpy() * std0[None, None, :] + mean0[None, None, :]

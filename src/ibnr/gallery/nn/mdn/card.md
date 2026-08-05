@@ -34,19 +34,38 @@ training-context cells only, with devs holding fewer than two context values
 std 1; rollout draws there forced to the pooled dev mean). The pinning is
 the v2 fix recorded in CLAUDE.md and is shared source, not a copy.
 
+Observedness is **per channel** (`x_obs`), not per cell. A triangle can report
+the target at a cell and not a feature there, or the other way round, so each
+channel is conditioned on its own usable cells: a missing feature is masked
+out rather than read as a reported zero, and each channel's standardization
+statistics come from the cells where that channel has a value. Channel 0's
+mask is the target's and is exactly `obs_mask`, so a fit with no feature
+fields is the same fit it always was.
+
+`fit(level_fields=...)` names feature channels carried **undifferenced** - for
+fields that are eval-date snapshots rather than amounts that accumulate, such
+as `case_reserve`, whose difference is the case movement while the informative
+quantity is the outstanding level. It must be a subset of `feature_fields`
+(it declares a channel's kind, it does not add a channel) and the target
+cannot be one. See `kernels.nn_contract.nn_data` for the semantics; the entry
+only threads the argument through.
+
 ## Network
 
 Per target cell, an MLP over a fixed-size feature vector - no tokens, no
 attention. The vector concatenates:
 
 - **cohort summary**: the masked mean of each (channel, dev)'s standardized
-  context values, pooled over origins, plus each dev's context-cell fraction
-  (context count / n_w). This is the entry's whole cross-origin view: where
-  the transformer learns which cells to look at, the MLP gets one fixed
-  per-dev average.
+  context values, pooled over origins - each channel averaged over its own
+  context cells - plus each dev's context-cell fraction (channel 0's context
+  count / n_w). This is the entry's whole cross-origin view: where the
+  transformer learns which cells to look at, the MLP gets one fixed per-dev
+  average.
 - **the target origin's own masked row**: its standardized context values
   across devs (zeroed off-context) plus per-dev context flags - the
-  chain-ladder-natural conditioning on the origin's own history.
+  chain-ladder-natural conditioning on the origin's own history. The flag
+  vector is channel 0's: it is the structural "does this cell exist" signal,
+  and that is the target's question.
 - **origin embedding + dev embedding + relative calendar embedding**
   (distance past the conditioning cutoff, clamped to [0, n_d]). The calendar
   encoding is RELATIVE for the same reason the transformer's is: forecast
@@ -55,7 +74,10 @@ attention. The vector concatenates:
 - **LOB embedding + normalized log premium** - cohort conditioning.
 
 Non-context values are zeroed *before* any summary is taken, so a cell past
-the cutoff cannot influence any prediction - its own included. Body: 2
+the cutoff cannot influence any prediction - its own included. The gate is per
+channel: a value never enters a summary without its own channel's flag. With
+one channel the two forms are the same function, which is why this change left
+every single-channel result untouched. Body: 2
 hidden layers of 128, GELU, dropout 0.1 - **26,353 parameters** on an 8x8 grid,
 comfortably under the transformer's **70,121 parameters** at the same shape.
 Both figures are pinned by `tests/test_nn_parameter_counts.py`; an earlier
@@ -80,10 +102,13 @@ comparison.
 Autoregressive **diagonal-by-diagonal rollout**, mirroring the transformer's
 `_rollout` structure exactly: sample every future cell on the next calendar
 diagonal from the MDN, promote the samples to context, recompute the context
-summary, continue. The dependence between a cohort's cells flows through the
-shared summary rather than through attention - a strictly cruder channel,
-which is part of what the ablation measures. Ultimates = anchor cumulative +
-premium x summed sampled future increments; draws pooled over the ensemble.
+summary, continue. Promotion sets **channel 0's flag only** - the sampled
+target value now exists, next year's feature values do not - so the summary
+never counts a feature the rollout invented. The dependence between a cohort's
+cells flows through the shared summary rather than through attention - a
+strictly cruder channel, which is part of what the ablation measures.
+Ultimates = anchor cumulative + premium x summed sampled future increments;
+draws pooled over the ensemble.
 
 ## Held-out scoring (milestones 6/7)
 
@@ -140,8 +165,15 @@ pred.summary(observed=realized)  # same Meyers-style table as every entry
   capability being ablated - but it is a real predictive handicap.
 - Like the single-line transformer, per-line draws are independent: no
   cross-line dependence, no diversified company total.
-- Feature channels are not simulated during rollout - future cells feed back
-  the target channel only.
+- **Feature channels are not simulated during rollout**, and the rollout is
+  honest about it rather than papering over it: a promoted cell carries the
+  sampled target and no feature flag, so the deeper the rollout goes, the
+  fewer observed feature values the cohort summary is built from. A fit with
+  feature channels therefore conditions on progressively less at deep lags -
+  a real limitation, and one whose cost is now visible in the summary's
+  per-channel counts instead of hidden inside a fabricated zero. Simulating
+  the features forward needs a joint head over all channels, which is a
+  different entry.
 - All the transformer's small-data caveats apply; the mitigations (tiny
   network, dropout, weight decay, augmentation, eval_date early stopping,
   ensembling, no company embedding) are inherited unchanged.
