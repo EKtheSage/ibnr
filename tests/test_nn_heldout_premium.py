@@ -41,10 +41,13 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from ibnr import gallery  # noqa: E402
+import pandas as pd  # noqa: E402
+
+from ibnr import Triangle, gallery  # noqa: E402
 from ibnr.gallery.nn._heldout import PooledMDNHeldout  # noqa: E402
 from ibnr.gallery.nn.deeptriangle.config import DeepTriangleConfig  # noqa: E402
 from ibnr.gallery.nn.mdn.config import MDNConfig  # noqa: E402
+from ibnr.gallery.nn.nn_paid_case.config import NNPaidCaseConfig  # noqa: E402
 from ibnr.gallery.nn.resnet.config import ResNetConfig  # noqa: E402
 from ibnr.gallery.nn.transformer.config import TransformerConfig  # noqa: E402
 from ibnr.kernels.holdout import next_diagonal  # noqa: E402
@@ -80,6 +83,22 @@ CONFIGS = {
     "mdn": MDNConfig(hidden_dim=32, n_layers=1, embedding_dim=4, **COMMON),
     "resnet": ResNetConfig(channels=16, n_blocks=2, n_groups=4, **COMMON),
     "deeptriangle": DeepTriangleConfig(hidden_dim=16, company_embedding_dim=4, **COMMON),
+    # every key in COMMON is a SHARED field of this config (nothing in
+    # ``config.BACKBONE_KNOBS``), so the same tiny settings reach it unchanged;
+    # the four named here are the transformer body's own, which is why the
+    # backbone is named alongside them rather than left to the default.
+    "nn_paid_case": NNPaidCaseConfig(
+        backbone="transformer", d_model=16, n_layers=1, n_heads=2, ffn_dim=32, **COMMON
+    ),
+}
+
+#: entry name -> the FIELD arguments its ``fit`` takes. Four of the five share
+#: one call; ``nn_paid_case`` models two fields and spells them
+#: ``paid_field``/``case_field``, taking no ``feature_fields`` at all. Everything
+#: else about the fit (as_of, config, seed) is common and stays in the fixture.
+DEFAULT_FIT_KWARGS = dict(loss_field="paid_loss", feature_fields=())
+FIT_KWARGS: dict[str, dict] = {
+    "nn_paid_case": dict(paid_field="paid_loss", case_field="case_reserve"),
 }
 
 #: how far the perturbed premium is off. Large enough that a pre-fix run
@@ -99,6 +118,40 @@ def _matrices() -> np.ndarray:
     return np.cumsum(incr, axis=2)
 
 
+def _case_levels(cum: np.ndarray) -> np.ndarray:
+    """Case reserve LEVELS on the same grid: a share of the paid cumulative that
+    shrinks with development, i.e. a reserve draining as payments replace it.
+
+    Positive everywhere and read off the cell it sits on - never off a later
+    dev, which on this fixture would be a cell the as_of slice has not reached.
+    Only ``nn_paid_case`` reads the channel; the other four fit with
+    ``feature_fields=()``.
+    """
+    return cum * np.linspace(0.6, 0.05, cum.shape[-1])[None, None, :]
+
+
+def _pooled_triangle(cum: np.ndarray, prem: np.ndarray) -> Triangle:
+    """The two-LOB pooled fit triangle: paid, premium and the case level.
+
+    ``make_multiline_triangle`` emits one loss field and its premium, so the
+    case channel is a second triangle concatenated on - the same construction
+    ``tests/test_nn_paid_case.py`` uses.
+    """
+    lobs = {f"lob_{k}": cum[k] for k in range(cum.shape[0])}
+    paid = make_multiline_triangle(
+        "duckdb", lobs, premium_by_lob=dict.fromkeys(lobs, prem), start_year=START
+    )
+    case = _case_levels(cum)
+    reserves = make_multiline_triangle(
+        "duckdb",
+        {f"lob_{k}": case[k] for k in range(case.shape[0])},
+        loss_field="case_reserve",
+        start_year=START,
+    )
+    df = pd.concat([paid.execute(), reserves.execute()], ignore_index=True)
+    return Triangle.from_long(df, measure="cumulative", backend="duckdb")
+
+
 @pytest.fixture(scope="module", params=sorted(CONFIGS))
 def fitted(request):
     """One TINY pooled fit per mixin entry, plus lob_0's next-diagonal cells.
@@ -110,17 +163,15 @@ def fitted(request):
     name = request.param
     cum = _matrices()
     prem = np.full(6, 1000.0)
-    lobs = {"lob_0": cum[0], "lob_1": cum[1]}
-    pooled = make_multiline_triangle(
-        "duckdb", lobs, premium_by_lob=dict.fromkeys(lobs, prem), start_year=START
-    )
-    # feature_fields=() uniformly: deeptriangle defaults to an auxiliary
-    # reported channel the other three do not have, and the premium a cell is
-    # scored with is orthogonal to how many channels the network reads.
+    pooled = _pooled_triangle(cum, prem)
+    # feature_fields=() for the four that take it: deeptriangle defaults to an
+    # auxiliary reported channel the other three do not have, and the premium a
+    # cell is scored with is orthogonal to how many channels the network reads.
+    # nn_paid_case is the exception in FIT_KWARGS - its two channels ARE the
+    # entry, so it names them instead.
     entry = gallery.get(name)().fit(
         pooled,
-        loss_field="paid_loss",
-        feature_fields=(),
+        **FIT_KWARGS.get(name, DEFAULT_FIT_KWARGS),
         as_of=AS_OF,
         config=CONFIGS[name],
         seed=0,
@@ -239,4 +290,10 @@ def test_every_mixin_entry_is_covered():
         f"{sorted(using_mixin - set(CONFIGS))}; rows naming entries that no longer use it: "
         f"{sorted(set(CONFIGS) - using_mixin)}. Both hooks of the mixin divide by the "
         "fitted contract's premium and must refuse a cell whose own premium disagrees."
+    )
+    orphan = sorted(set(FIT_KWARGS) - set(CONFIGS))
+    assert not orphan, (
+        f"FIT_KWARGS rows naming entries this file does not fit: {orphan}. A row keyed to "
+        "a name CONFIGS does not carry governs nothing, and the entry it was written for "
+        "silently gets the shared call instead."
     )

@@ -48,6 +48,7 @@ from ibnr import Triangle, gallery  # noqa: E402
 from ibnr.gallery.nn._heldout import PooledMDNHeldout, heldout_cutoff  # noqa: E402
 from ibnr.gallery.nn.deeptriangle.config import DeepTriangleConfig  # noqa: E402
 from ibnr.gallery.nn.mdn.config import MDNConfig  # noqa: E402
+from ibnr.gallery.nn.nn_paid_case.config import NNPaidCaseConfig  # noqa: E402
 from ibnr.gallery.nn.resnet.config import ResNetConfig  # noqa: E402
 from ibnr.gallery.nn.transformer.config import TransformerConfig  # noqa: E402
 from ibnr.kernels.holdout import index_into, next_diagonal  # noqa: E402
@@ -98,6 +99,29 @@ CONFIGS = {
     "deeptriangle": DeepTriangleConfig(
         hidden_dim=16, lob_embedding_dim=4, company_embedding_dim=4, n_draws=50, **_TINY
     ),
+    # ``backbone="transformer"`` deliberately: it is the body that READS a
+    # cutoff, so this entry runs the live leg of ``test_the_cutoff_is_not_inert``
+    # rather than the exempt one. The GRU arm carries no cutoff at all (relative
+    # position is structural in its recurrence) and has its own coverage in
+    # tests/test_nn_paid_case.py.
+    "nn_paid_case": NNPaidCaseConfig(
+        backbone="transformer",
+        d_model=16,
+        n_layers=1,
+        n_heads=2,
+        ffn_dim=32,
+        lob_embedding_dim=4,
+        n_draws=50,
+        **_TINY,
+    ),
+}
+
+#: entry name -> the FIELD arguments its ``fit`` takes. Four of the five share
+#: one call; ``nn_paid_case`` models two fields and spells them
+#: ``paid_field``/``case_field``, taking no ``feature_fields`` at all.
+DEFAULT_FIT_KWARGS = dict(loss_field="paid_loss", feature_fields=())
+FIT_KWARGS: dict[str, dict] = {
+    "nn_paid_case": dict(paid_field="paid_loss", case_field="case_reserve"),
 }
 
 
@@ -148,8 +172,23 @@ def _punched() -> np.ndarray:
     return cum
 
 
+#: case reserve as a share of the paid cumulative, by dev step: a level that
+#: shrinks with development, i.e. a reserve draining as payments replace it.
+CASE_SHARE = np.linspace(0.6, 0.05, N)
+
+
 def _rows(lob: str, cum: np.ndarray, premium: float = 1000.0) -> list[tuple]:
-    """Long rows for one cohort; NaN is unobserved and simply not emitted."""
+    """Long rows for one cohort; NaN is unobserved and simply not emitted.
+
+    The case level SHARES the paid grid's holes - it is emitted inside the same
+    ``continue`` - because :func:`_punched` removes a whole calendar diagonal,
+    which is a cohort that reported nothing that year rather than one that
+    reported a reserve and no payment. It also leaves the reproduction intact
+    whichever field a contract reads: ``nn_data`` derives ``latest_dev`` and
+    ``obs_mask`` from the LOSS field alone, so an unpunched case channel would
+    not move the cutoff either - it would just describe a cohort that cannot
+    exist.
+    """
     out = []
     for w in range(cum.shape[0]):
         for d in range(cum.shape[1]):
@@ -164,6 +203,7 @@ def _rows(lob: str, cum: np.ndarray, premium: float = 1000.0) -> list[tuple]:
             )
             out.append((*key, "paid_loss", float(cum[w, d])))
             out.append((*key, "earned_premium", premium))
+            out.append((*key, "case_reserve", float(cum[w, d] * CASE_SHARE[d])))
     return out
 
 
@@ -196,16 +236,16 @@ def fitted():
         rows += _rows(f"lob_{k}", _square(k))
     pooled = _triangle(rows)
 
-    # feature_fields=() everywhere: the fixture triangle carries paid_loss
-    # only, and deeptriangle's default names reported_loss - which nn_data
-    # now refuses by name rather than fitting as a dead all-masked channel
-    # (the pre-0.5.4 silent behavior this fixture unknowingly leaned on).
-    # The cutoff semantics under test are single-channel anyway.
+    # feature_fields=() for the four that take it: the fixture's second loss
+    # field is the case reserve, and deeptriangle's default names reported_loss
+    # - which nn_data now refuses by name rather than fitting as a dead
+    # all-masked channel (the pre-0.5.4 silent behavior this fixture unknowingly
+    # leaned on). The cutoff semantics under test are channel-count agnostic, so
+    # nn_paid_case reads its two channels and the rest read one.
     entries = {
         name: gallery.get(name)().fit(
             pooled,
-            loss_field="paid_loss",
-            feature_fields=(),
+            **FIT_KWARGS.get(name, DEFAULT_FIT_KWARGS),
             as_of=AS_OF,
             config=CONFIGS[name],
             seed=0,
@@ -241,6 +281,12 @@ def test_every_registered_nn_entry_is_covered():
     assert set(CONFIGS) == set(ENTRY_NAMES), (
         f"CONFIGS and the registry disagree: {set(CONFIGS) ^ set(ENTRY_NAMES)}. A new NN "
         "held-out entry needs a config row here, not its own copy of this file"
+    )
+    orphan = sorted(set(FIT_KWARGS) - set(ENTRY_NAMES))
+    assert not orphan, (
+        f"FIT_KWARGS rows naming entries this file does not fit: {orphan}. A row keyed to "
+        "a name the registry does not carry governs nothing, and the entry it was written "
+        "for silently gets the shared call instead."
     )
 
 

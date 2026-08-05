@@ -88,13 +88,22 @@ NEEDS_TWO_LINES = frozenset({"copula_glm"})
 
 
 def _staircase(lines: tuple[str, ...] = ("CA",)) -> Triangle:
-    """A 6x6 run-off triangle per line, carrying both loss fields, no premium.
+    """A 6x6 run-off triangle per line carrying every loss field, no premium.
 
     Rich enough that every entry's contract builder would BUILD if premium
     were supplied - the refusals under test are about the argument, not about
     the data being unusable. Lines share one observed-cell pattern and develop
     strictly upward, which is what the cell-wise dependence and lognormal
     marginal contracts require.
+
+    ``case_reserve`` is here so ``nn_paid_case`` reaches the premium check at
+    all: its contract names the case field, and ``nn_data`` refuses an absent
+    FIELD before it refuses an absent premium, so without this column the entry
+    fails the wrong way ("no rows for field(s) ['case_reserve']") and the case
+    below would be green while testing nothing. Its 0.25 share is the fixture's
+    own reported-minus-paid gap (1.25 - 1.00), so the three fields stay
+    consistent with each other; nothing here reads the VALUES, because every
+    refusal under test fires from argument validation before the data is used.
     """
     n = 6
     rows = [
@@ -109,7 +118,7 @@ def _staircase(lines: tuple[str, ...] = ("CA",)) -> Triangle:
         for lscale, line in enumerate(lines, start=1)
         for w in range(1, n + 1)
         for d in range(1, n + 1)
-        for field, scale in (("paid_loss", 1.0), ("reported_loss", 1.25))
+        for field, scale in (("paid_loss", 1.0), ("reported_loss", 1.25), ("case_reserve", 0.25))
         if w + d - 1 <= n
     ]
     return Triangle.from_long(pd.DataFrame(rows), measure="cumulative")
@@ -139,12 +148,13 @@ def test_the_derivation_found_the_premium_requiring_entries():
     } <= set(_premium_requiring())
 
 
-#: who a refusal is allowed to name as its source. The five NN entries share
-#: one check in ``nn_data``, so naming that function is naming the thing that
-#: needs premium; every other entry refuses under its own name.
+#: who a refusal is allowed to name as its source. The NN entries share one
+#: check in ``nn_data``, so naming that function is naming the thing that needs
+#: premium; every other entry refuses under its own name.
 RAISER = {name: "nn_data" for name in ("deeptriangle", "mdn", "resnet")}
 RAISER["nn_transformer"] = "nn_data"
 RAISER["nn_transformer_ml"] = "nn_data"
+RAISER["nn_paid_case"] = "nn_data"
 
 
 def _assert_names_the_requirement(message: str, name: str) -> None:
