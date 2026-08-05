@@ -126,7 +126,12 @@ DISCLOSED: dict[str, tuple[Claim, ...]] = {
 #: its count CHANGES when the company embedding is switched off, which is a
 #: relative claim already pinned by
 #: ``tests/test_deeptriangle.py::test_company_embedding_can_be_switched_off``.
-NO_COUNT_DISCLOSED: frozenset[str] = frozenset({"deeptriangle", "nn_transformer_ml"})
+#: ``nn_paid_case`` ships TWO interchangeable bodies over one head
+#: (``config.backbone``), so a single bolded figure would be ambiguous about
+#: which network it counts - the card compares them in relative terms instead.
+NO_COUNT_DISCLOSED: frozenset[str] = frozenset(
+    {"deeptriangle", "nn_paid_case", "nn_transformer_ml"}
+)
 
 
 def _nn_entries() -> set[str]:

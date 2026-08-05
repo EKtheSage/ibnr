@@ -48,7 +48,7 @@ SINGLE_COHORT = {
     "sur",
 }
 #: a pooled fit: `segment=None` is the whole panel, a segment is one cohort
-POOLED = {"deeptriangle", "mdn", "nn_transformer", "nn_transformer_ml", "resnet"}
+POOLED = {"deeptriangle", "mdn", "nn_paid_case", "nn_transformer", "nn_transformer_ml", "resnet"}
 #: of the single-cohort entries, the ones whose fit needs cmdstan
 NEEDS_STAN = {
     "clark_growth_curve",

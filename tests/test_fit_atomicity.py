@@ -123,15 +123,36 @@ def bayes_triangle(start_year: int, n: int = 5) -> Triangle:
 
 
 def nn_triangle(start_year: int) -> Triangle:
-    """Two-LOB company square with premium, for the pooled NN contracts."""
+    """Two-LOB company square with premium AND a case reserve, for the pooled
+    NN contracts.
+
+    The case channel is here for ``nn_paid_case``, whose contract names both
+    fields: ``nn_data`` refuses an absent field by name, so without it that
+    entry's fit would fail on the DATA, before the stubbed trainer runs, and the
+    atomicity claim would never be exercised. The level is a share of the paid
+    cumulative that shrinks with development - a reserve draining as payments
+    replace it, never negative, and read off the cell it sits on rather than off
+    any later one. The other five entries are fitted with ``feature_fields=()``
+    and never read the channel.
+    """
     rng = np.random.default_rng(start_year)
     n_w = 6
     dev_level = np.exp(np.linspace(-0.8, -3.0, n_w))
     incr = 1000.0 * dev_level[None, None, :] * rng.lognormal(0.0, 0.1, size=(2, n_w, n_w))
     cum = np.cumsum(incr, axis=2)
-    lobs = {f"lob_{k}": cum[k] for k in range(2)}
+    case = cum * np.linspace(0.6, 0.05, n_w)[None, None, :]
     prem = {f"lob_{k}": np.full(n_w, 1000.0) for k in range(2)}
-    return make_multiline_triangle("duckdb", lobs, premium_by_lob=prem, start_year=start_year)
+    paid = make_multiline_triangle(
+        "duckdb", {f"lob_{k}": cum[k] for k in range(2)}, premium_by_lob=prem, start_year=start_year
+    )
+    reserves = make_multiline_triangle(
+        "duckdb",
+        {f"lob_{k}": case[k] for k in range(2)},
+        loss_field="case_reserve",
+        start_year=start_year,
+    )
+    df = pd.concat([paid.execute(), reserves.execute()], ignore_index=True)
+    return Triangle.from_long(df, measure="cumulative", backend="duckdb")
 
 
 # -- bayesian: the sampler is the fallible step ---------------------------------
@@ -270,7 +291,24 @@ NN_ENTRIES = [
     ("deeptriangle", "ibnr.gallery.nn.deeptriangle.model.train_ensemble"),
     ("mdn", "ibnr.gallery.nn.mdn.model.train_ensemble"),
     ("resnet", "ibnr.gallery.nn.resnet.model.train_ensemble"),
+    ("nn_paid_case", "ibnr.gallery.nn.nn_paid_case.model.train_ensemble"),
 ]
+
+#: the pooled fit call five of the six share. ``feature_fields=()``: the
+#: fixture's second field is a case reserve, and deeptriangle's default names
+#: reported_loss, which nn_data refuses by name. Atomicity is a property of the
+#: fit lifecycle, not of the channel count.
+DEFAULT_FIT_KWARGS = dict(loss_field="paid_loss", feature_fields=())
+
+#: entry name -> the fit arguments it takes instead. ``nn_paid_case`` models two
+#: fields, so it spells them ``paid_field``/``case_field`` and takes no
+#: ``feature_fields`` at all - passing the shared call would be a TypeError,
+#: which is a failure of the test rather than of the entry. A row here is keyed
+#: to ``NN_ENTRIES``, which ``test_every_registered_entry_is_covered`` holds to
+#: the registry.
+FIT_KWARGS: dict[str, dict] = {
+    "nn_paid_case": dict(paid_field="paid_loss", case_field="case_reserve"),
+}
 
 
 @pytest.mark.parametrize("name,trainer", NN_ENTRIES, ids=[n for n, _ in NN_ENTRIES])
@@ -286,14 +324,12 @@ def test_nn_failed_training_leaves_the_previous_fit_intact(monkeypatch, name, tr
     pytest.importorskip("torch")
     monkeypatch.setattr(trainer, FitThenBoom(("models-A", "history-A")))
     entry = gallery.get(name)()
-    # feature_fields=(): the fixture carries paid_loss only, and deeptriangle's
-    # default names reported_loss, which nn_data refuses by name. Atomicity is
-    # a property of the fit lifecycle, not of the channel count.
-    entry.fit(nn_triangle(2000), loss_field="paid_loss", feature_fields=())
+    kwargs = FIT_KWARGS.get(name, DEFAULT_FIT_KWARGS)
+    entry.fit(nn_triangle(2000), **kwargs)
     before = snapshot(entry)
 
     with pytest.raises(RuntimeError, match="boom"):
-        entry.fit(nn_triangle(1990), loss_field="paid_loss", feature_fields=())
+        entry.fit(nn_triangle(1990), **kwargs)
 
     assert_untouched(entry, before)
 
@@ -355,3 +391,8 @@ def test_every_registered_entry_is_covered():
         f"these names are listed here but are not registered gallery entries: {stale}. "
         "A renamed or removed entry leaves a row that silently tests nothing."
     )
+    # and the per-entry fit arguments describe entries this file actually fits:
+    # a row keyed to a name NN_ENTRIES does not carry governs nothing, and the
+    # entry it was written for silently gets the shared call instead.
+    orphan = sorted(set(FIT_KWARGS) - {name for name, _ in NN_ENTRIES})
+    assert not orphan, f"FIT_KWARGS rows naming entries this file does not fit: {orphan}"

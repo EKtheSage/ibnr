@@ -33,9 +33,16 @@ each was a raw exception from wherever the ``None`` finally landed:
                           TypeError inside nn_data, which selects the premium
                           field unconditionally
 
-``loss_field`` is ``str`` everywhere and correctly so: every entry passes it
-straight to ``select_fields``, so ``None`` names no column. Same for
-``compartmental``'s ``reported_field``.
+Entries registered SINCE that date join the refusing set rather than the list
+above - ``nn_paid_case`` refuses through the same ``nn_data`` check its five NN
+siblings do, and gets its case in test_premium_refusal.py the day it registers,
+because that file derives its parametrization from the table below.
+
+``loss_field`` is ``str`` everywhere and correctly so: every entry that takes it
+passes it straight to ``select_fields``, so ``None`` names no column. Same for
+``compartmental``'s ``reported_field``, and for ``nn_paid_case``'s
+``paid_field``/``case_field``, which are outside ``SWEPT_PARAMS`` only because
+they are spelled for a two-field model.
 
 Why a hand-written table rather than probing each entry. Probing a REFUSAL is
 now cheap - it returns before Stan or torch does anything - and
@@ -86,6 +93,11 @@ ACCEPTS_NONE: dict[str, frozenset[str]] = {
     "mdn": frozenset(),
     "meyers_ccl": frozenset(),
     "meyers_csr": frozenset(),
+    # of the swept three it takes ``premium_field`` only - its two loss fields
+    # are spelled ``paid_field``/``case_field``, because the entry models both
+    # and "loss_field" would underdescribe it. Premium is required: the runtime
+    # refuses None in ``nn_data``, like every other NN entry.
+    "nn_paid_case": frozenset(),
     "nn_transformer": frozenset(),
     "nn_transformer_ml": frozenset(),
     "resnet": frozenset(),
