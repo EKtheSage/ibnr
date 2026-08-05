@@ -36,10 +36,11 @@ class TriangleMDN(nn.Module):
     Each target cell's feature vector concatenates:
 
     - **cohort summary** - the masked mean of every (channel, dev)'s
-      standardized context values, pooled over origins, plus each dev's
-      context-cell fraction (count / n_w). Fixed size, recomputed from the
-      context mask on every forward, so the rollout's promotion of sampled
-      diagonals to context flows through it;
+      standardized context values, pooled over origins, each channel averaged
+      over ITS OWN context cells, plus each dev's context-cell fraction
+      (channel 0's count / n_w). Fixed size, recomputed from the context mask
+      on every forward, so the rollout's promotion of sampled diagonals to
+      context flows through it;
     - **the target origin's own masked row** - its standardized context values
       across devs (zeroed off-context) plus per-dev context flags: the
       chain-ladder-natural conditioning on the origin's own history;
@@ -51,11 +52,15 @@ class TriangleMDN(nn.Module):
       never received a gradient);
     - **LOB embedding + normalized log premium** - cohort conditioning.
 
-    Non-context values are zeroed BEFORE any summary is taken (``x * flag``),
+    Non-context values are zeroed BEFORE any summary is taken (``x * flags``),
     which is the entry's no-leak gate: a value at a cell past the cutoff
-    cannot influence any prediction, its own included. The head is the same
-    K-Gaussian MDN as the transformer's, over the normalized incremental
-    loss ratio of every cell.
+    cannot influence any prediction, its own included. The gate is PER
+    CHANNEL - a value is never consumed without its own channel's flag, so a
+    feature the triangle never reported is masked rather than read as an
+    observed zero. Where one structural flag is needed instead (the per-dev
+    context fraction, the origin row's flag vector) it is channel 0's, the
+    target's. The head is the same K-Gaussian MDN as the transformer's, over
+    the normalized incremental loss ratio of every cell.
     """
 
     def __init__(self, cfg: MDNConfig, *, n_lob: int, n_features: int, n_w: int, n_d: int) -> None:
@@ -105,7 +110,7 @@ class TriangleMDN(nn.Module):
     def forward(
         self,
         x: torch.Tensor,  # (B, F, W, D) normalized values (junk allowed off-context)
-        context_mask: torch.Tensor,  # (B, W, D) bool
+        context_mask: torch.Tensor,  # (B, F, W, D) bool - PER CHANNEL
         lob_idx: torch.Tensor,  # (B,) long
         log_premium: torch.Tensor,  # (B,) normalized
         cutoff: torch.Tensor,  # (B,) long - 1-based conditioning diagonal
@@ -115,24 +120,34 @@ class TriangleMDN(nn.Module):
         B = cohorts in the batch, F = channels, W = origins, D = dev lags,
         K = mixture components. Returns log_pi, mu, sigma each (B, W, D, K) -
         a K-Gaussian mixture over the normalized incremental loss ratio of
-        every cell. Only ``context_mask``-true cells contribute their values;
-        the rest are zeroed before any summary, so no cell can read a value
-        it is supposed to predict."""
+        every cell. Only cells ``context_mask`` marks true ON THEIR OWN CHANNEL
+        contribute their values; the rest are zeroed before any summary, so no
+        cell can read a value it is supposed to predict and no channel can read
+        a value its own triangle never carried."""
         b = x.shape[0]
         n_w, n_d = self.n_w, self.n_d
-        flag = context_mask.unsqueeze(1).to(x.dtype)  # (B, 1, W, D)
-        vals = x * flag  # (B, F, W, D) - the no-leak gate: off-context values die here
+        # a per-cell mask would broadcast against x rather than raise (B against
+        # F on the channel axis), so its rank is checked rather than trusted
+        if context_mask.dim() != x.dim():
+            raise ValueError(
+                f"context_mask must be per channel, shaped {tuple(x.shape)}; got "
+                f"{tuple(context_mask.shape)}. Channel 0 is the target's own mask"
+            )
+        flags = context_mask.to(x.dtype)  # (B, F, W, D)
+        vals = x * flags  # the no-leak gate: a value without ITS channel's flag dies here
 
-        # cohort summary: masked mean per (channel, dev) over origins, plus the
-        # per-dev context-cell fraction (how much of the column is observed)
-        counts = flag.sum(dim=2)  # (B, 1, D)
+        # cohort summary: masked mean per (channel, dev) over origins, each
+        # channel divided by its OWN context count, plus the per-dev
+        # context-cell fraction of channel 0 - a structural "how much of this
+        # column exists" flag, which is the target's
+        counts = flags.sum(dim=2)  # (B, F, D)
         mean_fd = vals.sum(dim=2) / counts.clamp(min=1.0)  # (B, F, D)
         frac_d = counts[:, 0] / float(n_w)  # (B, D)
         cohort = torch.cat([mean_fd.flatten(1), frac_d], dim=1)  # (B, F*D + D)
 
-        # the target origin's own masked row: values across devs + flags
+        # the target origin's own masked row: values across devs + channel 0's flags
         row_vals = vals.permute(0, 2, 1, 3).flatten(2)  # (B, W, F*D)
-        rows = torch.cat([row_vals, flag[:, 0]], dim=2)  # (B, W, F*D + D)
+        rows = torch.cat([row_vals, flags[:, 0]], dim=2)  # (B, W, F*D + D)
 
         # relative calendar position of each cell, clamped to [0, n_d]
         dist = (self.cal_grid[None] - cutoff[:, None, None]).clamp(0, n_d)  # (B, W, D)

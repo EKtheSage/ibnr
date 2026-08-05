@@ -17,15 +17,31 @@ identical by construction. Targets are incremental loss ratios per line.
 Lines a company does not write are `line_mask`-ed out: excluded from
 attention (padding mask), losses, and rollout. Pinned per-(line, channel,
 dev) standardization as in the single-line model v2 - stats via the same
-helper, one implementation.
+helper, one implementation, each channel standardized on the cells where
+that channel itself has a value.
+
+Conditioning is PER CHANNEL, on the contract's `x_obs`: a feature that is
+missing where the target is observed is masked out rather than read as a
+zero increment. In training every channel's flag is additionally gated at
+the drawn cutoff; the rollout gates by observedness alone, so a feature
+booked on a deeper calendar diagonal than every target cell reaches it in a
+configuration training never showed - kept, because that contemporaneous
+cell is genuinely informative. `fit(feature_fields=...)` names the extra input channels;
+`fit(level_fields=...)` declares which of them are eval-date snapshots
+carried undifferenced - `case_reserve` is the motivating one - with the
+semantics and refusals in `kernels.nn_contract.nn_data`.
 
 ## Network
 
-Token = `Linear([channel values * flag, flag])` + line embedding + origin
-embedding + dev embedding + relative calendar embedding (distance past the
-conditioning cutoff) + per-line normalized log premium. Encoder: 2 pre-LN
-transformer layers, d_model 64, 4 heads, FFN 128, dropout 0.15, GELU.
-Sequence length L*W*D (400 for four Schedule P lines).
+Token = `Linear([channel values * channel flags, channel flags])` + line
+embedding + origin embedding + dev embedding + relative calendar embedding
+(distance past the conditioning cutoff) + per-line normalized log premium.
+One flag per channel, so no value is consumed without its own channel's
+flag; with a single target channel (the default) that is the same two inputs
+as the per-cell flag it replaced.
+
+Encoder: 2 pre-LN transformer layers, d_model 64, 4 heads, FFN 128, dropout
+0.15, GELU. Sequence length L*W*D (400 for four Schedule P lines).
 
 The line embedding is ADDED to the token, so its width is necessarily
 `d_model` and there is deliberately no `line_embedding_dim` config knob. This
@@ -68,8 +84,16 @@ against `sur` / `copula_glm`.
 
 ## Limitations
 
-- Everything the single-line card lists (small data, feature channels not
-  simulated in rollout, unsupervised deepest devs behind the pin).
+- Everything the single-line card lists (small data, unsupervised deepest
+  devs behind the pin).
+- Feature channels are NOT simulated forward. The rollout feeds back the
+  target channel only, so a sampled cell carries a target value and no
+  feature values, and the deeper the rollout goes the fewer observed feature
+  channels it conditions on. That is now the honest representation - the
+  feature flags stay off, where before promotion set one per-cell flag and
+  the network read the contract's padding zero as an observed zero
+  increment - but it still means a feature informs the near diagonals far
+  more than the far ones.
 - "ar": within-diagonal dependence is directional; randomized order makes
   the marginal draw exchangeable across draws, not within one draw.
 - "joint": L*(L+1)/2 covariance parameters per component per cell-group is

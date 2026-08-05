@@ -20,6 +20,15 @@ to express correlation at all, and - for both variants - the grand total must
 be the sum of line totals WITHIN each draw, so the diversified total carries
 the dependence structure instead of being a sum of marginal means.
 
+Conditioning is PER CHANNEL (0.5.4), and the same "no shape error" hazard
+applies to it: one flag per cell instead of one per channel still runs, still
+trains, and silently tells the network that a missing feature is a zero
+increment - at every cell the rollout has just promoted, on every cell where
+a feature is absent but the target is not. Three tests below pin it: the
+network never consumes a value without that channel's own flag, fit builds
+the context from the contract's ``x_obs``, and the rollout promotes the
+TARGET channel alone.
+
 Determinism and small-triangle caveats are as in ``test_nn_transformer.py``:
 explicit seeds/generators throughout, and a deliberately under-powered config
 (``tiny``) since nothing here asserts predictive quality. Entry tests run on
@@ -28,11 +37,16 @@ BOTH ibis backends.
 
 from __future__ import annotations
 
+import datetime as dt
+
 import numpy as np
+import pandas as pd
 import pytest
 
 torch = pytest.importorskip("torch")
 
+from ibnr import Triangle  # noqa: E402
+from ibnr.gallery.nn import _scheme  # noqa: E402
 from ibnr.gallery.nn.transformer_ml.config import TransformerMLConfig  # noqa: E402
 from ibnr.gallery.nn.transformer_ml.model import NNTransformerML  # noqa: E402
 from ibnr.gallery.nn.transformer_ml.network import (  # noqa: E402
@@ -80,6 +94,99 @@ def synthetic_triangle(backend_name, n_w=6, seed=0):
     return make_multiline_triangle(backend_name, lobs, premium_by_lob=prem, start_year=START)
 
 
+def feature_triangle(
+    backend_name,
+    *,
+    n_w=6,
+    upper=False,
+    feature_missing_dev=None,
+    target_missing_dev=None,
+    seed=0,
+):
+    """Same company/two-LOB shape, plus a ``case_reserve`` channel beside the
+    paid target - the fixture anything per-channel needs, since
+    ``make_multiline_triangle`` emits the loss and its premium only.
+
+    ``upper`` emits the run-off staircase (w + d < n_w) instead of the full
+    square, which is what leaves the rollout future cells to sample - on a
+    full square every origin's anchor is already at the deepest dev and
+    nothing is promoted.
+
+    The two ``*_missing_dev`` knobs make the channels' observedness differ, in
+    the two directions that matter and that a per-cell flag collapses:
+    ``feature_missing_dev`` drops the feature from one dev column (target
+    observed, feature not), and ``target_missing_dev`` drops the paid target
+    from one dev column of the FIRST line only (feature observed, target not).
+    """
+    rng = np.random.default_rng(seed)
+    n_d = n_w
+    dev_level = np.exp(np.linspace(-0.8, -3.0, n_d))
+    # a case reserve runs off toward zero as the paid loss matures
+    case_share = np.linspace(0.6, 0.05, n_d)
+    rows = []
+    for k in range(2):
+        lob = f"lob_{k}"
+        incr = 1000.0 * dev_level[None, :] * rng.lognormal(0.0, 0.1, size=(n_w, n_d))
+        cum = np.cumsum(incr, axis=1)
+        for w in range(n_w):
+            for step in range(n_d):
+                if upper and w + step >= n_w:
+                    continue
+                cell = (
+                    "0001",
+                    lob,
+                    dt.date(START + w, 1, 1),
+                    12 * (step + 1),
+                    dt.date(START + w + step, 12, 31),
+                )
+                if not (k == 0 and step == target_missing_dev):
+                    rows.append((*cell, "paid_loss", float(cum[w, step])))
+                rows.append((*cell, "earned_premium", 1000.0))
+                if step != feature_missing_dev:
+                    rows.append((*cell, "case_reserve", float(cum[w, step] * case_share[step])))
+    df = pd.DataFrame(
+        rows,
+        columns=[
+            "company_code",
+            "line_of_business",
+            "origin_period",
+            "dev_lag",
+            "eval_date",
+            "field",
+            "value",
+        ],
+    )
+    return Triangle.from_long(df, measure="cumulative", backend=backend_name)
+
+
+def fit_with_case_reserve(triangle, dependence="ar", *, level=True, seed=0):
+    """Fit the entry on the two-channel fixture: paid target + case reserve,
+    the latter declared a LEVEL (an eval-date snapshot, whose difference would
+    be the case movement) unless a test wants the differenced form."""
+    return NNTransformerML().fit(
+        triangle,
+        loss_field="paid_loss",
+        feature_fields=("case_reserve",),
+        level_fields=("case_reserve",) if level else (),
+        config=tiny(dependence),
+        seed=seed,
+    )
+
+
+def record_context(monkeypatch):
+    """Spy on every context mask handed to the network. Both heads funnel
+    through ``encode``, so one patch covers ``ar`` and ``joint`` alike."""
+    seen: list[np.ndarray] = []
+    real = TriangleTransformerML.encode
+
+    def spy(self, x, context_mask, *rest, **kwargs):
+        seen.append(context_mask.detach().cpu().numpy().copy())
+        return real(self, x, context_mask, *rest, **kwargs)
+
+    monkeypatch.setattr(TriangleTransformerML, "encode", spy)
+    return seen
+
+
 # -- network -------------------------------------------------------------------
 
 
@@ -95,7 +202,8 @@ def test_forward_shapes_and_validity(dependence):
     model = TriangleTransformerML(cfg, n_lines=3, n_features=2, n_w=5, n_d=4)
     b = 6
     x = torch.randn(b, 3, 2, 5, 4)
-    ctx = torch.rand(b, 3, 5, 4) > 0.5
+    # one flag per (line, CHANNEL, cell) - x's own shape
+    ctx = torch.rand(b, 3, 2, 5, 4) > 0.5
     lm = torch.ones(b, 3, dtype=torch.bool)
     # Real companies do not write every line; the line mask must be tolerated
     # by the forward pass, not just by the loss.
@@ -117,6 +225,54 @@ def test_forward_shapes_and_validity(dependence):
         diag = scale.diagonal(dim1=-2, dim2=-1)
         assert (diag > 0).all()
         assert (scale.triu(1) == 0).all()  # lower-triangular
+
+
+def test_a_channel_value_is_never_consumed_without_its_own_flag():
+    """Poison a feature channel wherever ITS flag is off; the encoding must be
+    bit-identical.
+
+    The per-cell flag this replaced could not express "target observed here,
+    feature not": it gated the whole cell, so the feature's value - which at
+    such a cell is the contract's padding zero, or the standardized image of
+    it - entered the token as though it had been observed. The poisoned cells
+    here are exactly the ones a single flag would have let through: channel 0
+    in context, channel 1 out of it.
+    """
+    torch.manual_seed(0)
+    model = TriangleTransformerML(tiny("ar"), n_lines=2, n_features=2, n_w=4, n_d=4)
+    b = 3
+    x = torch.randn(b, 2, 2, 4, 4)
+    ctx = torch.ones(b, 2, 2, 4, 4, dtype=torch.bool)
+    ctx[:, :, 1, :, 2] = False  # the feature is unobserved at dev index 2 only
+    lm = torch.ones(b, 2, dtype=torch.bool)
+    prem = torch.zeros(b, 2)
+    cutoff = torch.full((b,), 3)
+    args = (ctx, lm, prem, cutoff)
+
+    model.eval()
+    with torch.no_grad():
+        clean = model.encode(x, *args)
+        poisoned = x.clone()
+        poisoned[:, :, 1, :, 2] = 1e6
+        assert not torch.equal(x, poisoned)  # the poison really landed
+        torch.testing.assert_close(clean, model.encode(poisoned, *args), atol=0, rtol=0)
+
+
+def test_a_per_cell_context_mask_is_refused_by_name():
+    """The 0.5.3 spelling - one flag per cell - must not be accepted quietly.
+
+    It would broadcast a channel's flag onto channels it does not describe (or,
+    where the axis sizes happen to line up, produce a plausible wrong answer),
+    so the shape is checked against ``x``'s own rather than left to torch.
+    """
+    torch.manual_seed(0)
+    model = TriangleTransformerML(tiny("ar"), n_lines=2, n_features=2, n_w=4, n_d=4)
+    x = torch.randn(2, 2, 2, 4, 4)
+    per_cell = torch.ones(2, 2, 4, 4, dtype=torch.bool)
+    with pytest.raises(ValueError, match="per cell"):
+        model.encode(
+            x, per_cell, torch.ones(2, 2, dtype=torch.bool), torch.zeros(2, 2), torch.full((2,), 3)
+        )
 
 
 def test_joint_nll_marginalizes_absent_lines():
@@ -234,6 +390,142 @@ def test_predict_caches_and_reproduces(backend_name):
     entry2 = NNTransformerML().fit(t, loss_field="paid_loss", config=tiny("ar"), seed=0)
     a2 = entry2.predict(segment={"company_code": "0001"}, seed=7)
     np.testing.assert_allclose(a.samples, a2.samples)
+
+
+def test_level_fields_reaches_the_contract(backend_name):
+    """``fit(level_fields=...)`` is delivered, not merely accepted.
+
+    Read off the fitted contract's ``field_kinds``, which is the only place the
+    declaration shows up: a level channel is carried undifferenced, so an
+    argument that never reached ``nn_company_data`` would leave the case
+    reserve differenced into case MOVEMENT with every downstream number still
+    finite and plausible. The refusal is the contract's and is exercised
+    through ``fit`` for the same reason - it proves the kwarg travels.
+    """
+    t = feature_triangle(backend_name)
+    entry = fit_with_case_reserve(t)
+    assert entry.contract_["fields"] == ["paid_loss", "case_reserve"]
+    assert entry.contract_["field_kinds"] == ("increment", "level")
+
+    plain = fit_with_case_reserve(t, level=False)
+    assert plain.contract_["field_kinds"] == ("increment", "increment")
+    # a level that is not also a feature names no channel
+    with pytest.raises(ValueError, match="level_fields"):
+        NNTransformerML().fit(
+            t, loss_field="paid_loss", level_fields=("case_reserve",), config=tiny("ar"), seed=0
+        )
+
+
+def test_training_context_is_the_channels_own_observedness(backend_name, monkeypatch):
+    """Every context mask fit hands the network is the contract's ``x_obs``
+    under a calendar gate - per channel, not the target's mask repeated.
+
+    The fixture drops the case reserve from one dev column while the paid
+    target stays observed there, so the two masks genuinely differ; the last
+    assertion is what makes the test non-vacuous, requiring at least one cell
+    conditioned on for the target and NOT for the feature. Built on a single
+    company so every batch is that company and the recorded mask needs no
+    index bookkeeping.
+    """
+    seen = record_context(monkeypatch)
+    t = feature_triangle(backend_name, feature_missing_dev=2)
+    entry = fit_with_case_reserve(t)
+    c = entry.contract_
+    x_obs = c["x_obs"]  # (1, L, F, W, D)
+    assert x_obs.shape[0] == 1, "fixture must be one company for the index-free assertions"
+    assert (x_obs[:, :, 0] & ~x_obs[:, :, 1]).any(), (
+        "the fixture no longer has a cell where the target is observed and the feature is "
+        "not, so nothing here distinguishes a per-channel mask from a per-cell one"
+    )
+
+    assert seen, "no context mask was recorded - the spy is wired to the wrong method"
+    for ctx in seen:
+        assert ctx.shape[1:] == x_obs.shape[1:], "the mask lost its channel axis"
+        leaked = ctx & ~x_obs  # a flag on a cell whose channel has no usable value
+        assert not leaked.any(), (
+            f"{int(leaked.sum())} flag(s) claim a value the contract calls unusable - "
+            "the padding zero would be read as an observed value"
+        )
+    assert any((ctx[:, :, 0] & ~ctx[:, :, 1]).any() for ctx in seen), (
+        "no mask ever conditioned on the target without the feature, so a single per-cell "
+        "flag would have produced the same fit"
+    )
+
+
+def test_feature_channel_stats_come_from_its_own_observed_cells(backend_name):
+    """Per-(line, channel, dev) standardization is estimated on the cells where
+    THAT channel has a value.
+
+    Standardizing a feature on the TARGET's cells throws away every value the
+    feature has where the target has none, and at a dev where the target has
+    none at all it pins the channel - standardized to a constant 0, its own
+    values unused. The fixture drops the paid target from one dev column of
+    the first line, and the old target-gated call is recomputed and required
+    to DIFFER there, so the assertion cannot pass by coincidence.
+    """
+    t = feature_triangle(backend_name, target_missing_dev=3)
+    entry = fit_with_case_reserve(t)
+    c = entry.contract_
+    cal = c["cal_idx"]
+    _, _, val_cutoff = _scheme.splits(c["obs_mask"].any(axis=1), cal, entry.config_.val_diagonals)
+    chan_elig = c["x_obs"] & (cal[None, None, None] <= val_cutoff)
+
+    for li in range(c["x"].shape[1]):
+        mean, std, pinned = _scheme.norm_stats(c["x"][:, li], chan_elig[:, li], c["x_obs"][:, li])
+        np.testing.assert_allclose(entry.norm_["mean"][li], mean)
+        np.testing.assert_allclose(entry.norm_["std"][li], std)
+        np.testing.assert_array_equal(entry.norm_["pinned"][li], pinned)
+
+    # the target-gated form the entry used before x_obs existed, on the line
+    # whose target column is missing
+    li0 = c["lob_levels"].index("lob_0")
+    old_ctx = c["obs_mask"] & (cal[None, None] <= val_cutoff)
+    _, _, old_pinned = _scheme.norm_stats(c["x"][:, li0], old_ctx[:, li0], c["obs_mask"][:, li0])
+    assert old_pinned[1, 3] and not entry.norm_["pinned"][li0, 1, 3], (
+        "the feature's stats are the same either way; the fixture stopped exercising the "
+        "cells where the feature is observed and the target is not"
+    )
+
+
+@pytest.mark.parametrize("dependence", ["ar", "joint"])
+def test_rollout_promotes_only_the_target_channel(backend_name, monkeypatch, dependence):
+    """A sampled cell re-enters the context as a target value and nothing else.
+
+    Next year's case reserve is not simulated, so flagging it would present the
+    contract's padding zero - standardized, so not even a zero on the model's
+    scale - as an observed snapshot. Recorded off the real ``predict()`` path:
+    the feature flags must stay exactly the contract's, while the target flags
+    must grow, and both halves are asserted because a rollout that promoted
+    nothing would satisfy the first one trivially.
+    """
+    t = feature_triangle(backend_name, upper=True)
+    entry = fit_with_case_reserve(t, dependence)
+    c = entry.contract_
+    x_obs = c["x_obs"]  # (n_c, L, F, W, D)
+    n_c = x_obs.shape[0]
+
+    seen = record_context(monkeypatch)  # installed AFTER fit: rollout masks only
+    entry.predict(segment={"company_code": "0001"}, seed=0)
+    assert seen, "the rollout made no forward pass - nothing was promoted or recorded"
+
+    promoted = 0
+    for ctx in seen:
+        assert ctx.shape[1:] == x_obs.shape[1:], "the mask lost its channel axis"
+        # the rollout replicates each company `chunk` times, company-major
+        ctx = ctx.reshape(n_c, -1, *x_obs.shape[1:])
+        feature = ctx[:, :, :, 1:]
+        np.testing.assert_array_equal(
+            feature,
+            np.broadcast_to(x_obs[:, None, :, 1:], feature.shape),
+            err_msg="a feature flag moved during the rollout; only the target is fed back",
+        )
+        target = ctx[:, :, :, 0]
+        assert (target >= x_obs[:, None, :, 0]).all(), "an observed target cell left the context"
+        promoted += int((target & ~x_obs[:, None, :, 0]).sum())
+    assert promoted, (
+        "no sampled cell was ever promoted, so the feature-flag assertion above is vacuous - "
+        "the fixture has stopped leaving future cells to roll out"
+    )
 
 
 def test_predict_before_fit_raises():

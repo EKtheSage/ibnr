@@ -85,6 +85,7 @@ class ResNet(GalleryEntry, PooledMDNHeldout):
         *,
         loss_field: str = "reported_loss",
         feature_fields: tuple[str, ...] = (),
+        level_fields: tuple[str, ...] = (),
         premium_field: str = "earned_premium",
         as_of: dt.date | str | None = None,
         config: ResNetConfig | None = None,
@@ -94,7 +95,14 @@ class ResNet(GalleryEntry, PooledMDNHeldout):
     ) -> ResNet:
         """Pooled fit across every cohort (segment combination) in the
         triangle. Never fit this on a single triangle - the whole point is
-        cross-cohort pooling."""
+        cross-cohort pooling.
+
+        ``feature_fields`` names extra input channels beside the target;
+        ``level_fields`` must be a subset of them and declares which are
+        eval-date SNAPSHOTS carried undifferenced (``case_reserve``, whose
+        difference is the case movement rather than the quantity itself)
+        rather than incremental. ``kernels.nn_contract.nn_data`` owns both
+        semantics."""
         import torch
 
         from ibnr.gallery.nn.resnet import network as net
@@ -112,6 +120,7 @@ class ResNet(GalleryEntry, PooledMDNHeldout):
             train,
             loss_field=loss_field,
             feature_fields=feature_fields,
+            level_fields=level_fields,
             premium_field=premium_field,
         )
         device_str = device or "cpu"
@@ -125,7 +134,14 @@ class ResNet(GalleryEntry, PooledMDNHeldout):
         context_elig, val_target, val_cutoff = splits(
             c["obs_mask"], c["cal_idx"], cfg.val_diagonals
         )
-        mean, std, pinned = norm_stats(c["x"], context_elig, c["obs_mask"])
+        # the same window, PER CHANNEL: each channel's own usable cells inside
+        # the training window. It is what the network conditions on at
+        # validation and what the normalizer is estimated over, so a feature
+        # channel's statistics come from cells where that feature has a value
+        # rather than where the target does. Channel 0 is context_elig exactly
+        # (x_obs[:, 0] IS obs_mask), so a single-channel fit is unchanged.
+        val_ctx = c["x_obs"] & (c["cal_idx"] <= val_cutoff)[None, None]
+        mean, std, pinned = norm_stats(c["x"], val_ctx, c["x_obs"])
         prem_mean = float(np.mean(c["log_premium"]))
         prem_std = float(np.std(c["log_premium"]))
         if prem_std < 1e-8:
@@ -147,9 +163,10 @@ class ResNet(GalleryEntry, PooledMDNHeldout):
         dev = torch.device(device_str)
         xt = torch.tensor(x_norm, dtype=torch.float32, device=dev)  # (n_c, n_f, n_w, n_d)
         yt = xt[:, 0]  # (n_c, n_w, n_d) - target channel, normalized (channel 0)
-        obs_t = torch.tensor(c["obs_mask"], device=dev)
+        xobs_t = torch.tensor(c["x_obs"], device=dev)  # (n_c, n_f, n_w, n_d)
         cal_t = torch.tensor(c["cal_idx"], device=dev)
-        ctx_elig_t = torch.tensor(context_elig, device=dev)
+        ctx_elig_t = torch.tensor(context_elig, device=dev)  # target channel, for targets
+        val_ctx_t = torch.tensor(val_ctx, device=dev)  # per channel, for conditioning
         val_tgt_t = torch.tensor(val_target, device=dev)
         lob_t = torch.tensor(c["lob_idx"], dtype=torch.long, device=dev)
         prem_t = torch.tensor(
@@ -166,12 +183,17 @@ class ResNet(GalleryEntry, PooledMDNHeldout):
             ).to(dev)
 
         def train_loss(model, idx, cutoffs):
-            # condition on cells on/before the augmented cutoff, score the
-            # observed training cells strictly after it (card.md "Training").
+            # condition on each channel's own cells on/before the augmented
+            # cutoff, score the observed TARGET cells strictly after it
+            # (card.md "Training"). The rollout and the held-out path gate by
+            # observedness alone, so a feature booked past every target cell
+            # reaches them at a distance training never shows - the disclosed
+            # edge (see the transformer card's "Training" for why it is kept).
             # xt[idx] carries values PAST the cutoff too; the network zeroes
             # every non-context value before its first convolution, which the
-            # no-leak test in tests/test_resnet.py pins.
-            ctx = obs_t[idx] & (cal_t[None] <= cutoffs[:, None, None])  # (B, W, D)
+            # no-leak tests in tests/test_resnet.py pin.
+            gate = cal_t[None, None] <= cutoffs[:, None, None, None]  # (B, 1, W, D)
+            ctx = xobs_t[idx] & gate  # (B, F, W, D)
             # targets are context-eligible (never validation) cells past the cutoff
             tgt = ctx_elig_t[idx] & (cal_t[None] > cutoffs[:, None, None])  # (B, W, D)
             if not bool(tgt.any()):
@@ -181,7 +203,7 @@ class ResNet(GalleryEntry, PooledMDNHeldout):
 
         def val_loss(model):
             val_cut = torch.full((n_c,), val_cutoff, dtype=torch.long, device=dev)
-            log_pi, mu, sigma = model(xt, ctx_elig_t, lob_t, prem_t, val_cut)
+            log_pi, mu, sigma = model(xt, val_ctx_t, lob_t, prem_t, val_cut)
             return float(net.mdn_nll(log_pi, mu, sigma, yt, val_tgt_t))
 
         # deep ensemble via the shared loop (gallery/nn/_training.py): member
@@ -298,11 +320,11 @@ class ResNet(GalleryEntry, PooledMDNHeldout):
 
     def _heldout_inputs(self, ci: int) -> dict:
         """One cohort's forward inputs, conditioned on everything it had at
-        as_of: context = all its observed cells, cutoff = the deepest calendar
-        diagonal it HELD a cell on (so the held-out diagonal sits at distance 1,
-        the most-supervised relative-calendar position - the rollout's first
-        step). The cutoff spans obs cells and anchors both - see
-        ``_heldout.heldout_cutoff`` for why obs alone is not it."""
+        as_of: context = each channel's own usable cells, cutoff = the deepest
+        calendar diagonal it HELD a cell on (so the held-out diagonal sits at
+        distance 1, the most-supervised relative-calendar position - the
+        rollout's first step). The cutoff spans obs cells and anchors both -
+        see ``_heldout.heldout_cutoff`` for why obs alone is not it."""
         import torch
 
         c = self.contract_
@@ -310,12 +332,12 @@ class ResNet(GalleryEntry, PooledMDNHeldout):
         x_norm = (c["x"][ci] - self.norm_["mean"][:, None, :]) / self.norm_["std"][:, None, :]
         x_norm = np.where(self.norm_["pinned"][:, None, :], 0.0, x_norm)
         prem_norm = (c["log_premium"][ci] - self.norm_["prem_mean"]) / self.norm_["prem_std"]
-        obs = c["obs_mask"][ci]  # (n_w, n_d)
+        obs = c["x_obs"][ci]  # (n_f, n_w, n_d) usable values, per channel
         cut_level = heldout_cutoff(c, ci)
         dev = torch.device(self._device)
         return {
             "x": torch.tensor(x_norm[None], dtype=torch.float32, device=dev),
-            "ctx": torch.tensor(obs[None], device=dev),
+            "ctx": torch.tensor(obs[None], device=dev),  # (1, n_f, n_w, n_d)
             "lob": torch.tensor([c["lob_idx"][ci]], dtype=torch.long, device=dev),
             "prem": torch.tensor([prem_norm], dtype=torch.float32, device=dev),
             "cutoff": torch.tensor([cut_level], dtype=torch.long, device=dev),
@@ -363,7 +385,7 @@ class ResNet(GalleryEntry, PooledMDNHeldout):
         # definition, so sampled draws are forced to 0 -> pooled dev mean
         pin_t = torch.tensor(self.norm_["pinned"][0], device=dev)  # (n_d,) target-channel pins
         xt = torch.tensor(x_norm, dtype=torch.float32, device=dev)  # (n_c, n_f, n_w, n_d)
-        obs_t = torch.tensor(c["obs_mask"], device=dev)  # (n_c, n_w, n_d)
+        xobs_t = torch.tensor(c["x_obs"], device=dev)  # (n_c, n_f, n_w, n_d)
         fut_t = torch.tensor(future, device=dev)  # (n_c, n_w, n_d)
         cal_t = torch.tensor(c["cal_idx"], device=dev)  # (n_w, n_d)
         lob_t = torch.tensor(c["lob_idx"], dtype=torch.long, device=dev)  # (n_c,)
@@ -393,7 +415,7 @@ class ResNet(GalleryEntry, PooledMDNHeldout):
                 # (chunk*n_c, n_f, n_w, n_d); xb/ctx are mutated in-place as the
                 # rollout fills future cells, so they are cloned.
                 xb = xt.repeat_interleave(chunk, dim=0).clone()  # (chunk*n_c, n_f, n_w, n_d)
-                ctx = obs_t.repeat_interleave(chunk, dim=0).clone()  # (chunk*n_c, n_w, n_d)
+                ctx = xobs_t.repeat_interleave(chunk, dim=0).clone()  # (chunk*n_c, n_f, n_w, n_d)
                 futb = fut_t.repeat_interleave(chunk, dim=0)  # (chunk*n_c, n_w, n_d)
                 lobb = lob_t.repeat_interleave(chunk, dim=0)  # (chunk*n_c,)
                 premb = prem_t.repeat_interleave(chunk, dim=0)  # (chunk*n_c,)
@@ -415,9 +437,14 @@ class ResNet(GalleryEntry, PooledMDNHeldout):
                         # pinned devs -> 0 (pooled dev mean after unstandardizing)
                         sample = sample.masked_fill(pin_t[None, None, :], 0.0)
                         # write sampled cells into the target channel and promote
-                        # them to context for the next diagonal (autoregression)
+                        # them to context for the next diagonal (autoregression).
+                        # ONLY channel 0's flag moves: the sample is a target
+                        # increment and nothing simulates next year's features,
+                        # so a feature flag raised here would present the
+                        # contract's padding as an observed zero (card.md
+                        # "Limitations").
                         xb[:, 0][cells] = sample[cells]
-                        ctx = ctx | cells
+                        ctx[:, 0][cells] = True
                 # unstandardize the target channel back to loss ratios, then sum
                 # only the future increments per (row, origin).
                 ratios = xb[:, 0].cpu().numpy() * std0[None, None, :] + mean0[None, None, :]

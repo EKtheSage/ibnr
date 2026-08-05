@@ -70,8 +70,18 @@ HELDOUT_DIAGONAL = 7
 PINNED_DEVS = (6,)
 
 #: under-powered on purpose: nothing here reads a trained prediction for
-#: accuracy, only which cutoff the entry hands its network.
-_TINY = dict(dropout=0.0, n_components=2, batch_size=8, max_epochs=3, patience=5, ensemble_size=2)
+#: accuracy, only which cutoff the entry hands its network. ``heldout_n_draws``
+#: is the held-out diagonal's budget (10,000 by default) and is cut to 50 for
+#: the same reason as everything else here.
+_TINY = dict(
+    dropout=0.0,
+    n_components=2,
+    batch_size=8,
+    max_epochs=3,
+    patience=5,
+    ensemble_size=2,
+    heldout_n_draws=50,
+)
 
 #: name -> (entry class, fit config). Keyed by gallery name so the coverage
 #: test below can compare it against the registry directly.
@@ -186,9 +196,19 @@ def fitted():
         rows += _rows(f"lob_{k}", _square(k))
     pooled = _triangle(rows)
 
+    # feature_fields=() everywhere: the fixture triangle carries paid_loss
+    # only, and deeptriangle's default names reported_loss - which nn_data
+    # now refuses by name rather than fitting as a dead all-masked channel
+    # (the pre-0.5.4 silent behavior this fixture unknowingly leaned on).
+    # The cutoff semantics under test are single-channel anyway.
     entries = {
         name: gallery.get(name)().fit(
-            pooled, loss_field="paid_loss", as_of=AS_OF, config=CONFIGS[name], seed=0
+            pooled,
+            loss_field="paid_loss",
+            feature_fields=(),
+            as_of=AS_OF,
+            config=CONFIGS[name],
+            seed=0,
         )
         for name in ENTRY_NAMES
     }
@@ -365,7 +385,7 @@ def test_heldout_cells_still_score_on_the_hole_cohort(name, fitted):
     assert np.isfinite(ll).all()
 
     draws = entry.predict_at(cells, field="paid_loss", seed=0)
-    assert draws.shape == (CONFIGS[name].n_draws, cells.n_cells)
+    assert draws.shape == (CONFIGS[name].heldout_n_draws, cells.n_cells)
     assert np.isfinite(draws).all()
     # cumulative basis: the base class anchored the entry's increments onto each
     # cell's training predecessor, so the draws sit in the anchors' neighborhood

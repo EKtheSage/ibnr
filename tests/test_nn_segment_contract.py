@@ -69,7 +69,8 @@ TINY = MDNConfig(
     max_epochs=3,
     patience=5,
     ensemble_size=2,
-    n_draws=50,
+    n_draws=50,  # rollout draws (predict)
+    heldout_n_draws=50,  # held-out diagonal draws (predict_at); 10,000 by default
 )
 
 
@@ -181,7 +182,7 @@ def test_at_cohort_accepts_a_subset_of_the_identity(wide):
 def test_predict_at_accepts_the_full_key(wide):
     entry, cells = wide
     draws = entry.predict_at(cells, field=FIELD, seed=1)
-    assert draws.shape == (TINY.n_draws, cells.n_cells)
+    assert draws.shape == (TINY.heldout_n_draws, cells.n_cells)
     assert np.isfinite(draws).all()
 
 

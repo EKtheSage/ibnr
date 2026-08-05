@@ -227,7 +227,7 @@ class PooledMDNHeldout(ScoresHeldout, PredictsHeldout):
     **What the entry must provide.** The two abstract hooks below, plus the
     attributes every NN entry already has: ``contract_`` (the pooled
     ``nn_data`` dict), ``models_`` (the ensemble), ``norm_`` (per-(channel,
-    dev) normalization with its ``pinned`` mask), ``config_.n_draws``,
+    dev) normalization with its ``pinned`` mask), ``config_.heldout_n_draws``,
     ``_device``, ``_loss_field``, and the class-level ``name``,
     ``heldout_measure`` and ``heldout_draw_scale`` declarations. The scale
     declarations stay on the ENTRY rather than here because they are claims
@@ -410,7 +410,7 @@ class PooledMDNHeldout(ScoresHeldout, PredictsHeldout):
         return ll_z - np.log(std0[d0])[None, :]
 
     def _heldout_draws(self, ci: int, cells: CellIndex, *, rng: np.random.Generator) -> np.ndarray:
-        """``(config.n_draws, n_cells)`` INCREMENTAL dollar draws at the cells.
+        """``(config.heldout_n_draws, n_cells)`` INCREMENTAL dollar draws.
 
         One forward pass per ensemble member, conditioned on everything the
         cohort had at as_of (:meth:`_heldout_inputs`) - the held-out diagonal
@@ -420,7 +420,9 @@ class PooledMDNHeldout(ScoresHeldout, PredictsHeldout):
         and scaled by the CONTRACT's premium (:meth:`_cell_premium`) - the
         exposure the sampled ratio is a ratio TO. Draws are split across members
         exactly as ``_rollout`` splits them; per-member torch seeds derive from
-        ``rng``, so ``predict_at(seed=...)`` is reproducible.
+        ``rng``, so ``predict_at(seed=...)`` is reproducible. The COUNT is the
+        held-out budget, not the rollout's - one diagonal is one forward pass
+        per member, so the board's 10,000 draws cost what a rollout could not.
 
         Pinned devs keep rollout semantics: the sampled ``z`` is forced to 0,
         i.e. the pooled dev mean after un-standardizing - a point-mass column,
@@ -453,8 +455,12 @@ class PooledMDNHeldout(ScoresHeldout, PredictsHeldout):
         d0_t = torch.as_tensor(d0, device=dev)
         pin_t = torch.as_tensor(pin_cells, device=dev)
 
-        # split the requested draws across members exactly like _rollout
-        n_draws = self.config_.n_draws
+        # split the requested draws across members exactly like _rollout.
+        # config_.n_draws is the ROLLOUT's budget and is not read here: a
+        # held-out diagonal costs one forward pass per member whatever the draw
+        # count, so the two are sized independently and this path carries the
+        # 10,000 draws the rest of the leaderboard is scored on.
+        n_draws = self.config_.heldout_n_draws
         n_members = len(self.models_)
         member_draws = [n_draws // n_members] * n_members
         for i in range(n_draws % n_members):

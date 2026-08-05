@@ -50,3 +50,11 @@ class TransformerConfig:
     # predictive
     ensemble_size: int = 5  # deep-ensemble members (distinct seeds) -> epistemic spread
     n_draws: int = 1000  # posterior-predictive draws, pooled across members
+    # A SEPARATE budget from n_draws, because the two cost different things:
+    # n_draws pays for predict()'s rollout, which re-runs the network once per
+    # future diagonal, while the held-out draws behind predict_at cover ONE
+    # diagonal - a single forward pass per ensemble member and then mixture
+    # sampling, so 10,000 is cheap here and the same count in a rollout is not.
+    # 10,000 is what every other CRPS-capable entry puts on the board (the
+    # Bayesian posteriors' 4x2500; mack's fit kwarg, whose name this borrows).
+    heldout_n_draws: int = 10_000

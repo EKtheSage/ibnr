@@ -83,6 +83,7 @@ class MDN(GalleryEntry, PooledMDNHeldout):
         *,
         loss_field: str = "reported_loss",
         feature_fields: tuple[str, ...] = (),
+        level_fields: tuple[str, ...] = (),
         premium_field: str = "earned_premium",
         as_of: dt.date | str | None = None,
         config: MDNConfig | None = None,
@@ -92,7 +93,14 @@ class MDN(GalleryEntry, PooledMDNHeldout):
     ) -> MDN:
         """Pooled fit across every cohort (segment combination) in the
         triangle. Never fit this on a single triangle - the whole point is
-        cross-cohort pooling."""
+        cross-cohort pooling.
+
+        ``feature_fields`` names extra input channels; ``level_fields`` (a
+        subset of them) names the ones carried UNDIFFERENCED, for fields that
+        are eval-date snapshots rather than amounts that accumulate -
+        ``case_reserve`` is the motivating one. See
+        ``kernels.nn_contract.nn_data`` for the semantics; the entry only
+        threads them through."""
         import torch
 
         from ibnr.gallery.nn.mdn import network as net
@@ -110,6 +118,7 @@ class MDN(GalleryEntry, PooledMDNHeldout):
             train,
             loss_field=loss_field,
             feature_fields=feature_fields,
+            level_fields=level_fields,
             premium_field=premium_field,
         )
         device_str = device or "cpu"
@@ -123,7 +132,13 @@ class MDN(GalleryEntry, PooledMDNHeldout):
         context_elig, val_target, val_cutoff = splits(
             c["obs_mask"], c["cal_idx"], cfg.val_diagonals
         )
-        mean, std, pinned = norm_stats(c["x"], context_elig, c["obs_mask"])
+        # the per-CHANNEL training window: each channel's own usable cells under
+        # the calendar constraint the target's context obeys. It is what the
+        # network conditions on at validation and what the normalizer estimates
+        # from, so a feature channel's stats come from the cells where that
+        # feature has a value rather than from the cells where the target does.
+        chan_elig = c["x_obs"] & (c["cal_idx"] <= val_cutoff)  # (n_c, n_f, n_w, n_d)
+        mean, std, pinned = norm_stats(c["x"], chan_elig, c["x_obs"])
         prem_mean = float(np.mean(c["log_premium"]))
         prem_std = float(np.std(c["log_premium"]))
         if prem_std < 1e-8:
@@ -145,9 +160,10 @@ class MDN(GalleryEntry, PooledMDNHeldout):
         dev = torch.device(device_str)
         xt = torch.tensor(x_norm, dtype=torch.float32, device=dev)  # (n_c, n_f, n_w, n_d)
         yt = xt[:, 0]  # (n_c, n_w, n_d) - target channel, normalized (channel 0)
-        obs_t = torch.tensor(c["obs_mask"], device=dev)
+        x_obs_t = torch.tensor(c["x_obs"], device=dev)  # (n_c, n_f, n_w, n_d)
         cal_t = torch.tensor(c["cal_idx"], device=dev)
-        ctx_elig_t = torch.tensor(context_elig, device=dev)
+        chan_elig_t = torch.tensor(chan_elig, device=dev)  # (n_c, n_f, n_w, n_d) context
+        tgt_elig_t = torch.tensor(context_elig, device=dev)  # (n_c, n_w, n_d) target channel
         val_tgt_t = torch.tensor(val_target, device=dev)
         lob_t = torch.tensor(c["lob_idx"], dtype=torch.long, device=dev)
         prem_t = torch.tensor(
@@ -164,11 +180,12 @@ class MDN(GalleryEntry, PooledMDNHeldout):
             ).to(dev)
 
         def train_loss(model, idx, cutoffs):
-            # condition on cells on/before the augmented cutoff, score the
-            # observed training cells strictly after it (card.md "Training")
-            ctx = obs_t[idx] & (cal_t[None] <= cutoffs[:, None, None])  # (B, W, D)
+            # condition on each channel's own cells on/before the augmented
+            # cutoff, score the observed TARGET cells strictly after it
+            # (card.md "Training")
+            ctx = x_obs_t[idx] & (cal_t[None, None] <= cutoffs[:, None, None, None])  # (B,F,W,D)
             # targets are context-eligible (never validation) cells past the cutoff
-            tgt = ctx_elig_t[idx] & (cal_t[None] > cutoffs[:, None, None])  # (B, W, D)
+            tgt = tgt_elig_t[idx] & (cal_t[None] > cutoffs[:, None, None])  # (B, W, D)
             if not bool(tgt.any()):
                 return None
             log_pi, mu, sigma = model(xt[idx], ctx, lob_t[idx], prem_t[idx], cutoffs)
@@ -176,7 +193,7 @@ class MDN(GalleryEntry, PooledMDNHeldout):
 
         def val_loss(model):
             val_cut = torch.full((n_c,), val_cutoff, dtype=torch.long, device=dev)
-            log_pi, mu, sigma = model(xt, ctx_elig_t, lob_t, prem_t, val_cut)
+            log_pi, mu, sigma = model(xt, chan_elig_t, lob_t, prem_t, val_cut)
             return float(net.mdn_nll(log_pi, mu, sigma, yt, val_tgt_t))
 
         # deep ensemble via the shared loop (gallery/nn/_training.py): member
@@ -292,11 +309,11 @@ class MDN(GalleryEntry, PooledMDNHeldout):
 
     def _heldout_inputs(self, ci: int) -> dict:
         """One cohort's forward inputs, conditioned on everything it had at
-        as_of: context = all its observed cells, cutoff = the deepest calendar
-        diagonal it HELD a cell on (so the held-out diagonal sits at distance 1,
-        the most-supervised relative-calendar position - the rollout's first
-        step). The cutoff spans obs cells and anchors both - see
-        ``_heldout.heldout_cutoff`` for why obs alone is not it."""
+        as_of: context = each channel's own usable cells, cutoff = the deepest
+        calendar diagonal it HELD a cell on (so the held-out diagonal sits at
+        distance 1, the most-supervised relative-calendar position - the
+        rollout's first step). The cutoff spans obs cells and anchors both -
+        see ``_heldout.heldout_cutoff`` for why obs alone is not it."""
         import torch
 
         c = self.contract_
@@ -304,12 +321,12 @@ class MDN(GalleryEntry, PooledMDNHeldout):
         x_norm = (c["x"][ci] - self.norm_["mean"][:, None, :]) / self.norm_["std"][:, None, :]
         x_norm = np.where(self.norm_["pinned"][:, None, :], 0.0, x_norm)
         prem_norm = (c["log_premium"][ci] - self.norm_["prem_mean"]) / self.norm_["prem_std"]
-        obs = c["obs_mask"][ci]  # (n_w, n_d)
+        x_obs = c["x_obs"][ci]  # (n_f, n_w, n_d) per-channel usable values
         cut_level = heldout_cutoff(c, ci)
         dev = torch.device(self._device)
         return {
             "x": torch.tensor(x_norm[None], dtype=torch.float32, device=dev),
-            "ctx": torch.tensor(obs[None], device=dev),
+            "ctx": torch.tensor(x_obs[None], device=dev),
             "lob": torch.tensor([c["lob_idx"][ci]], dtype=torch.long, device=dev),
             "prem": torch.tensor([prem_norm], dtype=torch.float32, device=dev),
             "cutoff": torch.tensor([cut_level], dtype=torch.long, device=dev),
@@ -356,7 +373,7 @@ class MDN(GalleryEntry, PooledMDNHeldout):
         # definition, so sampled draws are forced to 0 -> pooled dev mean
         pin_t = torch.tensor(self.norm_["pinned"][0], device=dev)  # (n_d,) target-channel pins
         xt = torch.tensor(x_norm, dtype=torch.float32, device=dev)  # (n_c, n_f, n_w, n_d)
-        obs_t = torch.tensor(c["obs_mask"], device=dev)  # (n_c, n_w, n_d)
+        x_obs_t = torch.tensor(c["x_obs"], device=dev)  # (n_c, n_f, n_w, n_d)
         fut_t = torch.tensor(future, device=dev)  # (n_c, n_w, n_d)
         cal_t = torch.tensor(c["cal_idx"], device=dev)  # (n_w, n_d)
         lob_t = torch.tensor(c["lob_idx"], dtype=torch.long, device=dev)  # (n_c,)
@@ -386,7 +403,7 @@ class MDN(GalleryEntry, PooledMDNHeldout):
                 # (chunk*n_c, n_f, n_w, n_d); xb/ctx are mutated in-place as the
                 # rollout fills future cells, so they are cloned.
                 xb = xt.repeat_interleave(chunk, dim=0).clone()  # (chunk*n_c, n_f, n_w, n_d)
-                ctx = obs_t.repeat_interleave(chunk, dim=0).clone()  # (chunk*n_c, n_w, n_d)
+                ctx = x_obs_t.repeat_interleave(chunk, dim=0).clone()  # (chunk*n_c,n_f,n_w,n_d)
                 futb = fut_t.repeat_interleave(chunk, dim=0)  # (chunk*n_c, n_w, n_d)
                 lobb = lob_t.repeat_interleave(chunk, dim=0)  # (chunk*n_c,)
                 premb = prem_t.repeat_interleave(chunk, dim=0)  # (chunk*n_c,)
@@ -408,9 +425,13 @@ class MDN(GalleryEntry, PooledMDNHeldout):
                         # pinned devs -> 0 (pooled dev mean after unstandardizing)
                         sample = sample.masked_fill(pin_t[None, None, :], 0.0)
                         # write sampled cells into the target channel and promote
-                        # them to context: the next diagonal's summary sees them
+                        # them to context: the next diagonal's summary sees them.
+                        # ONLY channel 0's flag is set - the feature channels of a
+                        # future cell are genuinely unobserved, and flagging them
+                        # would present the contract's standardized padding as a
+                        # reported value.
                         xb[:, 0][cells] = sample[cells]
-                        ctx = ctx | cells
+                        ctx[:, 0][cells] = True
                 # unstandardize the target channel back to loss ratios, then sum
                 # only the future increments per (row, origin).
                 ratios = xb[:, 0].cpu().numpy() * std0[None, None, :] + mean0[None, None, :]

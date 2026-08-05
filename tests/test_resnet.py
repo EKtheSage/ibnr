@@ -5,14 +5,20 @@ What this file protects, in three layers:
 
 1. **Network.** The residual conv encoder emits a valid mixture density at
    every cell (normalized weights, positive sigmas) and can overfit one batch
-   (gradients flow through the conv stack, the mask channel and the MDN head).
-   The **receptive-field no-leak test is the load-bearing one for a conv
+   (gradients flow through the conv stack, the mask channels and the MDN head).
+   The **receptive-field no-leak tests are the load-bearing ones for a conv
    body**: convolutions see the whole grid - there is no attention mask to
    hide a cell architecturally - so the ONLY thing standing between the model
    and the future is the input construction zeroing every non-context value.
-   Poisoning a beyond-cutoff cell must leave the output bit-identical.
+   Poisoning a beyond-cutoff cell must leave the output bit-identical, and so
+   must poisoning a channel the mask leaves off at a cell another channel is
+   on at, since observedness is per channel.
 2. **Entry.** PredictiveDistribution layout, anchoring of fully developed
-   origins, and fit/predict determinism under an explicit seed.
+   origins, fit/predict determinism under an explicit seed, and the
+   per-channel conditioning: the context reaching the network during fit()
+   never claims a feature the contract has no usable value for, a promoted
+   rollout cell advances the TARGET channel's flag alone, and
+   ``level_fields`` reaches the contract as an undifferenced channel.
 3. **Held-out wiring.** The transformer's exact pattern over the shared
    per-cohort adapter: draw shape/seed/anchor, the pinned-dev asymmetry
    (draws point-mass, density refused), wrong-cohort refusal, and
@@ -37,11 +43,12 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
+import pandas as pd
 import pytest
 
 torch = pytest.importorskip("torch")
 
-from ibnr import gallery  # noqa: E402
+from ibnr import Triangle, gallery  # noqa: E402
 from ibnr.gallery.entry import PredictsHeldout, ScoresHeldout  # noqa: E402
 from ibnr.gallery.nn.resnet.config import ResNetConfig  # noqa: E402
 from ibnr.gallery.nn.resnet.model import ResNet  # noqa: E402
@@ -63,7 +70,8 @@ TINY = ResNetConfig(
     max_epochs=3,
     patience=5,
     ensemble_size=2,
-    n_draws=50,
+    n_draws=50,  # rollout draws (predict)
+    heldout_n_draws=50,  # held-out diagonal draws (predict_at); 10,000 by default
 )
 
 START = 2000
@@ -95,6 +103,39 @@ def synthetic_triangle(backend_name):
     return make_multiline_triangle(backend_name, lobs, premium_by_lob=prem, start_year=START)
 
 
+def two_field_triangle(backend_name, *, feature_field="reported_loss", drop_first_dev=False):
+    """The same squares plus a SECOND field, so F = 2 fits are exercised.
+
+    ``make_multiline_triangle`` emits one loss field per call, so the two are
+    built separately and concatenated (the idiom tests/test_deeptriangle.py
+    uses). ``drop_first_dev`` removes the feature's first dev column, which
+    makes its usable increments a STRICT subset of the target's - dev steps 1
+    and 2 lose theirs, one for want of a cell and the next for want of a
+    predecessor. That asymmetry is what per-channel observedness exists to
+    represent, and a mask built from the target's alone would claim both cells.
+    """
+    cum = _matrices()
+    feat = cum * 1.15  # a correlated second field; nothing here reads its level
+    if drop_first_dev:
+        feat = feat.copy()
+        feat[:, :, 0] = np.nan
+    prem = np.full(6, 1000.0)
+    target = make_multiline_triangle(
+        backend_name,
+        {"lob_0": cum[0], "lob_1": cum[1]},
+        premium_by_lob={"lob_0": prem, "lob_1": prem},
+        start_year=START,
+    )
+    feature = make_multiline_triangle(
+        backend_name,
+        {"lob_0": feat[0], "lob_1": feat[1]},
+        loss_field=feature_field,
+        start_year=START,
+    )
+    df = pd.concat([target.execute(), feature.execute()], ignore_index=True)
+    return Triangle.from_long(df, measure="cumulative", backend=backend_name)
+
+
 # -- network -------------------------------------------------------------------
 
 
@@ -108,13 +149,14 @@ def test_forward_shapes_and_validity():
     """The MDN head is a valid density at every cell of a NON-square grid
     (n_w != n_d catches a W/D transposition in the head's permute/reshape):
     one (log_pi, mu, sigma) triple per (batch, origin, dev, component), sigma
-    strictly positive, mixture weights normalized (logsumexp == 0)."""
+    strictly positive, mixture weights normalized (logsumexp == 0). The context
+    mask is PER CHANNEL - (B, F, W, D), one flag per value channel."""
     cfg = TINY
     torch.manual_seed(0)
     model = TriangleResNet(cfg, n_lob=3, n_features=2, n_w=5, n_d=4)
     b = 7
     x = torch.randn(b, 2, 5, 4)
-    ctx = torch.rand(b, 5, 4) > 0.5
+    ctx = torch.rand(b, 2, 5, 4) > 0.5
     lob = torch.randint(0, 3, (b,))
     prem = torch.randn(b)
     cutoff = torch.randint(1, 8, (b,))
@@ -166,9 +208,9 @@ def test_overfit_one_batch():
     cfg = TINY
     model = TriangleResNet(cfg, n_lob=1, n_features=1, n_w=4, n_d=4)
     x = torch.randn(8, 1, 4, 4)
-    ctx = torch.zeros(8, 4, 4, dtype=torch.bool)
-    ctx[:, :, :2] = True  # first two dev lags are context; the rest are targets
-    tgt = ~ctx
+    ctx = torch.zeros(8, 1, 4, 4, dtype=torch.bool)  # (B, F, W, D), one flag per channel
+    ctx[:, :, :, :2] = True  # first two dev lags are context; the rest are targets
+    tgt = ~ctx[:, 0]  # the loss scores the TARGET channel's cells
     y = x[:, 0]
     lob = torch.zeros(8, dtype=torch.long)
     prem = torch.zeros(8)
@@ -196,8 +238,8 @@ def test_receptive_field_no_leak_beyond_cutoff():
     hiding future cells architecturally - so the only protection against
     conditioning on the future is the input construction: every value channel
     must be zeroed outside the context mask before the first convolution
-    (``x * flag`` in the forward), with the mask itself supplied as an input
-    channel so "zeroed" stays distinguishable from "a zero increment".
+    (``x * flags`` in the forward), with the masks themselves supplied as input
+    channels so "zeroed" stays distinguishable from "a zero increment".
 
     Poison EVERY beyond-cutoff cell in EVERY value channel with 1e6 and the
     output must be bit-identical everywhere - in particular at the
@@ -216,7 +258,7 @@ def test_receptive_field_no_leak_beyond_cutoff():
     cal = torch.arange(n_w)[:, None] + torch.arange(n_d)[None, :] + 1  # (W, D) 1-based diagonal
     cut = 4
     cutoff = torch.full((b,), cut, dtype=torch.long)
-    ctx = (cal <= cut).expand(b, n_w, n_d)  # condition on diagonals 1..4
+    ctx = (cal <= cut).expand(b, 2, n_w, n_d)  # every channel conditions on diagonals 1..4
     x = torch.randn(b, 2, n_w, n_d)
     lob = torch.randint(0, 2, (b,))
     prem = torch.randn(b)
@@ -224,6 +266,44 @@ def test_receptive_field_no_leak_beyond_cutoff():
         base = model(x, ctx, lob, prem, cutoff)
         x_poisoned = x.clone()
         x_poisoned[:, :, cal > cut] = 1e6  # all channels, every beyond-cutoff cell
+        poisoned = model(x_poisoned, ctx, lob, prem, cutoff)
+    assert bool((x_poisoned != x).any())  # the poison really landed
+    for a, p in zip(base, poisoned, strict=True):
+        torch.testing.assert_close(a, p, atol=0.0, rtol=0.0)  # bit-identical
+
+
+def test_a_masked_off_channel_cannot_reach_the_output():
+    """The per-channel half of the same guarantee, and the one the test above
+    cannot make: there it is a whole CELL that is off, so any gating rule
+    passes it.
+
+    Observedness is per channel (``nn_contract``'s ``x_obs``) - a feature can
+    be missing at a cell whose target is observed, where the contract's value
+    is a padding zero. So poison every (channel, cell) the mask leaves off,
+    including cells another channel is on at, and the output must be
+    bit-identical. Zero tolerance for the same reason as above: 1e6 * 0.0 is
+    exactly 0.0, so any difference means a poisoned value reached a
+    convolution.
+
+    Mutation this must catch: gating every channel with one flag
+    (``x * flags[:, :1]``), which passes the cutoff test - where the channels
+    share a mask - while reading an absent feature as an observed zero.
+    """
+    torch.manual_seed(0)
+    n_w = n_d = 6
+    model = TriangleResNet(TINY, n_lob=2, n_features=2, n_w=n_w, n_d=n_d)
+    model.eval()
+    b = 3
+    gen = torch.Generator().manual_seed(1)
+    ctx = torch.rand(b, 2, n_w, n_d, generator=gen) > 0.4
+    assert bool((ctx[:, 0] != ctx[:, 1]).any())  # the channels genuinely disagree
+    x = torch.randn(b, 2, n_w, n_d)
+    lob = torch.randint(0, 2, (b,))
+    prem = torch.randn(b)
+    cutoff = torch.full((b,), 4, dtype=torch.long)
+    with torch.no_grad():
+        base = model(x, ctx, lob, prem, cutoff)
+        x_poisoned = torch.where(ctx, x, torch.full_like(x, 1e6))
         poisoned = model(x_poisoned, ctx, lob, prem, cutoff)
     assert bool((x_poisoned != x).any())  # the poison really landed
     for a, p in zip(base, poisoned, strict=True):
@@ -274,6 +354,147 @@ def test_predict_caches_rollout_and_is_reproducible(backend_name):
     entry2 = ResNet().fit(t, loss_field="paid_loss", config=TINY, seed=0)
     a2 = entry2.predict(segment=SEG0, seed=7)
     np.testing.assert_allclose(a.samples, a2.samples)
+
+
+# -- per-channel conditioning and level_fields ---------------------------------
+
+
+def _spy_on_forward(monkeypatch) -> list[np.ndarray]:
+    """Record every context mask the network is handed, in call order."""
+    seen: list[np.ndarray] = []
+    real_forward = TriangleResNet.forward
+
+    def spy(self, x, context_mask, *rest, **kwargs):
+        seen.append(context_mask.detach().cpu().numpy().copy())
+        return real_forward(self, x, context_mask, *rest, **kwargs)
+
+    monkeypatch.setattr(TriangleResNet, "forward", spy)
+    return seen
+
+
+def test_training_context_is_gated_per_channel(monkeypatch):
+    """Every context mask reaching the network during fit() is (B, F, W, D),
+    and the feature channel's flags never claim a cell that feature has no
+    usable value at.
+
+    The fixture drops the feature's first dev column, so its usable increments
+    are a strict subset of the target's. A context built from ``obs_mask``
+    broadcast over the channels - the shape this entry carried before
+    per-channel observedness - would flag those cells as observed, and the
+    contract's value there is a padding zero: the network would read an
+    absent feature as a zero increment. Validation passes are recorded by the
+    same spy and held to the same rule, one fixed cutoff later.
+    """
+    t = two_field_triangle("duckdb", drop_first_dev=True)
+    seen = _spy_on_forward(monkeypatch)
+    entry = ResNet().fit(
+        t, loss_field="paid_loss", feature_fields=("reported_loss",), config=TINY, seed=0
+    )
+    c = entry.contract_
+    feature_obs = c["x_obs"][:, 1]  # (n_c, n_w, n_d)
+    assert (feature_obs == feature_obs[0]).all()  # both cohorts share the pattern
+    assert not feature_obs[0][:, :2].any()  # dev steps 1-2 have no usable increment
+    assert seen, "no forward pass was recorded - the spy is wired to the wrong method"
+
+    for k, ctx in enumerate(seen):
+        assert ctx.shape[1:] == (2, c["n_w"], c["n_d"])
+        leaked = int((ctx[:, 1] & ~feature_obs[0][None]).sum())
+        assert not leaked, (
+            f"forward pass {k}: {leaked} feature-channel flag(s) sit where the feature "
+            "has no usable value - the context is the target's mask over every channel, "
+            "not each channel's own"
+        )
+    assert any(bool((ctx[:, 0] & ~ctx[:, 1]).any()) for ctx in seen), (
+        "the two channels' contexts never differed, so the assertions above are vacuous"
+    )
+
+
+def test_rollout_promotes_only_the_target_channel(monkeypatch):
+    """A promoted rollout cell raises CHANNEL 0's context flag and nothing else.
+
+    The sampled value is a target increment and nothing simulates next year's
+    features, so their flags must stay off. Promoting the whole cell - which is
+    what one flag per cell forced - told the network the feature channels were
+    OBSERVED there, where the contract holds padding: the rollout conditioned on
+    a fabricated zero increment, and on one more of them per diagonal.
+
+    Spied on the arguments the network actually received during ``predict()``,
+    which is the only place the promotion is visible: every ultimate the rollout
+    returns is finite and plausible either way.
+    """
+    t = two_field_triangle("duckdb")
+    entry = ResNet().fit(
+        t,
+        loss_field="paid_loss",
+        feature_fields=("reported_loss",),
+        as_of=AS_OF,
+        config=TINY,
+        seed=0,
+    )
+    seen = _spy_on_forward(monkeypatch)  # after the fit: rollout passes only
+    entry.predict(segment=SEG0, seed=0)
+    assert len(seen) > 1, "the rollout made one pass, so no promotion happened to check"
+
+    base = seen[0]
+    for k, ctx in enumerate(seen):
+        np.testing.assert_array_equal(
+            ctx[:, 1],
+            base[:, 1],
+            err_msg=f"forward pass {k}: a feature-channel flag moved during the rollout",
+        )
+        assert not (base[:, 0] & ~ctx[:, 0]).any()  # the target's context only grows
+    promoted = seen[-1][:, 0] & ~base[:, 0]
+    assert promoted.any(), "no cell was promoted - the fixture has no future cells"
+    assert not (seen[-1][:, 1] & promoted).any()
+
+
+def test_heldout_inputs_carry_each_channels_own_flags():
+    """The held-out forward conditions on the contract's ``x_obs`` for that
+    cohort - the same per-channel mask fit() and the rollout use - rather than
+    the target's mask over every channel."""
+    t = two_field_triangle("duckdb", drop_first_dev=True)
+    entry = ResNet().fit(
+        t,
+        loss_field="paid_loss",
+        feature_fields=("reported_loss",),
+        as_of=AS_OF,
+        config=TINY,
+        seed=0,
+    )
+    ci = entry.cohort_index(SEG0)
+    c = entry.contract_
+    ctx = entry._heldout_inputs(ci)["ctx"].cpu().numpy()
+    assert ctx.shape == (1, 2, c["n_w"], c["n_d"])
+    np.testing.assert_array_equal(ctx[0], c["x_obs"][ci])
+    # non-vacuous: the feature is unusable at cells the target is observed at
+    assert (ctx[0, 0] & ~ctx[0, 1]).any()
+
+
+def test_level_fields_reaches_the_contract():
+    """``fit(level_fields=...)`` is threaded to ``nn_data``, which carries that
+    channel UNDIFFERENCED: an eval-date snapshot such as ``case_reserve`` is
+    not an amount that accumulates, and its difference is the case *movement*
+    rather than the outstanding level.
+
+    Asserted on the channel's VALUES, not on the kwarg being accepted: the
+    level channel must equal snapshot / premium at every cell, which a
+    differenced channel cannot match.
+    """
+    t = two_field_triangle("duckdb", feature_field="case_reserve")
+    entry = ResNet().fit(
+        t,
+        loss_field="paid_loss",
+        feature_fields=("case_reserve",),
+        level_fields=("case_reserve",),
+        config=TINY,
+        seed=0,
+    )
+    c = entry.contract_
+    assert c["field_kinds"] == ("increment", "level")
+    ci = entry.cohort_index(SEG0)
+    np.testing.assert_allclose(c["x"][ci, 1], _matrices()[0] * 1.15 / 1000.0)
+    # a level needs no predecessor, so every cell of a full square is usable
+    assert c["x_obs"][ci, 1].all()
 
 
 # -- held-out wiring -----------------------------------------------------------
@@ -339,8 +560,8 @@ def test_fixture_and_declarations(fitted):
 
 
 def test_predict_at_shape_seed_and_anchor(fitted):
-    """Draw contract: (config.n_draws, n_cells); reproducible per seed; live
-    cells have genuine spread; pinned cells are the exact point mass at
+    """Draw contract: (config.heldout_n_draws, n_cells); reproducible per seed;
+    live cells have genuine spread; pinned cells are the exact point mass at
     anchor + premium * pooled dev mean; and the incremental-to-cumulative
     anchoring is the BASE CLASS's doing - ``predict_at`` must equal the native
     incremental draws plus each cell's training-diagonal predecessor.
@@ -353,7 +574,7 @@ def test_predict_at_shape_seed_and_anchor(fitted):
     entry = fitted.entry
     cells = fitted.cells0
     a = entry.predict_at(cells, field="paid_loss", seed=11)
-    assert a.shape == (TINY.n_draws, 5)
+    assert a.shape == (TINY.heldout_n_draws, 5)
     assert np.isfinite(a).all()
     b = entry.predict_at(cells, field="paid_loss", seed=11)
     np.testing.assert_array_equal(a, b)
@@ -413,7 +634,10 @@ def test_predict_at_draw_mean_matches_the_mixture(fitted):
 
     n_draws = 4000  # divisible by ensemble_size, so the member split is even
     keep = entry.config_
-    entry.config_ = replace(keep, n_draws=n_draws)
+    # the HELD-OUT budget is what _draws_native spends; the rollout's n_draws
+    # would leave this at the fixture's 50 and the moment check with 9x the
+    # Monte Carlo error the tolerance below is written against
+    entry.config_ = replace(keep, heldout_n_draws=n_draws)
     try:
         native = view._draws_native(idx, rng=np.random.default_rng(5))
     finally:
@@ -440,7 +664,7 @@ def test_log_lik_refused_at_pinned_devs_but_draws_survive(fitted):
     with pytest.raises(ValueError, match=r"pinned dev step\(s\) \[6\]"):
         fitted.entry.log_lik_at(cells, field="paid_loss")
     draws = fitted.entry.predict_at(cells, field="paid_loss", seed=0)
-    assert draws.shape == (TINY.n_draws, 5)
+    assert draws.shape == (TINY.heldout_n_draws, 5)
 
     # and the unpinned subset scores cleanly on the density axis too
     ll = fitted.entry.log_lik_at(_split(cells, pinned=False), field="paid_loss")

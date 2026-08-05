@@ -23,8 +23,19 @@ accident of plumbing.
 `kernels.nn_contract.nn_data`, unchanged from the transformer: a *cohort* is
 one company x line of business; targets are **incremental loss ratios**
 (incremental loss / origin premium); extra channels via `feature_fields`.
-Per-(channel, dev) standardization statistics are computed from
-training-context cells only, with the **pinned** rule for devs having fewer
+`fit(level_fields=...)` names the feature channels that are eval-date
+SNAPSHOTS - `case_reserve` is the motivating one, whose difference is the case
+*movement* while the informative quantity is the outstanding level - and those
+are carried undifferenced. It must be a subset of `feature_fields`, and the
+target cannot be one; `nn_contract` owns both rules and refuses by name.
+
+Observedness is **per channel** (the contract's `x_obs`), not one flag for the
+whole cell: a feature can be missing where the target is observed and present
+where it is not, so the network conditions on each channel under its own mask.
+The contract's zeros are padding for either kind of hole and never a value.
+
+Per-(channel, dev) standardization statistics are computed from each channel's
+own training-context cells only, with the **pinned** rule for devs having fewer
 than two context values (standardized value defined as 0, mean from all
 observed cells at that dev, std 1; rollout draws forced to the pooled dev
 mean). The pinning is the shared `gallery/nn/_scheme.py` implementation - the
@@ -34,12 +45,15 @@ v2 fix - not a re-derivation.
 
 Input is an image-like stack of per-cell channels over the (n_w, n_d) grid:
 
-- the F standardized value channels, **zeroed outside the context mask**;
-- the **context mask itself as an explicit input channel**. The contract's
-  zeros are padding, never data (every consumer gates on the mask), and for
-  a conv body the mask-as-channel is how the network learns that: it is the
-  only signal separating "zero because unobserved/future" from "zero because
-  a zero increment was observed";
+- the F standardized value channels, each **zeroed outside its own context
+  mask**;
+- **those F masks as explicit input channels**, one per value channel. The
+  contract's zeros are padding, never data (every consumer gates on the mask),
+  and for a conv body the mask-as-channel is how the network learns that: it
+  is the only signal separating "zero because unobserved/future" from "zero
+  because a zero increment was observed". Per channel rather than per cell,
+  because a feature missing at a cell whose target is observed is not a
+  feature of zero;
 - a **relative calendar channel**: distance past the conditioning cutoff,
   clamped to [0, n_d] exactly like the transformer's `dist_emb`, scaled by
   1/n_d. Relative, never absolute - forecast diagonals lie past the training
@@ -86,12 +100,13 @@ variant that wants it must first answer the leakage argument above.)
 **Leakage and the receptive field.** A convolution sees the whole grid -
 unlike attention there is no mask argument to hide a cell architecturally.
 What protects against conditioning on the future is the input construction:
-value channels are multiplied by the context flag before the first
-convolution, so a beyond-cutoff cell contributes only its (mask=0, distance)
-position, never its value. This is pinned by the receptive-field no-leak
-test in `tests/test_resnet.py`: poison a beyond-cutoff cell's value and the
-network's output must be bit-identical everywhere. That test is the
-load-bearing one for a conv body.
+each value channel is multiplied by its own context flag before the first
+convolution, so a beyond-cutoff cell - or a cell where that one channel has no
+value - contributes only its (mask=0, distance) position, never its value.
+This is pinned by two no-leak tests in `tests/test_resnet.py`: poison a
+beyond-cutoff cell's value, and poison a whole masked-off feature channel, and
+the network's output must be bit-identical everywhere. They are the
+load-bearing tests for a conv body.
 
 ## Training
 
@@ -109,9 +124,11 @@ regime and disclosed here; systematic HPO is deferred to `kernels/tuning.py`.
 
 Autoregressive **diagonal-by-diagonal rollout**, the same scheme as the
 transformer: sample every future cell on the next calendar diagonal from the
-MDN, insert the samples as context (the context flag advances with them),
-re-encode, continue; ultimates = anchor cumulative + premium x summed sampled
-future increments; draws pooled over the ensemble members (default 1000).
+MDN, insert the samples as context (the TARGET channel's flag advances with
+them, and only that channel's - nothing simulated next year's features, so
+their flags stay off), re-encode, continue; ultimates = anchor cumulative +
+premium x summed sampled future increments; draws pooled over the ensemble
+members (default 1000).
 `predict(segment=...)` slices the cached global rollout - fit once, score
 every company. Per-line draws are INDEPENDENT: this entry models no
 cross-line dependence and emits no diversified total.
@@ -127,7 +144,8 @@ unchanged. `resnet` adds only the two abstract hooks, `_heldout_inputs` and
 from it in the encoder alone.
 
 - **Draw scale: `incremental`.** One forward pass per ensemble member at
-  cutoff = the cohort's as_of diagonal, `mdn_sample` at the requested cells,
+  cutoff = the cohort's as_of diagonal, conditioned on each channel's own
+  observed cells as fit() and the rollout are, `mdn_sample` at the requested cells,
   un-standardized (`z * std0[d] + mean0[d]`) and scaled by premium; the base
   class anchors onto the training-diagonal predecessor.
 - **Density measure: `loss_ratio`.** Per member, the mixture log density of
@@ -177,7 +195,13 @@ pred.summary(observed=realized)  # same Meyers-style table as every entry
   the ablation - if the transformer beats this entry, global attention earns
   its keep; if not, locality was enough.
 - Feature channels are not simulated during rollout - future cells feed back
-  the target channel only.
+  the target channel only, and a promoted cell raises the target's context
+  flag alone. So the rollout conditions on progressively FEWER observed
+  features the further past as_of it steps, which is an honest loss of
+  information and is the reason to prefer features that are informative early.
+  What it no longer does is read a fabricated zero there: a single per-cell
+  flag used to promote the feature channels too, presenting the contract's
+  padding as an observed zero increment.
 - Origins with no observed cells get pure-extrapolation ultimates (anchor 0);
   origins without premium produce NaN ultimates.
 - Per-line draws are independent; only the `nn_ml_*` entries model cross-line
