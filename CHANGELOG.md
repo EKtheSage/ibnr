@@ -15,6 +15,68 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
+## 0.5.4 - 2026-08-05
+
+Case reserves (and any eval-date snapshot) become usable NN input channels
+with honest semantics, and the NN entries' held-out CRPS draws stop being
+rationed by the rollout budget. One PR (#91), adversarially reviewed.
+
+### Per-channel observedness: `x_obs`
+
+`kernels.nn_contract.nn_data` now returns `x_obs`, a per-channel usable-value
+mask whose channel 0 equals `obs_mask` exactly, and every NN entry conditions
+per channel: tokens are `[values * chan_flags, chan_flags]`, element-identical
+to the old per-cell form on a single-channel fit (seeded draws are
+byte-identical). Two defects the cards used to disclose as limitations are
+closed. A rollout cell promoted to context no longer presents the contract's
+padding zero as an observed zero feature increment - promotion raises only the
+target channel's flag, so next year's features stay what they are, unobserved.
+And deeptriangle's auxiliary outstanding head now trains only where BOTH its
+channels are real; the fabricated pre-fix target at a punched fixture cell was
+measurably negative outstanding, paid exceeding reported.
+
+### `level_fields`: snapshots carried undifferenced
+
+`fit(feature_fields=("case_reserve",), level_fields=("case_reserve",))` is the
+new consumer spelling. A field named in `level_fields` skips differencing -
+`case_reserve` is a snapshot whose difference is the case movement while the
+informative quantity is the level - and `field_kinds` records each channel's
+kind. The target cannot be a level, a level must also be a feature, and an
+absent field is refused by name (`select_fields` is a filter, so the old
+behaviour fit a dead all-masked channel silently - the refusal immediately
+caught two test fixtures that had been doing exactly that since the
+deeptriangle entry landed). deeptriangle refuses a LEVEL at channel 1 for its
+auxiliary task by name - level-minus-increment is neither the outstanding
+increment nor the outstanding level - with `config(aux_weight=0.0)` as the
+single-task escape.
+
+### `heldout_n_draws`
+
+The four held-out-capable NN configs gain `heldout_n_draws = 10_000`, read by
+the held-out draw path instead of the rollout's `n_draws` (a held-out diagonal
+is one forward pass per ensemble member regardless of draw count, so 10,000 is
+cheap there and was not in a rollout). The NN rows of a CRPS board now rest on
+the same draw count as every other entry; they carried 1,000 before, the
+rollout default inherited by coincidence. `transformer_ml`'s config does not
+gain the field - it has no held-out surface, and an unread field would be an
+inert parameter.
+
+### One disclosed edge, kept deliberately
+
+Training gates every channel at the drawn augmentation cutoff; the rollout and
+held-out paths gate features by observedness alone. On a ragged cohort whose
+feature is booked on a deeper calendar diagonal than every target cell, the
+network therefore conditions on a feature cell at a distance training never
+showed. Kept, because that contemporaneous cell is genuinely informative; all
+five cards state it.
+
+## 0.5.3 - 2026-08-04
+
+Released without a changelog section at the time; backfilled here from the
+commit body. One consumer-visible change: Schedule P gold-mart downloads go
+over anonymous HTTPS (stdlib urllib) with the `gh` CLI demoted to a fallback,
+so a fresh clone with no GitHub tooling works.
+
 ## 0.5.2 - 2026-07-29
 
 Two review findings against 0.5.1's own work, no public surface change and no
