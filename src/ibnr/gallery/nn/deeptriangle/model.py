@@ -109,7 +109,11 @@ class DeepTriangle(GalleryEntry, PooledMDNHeldout):
         case movement while the informative quantity is the outstanding level.
         It must name fields already in ``feature_fields`` (it declares a
         channel's kind, it does not add one); ``kernels.nn_contract.nn_data``
-        owns the semantics and the refusals."""
+        owns the semantics and the refusals. A LEVEL at channel 1 switches the
+        auxiliary head onto that level itself - the CASE-RESERVE HEAD, Kuo's
+        own second task read literally - rather than onto a difference that
+        only means something between two increments. The form is inferred from
+        ``field_kinds``, never chosen by a knob."""
         import torch
 
         from ibnr.gallery.nn.deeptriangle import network as net
@@ -158,32 +162,36 @@ class DeepTriangle(GalleryEntry, PooledMDNHeldout):
             "prem_std": prem_std,
         }
 
-        # auxiliary task: incremental OUTSTANDING ratio = reported - paid on
-        # the ratio scale, standardized per dev with the same pinning rule as
-        # the target. A DIFFERENCE of two channels is real only where both are:
-        # at a cell where the feature is padding, `x[:, 1] - x[:, 0]` reads the
-        # padding zero as a reported value and the derived OS is fabricated,
-        # so the aux target is masked there rather than trained on.
+        # auxiliary task: an outstanding-claims target on the ratio scale,
+        # standardized per dev with the same pinning rule as the target. It
+        # takes TWO forms, and which one runs is INFERRED from the contract's
+        # field_kinds - there is deliberately no config knob, because a knob
+        # whose only legal value is determined by the contract is a knob that
+        # cannot be turned. Rollout and held-out scoring consume the target
+        # head alone either way; this head is a training-time regularizer.
         has_aux = n_f >= 2 and cfg.aux_weight > 0
-        # ... and only where both channels are on the SAME scale. A level
-        # channel 1 (level_fields) would make the difference level-minus-
-        # increment - neither the outstanding increment nor the outstanding
-        # level - trained through the shared trunk at full weight with nothing
-        # raising, so it is refused rather than silently redefined.
-        if has_aux and c["field_kinds"][1] != "increment":
-            raise ValueError(
-                f"{self.name}: the auxiliary outstanding target is channel 1 minus "
-                f"channel 0 on the increment scale, and channel 1 ({c['fields'][1]!r}) "
-                f"is a {c['field_kinds'][1]}. The difference of a level and an "
-                "increment is neither the outstanding increment nor the outstanding "
-                "level. Fit with config(aux_weight=0.0) for single-task training, or "
-                "put an increment field at channel 1"
-            )
         if has_aux:
-            os_ratio = c["x"][:, 1] - c["x"][:, 0]  # (n_c, n_w, n_d)
-            aux_obs = c["x_obs"][:, 1] & c["x_obs"][:, 0]  # (n_c, n_w, n_d)
+            if c["field_kinds"][1] == "level":
+                # CASE-RESERVE HEAD. Channel 1 arrives UNDIFFERENCED and already
+                # premium-divided, so it IS the outstanding level ratio - Kuo's
+                # own second task is claims outstanding, which is a level, so
+                # this is the faithful reading rather than a fallback. One
+                # channel needs one gate: a level is real wherever its own cell
+                # is, with no predecessor dev and no second channel involved.
+                aux_ratio = c["x"][:, 1]  # (n_c, n_w, n_d)
+                aux_obs = c["x_obs"][:, 1]  # (n_c, n_w, n_d)
+            else:
+                # OUTSTANDING-INCREMENT HEAD: reported - paid on the ratio scale
+                # (OS = reported - paid, so incremental OS is the difference of
+                # the increments). A DIFFERENCE of two channels is real only
+                # where both are: at a cell where the feature is padding,
+                # `x[:, 1] - x[:, 0]` reads the padding zero as a reported value
+                # and the derived OS is fabricated, so the aux target is masked
+                # there rather than trained on.
+                aux_ratio = c["x"][:, 1] - c["x"][:, 0]  # (n_c, n_w, n_d)
+                aux_obs = c["x_obs"][:, 1] & c["x_obs"][:, 0]  # (n_c, n_w, n_d)
             aux_mean, aux_std, aux_pinned = norm_stats(
-                os_ratio[:, None], aux_obs & (c["cal_idx"] <= val_cutoff), aux_obs
+                aux_ratio[:, None], aux_obs & (c["cal_idx"] <= val_cutoff), aux_obs
             )
             norm["aux_mean"] = aux_mean[0]
             norm["aux_std"] = aux_std[0]
@@ -209,9 +217,11 @@ class DeepTriangle(GalleryEntry, PooledMDNHeldout):
             (c["log_premium"] - prem_mean) / prem_std, dtype=torch.float32, device=dev
         )
         if has_aux:
-            os_norm = (os_ratio - norm["aux_mean"][None, None, :]) / norm["aux_std"][None, None, :]
-            os_norm = np.where(norm["aux_pinned"][None, None, :], 0.0, os_norm)
-            y_aux_t = torch.tensor(os_norm, dtype=torch.float32, device=dev)  # (n_c, n_w, n_d)
+            aux_norm = (aux_ratio - norm["aux_mean"][None, None, :]) / norm["aux_std"][
+                None, None, :
+            ]
+            aux_norm = np.where(norm["aux_pinned"][None, None, :], 0.0, aux_norm)
+            y_aux_t = torch.tensor(aux_norm, dtype=torch.float32, device=dev)  # (n_c, n_w, n_d)
             aux_obs_t = torch.tensor(aux_obs, device=dev)  # (n_c, n_w, n_d)
 
         # augmented cutoffs are drawn from [min_cutoff, val_cutoff); clamp the
@@ -243,7 +253,8 @@ class DeepTriangle(GalleryEntry, PooledMDNHeldout):
             target_params, aux_params = model(xt[idx], ctx, lob_t[idx], comp_t[idx], prem_t[idx])
             loss = mdn_nll(*target_params, yt[idx], tgt)
             if has_aux:
-                # the derived OS target exists only where both channels do
+                # the OS target exists only where its channel(s) do: both, for
+                # the derived increment; channel 1 alone, for the level
                 loss = loss + cfg.aux_weight * mdn_nll(
                     *aux_params, y_aux_t[idx], tgt & aux_obs_t[idx]
                 )

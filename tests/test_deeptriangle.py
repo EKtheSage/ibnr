@@ -604,10 +604,7 @@ def test_level_fields_reaches_the_contract():
     only if the kwarg travels).
     """
     t = synthetic_triangle("duckdb")
-    # aux_weight=0: the aux target is channel 1 minus channel 0 on the
-    # increment scale, so a LEVEL channel 1 refuses the aux task by name
-    # (pinned below) and the level spelling trains single-task
-    quick = replace(TINY, max_epochs=1, ensemble_size=1, aux_weight=0.0)
+    quick = replace(TINY, max_epochs=1, ensemble_size=1)
     entry = DeepTriangle().fit(
         t,
         feature_fields=("reported_loss",),
@@ -630,32 +627,148 @@ def test_level_fields_reaches_the_contract():
         DeepTriangle().fit(t, level_fields=("earned_premium",), config=quick, seed=0)
 
 
-def test_a_level_feature_channel_refuses_the_aux_task():
-    """The aux target is channel 1 minus channel 0 on the INCREMENT scale, so a
-    level channel 1 would train it on level-minus-increment - a quantity that
-    is neither the outstanding increment nor the outstanding level, backprop'd
-    through the shared trunk at full weight with nothing raising. Refused by
-    name; single-task training (aux_weight=0) is the escape and must work."""
-    t = synthetic_triangle("duckdb")
+#: paid punched out at lob_1's origin 1, dev step 4 - the ONLY shape in which a
+#: level channel is real where the TARGET channel is not (the level needs its own
+#: cell and nothing else; the target increment needs a predecessor too). Without
+#: it, gating the level's statistics on ``x_obs[1] & x_obs[0]`` instead of
+#: ``x_obs[1]`` is inert, since paid is booked everywhere reported is. Dev step 4
+#: sits on calendar diagonal 5, inside the normalizer's training window.
+PAID_HOLE = (1, 1, 3)  # (lob index, origin w, dev index)
+
+
+def case_reserve_triangle(backend_name: str = "duckdb") -> Triangle:
+    """``holed_triangle`` plus a PAID hole, for the level-form tests: one hole
+    per direction, so neither channel's observedness is a subset of the other's
+    and every mask choice is separable."""
+    paid, reported = _matrices()
+    paid = paid.copy()
+    paid[PAID_HOLE] = np.nan  # unobserved cumulative: the row is never emitted
+    return two_field_triangle(
+        backend_name, paid, reported, np.full(6, 1000.0), reported_holes=(REPORTED_HOLE,)
+    )
+
+
+def test_a_level_feature_channel_trains_the_case_reserve_head():
+    """A LEVEL at channel 1 trains the auxiliary head on the outstanding LEVEL
+    itself - the case-reserve head - instead of on a difference that only means
+    something between two increments. Kuo's own second task is claims
+    outstanding, a level, so this is the faithful reading; 0.5.4 refused the
+    combination by name and this test is the replacement for that refusal.
+
+    Which form runs is inferred from the contract's ``field_kinds`` and there is
+    no config knob, so the assertions here are on VALUES, not on presence: the
+    aux normalizer must be ``norm_stats`` over the LEVEL ratio - reported
+    cumulative over premium, rebuilt from the fixture matrices rather than read
+    back out of the contract - masked by channel 1's OWN observedness, a level
+    needing no second channel to be real.
+
+    Three mutations the closing assertions separate from the right answer, all
+    of which produce a perfectly plausible normalizer: keeping 0.5.4's
+    difference (``x[:, 1] - x[:, 0]``, here a level minus an increment) as the
+    target; estimating the level's statistics on the TARGET channel's mask -
+    which on this fixture is not a small perturbation, it flips a dev from
+    pinned to unpinned; and carrying the increment form's ``x_obs[1] &
+    x_obs[0]`` over to a channel that needs no second channel, which is what
+    the fixture's PAID hole exists to make visible.
+    """
+    t = case_reserve_triangle()
     quick = replace(TINY, max_epochs=1, ensemble_size=1)
-    with pytest.raises(ValueError, match="aux"):
-        DeepTriangle().fit(
-            t,
-            feature_fields=("reported_loss",),
-            level_fields=("reported_loss",),
-            config=quick,
-            seed=0,
-        )
-    single = replace(quick, aux_weight=0.0)
+    assert quick.aux_weight > 0, "the default config is the point: no knob is needed"
     entry = DeepTriangle().fit(
         t,
         feature_fields=("reported_loss",),
         level_fields=("reported_loss",),
-        config=single,
+        as_of=AS_OF,
+        config=quick,
         seed=0,
     )
-    assert entry.contract_["field_kinds"] == ("increment", "level")
-    assert "aux_mean" not in entry.norm_
+    c = entry.contract_
+    assert c["field_kinds"] == ("increment", "level")
+    assert "aux_mean" in entry.norm_, "the case-reserve head did not train"
+
+    cal, x_obs = np.asarray(c["cal_idx"]), np.asarray(c["x_obs"])
+    _, _, val_cutoff = splits(c["obs_mask"], cal, quick.val_diagonals)
+    window = cal <= val_cutoff
+    # the aux target IS the level ratio: cumulative reported over premium,
+    # cohort-ordered (sorted segment tuples -> lob_0, lob_1)
+    _, reported = _matrices()
+    assert (entry.cohort_index(SEG0), entry.cohort_index(SEG1)) == (0, 1)
+    level = np.stack([reported[0], reported[1]]) / 1000.0  # (n_c, n_w, n_d)
+    obs1 = x_obs[:, 1]  # channel 1 alone - a level needs no predecessor
+    want = norm_stats(level[:, None], obs1 & window, obs1)
+
+    np.testing.assert_allclose(entry.norm_["aux_mean"], want[0][0])
+    np.testing.assert_allclose(entry.norm_["aux_std"], want[1][0])
+    np.testing.assert_array_equal(entry.norm_["aux_pinned"], want[2][0])
+
+    both = obs1 & x_obs[:, 0]
+    assert (obs1 & ~x_obs[:, 0]).any(), "the paid hole is not in the fit; the & is inert here"
+    difference = (c["x"][:, 1] - c["x"][:, 0])[:, None]  # 0.5.4's refused quantity
+    refused = norm_stats(difference, both & window, both)
+    assert not np.allclose(entry.norm_["aux_mean"], refused[0][0]), (
+        "the level and the level-minus-increment difference give the same statistics on "
+        "this fixture, so the assertions above cannot tell the two targets apart"
+    )
+    target_masked = norm_stats(level[:, None], x_obs[:, 0] & window, x_obs[:, 0])
+    assert not np.array_equal(entry.norm_["aux_pinned"], target_masked[2][0]), (
+        "the level channel's own mask and the target's give the same pinning here, so "
+        "the assertions above would pass on the target-masked version"
+    )
+    both_masked = norm_stats(level[:, None], both & window, both)
+    assert not np.allclose(entry.norm_["aux_mean"], both_masked[0][0]), (
+        "the level channel's own mask and `x_obs[1] & x_obs[0]` give the same statistics "
+        "here, so the increment form's two-channel gate would pass unnoticed"
+    )
+
+    # and it is a working fit, not just a normalizer
+    pred = entry.predict(segment=SEG0, seed=0)
+    assert pred.n_targets == 7 and np.isfinite(pred.samples).all()
+
+
+def test_the_case_reserve_aux_loss_is_scored_where_the_level_channel_is_real(monkeypatch):
+    """The level form's gate is ONE channel, and that is the whole difference
+    from the increment form's ``x_obs[1] & x_obs[0]``: a level is real wherever
+    its own cell is, needing neither a predecessor dev nor the target channel.
+    Where it is NOT real the value is the contract's padding zero, which reads
+    as an outstanding level of exactly nothing - so those cells are dropped from
+    the auxiliary loss rather than trained on.
+
+    Checked on the masks ``mdn_nll`` actually received, with the same
+    non-vacuity half as the increment-form test: the punched-out cell must sit
+    inside the target's mask, or a mutation that hands the aux head the target
+    mask passes here.
+    """
+    cfg = replace(TINY, max_epochs=2, ensemble_size=1)
+    rec = record_fit(
+        monkeypatch,
+        case_reserve_triangle(),
+        cfg,
+        as_of=AS_OF,
+        feature_fields=("reported_loss",),
+        level_fields=("reported_loss",),
+    )
+    assert rec.entry.contract_["field_kinds"] == ("increment", "level")
+    level_obs = rec.entry.contract_["x_obs"][:, 1]  # (n_c, n_w, n_d)
+
+    scored = [b for b in rec.batches if b["nll"]]
+    assert scored, "no batch reached the loss"
+    witnessed = 0
+    for batch in scored:
+        assert len(batch["nll"]) == 2, (
+            f"expected a target and an auxiliary loss per batch, got {len(batch['nll'])}"
+        )
+        target_mask, aux_mask = batch["nll"]
+        idx = batch["idx"]
+        np.testing.assert_array_equal(
+            aux_mask,
+            target_mask & level_obs[idx],
+            err_msg="the case-reserve loss scores cells where the level channel is padding",
+        )
+        witnessed += int((target_mask & ~level_obs[idx]).any())
+    assert witnessed, (
+        "no batch scored a target cell whose level channel is padding, so the equality "
+        "above cannot tell the aux mask from the target's - the hole has stopped biting"
+    )
 
 
 # -- held-out wiring -----------------------------------------------------------
