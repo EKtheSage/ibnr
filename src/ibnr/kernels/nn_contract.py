@@ -276,8 +276,17 @@ def nn_data(
     field_kinds = tuple("level" if f in level_fields else "increment" for f in fields)
     level_idx = [k for k, kind in enumerate(field_kinds) if kind == "level"]
     df = triangle.select_fields(fields).execute()
-    if df.empty:
-        raise ValueError(f"no rows for fields {fields}")
+    # select_fields is a filter, so a field the triangle does not carry yields
+    # no rows rather than an error - and the fit would then run with an
+    # all-masked channel that conditions nothing, indistinguishable from one
+    # the feature genuinely reached. Refuse by name instead, the same rule the
+    # premium field gets below.
+    present = set(df["field"].unique()) if not df.empty else set()
+    absent = [f for f in fields if f not in present]
+    if absent:
+        raise ValueError(
+            f"no rows for field(s) {absent}; the triangle carries {sorted(triangle.fields)}"
+        )
     # BEFORE the duplicate-cell guard below, deliberately. Both can fire on the
     # same triangle, and "this column is not determined by the key" is the cause
     # while "multiple rows per cell" is only the symptom - and when the merged

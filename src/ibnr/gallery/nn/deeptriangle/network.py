@@ -157,9 +157,11 @@ class DeepTriangleGRU(nn.Module):
         states = []
         for t in range(self.n_d):
             # both cells advance from the same state; the mask picks which
-            # transition is real. Encoder consumes the true (flagged) values,
-            # decoder the zeroed position-only input - Kuo's encode/decode
-            # split, generalized to ragged boundaries and holes.
+            # transition is real. Encoder steps consume the cell's flagged
+            # values; decoder steps see the same token with the target zeroed
+            # (a feature channel observed at the cell stays live under its own
+            # flag) - Kuo's encode/decode split, generalized to ragged
+            # boundaries and holes.
             h_enc = self.encoder(seq[:, t], h)
             h_dec = self.decoder(seq[:, t], h)
             h = torch.where(is_ctx[:, t].unsqueeze(-1), h_enc, h_dec)

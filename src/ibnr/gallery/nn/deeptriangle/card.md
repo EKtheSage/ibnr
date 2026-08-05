@@ -37,9 +37,11 @@ real (`x_obs[1] & x_obs[0]`).
 That fixes a distortion this card used to disclose. Before 0.5.4 the mask was
 one flag per CELL, the target's, so a hole in reported at an observed paid cell
 corrupted TWO auxiliary targets rather than one: increments are differenced
-against the immediate predecessor dev, so the padding zero was read as the
-reported cumulative at dev d and differenced against at dev d + 1. Those cells
-are now dropped from the auxiliary loss instead of fabricated. On the Schedule P
+against the immediate predecessor dev, so a hole at dev d wipes out both the
+dev-d and dev-d+1 reported increments, and the contract's padding zero then
+stood in for each - the derived outstanding at both cells read as MINUS the
+paid increment, an outstanding that shrinks by exactly what was just paid.
+Those cells are now dropped from the auxiliary loss instead of fabricated. On the Schedule P
 mart paid and reported are booked on the same cells, so the two masks coincide
 there and the fix bites on ragged data - and on the rollout (below), where it
 bites always.
@@ -50,7 +52,12 @@ while the informative quantity is the outstanding level. It declares the KIND of
 a channel already named in `feature_fields` rather than adding one;
 `kernels/nn_contract.py` owns the semantics and the refusals. The default
 channel pair does not use it: reported loss genuinely accumulates, so
-differencing it is right.
+differencing it is right. A LEVEL at channel 1 refuses the auxiliary task by
+name - the aux target is channel 1 minus channel 0 on the increment scale, and
+a level-minus-increment hybrid is neither the outstanding increment nor the
+outstanding level - so the level spelling trains single-task
+(`config(aux_weight=0.0)`). Training the aux head on the level itself, which is
+Kuo's own second task, is a possible future variant, not what this entry does.
 
 ## Network
 
@@ -127,8 +134,12 @@ Identical scheme to the transformer, via the shared machinery:
 - **Calendar-cutoff augmentation** (`gallery/nn/_training.py`): per cohort
   per epoch, draw a fake as_of cutoff; the encoder consumes cells on/before
   it, the loss scores observed training cells strictly after it. The decoder
-  is therefore trained exactly the way it is used: conditioned only on data
-  at or before a cutoff, never on absolute calendar position.
+  is trained the way it is used - conditioned on a sub-triangle, never on
+  absolute calendar position - with one ragged-data edge: prediction gates
+  features by observedness alone, so a feature booked past every target cell
+  reaches the network at a distance training never showed (kept because the
+  contemporaneous cell is genuinely informative; the transformer card's
+  "Training" section states the same edge).
 - **Validation by eval_date** (`gallery/nn/_scheme.py::splits`): the trailing
   observed calendar diagonal of the training window is excluded from all
   training contexts and targets; early stopping (patience 25) on its

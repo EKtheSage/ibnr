@@ -604,7 +604,10 @@ def test_level_fields_reaches_the_contract():
     only if the kwarg travels).
     """
     t = synthetic_triangle("duckdb")
-    quick = replace(TINY, max_epochs=1, ensemble_size=1)
+    # aux_weight=0: the aux target is channel 1 minus channel 0 on the
+    # increment scale, so a LEVEL channel 1 refuses the aux task by name
+    # (pinned below) and the level spelling trains single-task
+    quick = replace(TINY, max_epochs=1, ensemble_size=1, aux_weight=0.0)
     entry = DeepTriangle().fit(
         t,
         feature_fields=("reported_loss",),
@@ -625,6 +628,34 @@ def test_level_fields_reaches_the_contract():
 
     with pytest.raises(ValueError, match="level_fields"):
         DeepTriangle().fit(t, level_fields=("earned_premium",), config=quick, seed=0)
+
+
+def test_a_level_feature_channel_refuses_the_aux_task():
+    """The aux target is channel 1 minus channel 0 on the INCREMENT scale, so a
+    level channel 1 would train it on level-minus-increment - a quantity that
+    is neither the outstanding increment nor the outstanding level, backprop'd
+    through the shared trunk at full weight with nothing raising. Refused by
+    name; single-task training (aux_weight=0) is the escape and must work."""
+    t = synthetic_triangle("duckdb")
+    quick = replace(TINY, max_epochs=1, ensemble_size=1)
+    with pytest.raises(ValueError, match="aux"):
+        DeepTriangle().fit(
+            t,
+            feature_fields=("reported_loss",),
+            level_fields=("reported_loss",),
+            config=quick,
+            seed=0,
+        )
+    single = replace(quick, aux_weight=0.0)
+    entry = DeepTriangle().fit(
+        t,
+        feature_fields=("reported_loss",),
+        level_fields=("reported_loss",),
+        config=single,
+        seed=0,
+    )
+    assert entry.contract_["field_kinds"] == ("increment", "level")
+    assert "aux_mean" not in entry.norm_
 
 
 # -- held-out wiring -----------------------------------------------------------

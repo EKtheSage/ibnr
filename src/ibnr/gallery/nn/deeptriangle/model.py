@@ -165,6 +165,20 @@ class DeepTriangle(GalleryEntry, PooledMDNHeldout):
         # padding zero as a reported value and the derived OS is fabricated,
         # so the aux target is masked there rather than trained on.
         has_aux = n_f >= 2 and cfg.aux_weight > 0
+        # ... and only where both channels are on the SAME scale. A level
+        # channel 1 (level_fields) would make the difference level-minus-
+        # increment - neither the outstanding increment nor the outstanding
+        # level - trained through the shared trunk at full weight with nothing
+        # raising, so it is refused rather than silently redefined.
+        if has_aux and c["field_kinds"][1] != "increment":
+            raise ValueError(
+                f"{self.name}: the auxiliary outstanding target is channel 1 minus "
+                f"channel 0 on the increment scale, and channel 1 ({c['fields'][1]!r}) "
+                f"is a {c['field_kinds'][1]}. The difference of a level and an "
+                "increment is neither the outstanding increment nor the outstanding "
+                "level. Fit with config(aux_weight=0.0) for single-task training, or "
+                "put an increment field at channel 1"
+            )
         if has_aux:
             os_ratio = c["x"][:, 1] - c["x"][:, 0]  # (n_c, n_w, n_d)
             aux_obs = c["x_obs"][:, 1] & c["x_obs"][:, 0]  # (n_c, n_w, n_d)
@@ -217,9 +231,10 @@ class DeepTriangle(GalleryEntry, PooledMDNHeldout):
         def train_loss(model, idx, cutoffs):
             # condition on cells on/before the augmented cutoff, score the
             # observed training cells strictly after it (card.md "Training").
-            # The cutoff gates every channel; each channel's own observedness
-            # decides the rest, so the network is trained on exactly the
-            # conditioning the rollout and the held-out path hand it.
+            # The cutoff gates every channel; the rollout and held-out paths
+            # gate features by observedness alone, so a feature booked past
+            # every target cell reaches them at a distance training never
+            # shows - the disclosed edge (card.md "Training").
             ctx = x_obs_t[idx] & (cal_t[None, None] <= cutoffs[:, None, None, None])  # (B,F,W,D)
             # targets are context-eligible (never validation) cells past the cutoff
             tgt = tgt_elig_t[idx] & (cal_t[None] > cutoffs[:, None, None])  # (B, W, D)

@@ -330,6 +330,18 @@ def test_nn_data_rejects_duplicate_fields(two_cohorts):
         nn_data(two_cohorts, loss_field="paid_loss", feature_fields=("paid_loss",))
 
 
+def test_an_absent_field_is_refused_by_name(two_cohorts):
+    """``select_fields`` is a filter, so a field the triangle does not carry
+    yields no rows rather than an error - and the fit would then run with an
+    all-masked channel that conditions nothing, indistinguishable from one the
+    feature genuinely reached. The premium field already gets this refusal;
+    the loss and feature fields must answer the same way."""
+    with pytest.raises(ValueError, match="case_reserv"):
+        nn_data(two_cohorts, loss_field="paid_loss", feature_fields=("case_reserv",))
+    with pytest.raises(ValueError, match="no_such_field"):
+        nn_data(two_cohorts, loss_field="no_such_field")
+
+
 def test_nn_data_gap_predecessor_is_unobserved(backend_name):
     """An interior hole masks out two cells, not one: the missing cell itself and
     its successor, whose increment would otherwise silently span two dev periods.

@@ -196,9 +196,19 @@ def fitted():
         rows += _rows(f"lob_{k}", _square(k))
     pooled = _triangle(rows)
 
+    # feature_fields=() everywhere: the fixture triangle carries paid_loss
+    # only, and deeptriangle's default names reported_loss - which nn_data
+    # now refuses by name rather than fitting as a dead all-masked channel
+    # (the pre-0.5.4 silent behavior this fixture unknowingly leaned on).
+    # The cutoff semantics under test are single-channel anyway.
     entries = {
         name: gallery.get(name)().fit(
-            pooled, loss_field="paid_loss", as_of=AS_OF, config=CONFIGS[name], seed=0
+            pooled,
+            loss_field="paid_loss",
+            feature_fields=(),
+            as_of=AS_OF,
+            config=CONFIGS[name],
+            seed=0,
         )
         for name in ENTRY_NAMES
     }

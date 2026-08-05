@@ -185,9 +185,10 @@ class ResNet(GalleryEntry, PooledMDNHeldout):
         def train_loss(model, idx, cutoffs):
             # condition on each channel's own cells on/before the augmented
             # cutoff, score the observed TARGET cells strictly after it
-            # (card.md "Training"). The calendar gate is the same one the
-            # rollout and the held-out path condition under, so the network is
-            # trained on exactly the conditioning it is asked to predict from.
+            # (card.md "Training"). The rollout and the held-out path gate by
+            # observedness alone, so a feature booked past every target cell
+            # reaches them at a distance training never shows - the disclosed
+            # edge (see the transformer card's "Training" for why it is kept).
             # xt[idx] carries values PAST the cutoff too; the network zeroes
             # every non-context value before its first convolution, which the
             # no-leak tests in tests/test_resnet.py pin.

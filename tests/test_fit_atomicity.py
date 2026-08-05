@@ -286,11 +286,14 @@ def test_nn_failed_training_leaves_the_previous_fit_intact(monkeypatch, name, tr
     pytest.importorskip("torch")
     monkeypatch.setattr(trainer, FitThenBoom(("models-A", "history-A")))
     entry = gallery.get(name)()
-    entry.fit(nn_triangle(2000), loss_field="paid_loss")
+    # feature_fields=(): the fixture carries paid_loss only, and deeptriangle's
+    # default names reported_loss, which nn_data refuses by name. Atomicity is
+    # a property of the fit lifecycle, not of the channel count.
+    entry.fit(nn_triangle(2000), loss_field="paid_loss", feature_fields=())
     before = snapshot(entry)
 
     with pytest.raises(RuntimeError, match="boom"):
-        entry.fit(nn_triangle(1990), loss_field="paid_loss")
+        entry.fit(nn_triangle(1990), loss_field="paid_loss", feature_fields=())
 
     assert_untouched(entry, before)
 

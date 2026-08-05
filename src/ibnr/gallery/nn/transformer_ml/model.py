@@ -198,8 +198,10 @@ class NNTransformerML(GalleryEntry):
             # cells on/before the augmented cutoff are context, later observed
             # cells are the prediction targets - this teaches the model to
             # forecast future diagonals. The context is per channel and the
-            # targets are channel 0's, under one calendar gate: a feature past
-            # the augmented cutoff is masked exactly as the rollout masks it.
+            # targets are channel 0's, under one calendar gate. The rollout
+            # gates features by observedness alone (no calendar clamp), so a
+            # feature booked past every target cell reaches it at a distance
+            # training never shows - the disclosed edge (card.md).
             ctx = xobs_t[idx] & (cal_t[None, None, None] <= cutoffs[:, None, None, None, None])
             tgt = ctx_elig_t[idx] & (cal_t[None, None] > cutoffs[:, None, None, None])
             if not bool(tgt.any()):

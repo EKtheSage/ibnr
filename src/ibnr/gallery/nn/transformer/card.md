@@ -119,9 +119,13 @@ documented opt-in lever, not the headline. Compare arm:
   cutoff uniformly in `[min_cutoff, val_cutoff - 1]`; condition on the
   sub-triangle, score NLL on later observed training cells. Every triangle
   yields ~5 distinct "predict the future diagonals" tasks per epoch - the
-  main small-data multiplier. The cutoff gates every channel, so training
-  teaches the network exactly the conditioning the rollout and the held-out
-  path give it: a feature past the cutoff is masked, not read.
+  main small-data multiplier. The cutoff gates every channel, so a feature
+  past the drawn cutoff is masked, not read. One edge is deliberately NOT
+  matched at prediction time: the rollout and the held-out path gate features
+  by observedness alone, so on a ragged cohort whose feature is booked on a
+  deeper calendar diagonal than every target cell and anchor, they present a
+  feature cell at a distance training never showed - kept because that
+  contemporaneous cell is genuinely informative.
 - **Validation by eval_date:** the trailing `val_diagonals=1` observed
   calendar diagonal of the *training window* is excluded from all training
   contexts and targets; early stopping (patience 25) on its NLL, best
@@ -168,7 +172,10 @@ values and delegate.
 
 - **Conditioning: everything the cohort held at as_of, per channel.**
   `_heldout_inputs` hands the network the contract's `x_obs` for that cohort,
-  so each channel conditions on its own observed cells exactly as in training.
+  so each channel conditions on its own observed cells. Training additionally
+  gates every channel at the drawn cutoff, so a feature observed past the
+  cohort's as_of diagonal (ragged booking) reaches the network here in a
+  configuration training never showed - see "Training" for why it is kept.
 - **Draw scale: `incremental`.** A draw is one forward pass per ensemble
   member at cutoff = the cohort's as_of diagonal (the held-out diagonal sits
   at distance 1, the most-supervised relative-calendar position - no rollout),

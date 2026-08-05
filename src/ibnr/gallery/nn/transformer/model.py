@@ -190,9 +190,10 @@ class NNTransformer(GalleryEntry, PooledMDNHeldout):
         def train_loss(model, idx, cutoffs):
             # condition on cells on/before the augmented cutoff, score the
             # observed training cells strictly after it (card.md "Training").
-            # PER CHANNEL, so training teaches the network the exact
-            # conditioning the rollout and the held-out path use: a feature
-            # beyond the cutoff is masked, not read.
+            # PER CHANNEL: a feature beyond the cutoff is masked, not read.
+            # The rollout/held-out contexts gate by observedness alone, so a
+            # feature booked past every target cell reaches them at a distance
+            # training never shows - the disclosed edge, card.md "Training".
             ctx = xobs_t[idx] & (cal_t[None, None] <= cutoffs[:, None, None, None])  # (B, F, W, D)
             # targets are context-eligible (never validation) cells past the cutoff
             tgt = ctx_elig_t[idx] & (cal_t[None] > cutoffs[:, None, None])  # (B, W, D)

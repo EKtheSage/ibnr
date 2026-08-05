@@ -22,9 +22,11 @@ that channel itself has a value.
 
 Conditioning is PER CHANNEL, on the contract's `x_obs`: a feature that is
 missing where the target is observed is masked out rather than read as a
-zero increment, and each channel's flag is gated by the same calendar
-constraint the target's is (so training conditions exactly as the rollout
-does). `fit(feature_fields=...)` names the extra input channels;
+zero increment. In training every channel's flag is additionally gated at
+the drawn cutoff; the rollout gates by observedness alone, so a feature
+booked on a deeper calendar diagonal than every target cell reaches it in a
+configuration training never showed - kept, because that contemporaneous
+cell is genuinely informative. `fit(feature_fields=...)` names the extra input channels;
 `fit(level_fields=...)` declares which of them are eval-date snapshots
 carried undifferenced - `case_reserve` is the motivating one - with the
 semantics and refusals in `kernels.nn_contract.nn_data`.
