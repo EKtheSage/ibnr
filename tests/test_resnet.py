@@ -63,7 +63,8 @@ TINY = ResNetConfig(
     max_epochs=3,
     patience=5,
     ensemble_size=2,
-    n_draws=50,
+    n_draws=50,  # rollout draws (predict)
+    heldout_n_draws=50,  # held-out diagonal draws (predict_at); 10,000 by default
 )
 
 START = 2000
@@ -339,8 +340,8 @@ def test_fixture_and_declarations(fitted):
 
 
 def test_predict_at_shape_seed_and_anchor(fitted):
-    """Draw contract: (config.n_draws, n_cells); reproducible per seed; live
-    cells have genuine spread; pinned cells are the exact point mass at
+    """Draw contract: (config.heldout_n_draws, n_cells); reproducible per seed;
+    live cells have genuine spread; pinned cells are the exact point mass at
     anchor + premium * pooled dev mean; and the incremental-to-cumulative
     anchoring is the BASE CLASS's doing - ``predict_at`` must equal the native
     incremental draws plus each cell's training-diagonal predecessor.
@@ -353,7 +354,7 @@ def test_predict_at_shape_seed_and_anchor(fitted):
     entry = fitted.entry
     cells = fitted.cells0
     a = entry.predict_at(cells, field="paid_loss", seed=11)
-    assert a.shape == (TINY.n_draws, 5)
+    assert a.shape == (TINY.heldout_n_draws, 5)
     assert np.isfinite(a).all()
     b = entry.predict_at(cells, field="paid_loss", seed=11)
     np.testing.assert_array_equal(a, b)
@@ -413,7 +414,10 @@ def test_predict_at_draw_mean_matches_the_mixture(fitted):
 
     n_draws = 4000  # divisible by ensemble_size, so the member split is even
     keep = entry.config_
-    entry.config_ = replace(keep, n_draws=n_draws)
+    # the HELD-OUT budget is what _draws_native spends; the rollout's n_draws
+    # would leave this at the fixture's 50 and the moment check with 9x the
+    # Monte Carlo error the tolerance below is written against
+    entry.config_ = replace(keep, heldout_n_draws=n_draws)
     try:
         native = view._draws_native(idx, rng=np.random.default_rng(5))
     finally:
@@ -440,7 +444,7 @@ def test_log_lik_refused_at_pinned_devs_but_draws_survive(fitted):
     with pytest.raises(ValueError, match=r"pinned dev step\(s\) \[6\]"):
         fitted.entry.log_lik_at(cells, field="paid_loss")
     draws = fitted.entry.predict_at(cells, field="paid_loss", seed=0)
-    assert draws.shape == (TINY.n_draws, 5)
+    assert draws.shape == (TINY.heldout_n_draws, 5)
 
     # and the unpinned subset scores cleanly on the density axis too
     ll = fitted.entry.log_lik_at(_split(cells, pinned=False), field="paid_loss")

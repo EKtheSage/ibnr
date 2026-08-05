@@ -63,7 +63,8 @@ TINY = DeepTriangleConfig(
     max_epochs=3,
     patience=5,
     ensemble_size=2,
-    n_draws=50,
+    n_draws=50,  # rollout draws (predict)
+    heldout_n_draws=50,  # held-out diagonal draws (predict_at); 10,000 by default
 )
 
 START = 2000
@@ -427,13 +428,13 @@ def test_entry_needs_cells_that_name_a_cohort(fitted):
 
 
 def test_predict_at_shape_seed_and_variance(fitted):
-    """Draw contract: (config.n_draws, n_cells); reproducible per seed; live
-    cells have genuine spread; pinned cells are the rollout-semantics point
+    """Draw contract: (config.heldout_n_draws, n_cells); reproducible per seed;
+    live cells have genuine spread; pinned cells are the rollout-semantics point
     mass at anchor + premium * pooled dev mean, exactly."""
     entry = fitted.entry
     cells = fitted.cells0
     a = entry.predict_at(cells, field="paid_loss", seed=11)
-    assert a.shape == (TINY.n_draws, 5)
+    assert a.shape == (TINY.heldout_n_draws, 5)
     assert np.isfinite(a).all()
     b = entry.predict_at(cells, field="paid_loss", seed=11)
     np.testing.assert_array_equal(a, b)
@@ -483,7 +484,7 @@ def test_draws_unstandardize_in_the_right_order(fitted):
     view = entry.at_cohort(SEG0)
     cells = _split(fitted.cells0, pinned=False)
     idx = index_into(cells, view.contract_, field="paid_loss")
-    native = view._draws_native(idx, rng=np.random.default_rng(3))  # (n_draws, 4)
+    native = view._draws_native(idx, rng=np.random.default_rng(3))  # (heldout_n_draws, 4)
 
     ci = entry.cohort_index(SEG0)
     log_pi, mu, sigma = entry._heldout_mixture(ci, idx)  # (n_members, n_cells, K)
@@ -519,7 +520,7 @@ def test_log_lik_refused_at_pinned_devs_but_draws_survive(fitted):
     with pytest.raises(ValueError, match=r"pinned dev step\(s\) \[6\]"):
         fitted.entry.log_lik_at(cells, field="paid_loss")
     draws = fitted.entry.predict_at(cells, field="paid_loss", seed=0)
-    assert draws.shape == (TINY.n_draws, 5)
+    assert draws.shape == (TINY.heldout_n_draws, 5)
 
     ll = fitted.entry.log_lik_at(_split(cells, pinned=False), field="paid_loss")
     assert ll.shape == (TINY.ensemble_size, 4)

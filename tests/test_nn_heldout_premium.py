@@ -69,7 +69,8 @@ COMMON = dict(
     max_epochs=3,
     patience=5,
     ensemble_size=2,
-    n_draws=50,
+    n_draws=50,  # rollout draws (predict)
+    heldout_n_draws=50,  # held-out diagonal draws (predict_at); 10,000 by default
 )
 
 #: entry name -> its tiny fit config. Add a row when an entry joins the mixin;
@@ -191,7 +192,7 @@ def test_predict_at_refuses_a_premium_that_disagrees_with_the_contract(fitted):
     """
     entry = fitted.entry
     honest = entry.predict_at(fitted.cells, field="paid_loss", seed=7)
-    assert honest.shape == (CONFIGS[fitted.name].n_draws, fitted.cells.n_cells)
+    assert honest.shape == (CONFIGS[fitted.name].heldout_n_draws, fitted.cells.n_cells)
     assert np.isfinite(honest).all()
 
     with pytest.raises(ValueError) as excinfo:

@@ -60,7 +60,8 @@ TINY = MDNConfig(
     max_epochs=3,
     patience=5,
     ensemble_size=2,
-    n_draws=400,  # cheap here (one forward per member, no rollout) and large
+    n_draws=50,  # rollout draws (predict)
+    heldout_n_draws=400,  # cheap (one forward per member, no rollout) and large
     # enough for the draw-mean check to have negligible Monte Carlo error
 )
 
@@ -326,13 +327,13 @@ def test_entry_declares_both_capabilities(fitted):
 
 
 def test_predict_at_shape_seed_and_variance(fitted):
-    """Draw contract: (config.n_draws, n_cells); reproducible per seed;
+    """Draw contract: (config.heldout_n_draws, n_cells); reproducible per seed;
     live cells have genuine spread; pinned cells are the rollout-semantics
     point mass at anchor + premium * pooled dev mean, exactly."""
     entry = fitted.entry
     cells = fitted.cells0
     a = entry.predict_at(cells, field="paid_loss", seed=11)
-    assert a.shape == (TINY.n_draws, 5)
+    assert a.shape == (TINY.heldout_n_draws, 5)
     assert np.isfinite(a).all()
     b = entry.predict_at(cells, field="paid_loss", seed=11)
     np.testing.assert_array_equal(a, b)
@@ -388,7 +389,7 @@ def test_predict_at_unstandardizes_in_the_right_order(fitted):
     cells = _split(fitted.cells0, pinned=False)
     view = entry.at_cohort(SEG0)
     idx = index_into(cells, view.contract_, field="paid_loss")
-    draws = entry.predict_at(cells, field="paid_loss", seed=11)  # (n_draws, 4)
+    draws = entry.predict_at(cells, field="paid_loss", seed=11)  # (heldout_n_draws, 4)
 
     d0 = idx.d - 1
     mean0, std0 = entry.norm_["mean"][0][d0], entry.norm_["std"][0][d0]
@@ -416,7 +417,7 @@ def test_log_lik_refused_at_pinned_devs_but_draws_survive(fitted):
     with pytest.raises(ValueError, match=r"pinned dev step\(s\) \[6\]"):
         fitted.entry.log_lik_at(cells, field="paid_loss")
     draws = fitted.entry.predict_at(cells, field="paid_loss", seed=0)
-    assert draws.shape == (TINY.n_draws, 5)
+    assert draws.shape == (TINY.heldout_n_draws, 5)
 
     # and the unpinned subset scores cleanly on the density axis too
     ll = fitted.entry.log_lik_at(_split(cells, pinned=False), field="paid_loss")

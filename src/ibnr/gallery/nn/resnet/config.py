@@ -49,6 +49,12 @@ class ResNetConfig:
     # predictive
     ensemble_size: int = 5  # deep-ensemble members (distinct seeds) -> epistemic spread
     n_draws: int = 1000  # posterior-predictive draws, pooled across members
+    # held-out CRPS draws (predict_at), a separate budget from the rollout
+    # above: scoring one diagonal costs a single forward pass per ensemble
+    # member plus mixture sampling, so 10,000 - what every other CRPS-capable
+    # entry puts on the board - is cheap here where a 10,000-draw rollout is
+    # not. Same value and same reasoning as ``TransformerConfig``.
+    heldout_n_draws: int = 10_000
 
     def __post_init__(self) -> None:
         if self.channels % self.n_groups != 0:

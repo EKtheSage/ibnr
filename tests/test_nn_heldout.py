@@ -40,8 +40,9 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+from ibnr import gallery  # noqa: E402
 from ibnr.gallery.entry import PredictsHeldout, ScoresHeldout  # noqa: E402
-from ibnr.gallery.nn._heldout import cohort_contract  # noqa: E402
+from ibnr.gallery.nn._heldout import PooledMDNHeldout, cohort_contract  # noqa: E402
 from ibnr.gallery.nn.transformer.config import TransformerConfig  # noqa: E402
 from ibnr.gallery.nn.transformer.model import NNTransformer  # noqa: E402
 from ibnr.kernels.densities import MEASURES, check_normalization  # noqa: E402
@@ -67,7 +68,11 @@ TINY = TransformerConfig(
     max_epochs=3,
     patience=5,
     ensemble_size=2,
+    # the two draw budgets differ on purpose: they are independent knobs (the
+    # rollout's and the held-out diagonal's), and equal values would let either
+    # one stand in for the other everywhere below
     n_draws=50,
+    heldout_n_draws=40,
 )
 
 START = 2000
@@ -95,9 +100,10 @@ def _matrices() -> np.ndarray:
 def fitted(request):
     """One TINY pooled fit per backend, plus each cohort's next-diagonal cells.
 
-    Module-scoped: the fit is the expensive part and every test here is
-    read-only against it (the one test that mutates ``models_`` restores it
-    in a ``finally``).
+    Module-scoped: the fit is the expensive part and every test here leaves it
+    as it found it (the one that mutates ``models_`` restores it in a
+    ``finally``; the one that calls ``predict`` fills the rollout cache, which
+    is derived state nothing else here reads).
     """
     backend = request.param
     cum = _matrices()
@@ -336,13 +342,13 @@ def test_entry_needs_cells_that_name_a_cohort(fitted):
 
 
 def test_predict_at_shape_seed_and_variance(fitted):
-    """Draw contract: (config.n_draws, n_cells); reproducible per seed;
+    """Draw contract: (config.heldout_n_draws, n_cells); reproducible per seed;
     live cells have genuine spread; pinned cells are the rollout-semantics
     point mass at anchor + premium * pooled dev mean, exactly."""
     entry = fitted.entry
     cells = fitted.cells0
     a = entry.predict_at(cells, field="paid_loss", seed=11)
-    assert a.shape == (TINY.n_draws, 5)
+    assert a.shape == (TINY.heldout_n_draws, 5)
     assert np.isfinite(a).all()
     b = entry.predict_at(cells, field="paid_loss", seed=11)
     np.testing.assert_array_equal(a, b)
@@ -396,6 +402,55 @@ def test_predict_at_refuses_all_pinned_cells(fitted):
         fitted.entry.predict_at(only_pinned, field="paid_loss", seed=0)
 
 
+# -- the two draw budgets ------------------------------------------------------
+
+
+def test_the_two_draw_budgets_are_delivered_independently(fitted):
+    """One config, two knobs, two paths: ``predict_at`` spends
+    ``heldout_n_draws`` and ``predict`` spends ``n_draws``.
+
+    Held-out draws used to come off the ROLLOUT's ``n_draws``, so the NN
+    entries reached the CRPS board on 1,000 draws where every other
+    CRPS-capable entry delivered 10,000 - and nothing could see it, because a
+    draw count is never wrong, only small. The split is what makes 10,000
+    affordable: a held-out diagonal is one forward pass per ensemble member
+    whatever the count, while raising ``n_draws`` to match would pay for it
+    once per future diagonal of the rollout.
+
+    Both halves are asserted from the same fit, because a fix that simply
+    renamed the field would move BOTH counts and pass either half alone.
+    """
+    entry = fitted.entry
+    assert TINY.heldout_n_draws != TINY.n_draws  # or either could stand in
+    draws = entry.predict_at(fitted.cells0, field="paid_loss", seed=3)
+    assert draws.shape == (TINY.heldout_n_draws, 5)
+    # n_draws=None is the spelling that reads the config, i.e. the rollout knob
+    # on its default path - untouched by the split
+    pred = entry.predict(segment=SEG0, n_draws=None, seed=3)
+    assert pred.samples.shape[0] == TINY.n_draws
+
+
+def test_every_heldout_nn_entry_defaults_to_ten_thousand_heldout_draws():
+    """The default every held-out NN entry puts on the board, which is the
+    10,000 draws the Bayesian posteriors and ``mack`` already deliver.
+
+    Derived from the registry rather than a hand list: membership is "inherits
+    the held-out mixin", so an entry cloned from one of these joins the pin the
+    day it registers instead of shipping a smaller default under a new name.
+    """
+    configs = {
+        name: cls.config_class
+        for name, cls in ((n, gallery.get(n)) for n in gallery.list())
+        if issubclass(cls, PooledMDNHeldout)
+    }
+    # guard on the guard: a loop over an empty registry passes for free. Four
+    # is what this release ships (transformer, mdn, resnet, deeptriangle); a
+    # fifth joins the loop by registering, without moving this floor.
+    assert len(configs) >= 4
+    for name, config_class in configs.items():
+        assert config_class().heldout_n_draws == 10_000, name
+
+
 # -- density (ScoresHeldout) ---------------------------------------------------
 
 
@@ -408,7 +463,7 @@ def test_log_lik_refused_at_pinned_devs_but_draws_survive(fitted):
     with pytest.raises(ValueError, match=r"pinned dev step\(s\) \[6\]"):
         fitted.entry.log_lik_at(cells, field="paid_loss")
     draws = fitted.entry.predict_at(cells, field="paid_loss", seed=0)
-    assert draws.shape == (TINY.n_draws, 5)
+    assert draws.shape == (TINY.heldout_n_draws, 5)
 
     # and the unpinned subset scores cleanly on the density axis too
     ll = fitted.entry.log_lik_at(_split(cells, pinned=False), field="paid_loss")
