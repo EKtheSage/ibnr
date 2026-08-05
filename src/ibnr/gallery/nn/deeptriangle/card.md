@@ -6,8 +6,9 @@ does not)
 (original in Keras). Reimplemented in pytorch over this package's NN data
 contract, with three disclosed adaptations: the point heads are replaced by
 mixture density heads (a point estimator cannot enter the gallery - decision
-4), the auxiliary claims-outstanding target is derived inside the entry
-(OS = reported - paid; the contract does not carry OS), and the paper's clean
+4), the auxiliary claims-outstanding target is produced inside the entry
+(OS = reported - paid, or a case-reserve level read as it stands; the contract
+carries no OS field), and the paper's clean
 encode-then-decode split is generalized to ragged conditioning boundaries via
 per-step masked dispatch between the encoder and decoder GRU cells.
 
@@ -32,7 +33,9 @@ so a channel's value is read only where that channel has a value of its own,
 and each channel's per-dev statistics are estimated on its own cells. A feature
 missing at a cell the target holds is masked rather than read as a zero
 increment, and the auxiliary OS target is trained only where BOTH channels are
-real (`x_obs[1] & x_obs[0]`).
+real (`x_obs[1] & x_obs[0]`) - or, when channel 1 is a level, where that one
+channel is real (`x_obs[1]`), since a level needs neither a predecessor dev nor
+a second channel to exist.
 
 That fixes a distortion this card used to disclose. Before 0.5.4 the mask was
 one flag per CELL, the target's, so a hole in reported at an observed paid cell
@@ -52,12 +55,13 @@ while the informative quantity is the outstanding level. It declares the KIND of
 a channel already named in `feature_fields` rather than adding one;
 `kernels/nn_contract.py` owns the semantics and the refusals. The default
 channel pair does not use it: reported loss genuinely accumulates, so
-differencing it is right. A LEVEL at channel 1 refuses the auxiliary task by
-name - the aux target is channel 1 minus channel 0 on the increment scale, and
-a level-minus-increment hybrid is neither the outstanding increment nor the
-outstanding level - so the level spelling trains single-task
-(`config(aux_weight=0.0)`). Training the aux head on the level itself, which is
-Kuo's own second task, is a possible future variant, not what this entry does.
+differencing it is right. A LEVEL at channel 1 switches the auxiliary head onto
+that level itself - the **case-reserve head** below - because the difference
+channel 1 minus channel 0 only means something between two increments, and a
+level-minus-increment hybrid is neither the outstanding increment nor the
+outstanding level. Which form runs is read off `field_kinds`; there is no config
+knob for it, since a knob whose only legal value the contract determines is a
+knob that cannot be turned.
 
 ## Network
 
@@ -117,14 +121,28 @@ Whether the embedding helps or hurts on the Schedule P backtest is an
 empirical question the compare harness answers, not a claim this card makes.
 
 **Auxiliary task (`config.aux_weight`, default 1.0).** Kuo trains paid and
-claims outstanding jointly; here the OS head is a second MDN over the
-standardized incremental outstanding ratio, trained with plain
+claims outstanding jointly; here the second head is an MDN trained with plain
 `mdn_nll` at weight `aux_weight` (a second MDN rather than Kuo's MSE, so
 there is exactly one loss family in the entry; `aux_weight=0.0` is the
-single-task ablation arm). Early stopping tracks the TARGET head's validation
-NLL only, so model selection is not coupled to `aux_weight`. Rollout and
-held-out scoring only ever consume the target head - the auxiliary head is a
-training-time regularizer.
+single-task ablation arm). It has **two forms, chosen by `field_kinds[1]`, not
+by a knob**:
+
+- **Outstanding increment** (channel 1 is an increment, the default pair): the
+  target is `x[1] - x[0]` on the ratio scale - incremental reported minus
+  incremental paid - trained where both channels are real.
+- **Case-reserve head** (channel 1 is a level, e.g.
+  `level_fields=("case_reserve",)`): the target is that level ratio itself,
+  trained where that one channel is real. This is Kuo's own second task read
+  literally, and the level is the harder and more informative thing to learn: a
+  case reserve does not accumulate, it drains toward zero as payments replace it
+  and jumps upward when new information arrives - a hospital bill reported
+  months late - so its rundown is neither linear nor monotone.
+
+Standardization is the same either way: per dev, from training-context cells,
+under the target's pinning rule. Early stopping tracks the TARGET head's
+validation NLL only, so model selection is not coupled to `aux_weight`. Rollout
+and held-out scoring only ever consume the target head - the auxiliary head is a
+training-time regularizer, in both forms.
 
 ## Training
 
@@ -241,6 +259,9 @@ pred.summary(observed=realized)
   company total (see `nn_ml_*`).
 - Origins with no observed cells get pure-extrapolation ultimates (anchor 0);
   origins without premium produce NaN ultimates.
-- The auxiliary OS target exists only where BOTH channels are observed, so a
-  cohort whose reported development is ragged trains its OS head on fewer cells
-  than its paid head; see "Data".
+- The auxiliary outstanding-increment target exists only where BOTH channels are
+  observed, so a cohort whose reported development is ragged trains that head on
+  fewer cells than its paid head; see "Data". The case-reserve form needs one
+  channel and so loses fewer cells, but it is scored on nothing else: no test
+  here says a level auxiliary task predicts paid loss better than the derived
+  increment does, and the compare harness is what would.
