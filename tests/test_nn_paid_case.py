@@ -407,7 +407,9 @@ def test_seeded_determinism_and_the_shared_rollout_cache(fitted):
     cached = entry._rollout_ults
     b = entry.predict(segment=SEG1, seed=7)
     assert entry._rollout_ults is cached  # one rollout, sliced per cohort
-    assert entry.case_paths(seed=7) is entry._rollout_case
+    assert entry.case_paths(seed=7, per_diagonal=True) is entry._rollout_case
+    # the terminal read is a VIEW of the cached path's last step, not a copy
+    assert np.shares_memory(entry.case_paths(seed=7), entry._rollout_case)
     assert not np.allclose(a.samples, b.samples)
 
     again = NNPaidCase().fit(fitted.triangle, as_of=AS_OF, config=fitted.config, seed=0)
@@ -632,7 +634,19 @@ def test_case_paths_is_a_diagnostic_over_the_same_draws(fitted):
     assert paths.shape == (fitted.config.n_draws, n_c, n_w)
     assert np.isfinite(paths).all()
     entry.predict(segment=SEG0, seed=3)
-    assert entry.case_paths(seed=3) is paths  # one simulation, two read-outs
+    full = entry.case_paths(seed=3, per_diagonal=True)
+    assert full is entry._rollout_case  # one simulation, two read-outs
+    # the walk itself: one step per future calendar diagonal, ascending; the
+    # last step IS the terminal read, and the walk genuinely walks - a path
+    # that repeated its endpoint L times would pass every shape check here
+    assert full.ndim == 4 and full.shape[0] == fitted.config.n_draws
+    assert full.shape[2:] == (n_c, n_w)
+    np.testing.assert_array_equal(full[:, -1], paths)
+    if full.shape[1] > 1:
+        assert not np.array_equal(full[:, 0], full[:, -1]), (
+            "every step of the case path equals its endpoint - the per-diagonal "
+            "walk is not being recorded, only the terminal state repeated"
+        )
 
 
 # -- held-out wiring -----------------------------------------------------------

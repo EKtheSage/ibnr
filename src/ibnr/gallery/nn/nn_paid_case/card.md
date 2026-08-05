@@ -210,6 +210,9 @@ score every cohort. **`predict` is paid-only** for board comparability.
 
 ## The drain diagnostic
 
+`entry.case_paths(per_diagonal=True)` returns the full walk,
+`(n_draws, n_levels, n_c, n_w)` over the projected calendar diagonals - where
+the level steps down and where a shock lands, not only where it ends.
 `entry.case_paths()` returns `(n_draws, n_c, n_w)` - the simulated **terminal
 case level ratio** per (draw, cohort, origin), off the same cached rollout as
 `predict`, so they are the same draws. It is a **diagnostic accessor, not a
@@ -268,7 +271,7 @@ entry = gallery.fit(
     as_of="1997-12-31",
 )
 pred = entry.predict(segment={"company_code": code, "line_of_business": line})
-realized = entry.realized_ultimates(tri, segment={"company_code": code})
+realized = entry.realized_ultimates(tri, segment={"company_code": code, "line_of_business": line})
 pred.summary(observed=realized)  # the same Meyers-style table as every entry
 
 # the drain diagnostic: terminal case level ratio per (draw, cohort, origin)
@@ -307,3 +310,9 @@ control = gallery.fit("nn_paid_case", tri, config=gru, as_of="1997-12-31")
 - Origins with no observed cells get pure-extrapolation ultimates (anchor 0) and
   a case state starting from zero; origins without premium produce NaN
   ultimates.
+- When the case cell at the paid anchor is missing while an earlier one exists,
+  the rollout starts the state from that stale earlier level and the movements
+  over the skipped devs are never sampled - on a draining reserve the start is
+  overstated by the skipped drain, silently, and the paid projection conditions
+  on it. Rare on the mart (the case reserve sits on the same statement rows as
+  paid) but reachable through the hole-inheritance path above.

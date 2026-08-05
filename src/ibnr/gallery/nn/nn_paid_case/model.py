@@ -150,7 +150,7 @@ class NNPaidCase(GalleryEntry, PooledMDNHeldout):
         # path rides the same cache - it comes out of the same simulation.
         self._rollout_key: tuple | None = None
         self._rollout_ults: np.ndarray | None = None  # (n_draws, n_c, n_w)
-        self._rollout_case: np.ndarray | None = None  # (n_draws, n_c, n_w) terminal level
+        self._rollout_case: np.ndarray | None = None  # (n_draws, L, n_c, n_w) level walk
 
     def fit(
         self,
@@ -442,15 +442,28 @@ class NNPaidCase(GalleryEntry, PooledMDNHeldout):
         targets["premium"] = c["premium"].reshape(-1)
         return PredictiveDistribution(samples=ults.reshape(ults.shape[0], -1), targets=targets)
 
-    def case_paths(self, n_draws: int | None = None, seed: int | None = None) -> np.ndarray:
-        """``(n_draws, n_c, n_w)`` simulated TERMINAL case level ratios - a DIAGNOSTIC.
+    def case_paths(
+        self,
+        n_draws: int | None = None,
+        seed: int | None = None,
+        *,
+        per_diagonal: bool = False,
+    ) -> np.ndarray:
+        """Simulated case level ratios - a DIAGNOSTIC, not a forecast.
+
+        Default: ``(n_draws, n_c, n_w)`` TERMINAL levels, the state after the
+        deepest projected diagonal. With ``per_diagonal=True``: the FULL walk,
+        ``(n_draws, n_levels, n_c, n_w)`` - axis 1 is the rollout's future
+        calendar diagonals in ascending order, its last step identical to the
+        terminal read, so the drain TRAJECTORY (where the level steps down,
+        where a shock lands) is inspectable, not only its endpoint.
 
         Not a ``PredictiveDistribution`` and deliberately not one: it is the
         rollout's internal state read out, in the same (draw, cohort, origin)
         layout as :meth:`predict`'s samples and off the same cached simulation,
         so the two are the same draws. The value is the case reserve as a RATIO
-        to that origin's premium at the DEEPEST projected dev - multiply by
-        ``contract_["premium"]`` for dollars.
+        to that origin's premium - multiply by ``contract_["premium"]`` for
+        dollars.
 
         **The drain diagnostic** (card.md): a case reserve that has done its job
         is nearly exhausted by the end of the projection, so this should
@@ -467,7 +480,8 @@ class NNPaidCase(GalleryEntry, PooledMDNHeldout):
         """
         if self.models_ is None or self.contract_ is None:
             raise RuntimeError("call fit() first")
-        return self._ensure_rollout(n_draws, seed)[1]
+        path = self._ensure_rollout(n_draws, seed)[1]  # (n_draws, L, n_c, n_w)
+        return path if per_diagonal else path[:, -1]
 
     def realized_ultimates(
         self, full_triangle: Triangle, segment: Mapping | None = None
@@ -567,6 +581,14 @@ class NNPaidCase(GalleryEntry, PooledMDNHeldout):
         (``future = d_index >= latest_dev``), so a case cell booked on a deeper
         diagonal than the paid anchor cannot be counted twice - once as the
         starting level and again as a cell the rollout simulates over.
+
+        Known approximation, disclosed in the card: when the case cell AT the
+        paid anchor is missing but an earlier one exists, the state starts from
+        that stale level and the movements over the skipped devs are never
+        sampled (the rollout only visits ``d >= latest_dev``), so a draining
+        reserve's start is overstated by the skipped drain - silently, every
+        number finite. Bridging it would mean sampling movements on pre-anchor
+        diagonals, which the double-count rule above exists to forbid.
         """
         c = self.contract_
         level, obs = c["x"][:, 1], c["x_obs"][:, 1]  # (n_c, n_w, n_d)
@@ -606,7 +628,9 @@ class NNPaidCase(GalleryEntry, PooledMDNHeldout):
         the exact opposite of the other four NN entries, which promote channel 0
         alone precisely because they simulated nothing else.
 
-        Returns ``(ultimates, terminal_case_level)``, both (n_draws, n_c, n_w):
+        Returns ``(ultimates, case_level_path)`` - (n_draws, n_c, n_w) and
+        (n_draws, L, n_c, n_w), L = future calendar diagonals ascending, the
+        path's last step being the terminal level:
         ultimate = anchor cumulative + premium x summed future paid ratios, and
         the case state as it stands after the last projected diagonal.
         """
@@ -686,10 +710,14 @@ class NNPaidCase(GalleryEntry, PooledMDNHeldout):
                 compb = comp_t.repeat_interleave(chunk, dim=0)
                 premb = prem_t.repeat_interleave(chunk, dim=0)
                 level = level0_t.repeat_interleave(chunk, dim=0).clone()  # (chunk*n_c, n_w)
+                # one state snapshot per future calendar diagonal, sampled or
+                # not, so the path axis is uniform across chunks and members
+                path_steps: list[torch.Tensor] = []
                 with torch.no_grad():
                     for lv in cal_levels:
                         cells = futb & (cal_t[None] == lv)  # (chunk*n_c, n_w, n_d)
                         if not bool(cells.any()):
+                            path_steps.append(level.clone())
                             continue
                         # the context boundary advances with each sampled
                         # diagonal, so the predicted diagonal always sits at
@@ -732,6 +760,7 @@ class NNPaidCase(GalleryEntry, PooledMDNHeldout):
                         xb[:, 1][cells] = level_z[cells]
                         ctx[:, 0][cells] = True
                         ctx[:, 1][cells] = True
+                        path_steps.append(level.clone())
                 # un-standardize the paid channel back to loss ratios, then sum
                 # only the future increments per (row, origin).
                 ratios = xb[:, 0].cpu().numpy() * std0[None, None, :] + mean0[None, None, :]
@@ -740,7 +769,11 @@ class NNPaidCase(GalleryEntry, PooledMDNHeldout):
                 # ultimate = anchor cumulative + premium * summed future increments
                 ults = c["latest_cum"][:, None, :] + contrib * c["premium"][:, None, :]
                 ult_pieces.append(np.moveaxis(ults, 1, 0))  # -> (chunk, n_c, n_w)
-                terminal = level.cpu().numpy().reshape(n_c, chunk, n_w, order="C")
-                case_pieces.append(np.moveaxis(terminal, 1, 0))
+                # the full path: (L, chunk*n_c, n_w) -> (L, n_c, chunk, n_w)
+                # undoing the interleave, then the chunk axis to the front. Its
+                # last step IS the terminal level, so nothing is stored twice.
+                path = torch.stack(path_steps).cpu().numpy()
+                path = path.reshape(len(cal_levels), n_c, chunk, n_w, order="C")
+                case_pieces.append(np.moveaxis(path, 2, 0))  # (chunk, L, n_c, n_w)
                 done += chunk
         return np.concatenate(ult_pieces, axis=0), np.concatenate(case_pieces, axis=0)
