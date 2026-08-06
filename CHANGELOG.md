@@ -15,6 +15,43 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
+## Unreleased
+
+### `nn_paid_case` floors the simulated case level at zero
+
+A case reserve is booked down TO zero and never past it, and 0.5.5's rollout did
+not say so: it advanced the state as `level += movement` with nothing stopping
+the walk crossing zero, and roughly half the simulated terminal levels on the
+Schedule P panel landed below it (55% with the transformer body, 45% with the
+GRU, against zero of that panel's 900 observed case cells). The state update is
+now `level = max(level + movement, 0)`.
+
+* **New config field** `NNPaidCaseConfig.floor_case_at_zero`, default `True`. It
+  is a rollout knob shared by both backbones, so it is not in `BACKBONE_KNOBS`
+  and neither body refuses it.
+* **The draw is untouched.** The clamp is arithmetic on the case STATE, applied
+  after the joint (paid increment, case movement) sample; the paid coordinate is
+  written unchanged and the generator has already advanced. So a floored and an
+  unfloored run share every draw for a given seed, and
+  `floor_case_at_zero=False` reproduces the 0.5.5 walk byte for byte - verified
+  against the published 0.5.5 wheel in a clean venv, on `case_paths()` and
+  `predict().samples`, on both backbones.
+* **The floored level is the only copy of the state**: it is what feeds channel 1
+  forward on the next step AND what `case_paths()` reports, terminal and
+  per-diagonal alike, including the pinned deepest dev whose movement is forced
+  to the pooled dev mean. A rollout that clamped the read-out while handing the
+  network the unfloored level would pass every diagnostic; it is caught by test.
+* **The starting level is not floored.** `_initial_case_level` carries the
+  deepest observed case level as the triangle reported it, negative included; a
+  recovery can outrun the case estimate, and restating an observation is not
+  constraining a simulation.
+* Held-out scoring is untouched by construction: `predict_at` / `log_lik_at` are
+  a single forward pass at observed features with no level walk in them, so the
+  board's paid columns are byte-identical with the floor on and off (asserted).
+
+`floor_case_at_zero=False` is kept so the change can be measured with and
+without it, not as a fallback.
+
 ## 0.5.5 - 2026-08-06
 
 The case-reserve arc built on 0.5.4's channel machinery lands: deeptriangle

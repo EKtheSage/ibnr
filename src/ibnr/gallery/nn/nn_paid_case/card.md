@@ -184,9 +184,9 @@ diagonal, per draw:
    same component, same normal draw for both coordinates, which is what carries
    the learned correlation into the simulated diagonal;
 2. the paid increment ratio is un-standardized and written into channel 0;
-3. the case **level state** is advanced, `level += movement`, in RATIO space,
-   and the new level is re-standardized with the LEVEL channel's own per-dev
-   statistics and written into channel 1;
+3. the case **level state** is advanced, `level = max(level + movement, 0)`, in
+   RATIO space, and the new level is re-standardized with the LEVEL channel's
+   own per-dev statistics and written into channel 1;
 4. **both** channels' flags are promoted at those cells;
 5. re-encode, next diagonal.
 
@@ -196,6 +196,31 @@ z_move[d]` is not the standardized new level, and a rollout built that way
 produces smooth, finite, entirely believable numbers. The movement is integrated
 on the ratio scale - the only scale on which a level and a movement are the same
 quantity - and re-standardized afterwards.
+
+**The `max(..., 0)` is the booking constraint** (`config.floor_case_at_zero`,
+default on): a case reserve is taken down TO zero and never past it, so the
+simulated walk is truncated there. Three things about where it sits.
+
+- It floors the **state**, after the joint draw. The draw itself is untouched
+  and the paid coordinate is written unchanged, so the random stream is the same
+  either way: for one seed, a floored and an unfloored rollout share every draw,
+  and `floor_case_at_zero=False` reproduces the 0.5.5 walk byte for byte
+  (verified against the published 0.5.5 wheel).
+- The floored level is what feeds channel 1 forward AND what `case_paths`
+  reports. There is no second, unfloored copy of the state - a rollout that
+  clamped the read-out while handing the network the negative level would look
+  healthy in every diagnostic and condition the paid projection on a case
+  position that cannot exist.
+- The **starting** level is not floored. `_initial_case_level` carries the
+  deepest observed case level as the triangle reported it, negative included,
+  because a recovery from salvage or subrogation can outrun what is left of the
+  case estimate and restating an observation is not constraining a simulation.
+  (No cell of the Schedule P panel is negative, so this is a rule about what the
+  code may rewrite, not a common case.) So an origin that never steps can still
+  show a negative level; every level the simulation produced is at or above zero.
+
+`floor_case_at_zero=False` is kept so the change can be measured with and
+without it, not as a fallback.
 
 Step 4 is the mirror image of every other NN entry. They promote channel 0's
 flag ALONE, precisely because they simulated nothing else and raising a feature
@@ -208,7 +233,7 @@ future paid increment ratios`, pooled over ensemble members (1000 draws by
 default). `predict(segment=...)` slices the cached global rollout - fit once,
 score every cohort. **`predict` is paid-only** for board comparability.
 
-## The drain diagnostic
+## The case run-off diagnostic
 
 `entry.case_paths(per_diagonal=True)` returns the full walk,
 `(n_draws, n_levels, n_c, n_w)` over the projected calendar diagonals - where
@@ -223,12 +248,21 @@ What to read from it:
 
 - the terminal level should **concentrate near zero**. A case reserve that has
   done its job is nearly exhausted by the end of the projection;
+- mass **exactly at zero** is the reserve having fully run down. The walk is
+  floored there (`floor_case_at_zero`, above), so zero is a value the simulation
+  can reach and not pass, the way a booked reserve is. A large share of draws
+  sitting at zero says the model expects the case position to close out inside
+  the projection window;
 - a **fat positive tail** is the model saying development continues past the
   triangle's window - real information about the tail, and a reason to distrust
   the ultimate at face value rather than a bug;
-- a mass of **negative** terminal levels IS a defect: the movement head is
-  unconstrained, so nothing stops a drain from overshooting into a case reserve
-  below zero. Nothing in v1 prevents it (see "Limitations").
+- **negative** terminal levels can only appear with `floor_case_at_zero=False`,
+  where the movement head is unconstrained and a run-down can overshoot. Read
+  them as the defect the floor exists for, not as a finding. On the Schedule P
+  panel roughly half of the unfloored terminal levels land below zero - 55% with
+  the transformer body, 45% with the GRU, against **zero** of that panel's 900
+  observed case cells (`analysis/03b_nn_vs_classical.ipynb`). That is why the
+  floor is on by default.
 
 ## Held-out scoring
 
@@ -274,12 +308,16 @@ pred = entry.predict(segment={"company_code": code, "line_of_business": line})
 realized = entry.realized_ultimates(tri, segment={"company_code": code, "line_of_business": line})
 pred.summary(observed=realized)  # the same Meyers-style table as every entry
 
-# the drain diagnostic: terminal case level ratio per (draw, cohort, origin)
+# the case run-off diagnostic: terminal case level ratio per (draw, cohort, origin)
 terminal = entry.case_paths()
 
 # the GRU control, same head, same loss, same rollout
 gru = gallery.get("nn_paid_case").config_class(backbone="gru", hidden_dim=64)
 control = gallery.fit("nn_paid_case", tri, config=gru, as_of="1997-12-31")
+
+# the unfloored walk (the 0.5.5 behaviour), for a with-and-without comparison
+cfg = gallery.get("nn_paid_case").config_class(floor_case_at_zero=False)
+unfloored = gallery.fit("nn_paid_case", tri, config=cfg, as_of="1997-12-31")
 ```
 
 ## Limitations
@@ -290,12 +328,18 @@ control = gallery.fit("nn_paid_case", tri, config=gru, as_of="1997-12-31")
   projection they feed is. A case-side holdout (score the case level at the next
   diagonal the way `next_diagonal` scores paid) is the obvious follow-up and is
   not built.
-- **The movement head is unconstrained**, so a simulated case level can go
-  negative, and a long projection can drift there cell by cell. A non-negative
-  parameterization (predict a log-drain, or floor the level at zero) would fix
-  the sign at the cost of the upward shocks that motivate the entry, so v1
-  keeps the honest unconstrained version and reports the terminal level as a
-  diagnostic instead.
+- **The movement head is still unconstrained; only the STATE is floored.** The
+  head can predict a movement that would take the level below zero, and the
+  rollout truncates the result rather than reshaping the density - which is the
+  booking rule (a reserve is taken down to zero and released) but is not a
+  non-negative parameterization. Two consequences. The simulated level is a
+  censored quantity, so its mean is above the mean of the unconstrained walk by
+  the censored mass, and any moment read off `case_paths` is a moment of the
+  censored variable. And the head itself is still trained on raw movements, so
+  a fit whose case coordinate is badly calibrated is not fixed by the floor,
+  only made to respect the sign. Predicting a non-negative level directly (a
+  log-level, say) is the alternative and would cost the upward shocks that
+  motivate the entry; it is not built.
 - **Single line.** Each cohort is encoded independently, so a company's per-line
   draws carry no cross-line dependence (`nn_transformer_ml`'s job).
 - **Small data is still the central risk.** Two channels and a wider head mean

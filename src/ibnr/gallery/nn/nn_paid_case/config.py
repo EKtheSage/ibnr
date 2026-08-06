@@ -93,6 +93,18 @@ class NNPaidCaseConfig:
     # predictive
     ensemble_size: int = 5  # deep-ensemble members (distinct seeds) -> epistemic spread
     n_draws: int = 1000  # rollout draws (predict), pooled across members
+    # ROLLOUT STATE, and a SHARED knob - both bodies roll out through the same
+    # code, so this is not in BACKBONE_KNOBS and neither backbone refuses it.
+    # A case reserve is booked down TO zero and never past it: when the claim
+    # closes the department releases whatever is left, and an outstanding
+    # position below nothing does not exist. So the simulated level walk is
+    # truncated there, ``level = max(level + movement, 0)``. Only the case STATE
+    # is floored - the joint (paid, movement) draw is untouched and consumes the
+    # same randomness either way - so ``False`` reproduces the 0.5.5 walk
+    # exactly for the same seed, and a floored and an unfloored run share every
+    # draw. It is kept rather than deleted so the change can be measured with
+    # and without it.
+    floor_case_at_zero: bool = True
     # held-out CRPS draws (predict_at), a separate budget from the rollout
     # above: scoring one diagonal costs a single forward pass per ensemble
     # member plus mixture sampling, so 10,000 - what every other CRPS-capable
