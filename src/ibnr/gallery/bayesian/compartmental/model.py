@@ -90,7 +90,7 @@ def os_curve(t, ker, kp, rlr):
     with EX(0) = 1 (the same closed form as the Stan functions block).
 
     A hump: case reserves build at rate ``ker`` as exposure is reported and
-    empty at rate ``kp`` as claims settle, so OS -> 0 as t -> inf. Note the
+    run down at rate ``kp`` as claims settle, so OS -> 0 as t -> inf. Note the
     ``ker - kp`` denominator is singular at ker == kp; the lognormal priors
     (medians 3 and 1) keep the sampler far from that ridge in practice.
     Broadcasts over numpy arrays of posterior draws.

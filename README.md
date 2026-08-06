@@ -266,21 +266,24 @@ picks a basis for you:
 | `loss_field` default | entries |
 |---|---|
 | `"reported_loss"` | `meyers_ccl`, `mdn`, `nn_transformer`, `nn_transformer_ml`, `resnet` |
-| `"paid_loss"` | the other ten: `clark`, `clark_growth_curve`, `compartmental`, `copula_glm`, `deeptriangle`, `england_verrall_odp`, `guszcza_growth_curve`, `mack`, `meyers_csr`, `sur` |
+| `"paid_loss"` | the other eleven: `clark`, `clark_growth_curve`, `compartmental`, `copula_glm`, `deeptriangle`, `england_verrall_odp`, `guszcza_growth_curve`, `mack`, `meyers_csr`, `nn_paid_case`, `sur` |
 
-`deeptriangle` is the one to watch: it is an NN entry but keeps the paper's
-paid-loss basis, so "the NN entries are reported-basis" is true of four of the
-five and wrong for that one. Pass `loss_field=` explicitly whenever the basis
-matters - which is always, if you are comparing entries to each other.
+Two NN entries are the ones to watch. `deeptriangle` keeps the paper's paid-loss
+basis, and `nn_paid_case` is paid by construction (it models paid development
+against the case reserve), so "the NN entries are reported-basis" is true of
+four of the six and wrong for those two. `nn_paid_case` also spells the argument
+`paid_field=`, not `loss_field=`, because it names two loss fields and
+"loss_field" would underdescribe it. Pass the field explicitly whenever the
+basis matters - which is always, if you are comparing entries to each other.
 
 Premium is genuinely required by every entry that models a loss *ratio* or
 carries a log-premium offset: `meyers_ccl`, `meyers_csr`,
 `guszcza_growth_curve`, `clark_growth_curve`, `compartmental`,
-`england_verrall_odp`, `copula_glm` and all five NN entries. Only `mack` and
+`england_verrall_odp`, `copula_glm` and all six NN entries. Only `mack` and
 `sur` have no `premium_field` argument at all. For the entries that do require
 it, a premium field that is missing, duplicated per origin, non-positive, or
 belongs to a different cohort than the losses is an error at fit time rather
-than a silent zero. All twelve name the problem: `premium_field=None` gets a
+than a silent zero. All fourteen name the problem: `premium_field=None` gets a
 `ValueError` saying that entry cannot model a loss ratio without exposure, and
 a `premium_field` naming a column the triangle does not carry gets
 `ValueError: no rows for premium field 'earned_premium'`. The NN entries

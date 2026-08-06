@@ -578,6 +578,16 @@ def test_the_rollout_integrates_the_movement_into_the_case_level(
     so the clamp never fires and the rebuild has to match without it. Which arm
     is which is asserted (``must_bind``), because an arm whose clamp silently
     stopped firing would prove nothing and say nothing.
+
+    **This test does NOT guard the feed-forward half of that claim, despite the
+    paragraph above.** Under the constant ``-0.7`` movement the clamps land only
+    at PINNED devs, where the channel-1 input is masked to the pin (standardized
+    0) whatever the level is - so a rollout that floors ``case_paths`` while
+    feeding the network the unfloored level produces byte-identical grids here
+    and passes both arms (measured: such a mutation passes 52 of 54 tests in
+    this file). ``test_the_two_walks_share_every_draw_until_the_floor_first_binds``
+    is the only thing that catches it, on its channel-1 divergence assertion.
+    Keep that test alive.
     """
     entry = fitted.entry
     c = entry.contract_
@@ -753,14 +763,31 @@ def test_the_floor_keeps_every_simulated_case_level_at_or_above_zero(floor_pair)
     or above zero. The floor-off twin is what keeps that from passing on a
     fixture where the floor never binds: its walk MUST go negative here, and
     both statements come off the same data, the same seed and the same networks.
+
+    **Scoped to origins the rollout SIMULATES** (``latest_dev < n_d``), which is
+    the guarantee the entry actually makes. An origin already at its deepest dev
+    has no future cell, never steps, and carries its observed starting level
+    through untouched - so with a negative case reserve in the data the array
+    read whole contains a negative number while the code is behaving exactly as
+    documented. Asserting over the whole array would be asserting the exemption
+    away, and it passes here only because this fixture's observed levels are all
+    positive; ``test_a_negative_observed_start_...`` pins both halves.
     """
     on, off = floor_pair.on, floor_pair.off
+    c = on.contract_
+    steps = c["latest_dev"] < c["n_d"]  # (n_c, n_w) - origins with a future cell
+    assert steps.any() and not steps.all(), (
+        "this fixture has no mix of stepping and non-stepping origins, so the scoping "
+        "below is either vacuous or the whole array"
+    )
     for kwargs in ({}, {"per_diagonal": True}):
         levels = on.case_paths(seed=0, **kwargs)
-        assert levels.min() >= 0.0, (
-            f"case_paths({kwargs}) reached {levels.min():.4f}; the walk is floored at zero"
+        simulated = levels[..., steps]  # broadcasts over draws (and diagonals)
+        assert simulated.min() >= 0.0, (
+            f"case_paths({kwargs}) reached {simulated.min():.4f} at an origin the rollout "
+            "simulates; the walk is floored at zero"
         )
-    unfloored = off.case_paths(seed=0, per_diagonal=True)
+    unfloored = off.case_paths(seed=0, per_diagonal=True)[..., steps]
     assert unfloored.min() < 0.0, (
         "the unfloored walk never goes negative on this fixture, so flooring it proves "
         "nothing - the run-down fixture is supposed to overshoot"
@@ -911,6 +938,103 @@ def test_the_held_out_paid_path_does_not_run_the_case_walk(floor_pair):
     np.testing.assert_array_equal(
         np.ascontiguousarray(on.log_lik_at(live, field="paid_loss")).view(np.uint8),
         np.ascontiguousarray(off.log_lik_at(live, field="paid_loss")).view(np.uint8),
+    )
+
+
+def test_flipping_the_floor_on_a_fitted_entry_re_runs_the_rollout(floor_pair):
+    """The rollout cache is keyed on the FLAG, not only on (n_draws, seed).
+
+    This is the one config field a caller is invited to change on a fitted
+    entry: it exists to be compared with and without, and re-fitting to flip it
+    would re-draw the networks, which is exactly what such a comparison must not
+    do. Keyed on ``(n_draws, seed)`` alone, the second call returned the FIRST
+    arm's cached array - same seed, byte-identical, no error - so the two arms
+    would look like they agreed everywhere, on a fixture built to make them
+    disagree.
+
+    Both directions, because a cache is a two-way trap: on -> off must re-run,
+    and off -> on must re-run back to the floored answer rather than to some
+    third thing. The final identity check is what makes the middle assertion
+    about the FLAG rather than about the rollout being nondeterministic.
+    """
+    entry = floor_pair.on
+    _drop_rollout_cache(entry)
+    try:
+        floored = entry.case_paths(seed=0, per_diagonal=True).copy()
+        entry.config_.floor_case_at_zero = False
+        unfloored = entry.case_paths(seed=0, per_diagonal=True).copy()
+        assert unfloored.min() < 0.0, (
+            "flipping the flag on the fitted entry returned a walk with no negative "
+            "level, i.e. the floored arm's cached array"
+        )
+        assert not np.array_equal(floored, unfloored)
+        entry.config_.floor_case_at_zero = True
+        np.testing.assert_array_equal(
+            entry.case_paths(seed=0, per_diagonal=True).view(np.uint8),
+            floored.view(np.uint8),
+            err_msg="flipping back did not reproduce the floored walk exactly",
+        )
+    finally:
+        entry.config_.floor_case_at_zero = True
+        _drop_rollout_cache(entry)
+
+
+def test_a_negative_observed_start_survives_only_where_the_rollout_never_steps(fitted):
+    """Both halves of the starting-level exemption, which nothing else covers.
+
+    ``_initial_case_level`` returns the deepest observed case level as the
+    triangle reported it, negative included: an observed negative case reserve
+    is data (a recovery outrunning the estimate), and the floor constrains the
+    SIMULATION, not the observation. The exemption is documented as narrow and
+    this pins exactly how narrow.
+
+    (a) An origin with no future cell never steps, so its reported level passes
+        straight through to ``case_paths`` - negative and unchanged, at every
+        recorded diagonal.
+    (b) An origin the rollout projects has a cell on the FIRST future diagonal,
+        so the clamp absorbs the negative start at step 0 and it never appears
+        at all.
+
+    Forced through ``_initial_case_level`` rather than through a fixture,
+    because on a run-off triangle the deepest observed level is the one at the
+    anchor, and building a negative one there would also move every movement
+    target the head trains on - which would make this a test of a different fit.
+    """
+    entry = fitted.entry
+    c = entry.contract_
+    n_c, n_w = c["latest_dev"].shape
+    steps = c["latest_dev"] < c["n_d"]  # (n_c, n_w)
+    never = np.nonzero(~steps)
+    always = np.nonzero(steps)
+    assert len(never[0]) and len(always[0]), "need one origin of each kind on this fixture"
+    still = (int(never[0][0]), int(never[1][0]))
+    moving = (int(always[0][0]), int(always[1][0]))
+
+    start = entry._initial_case_level()
+    forced = start.copy()
+    forced[still] = -0.5
+    forced[moving] = -0.5
+    assert forced.shape == (n_c, n_w)
+
+    _drop_rollout_cache(entry)
+    try:
+        entry._initial_case_level = lambda: forced.copy()
+        path = entry.case_paths(seed=0, per_diagonal=True)
+    finally:
+        del entry._initial_case_level  # restore the bound method
+        _drop_rollout_cache(entry)
+
+    np.testing.assert_allclose(
+        path[:, :, still[0], still[1]],
+        -0.5,
+        err_msg=(
+            "an origin the rollout never steps had its observed negative case level "
+            "rewritten; the floor constrains the simulation, not the data"
+        ),
+    )
+    assert (path[:, :, moving[0], moving[1]] >= 0.0).all(), (
+        "a projected origin's negative start reached case_paths; the first simulated "
+        "diagonal must clamp it away"
     )
 
 

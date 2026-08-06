@@ -202,25 +202,39 @@ default on): a case reserve is taken down TO zero and never past it, so the
 simulated walk is truncated there. Three things about where it sits.
 
 - It floors the **state**, after the joint draw. The draw itself is untouched
-  and the paid coordinate is written unchanged, so the random stream is the same
-  either way: for one seed, a floored and an unfloored rollout share every draw,
-  and `floor_case_at_zero=False` reproduces the 0.5.5 walk byte for byte
-  (verified against the published 0.5.5 wheel).
-- The floored level is what feeds channel 1 forward AND what `case_paths`
-  reports. There is no second, unfloored copy of the state - a rollout that
-  clamped the read-out while handing the network the negative level would look
-  healthy in every diagnostic and condition the paid projection on a case
-  position that cannot exist.
+  and the paid coordinate is written unchanged, so the two arms consume the same
+  random stream - same generator, same seed, same call order, a common-random-
+  numbers pairing. They are byte-identical **until the first bind**, which is
+  why `floor_case_at_zero=False` reproduces the 0.5.5 walk exactly (verified
+  against the published 0.5.5 wheel). Past the first bind the floored arm feeds
+  the network a different case level, so the same underlying randomness maps
+  through a different mixture and the arms' later samples legitimately differ.
+  Common random numbers is the point of the pairing; identical output is not.
+- The floored level is the only copy of the state: it feeds channel 1 forward
+  and it is what `case_paths` reports. A rollout that clamped the read-out while
+  handing the network the negative level would look healthy in every diagnostic
+  and condition the paid projection on a case position that cannot exist. One
+  exception, and it is pre-existing pin behaviour rather than anything the floor
+  does: at a **pinned** dev the channel-1 input is masked to the pin
+  (standardized 0, the pooled level mean), so the network sees the pin and not
+  the level there, floored or not.
 - The **starting** level is not floored. `_initial_case_level` carries the
   deepest observed case level as the triangle reported it, negative included,
   because a recovery from salvage or subrogation can outrun what is left of the
   case estimate and restating an observation is not constraining a simulation.
   (No cell of the Schedule P panel is negative, so this is a rule about what the
-  code may rewrite, not a common case.) So an origin that never steps can still
-  show a negative level; every level the simulation produced is at or above zero.
+  code may rewrite, not a common case.) The consequence is narrow: every origin
+  the rollout projects has a cell on the **first** future diagonal, so a
+  negative start is clamped away at that first step and never reaches
+  `case_paths`. The only origin whose negative start survives is one with no
+  future cell at all - already at its deepest dev, never stepped. Every level
+  the simulation produced is at or above zero.
 
 `floor_case_at_zero=False` is kept so the change can be measured with and
-without it, not as a fallback.
+without it, not as a fallback. Compare the arms on `predict()`'s rollout
+ultimates and on a Meyers-style retrospective; **not** on the held-out board,
+whose rows are one forward pass at observed features and therefore identical
+between the arms by construction.
 
 Step 4 is the mirror image of every other NN entry. They promote channel 0's
 flag ALONE, precisely because they simulated nothing else and raising a feature
@@ -250,19 +264,27 @@ What to read from it:
   done its job is nearly exhausted by the end of the projection;
 - mass **exactly at zero** is the reserve having fully run down. The walk is
   floored there (`floor_case_at_zero`, above), so zero is a value the simulation
-  can reach and not pass, the way a booked reserve is. A large share of draws
-  sitting at zero says the model expects the case position to close out inside
-  the projection window;
+  can reach and not pass, the way a booked reserve is - it is not absorbing, and
+  the next diagonal's movement can lift the level off it, which is the upward
+  shock half of what this entry models. **That reading holds only for origins
+  that started from a real observed case level.** An origin the triangle carries
+  no case cell for starts at the 0.0 fallback, and a walk whose movements are
+  negative never leaves it (measured on a stripped accident year: 100% of draws
+  at exactly zero, from the first step). Check the start before reading the
+  atom;
 - a **fat positive tail** is the model saying development continues past the
   triangle's window - real information about the tail, and a reason to distrust
   the ultimate at face value rather than a bug;
-- **negative** terminal levels can only appear with `floor_case_at_zero=False`,
-  where the movement head is unconstrained and a run-down can overshoot. Read
-  them as the defect the floor exists for, not as a finding. On the Schedule P
-  panel roughly half of the unfloored terminal levels land below zero - 55% with
-  the transformer body, 45% with the GRU, against **zero** of that panel's 900
-  observed case cells (`analysis/03b_nn_vs_classical.ipynb`). That is why the
-  floor is on by default.
+- **negative** terminal levels are, with the floor on, only possible for an
+  origin that never steps and whose observed starting level was itself negative
+  (the exemption above). Everything the simulation produced is at or above zero.
+  With `floor_case_at_zero=False` the movement head is unconstrained and a
+  run-down can overshoot freely; read that negative mass as the defect the floor
+  exists for, not as a finding. On the Schedule P panel roughly half of the
+  unfloored terminal levels land below zero - 55% with the transformer body, 45%
+  with the GRU, against **zero** of that panel's 900 observed case cells
+  (`analysis/03b_nn_vs_classical.ipynb`, measured on 0.5.5, i.e. on the
+  unfloored walk). That is why the floor is on by default.
 
 ## Held-out scoring
 
@@ -328,18 +350,28 @@ unfloored = gallery.fit("nn_paid_case", tri, config=cfg, as_of="1997-12-31")
   projection they feed is. A case-side holdout (score the case level at the next
   diagonal the way `next_diagonal` scores paid) is the obvious follow-up and is
   not built.
-- **The movement head is still unconstrained; only the STATE is floored.** The
-  head can predict a movement that would take the level below zero, and the
-  rollout truncates the result rather than reshaping the density - which is the
-  booking rule (a reserve is taken down to zero and released) but is not a
-  non-negative parameterization. Two consequences. The simulated level is a
-  censored quantity, so its mean is above the mean of the unconstrained walk by
-  the censored mass, and any moment read off `case_paths` is a moment of the
-  censored variable. And the head itself is still trained on raw movements, so
-  a fit whose case coordinate is badly calibrated is not fixed by the floor,
-  only made to respect the sign. Predicting a non-negative level directly (a
-  log-level, say) is the alternative and would cost the upward shocks that
-  motivate the entry; it is not built.
+- **The movement head is still unconstrained; only the STATE is floored, and at
+  a binding step the sampled pair is not the pair the model drew.** The head can
+  predict a movement that would take the level below zero, and the rollout
+  truncates the result rather than reshaping the density - which is the booking
+  rule (a reserve is taken down to zero and released) but is not a non-negative
+  parameterization. What that does to the joint draw is the disclosure that
+  matters. The head samples `(paid increment, case movement)` from one
+  component with one `z`, and at a binding step the realized pair becomes
+  `(paid increment, -level)`: the paid coordinate keeps its full sampled
+  magnitude while the take-down is capped at whatever is left. So **the learned
+  correlation between payment and case run-off is not enforced at binding
+  steps**, and because that correlation is negative (large payment, large
+  take-down), the draws that bind are preferentially the large-payment ones -
+  exactly the draws whose case movement is cut most. This is not pointwise
+  censoring of one variable: once a step binds, the arms' whole subsequent
+  trajectories diverge, because the floored level is fed back and changes the
+  next diagonal's mixture. Read `case_paths` moments, and any
+  floored-vs-unfloored comparison, with that in mind. The head itself is still
+  trained on raw movements, so a fit whose case coordinate is badly calibrated
+  is not fixed by the floor, only made to respect the sign. Predicting a
+  non-negative level directly (a log-level, say) is the alternative and would
+  cost the upward shocks that motivate the entry; it is not built.
 - **Single line.** Each cohort is encoded independently, so a company's per-line
   draws carry no cross-line dependence (`nn_transformer_ml`'s job).
 - **Small data is still the central risk.** Two channels and a wider head mean
