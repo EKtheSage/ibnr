@@ -1,9 +1,9 @@
-# mdn - per-cell mixture density network (the no-attention ablation)
+# mdn - per-cell mixture density network (the no-attention variant)
 
 **Family:** nn (PyTorch; requires the `[nn]` extra at fit time - registration
 does not)
 **Lineage:** Bishop's mixture density network, applied per triangle cell. Not
-a new modeling idea: this entry exists as the architecture ablation of
+a new modeling idea: this entry is the architecture comparison against
 `nn_transformer` - same data contract, same masked-cell objective, same
 training scheme, same MDN head, same rollout and held-out wiring, and NO
 sequence model, NO attention. A leaderboard gap between the two entries is
@@ -94,8 +94,8 @@ pooled over cohorts, calendar-cutoff augmentation in
 AdamW (lr 3e-4, weight decay 1e-2), gradient clip 1.0, early stopping
 (patience 25), deep ensemble of 5 members seeded `seed + 1000 * member`.
 The optimization defaults are deliberately the transformer's - tuning one
-arm and not the other would turn the architecture ablation into a tuning
-comparison.
+arm and not the other would make this a tuning comparison rather than an
+architecture comparison.
 
 ## Prediction
 
@@ -106,7 +106,7 @@ summary, continue. Promotion sets **channel 0's flag only** - the sampled
 target value now exists, next year's feature values do not - so the summary
 never counts a feature the rollout invented. The dependence between a cohort's
 cells flows through the shared summary rather than through attention - a
-strictly cruder channel, which is part of what the ablation measures.
+strictly cruder channel, which is part of what the comparison measures.
 Ultimates = anchor cumulative + premium x summed sampled future increments;
 draws pooled over the ensemble.
 
@@ -162,7 +162,7 @@ pred.summary(observed=realized)  # same Meyers-style table as every entry
 - The cohort summary is a per-dev mean: cross-origin structure beyond "the
   average development at this dev" is invisible, and the model cannot weight
   a similar origin above a dissimilar one. That is the point - it is the
-  capability being ablated - but it is a real predictive handicap.
+  capability being removed - but it is a real predictive handicap.
 - Like the single-line transformer, per-line draws are independent: no
   cross-line dependence, no diversified company total.
 - **Feature channels are not simulated during rollout**, and the rollout is

@@ -243,7 +243,7 @@ def test_phi_delta_split_matches_the_reference_grouping(backend_name):
 def test_simulation_isolates_process_risk(backend_name):
     """With parameter risk switched off the draws must reproduce Phi alone -
     the process half - computed here directly from the fit. This is what makes
-    the ablation switch meaningful rather than decorative."""
+    the risk-source switch meaningful rather than decorative."""
     fit = fit_mack(
         make_cohort_triangle(backend_name, synthetic_triangle(backend_name)),
         loss_field="paid_loss",

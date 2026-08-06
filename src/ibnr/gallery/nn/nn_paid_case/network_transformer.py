@@ -100,7 +100,7 @@ class PaidCaseTransformer(nn.Module):
         # THE head: one bivariate mixture per cell over (paid increment, case
         # movement) on the standardized scale. Shared with the GRU backbone -
         # same module, same weights shape - which is what makes the two a clean
-        # encoder ablation.
+        # encoder comparison.
         self.head = BivariateMixtureHead(d, cfg.n_components)
 
         # Per-token (origin, dev, calendar-diagonal) indices for the flattened

@@ -189,7 +189,7 @@ also draws) or `gamma`, both with mean `mu` and variance `phi*mu`. **R's
 `BootChainLadder` defaults to `gamma`**, so a like-for-like comparison needs it
 set explicitly.
 
-`resample_residuals` and `process_noise` are the two ablation switches: R's
+`resample_residuals` and `process_noise` are the two risk-source switches: R's
 `NYCost` arm is both on, its `NYParamDist` arm is `process_noise=False`, and
 the process-only arm R derives by subtraction is `resample_residuals=False`.
 All three are simulated here, and their variances compose in quadrature to

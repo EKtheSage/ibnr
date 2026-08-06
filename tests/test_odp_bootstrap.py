@@ -21,7 +21,7 @@ route is pinned three other ways, in descending order of strength:
 3. **Against invariants**: the fitted values are the Poisson MLE (checked
    against ``england_verrall_odp``'s iterative proportional fit, an independent
    implementation), the Pearson scale reproduces R's formula on a square
-   triangle, the three ablation arms' variances decompose, and a triangle with
+   triangle, the three arms' variances decompose, and a triangle with
    no residual variation has no CDR at all.
 """
 
@@ -318,7 +318,7 @@ def test_the_three_arms_variances_decompose(odp_fit):
     """R never simulates its process arm: ``CDR.BootChainLadder`` reports
     ``CDR.Process.S.E = sqrt(CDR.S.E^2 - CDR.Param.S.E^2)``, which is only
     legitimate if the two sources compose in quadrature. We simulate all three,
-    so the identity becomes a test of the ablation switches rather than an
+    so the identity becomes a test of the risk-source switches rather than an
     assumption behind a reported number."""
     sd = {}
     for label, kwargs in (
@@ -416,7 +416,7 @@ def test_the_bootstrap_cdr_is_not_exactly_centred_on_zero(odp_fit):
 # -- refusals -----------------------------------------------------------------
 
 
-def test_both_ablations_off_is_refused():
+def test_both_switches_off_is_refused():
     with pytest.raises(ValueError, match="no risk source left"):
         ODPBootstrapDiagonal(process_noise=False, resample_residuals=False)
 

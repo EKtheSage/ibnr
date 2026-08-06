@@ -4,7 +4,7 @@ from inside the entry's fit/predict paths (``ibnr.gallery`` must import
 without the [nn] extra; see model.py and CLAUDE.md's "torch must never be
 imported at module level" rule).
 
-This entry is the transformer's architecture ablation: it consumes the same
+This entry is the transformer's architecture comparison: it consumes the same
 contract, the same masked-cell objective, the same training scheme and the
 same MDN head, and differs ONLY in how a cell sees the rest of its triangle.
 Where the transformer attends over every (origin, dev) token, the MLP here
@@ -170,6 +170,6 @@ class TriangleMDN(nn.Module):
         mu = out[..., 1, :]  # (B, W, D, K) component means (normalized ratio scale)
         # softplus keeps sigma > 0; the 1e-3 floor prevents a collapsing
         # component from driving the NLL to -inf. Same head math as the
-        # transformer's - the ablation shares the distribution family exactly.
+        # transformer's - the comparison shares the distribution family exactly.
         sigma = nn.functional.softplus(out[..., 2, :]) + 1e-3  # (B, W, D, K)
         return log_pi, mu, sigma

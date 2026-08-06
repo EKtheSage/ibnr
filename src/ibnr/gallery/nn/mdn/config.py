@@ -2,7 +2,7 @@
 entry registers (and this config is importable) without the [nn] extra.
 
 Optimization, data-scheme and predictive defaults are IDENTICAL to
-``TransformerConfig`` - the entry is the transformer's architecture ablation,
+``TransformerConfig`` - the entry is the transformer's architecture comparison,
 so everything that is not the encoder body is held fixed on purpose (see
 card.md "Why this entry exists"). Systematic HPO lives in kernels/tuning.py."""
 
@@ -26,7 +26,7 @@ class MDNConfig:
     embedding_dim: int = 8  # origin / dev / distance-past-cutoff embeddings
     lob_embedding_dim: int = 8
     # optimization (AdamW; patience = early-stopping window on validation NLL).
-    # Same values as the transformer - the ablation holds the recipe fixed.
+    # Same values as the transformer - the comparison holds the recipe fixed.
     lr: float = 3e-4
     weight_decay: float = 1e-2
     batch_size: int = 64  # cohort-triangles per batch, not cells

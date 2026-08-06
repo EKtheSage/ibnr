@@ -35,7 +35,7 @@ cannot identify a between-company sd or an LKJ correlation - leaving Guszcza's
 single-company model. Note that this narrows the MARGINAL prior on the curve
 parameters (the entity-level ``student_t(3, 0, 1)`` sd goes with the level),
 which is the over-confident direction; the card states the size and the
-ablation that would answer it.
+comparison that would answer it.
 
 Three posterior backends, all fitting the identical Stan ``data`` block:
 ``model.stan`` (cmdstanpy, the reference), ``model_numpyro.py`` and
@@ -137,7 +137,7 @@ class GuszczaGrowthCurve(GalleryEntry, ScoresHeldout, PredictsHeldout):
 
         ``as_of`` slices the triangle to the training cutoff; ``growth_curve``
         selects the post's loglogistic (default) or the weibull - the
-        ablatable dimension of this entry, everything else shared.
+        switchable dimension of this entry, everything else shared.
 
         Atomic: all state is built into locals and assigned only after the
         sampler returns, so a failed re-fit cannot leave the entry torn

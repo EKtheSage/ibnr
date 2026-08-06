@@ -269,7 +269,7 @@ def main() -> int:
     args = ap.parse_args()
     if args.out is None:
         # one CSV per model so entries never overwrite each other's results;
-        # non-default ablations get a suffix (precedent: clark_validation_weibull)
+        # non-default variants get a suffix (precedent: clark_validation_weibull)
         suffix = f"_{args.variant}" if args.variant not in (None, "gaussian") else ""
         args.out = (
             Path(__file__).parents[1]

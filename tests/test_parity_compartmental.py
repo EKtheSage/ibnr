@@ -1,6 +1,6 @@
 """Cross-backend parity for compartmental (milestone 5).
 
-The hardest entry in the gallery, and the only one with two ablatable variants,
+The hardest entry in the gallery, and the only one with two switchable variants,
 so the fast tier here is bigger than elsewhere: it pins the three constructs
 that a hierarchical brms/Stan model can silently lose in translation.
 

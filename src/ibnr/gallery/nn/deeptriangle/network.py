@@ -83,7 +83,7 @@ class DeepTriangleGRU(nn.Module):
         # dev embedding is trained wherever any cohort has data at that dev.
         self.dev_emb = nn.Embedding(n_d, d)
         # cohort conditioning: LOB identity + size (normalized log premium) +
-        # optionally company identity (Kuo's design; ablatable via the config
+        # optionally company identity (Kuo's design; switchable via the config
         # flag), projected to d and broadcast onto every step.
         self.lob_emb = nn.Embedding(n_lob, cfg.lob_embedding_dim)
         cond_in = cfg.lob_embedding_dim + 1

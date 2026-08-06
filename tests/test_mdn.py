@@ -1,4 +1,4 @@
-"""gallery.nn.mdn: the no-attention ablation entry. Skips without torch.
+"""gallery.nn.mdn: the no-attention variant entry. Skips without torch.
 
 What this file protects, in three layers:
 
@@ -9,10 +9,10 @@ What this file protects, in three layers:
    That no-leak gate is the analogue of the transformer's norm-stats poisoning
    test, checked here at the exact place this architecture could leak (the
    summary is computed from values, where the transformer's tokens are).
-2. **Ablation integrity.** The entry only answers "what does attention buy" if
-   everything except the encoder body is genuinely shared: the head loss and
+2. **Comparison integrity.** The entry only answers "what does attention buy"
+   if everything except the encoder body is genuinely shared: the head loss and
    sampler must BE the transformer's (identity check, not behavioral), and the
-   module must contain no attention/recurrence to ablate around.
+   module must contain no attention or recurrence at all.
 3. **Per-channel conditioning (0.5.4).** The mask is one flag per (channel,
    cell), not one per cell: a value is never consumed without its own
    channel's flag, each channel's summary mean divides by its own context
@@ -171,7 +171,7 @@ def test_forward_shapes_and_validity():
 
 
 def test_no_attention_no_recurrence():
-    """The ablation is only an ablation if the encoder body really is an MLP:
+    """The comparison only isolates attention if the encoder body is an MLP:
     no attention, no recurrence, no transformer layers anywhere in the module
     tree. A helpful contributor adding 'just one attention layer' would
     silently turn the architecture comparison into nothing."""
@@ -184,7 +184,7 @@ def test_no_attention_no_recurrence():
 def test_head_helpers_are_the_transformer_implementations():
     """``mdn_nll``/``mdn_sample`` are IMPORTED from the transformer, not
     copied: identity (``is``), not behavior, so the head loss and sampler
-    cannot drift between the two arms of the ablation."""
+    cannot drift between the two arms of the comparison."""
     assert mdn_net.mdn_nll is transformer_net.mdn_nll
     assert mdn_net.mdn_sample is transformer_net.mdn_sample
 

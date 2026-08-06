@@ -58,7 +58,7 @@ class PaidCaseGRU(nn.Module):
     along the development axis only - origins are folded into the batch - so
     nothing flows between origins inside a forward pass; they share information
     only through the trained weights. The transformer backbone is the opposite,
-    and that is the substance of the ablation between them.
+    and that is the substance of the comparison between them.
 
     There is NO calendar input of any kind, and none is needed: relative
     position arises structurally from the recurrence (the decoder knows how far

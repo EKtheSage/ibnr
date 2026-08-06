@@ -115,7 +115,7 @@ supplies epistemic spread on top of the mixture's aleatoric spread.
 actual design, and the deliberate departure from the transformer's
 no-embedding choice: `contract["company_idx"]` feeds an 8-dim embedding in
 the broadcast conditioning. ~600 companies x ~55 cells is a memorization
-vector, so the flag exists precisely to run the ablation - `False` removes
+vector, so the flag exists precisely to run the comparison - `False` removes
 the embedding table entirely (the parameter count changes; pinned by test).
 Whether the embedding helps or hurts on the Schedule P backtest is an
 empirical question the compare harness answers, not a claim this card makes.
@@ -124,8 +124,8 @@ empirical question the compare harness answers, not a claim this card makes.
 claims outstanding jointly; here the second head is an MDN trained with plain
 `mdn_nll` at weight `aux_weight` (a second MDN rather than Kuo's MSE, so
 there is exactly one loss family in the entry; `aux_weight=0.0` is the
-single-task ablation arm). It has **two forms, chosen by `field_kinds[1]`, not
-by a knob**:
+single-task comparison arm). It has **two forms, chosen by `field_kinds[1]`,
+not by a knob**:
 
 - **Outstanding increment** (channel 1 is an increment, the default pair): the
   target is `x[1] - x[0]` on the ratio scale - incremental reported minus

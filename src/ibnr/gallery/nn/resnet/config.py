@@ -18,7 +18,7 @@ class ResNetConfig:
     importable without torch and so ``card.md``'s disclosed defaults live in
     exactly one place. The optimization / data-scheme / predictive blocks
     mirror ``TransformerConfig`` value for value, so a resnet-vs-transformer
-    comparison isolates the encoder body (the ablation this entry exists for).
+    comparison isolates the encoder body (which is what this entry exists for).
     """
 
     # network: 59,753 parameters at the reference shape (n_lob=4,

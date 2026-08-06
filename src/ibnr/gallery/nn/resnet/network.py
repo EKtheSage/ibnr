@@ -4,7 +4,7 @@ only import it from inside the entry's fit/predict paths (``ibnr.gallery``
 must import without the [nn] extra; see model.py and CLAUDE.md's "torch must
 never be imported at module level" rule).
 
-The encoder-body ablation beside the transformer (global attention) and the
+The encoder-body comparison beside the transformer (global attention) and the
 per-cell MLP: residual 3x3 convolutions see LOCAL (origin, dev) neighborhoods
 and grow their receptive field with depth. The head and its loss/sampler are
 IMPORTED from the transformer's network module, not copied - the three bodies

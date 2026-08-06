@@ -118,7 +118,7 @@ that understates every case scale by the size of the correlation.
 
 `config.backbone` selects the encoder body; everything else - contract, head,
 loss, training scheme, rollout, held-out wiring - is literally the same code, so
-the two are an ablation of the encoder alone.
+the comparison isolates the encoder alone.
 
 - **`"transformer"` (default)**, `network_transformer.py`: the masked-cell
   attention encoder of `nn_transformer`. Every cell is a token

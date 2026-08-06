@@ -38,12 +38,12 @@ pinned by test:
 
 ```
 loglogistic (default, the post's):  G = t^omega / (t^omega + theta^omega)
-weibull (ablatable alternative):    G = 1 - exp(-(t/theta)^omega)
+weibull (switchable alternative):   G = 1 - exp(-(t/theta)^omega)
 ```
 
 Both curves appear in Guszcza (2008) (he leads with the weibull) and in
 Zhang, Dukic & Guszcza (2012), the post's other stated ancestor; the curve
-is this entry's one ablatable dimension, everything else shared.
+is this entry's one switchable dimension, everything else shared.
 
 **Units: `theta` here is in YEARS.** `growth()` is unit-agnostic - `x` and
 `theta` appear only as the ratio `theta/x` - so it is correct on any age
@@ -81,7 +81,7 @@ exactly confounded with the population intercepts. So the company level
 collapses into `ulr_pop`/`omega`/`theta`, their `student_t(3, 0, 1)` sds and
 the `lkj(2)` prior drop with it, and what remains is Guszcza's own model:
 per-AY random ultimate, shared curve. (A cross-company pooled variant would
-need a multi-cohort contract - the same open ablation the compartmental card
+need a multi-cohort contract - the same open comparison the compartmental card
 records.)
 
 **This changes the marginal prior, and in the over-confident direction.**
@@ -95,7 +95,7 @@ scales, but it runs the way that costs calibration rather than the way that
 is safe: a too-tight prior is precisely how `compartmental`'s gaussian arm
 came out too sharp (CV around 2.5%, combined D = 39.9). Worth revisiting
 when this entry gets its Schedule P retrospective - a widened-prior arm is
-the natural ablation if the PIT comes back over-confident.
+the natural thing to try if the PIT comes back over-confident.
 
 ## Parameterization (held constant across all three backends)
 

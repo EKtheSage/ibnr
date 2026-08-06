@@ -257,7 +257,7 @@ def test_overfit_one_batch():
 
 
 def test_exposure_sigma_head_matches_baseline_at_init():
-    """The optional exposure-scaled sigma head is a strict, ablatable extension.
+    """The optional exposure-scaled sigma head is a strict, switchable extension.
 
     Actuarial motivation: process variance scales with exposure, so sigma is
     multiplied by premium**(p-1) with p learnable. Initialized at p = 1 the

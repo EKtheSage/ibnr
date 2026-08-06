@@ -105,7 +105,7 @@ from ibnr.kernels.scores import crps  # noqa: E402
 
 #: models cheap enough to run as the default set (seconds-to-minutes per
 #: company); meyers_ccl is opt-in because it compiles and samples in cmdstan.
-#: "mdn" is the transformer's no-attention ablation - same pool, seeds and
+#: "mdn" is the transformer's no-attention variant - same pool, seeds and
 #: augmentation, so running both in one study isolates the encoder body.
 FAST_MODELS = ["sur", "copula_glm", "nn_transformer", "deeptriangle", "mdn", "resnet"]
 #: multi-line transformer arms - the only entries that model cross-line
@@ -518,7 +518,7 @@ def run_deeptriangle(tri_market, scored, pools, args) -> list[dict]:
 
 
 def run_mdn(tri_market, scored, pools, args) -> list[dict]:
-    """The no-attention ablation: run_transformer's exact shape with the MLP
+    """The no-attention variant: run_transformer's exact shape with the MLP
     entry. Same pool, seed, features and as_of, so any gap between the mdn
     and nn_transformer rows is attributable to the encoder body."""
     from ibnr.gallery.nn.mdn import MDNConfig
@@ -646,7 +646,7 @@ def run_transformer_ml(tri_market, scored, pools, args, dependence: str) -> list
     ``dependence`` selects the head: "ar" samples lines sequentially with an
     autoregressive link, "joint" uses a multivariate Gaussian-mixture head
     with absent lines marginalized out. Both arms share every other setting,
-    so the comparison isolates the dependence structure (ablatable-by-design).
+    so the comparison isolates the dependence structure (switchable by design).
     Emitting the SUR layout is what makes these rows directly comparable to
     the sur/copula_glm rows, grand total included.
     """
@@ -976,11 +976,11 @@ def main() -> int:
         all_rows += run_deeptriangle(tri_market, scored, pools, args)
 
     if "mdn" in args.models:
-        print(f"\nmdn: pooled fit (no-attention ablation), --nn-pool {args.nn_pool}", flush=True)
+        print(f"\nmdn: pooled fit (no-attention variant), --nn-pool {args.nn_pool}", flush=True)
         all_rows += run_mdn(tri_market, scored, pools, args)
 
     if "resnet" in args.models:
-        print(f"\nresnet: pooled fit (conv-body ablation), --nn-pool {args.nn_pool}", flush=True)
+        print(f"\nresnet: pooled fit (conv-body variant), --nn-pool {args.nn_pool}", flush=True)
         all_rows += run_resnet(tri_market, scored, pools, args)
 
     for dep in ("ar", "joint"):
