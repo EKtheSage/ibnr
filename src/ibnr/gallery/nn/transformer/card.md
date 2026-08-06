@@ -234,7 +234,7 @@ entry = gallery.fit(
     as_of="1997-12-31",
 )
 pred = entry.predict(segment={"company_code": code, "line_of_business": line})
-realized = entry.realized_ultimates(tri, segment={...})
+realized = entry.realized_ultimates(tri, segment={"company_code": code, "line_of_business": line})
 pred.summary(observed=realized)  # same Meyers-style table as every entry
 ```
 
