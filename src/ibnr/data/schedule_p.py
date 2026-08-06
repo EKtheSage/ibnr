@@ -10,10 +10,13 @@ development_age x statement_year. Schema (verified 2026-06-12 rebuild):
     bulk_loss, earned_prem_net, earned_prem_direct, case_reserve, loss_ratio,
     paid_to_incurred_ratio, ata_factor_into_this_age, publish_id
 
-Note: the mart's ``incurred_loss`` is gross of bulk+IBNR and its
-``case_reserve`` is incurred - paid (so it also contains bulk). The adapter
-derives ``reported_loss`` = incurred_loss - bulk_loss (paid + true case),
-which is what Meyers' monograph calls "incurred".
+Note: the mart's ``incurred_loss`` is gross of bulk+IBNR; its ``case_reserve``
+is reported minus paid, i.e. (incurred_loss - bulk_loss) - cum_paid_loss, so
+it contains NO bulk (measured cell-exact on all 149,550 mart cells of publish
+20260613_041006; incurred - paid matches only on the cells where bulk is
+zero). The adapter derives ``reported_loss`` = incurred_loss - bulk_loss
+(equivalently cum_paid_loss + case_reserve), which is what Meyers' monograph
+calls "incurred".
 
 Two ways to point this adapter at data (either directly or via the
 IBNR_SCHEDULE_P_WAREHOUSE environment variable; when neither is given the
