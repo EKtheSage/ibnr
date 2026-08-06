@@ -6,8 +6,8 @@ CROSS-LINE dependence. It fits on company cohorts (all lines of a company at
 once, attention running across lines) and predicts the SUR target layout so it
 is directly comparable to the statistical dependence baselines.
 
-Two ablatable dependence variants, both exercised here (CLAUDE.md: build both
-design variants, keep changes ablatable):
+Two switchable dependence variants, both exercised here (CLAUDE.md: build both
+design variants, keep changes switchable):
 
 * ``"ar"`` - line-by-line autoregressive sampling; independent per-line heads.
 * ``"joint"`` - a multivariate Gaussian-mixture head over lines, with absent

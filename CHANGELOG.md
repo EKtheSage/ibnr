@@ -15,6 +15,64 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
+## 0.5.5 - 2026-08-06
+
+The case-reserve arc built on 0.5.4's channel machinery lands: deeptriangle
+learns from the case-reserve level it previously refused, and `nn_paid_case` -
+the sixth NN entry - models paid development and case-reserve dynamics jointly.
+Three PRs (#94, #95, #96) plus a repo-wide wording pass.
+
+### The case-reserve head (#94)
+
+0.5.4 made deeptriangle refuse a level at channel 1 of its auxiliary task by
+name, because level-minus-increment is neither the outstanding increment nor
+the outstanding level. That refusal is now replaced by the case-reserve head:
+when channel 1 carries a level (inferred from `field_kinds`, no new knob), the
+auxiliary MDN trains on the case-reserve level itself, masked to cells where
+both channels are real. The increment path is byte-identical to 0.5.4 for the
+same seed (measured), so existing fits are unchanged.
+
+### `nn_paid_case` (#95)
+
+A joint model of paid development and case-reserve dynamics, motivated by what
+a case reserve is: a state with dynamics, not a static covariate - it drains
+toward zero as payments replace it and jumps when new information arrives. Per
+cell, a K-component bivariate Gaussian mixture predicts (paid increment, case
+movement) with full per-component covariance, so the payment-drain correlation
+is a learned per-cell quantity. The case LEVEL is an input channel the rollout
+advances (`level += movement`, in ratio space) and feeds back - both channels
+write back, both flags promote, so the frozen-feature rollout limitation the
+other five NN entries disclose does not apply here. Two switchable backbones
+(`config.backbone = "transformer" | "gru"`) share one head module; foreign
+knobs are refused by name. Training is mixed-observedness: the joint density
+where both targets are real, the closed-form margin where one is - no cell
+discarded, no target fabricated. Held-out scoring takes the paid margin of the
+joint density (a bivariate mixture's margin is a univariate mixture, test-
+pinned against the raw head output) through the shared pooled-MDN path, so the
+entry joins the board column-comparable at 10,000 draws. `case_paths()` is the
+drain diagnostic: terminal simulated case levels per draw, or the full walk
+over projected diagonals with `per_diagonal=True`. The case path's calibration
+is unvalidated in this release (no realized-case board column) and the card
+says so.
+
+### Card fixes (#96)
+
+The mdn card's evaluate example used a one-key `segment` that raises whenever
+the pooled fit carries more than one line for a company (the normal case); it
+now uses the two-key form, matching the `predict` call above it and the other
+NN cards. The transformer card's placeholder set literal in the same slot is
+spelled out the same way. `transformer_ml`'s one-key example is correct as it
+stands - that entry's cohort unit is the company - and is deliberately
+unchanged.
+
+### Wording pass
+
+Prose that described with-and-without comparisons through a lab-jargon term
+now says what it means: "switchable", "comparison arm", "variant". Cards,
+docstrings, comments and test prose across the package; one test function in
+`tests/test_odp_bootstrap.py` renamed to `test_both_switches_off_is_refused`.
+No behavior change.
+
 ## 0.5.4 - 2026-08-05
 
 Case reserves (and any eval-date snapshot) become usable NN input channels

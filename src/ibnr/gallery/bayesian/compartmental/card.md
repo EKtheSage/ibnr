@@ -35,7 +35,7 @@ compartment models). Ages, premiums and the delta indicator are data via
 study used direct premium - we use net earned premium like the rest of the
 gallery, consistent with the net loss basis).
 
-## Variants (ablatable, both from the monograph's case study)
+## Variants (switchable, both from the monograph's case study)
 
 ### `variant="gaussian"` (default) - case-study Model 1
 
@@ -156,7 +156,7 @@ model change; see the roadmap for the parallel retro harness and a
 two-stage escalation policy (fast settings, retry hard companies at the
 monograph settings).
 
-Open ablation (not built): a `hierarchical` variant with per-line,
+Open comparison (not built): a `hierarchical` variant with per-line,
 mart-derived prior medians (or cross-company partial pooling) to test
 whether the gaussian arm's failure is purely the single-company priors.
 

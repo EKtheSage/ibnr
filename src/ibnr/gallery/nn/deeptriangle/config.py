@@ -26,15 +26,15 @@ class DeepTriangleConfig:
     lob_embedding_dim: int = 8
     # company embedding: Kuo's actual design, and the deliberate departure from
     # the transformer's no-embedding choice. ON by default because it IS the
-    # paper's architecture; flag it off for the ablation arm (card.md "Company
-    # embedding"). ~600 companies x ~55 cells is a memorization vector, so the
-    # ablation is the honest check, not an afterthought.
+    # paper's architecture; flag it off for the comparison arm (card.md
+    # "Company embedding"). ~600 companies x ~55 cells is a memorization
+    # vector, so the comparison is the honest check, not an afterthought.
     company_embedding: bool = True
     company_embedding_dim: int = 8
     # auxiliary task: a second MDN head on the incremental claims-outstanding
     # loss ratio (OS = reported - paid, derived inside the entry), trained
     # jointly with this weight. 0.0 disables the auxiliary loss entirely -
-    # the single-task ablation arm. Rollout and held-out scoring only ever
+    # the single-task comparison arm. Rollout and held-out scoring only ever
     # consume the target head, whatever this is set to.
     aux_weight: float = 1.0
     # optimization (AdamW; patience = early-stopping window on validation NLL)

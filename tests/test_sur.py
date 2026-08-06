@@ -156,7 +156,7 @@ def test_sur_positive_correlation_widens_grand_total(backend_name):
     cum = simulate_cl_square(rng, rho=0.7)
     entry, _ = fit_on_upper(backend_name, cum)
 
-    # Ablate ONLY the off-diagonals of each transition covariance: same point
+    # Zero ONLY the off-diagonals of each transition covariance: same point
     # estimates and same marginal variances, so any SD difference on the total
     # is attributable to dependence alone.
     independent = copy.deepcopy(entry)
@@ -227,7 +227,7 @@ def test_sur_small_sample_ladder_kicks_in(backend_name):
 
 
 def test_sur_intercept_variant_fits(backend_name):
-    """The ablatable intercept variant (regression through a free constant
+    """The switchable intercept variant (regression through a free constant
     rather than the origin) fits and yields a 2-parameter beta per line."""
     rng = np.random.default_rng(13)
     cum = simulate_cl_square(rng, rho=0.2)

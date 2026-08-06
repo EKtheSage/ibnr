@@ -87,7 +87,7 @@ negative paid increments): combined KS D = 63.4* vs crit 13.9, percentiles
 piled at ~0 - within noise of the MLE twin's 61.3*, confirming the
 posterior tracks the MLE.** The failure is the model, not the inference:
 the post-1997 settlement speedup plus the loglogistic tail mass (see the
-MLE twin's card for the weibull ablation, D = 49.6*). In the gallery this
+MLE twin's card for the weibull arm, D = 49.6*). In the gallery this
 entry is the growth-curve baseline on the CRPS board (it is ELPD-ineligible,
 see the held-out section above); meyers_csr (D = 4.1, passes) is what
 calibrated paid reserving looks like in this window.

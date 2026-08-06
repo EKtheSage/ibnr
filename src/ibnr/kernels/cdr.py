@@ -450,7 +450,7 @@ class MackDiagonal(DiagonalGenerator):
     draw each open origin's next cell with ``E = f_{k_i} C_{i,k_i}``,
     ``Var = sigma_{k_i}^2 C_{i,k_i}``, independently across accident years.
 
-    ``parameter_risk`` is the ablation switch: off, the draws contain only the
+    ``parameter_risk`` is the risk-source switch: off, the draws contain only the
     process risk of the next diagonal (the ``Phi`` half of the Merz-Wuthrich
     formula); on, they also carry the estimation error of the factors (its
     ``Delta`` half). ``process`` chooses the shape of the shock among
@@ -512,11 +512,12 @@ class ODPBootstrapDiagonal(DiagonalGenerator):
     ``BootChainLadder`` defaults to ``gamma``, so a like-for-like comparison
     with R needs ``process="gamma"`` set explicitly.
 
-    ``resample_residuals`` and ``process_noise`` are the two ablation switches -
+    ``resample_residuals`` and ``process_noise`` are the two risk-source switches -
     R's ``NYCost`` arm is both on, its ``NYParamDist`` arm is
     ``process_noise=False``, and the process-only arm R derives by subtraction
     is ``resample_residuals=False``. Turning both off is refused: every draw
-    would be identical, which is a degenerate answer rather than an ablation.
+    would be identical, which is a degenerate answer rather than a meaningful
+    with-and-without comparison.
 
     **The family limit is real and is refused by name.** The ODP quasi-likelihood
     is defined on non-negative increments, so a cohort with a negative paid

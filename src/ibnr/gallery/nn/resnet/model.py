@@ -12,7 +12,7 @@ head, same autoregressive diagonal rollout, same per-cohort held-out wiring
 (``gallery/nn/_heldout.py``). Only the encoder body differs: residual 3x3
 convolutions over the (origin x dev) grid instead of full self-attention.
 Holding everything else fixed is what makes the resnet-vs-transformer-vs-mdn
-comparison an encoder ablation rather than three different studies.
+comparison a test of the encoder body rather than three different studies.
 
 Torch is imported inside fit()/predict() only: the entry must register (and
 `ibnr.gallery` must import) without the [nn] extra installed.

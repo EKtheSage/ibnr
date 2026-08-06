@@ -233,7 +233,7 @@ def draw_next_increments(
     reads a single diagonal off it (``getDiagonalIndexes(t.ibnr, m+1)``), so
     the rest is never used here.
 
-    The two ablation switches are R's two arms plus the one it derives by
+    The two risk-source switches are R's two arms plus the one it derives by
     subtraction. ``resample_residuals=False`` makes the pseudo-triangle the
     fitted triangle itself, which refits to ``f*`` exactly ``f`` (the fitted
     cumulatives are ``ult[i]/ultdf[j]``, so their column ratio is

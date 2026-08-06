@@ -4,7 +4,7 @@
 ``lognormal_model`` mirrors ``model_lognormal.stan`` (Model 2). Both consume
 the Stan ``data`` block the entry assembles, verbatim, and hold the monograph's
 priors and parameterization constant for parity (design decision 7) - these are
-the ablation baseline, so nothing here may be retuned.
+the comparison baseline, so nothing here may be retuned.
 
 Three constructs needed care, all verified empirically before use:
 

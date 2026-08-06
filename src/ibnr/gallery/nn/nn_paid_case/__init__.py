@@ -3,7 +3,7 @@
 Per cell it predicts (paid increment, case movement) from ONE bivariate mixture
 (``head.py``), samples both, and rolls both forward - so the case reserve is a
 simulated state rather than a frozen input channel, and the frozen-feature
-limitation every other NN entry discloses does not apply. Two ablatable
+limitation every other NN entry discloses does not apply. Two switchable
 backbones (``network_transformer.py``, ``network_gru.py``) over that one head.
 
 Torch-free at module scope, like every other entry package: ``head.py`` and the

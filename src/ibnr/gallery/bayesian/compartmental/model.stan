@@ -111,7 +111,7 @@ transformed parameters {
 }
 // MODEL BLOCK. Every prior below is held VERBATIM from the monograph's
 // appendix 7.2 brms code (its `mypriors1` object) - do not retune them here;
-// they are the ablation baseline and the milestone-5 ports must match them.
+// they are the comparison baseline and the milestone-5 ports must match them.
 // The card documents what transferring them mechanically costs: they were
 // calibrated on one fast-settling workers' comp book, and on long-tailed
 // other liability the gaussian arm's median estimate/outcome is 0.84.

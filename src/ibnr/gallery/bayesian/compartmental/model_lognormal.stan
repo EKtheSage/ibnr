@@ -123,8 +123,8 @@ transformed parameters {
 }
 // MODEL BLOCK. Every prior is held VERBATIM from the monograph's appendix
 // 7.2 brms code (its `mypriors2` object); the milestone-5 ports must match
-// them exactly, and any retuning belongs in a new ablatable variant (see the
-// card's open `hierarchical` ablation), not here.
+// them exactly, and any retuning belongs in a new switchable variant (see the
+// card's open `hierarchical` comparison), not here.
 model {
   // the case study's mypriors2, verbatim
   // population-level effects: unchanged from Model 1, so the two variants

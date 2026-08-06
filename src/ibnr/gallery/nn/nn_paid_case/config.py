@@ -3,8 +3,8 @@ registers (and this config is importable) without the [nn] extra.
 
 ONE config for TWO backbones, which is the only interesting thing about this
 file. The entry ships a transformer body and a GRU body over the same data
-contract, the same loss and the same head, so the comparison between them is an
-ablation of the encoder alone - and that only holds while everything else is
+contract, the same loss and the same head, so the comparison between them
+isolates the encoder alone - and that only holds while everything else is
 literally the same object. Hence one dataclass rather than two.
 
 The obvious way to do that is a union of both bodies' knobs, silently ignoring
@@ -74,7 +74,7 @@ class NNPaidCaseConfig:
     # the two backbones here exist to be compared, and an embedding table one of
     # them cannot have would make the comparison partly about company identity.
     # ~600 companies x ~55 cells is a memorization vector besides. Flag it on
-    # for the ablation, which is a GRU-only experiment by construction.
+    # for the with-embedding arm - a GRU-only experiment by construction.
     company_embedding: bool = False
     company_embedding_dim: int = 8
 

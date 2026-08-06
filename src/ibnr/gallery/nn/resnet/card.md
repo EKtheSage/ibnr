@@ -2,11 +2,12 @@
 
 **Family:** nn (PyTorch; requires the `[nn]` extra at fit time - registration
 does not)
-**Lineage:** the third encoder-body ablation in the NN family. The transformer
-(`nn_transformer`) reads the triangle with global self-attention; the per-cell
-MLP (`mdn`) reads each cell with no spatial structure at all; this entry reads
-it with LOCAL 2-D structure - residual 3x3 convolutions over the
-(origin x dev) grid, the ResNet recipe (He et al. 2016) at triangle scale.
+**Lineage:** the third arm of the encoder-body comparison in the NN family.
+The transformer (`nn_transformer`) reads the triangle with global
+self-attention; the per-cell MLP (`mdn`) reads each cell with no spatial
+structure at all; this entry reads it with LOCAL 2-D structure - residual
+3x3 convolutions over the (origin x dev) grid, the ResNet recipe
+(He et al. 2016) at triangle scale.
 The actuarial prior it encodes: development is dominated by a cell's
 neighborhood - the same origin's adjacent devs, adjacent origins at the same
 dev, the calendar diagonal through the cell - and longer-range structure
@@ -80,7 +81,7 @@ one head implementation.
 after measuring: at 64 the trunk carries **230,057 parameters** (each residual
 block holds two 64x64x3x3 convs, ~37k each), roughly 3x the **70,505 parameters**
 the transformer's default network carries at the same shape. That made the
-"deliberately tiny" claim above false and turned a body ablation into a
+"deliberately tiny" claim above false and turned a body comparison into a
 capacity comparison. Depth was kept at 3 blocks because depth IS the
 architectural claim here - it sets the receptive field - and only width,
 which is pure capacity, was reduced. All three counts on this card - including
@@ -192,7 +193,7 @@ pred.summary(observed=realized)  # same Meyers-style table as every entry
   channels 24 or n_blocks 2.
 - The receptive field is finite (grows with depth): structure farther than
   7 cells needs more blocks to influence a prediction. That is the point of
-  the ablation - if the transformer beats this entry, global attention earns
+  the comparison - if the transformer beats this entry, global attention earns
   its keep; if not, locality was enough.
 - Feature channels are not simulated during rollout - future cells feed back
   the target channel only, and a promoted cell raises the target's context

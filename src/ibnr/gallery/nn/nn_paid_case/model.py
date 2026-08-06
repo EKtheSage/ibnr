@@ -13,7 +13,7 @@ case position at every step.
 Two backbones over one head, one loss and one contract (``config.backbone``):
 the attention body of ``nn_transformer`` and the per-origin GRU recurrence of
 ``deeptriangle``. The entry's claim is about the data, not about attention, so
-the encoder is ablatable rather than assumed.
+the encoder is switchable rather than assumed.
 
 Torch is imported inside fit()/predict() only: the entry must register (and
 ``ibnr.gallery`` must import) without the [nn] extra installed. The training

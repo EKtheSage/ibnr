@@ -29,7 +29,7 @@ the contract stacks two blocks of cells (delta = 0 outstanding, computed as
 compartmental parameters, and ``t`` is the development age in YEARS at the
 cell's period end because ker/kp are per-year rates.
 
-Two ablatable variants, both from the monograph's case study with its
+Two switchable variants, both from the monograph's case study with its
 published brms priors held verbatim:
 
 - ``variant="gaussian"`` (default): case-study Model 1 - Gaussian on OS +
@@ -174,7 +174,7 @@ class Compartmental(GalleryEntry, ScoresHeldout, PredictsHeldout):
         dev lags per origin. ``variant`` selects the Stan program (and with it
         the likelihood, the observation scale and how many varying effects the
         parameters carry) - everything else about the two arms is shared, so
-        the variants stay directly ablatable.
+        the variants stay directly comparable.
 
         The default sampler settings are the monograph's own (adapt_delta
         0.99, max_treedepth 15): the four-parameter nonlinear hierarchy has a

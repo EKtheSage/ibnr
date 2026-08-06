@@ -6,7 +6,7 @@ with the same mixture density head, wired to the same data contract
 _training.py: calendar-cutoff augmentation, eval_date validation split,
 pinned per-dev standardization, deep ensembling, member seeds
 ``seed + 1000 * member``) and the same held-out machinery
-(gallery/nn/_heldout.py) as ``nn_transformer``. It exists as the ablation
+(gallery/nn/_heldout.py) as ``nn_transformer``. It exists as the comparison
 that isolates what attention buys: everything is held fixed except the
 encoder body, so a leaderboard gap between ``mdn`` and ``nn_transformer`` is
 attributable to the architecture rather than to the rig.
@@ -198,7 +198,7 @@ class MDN(GalleryEntry, PooledMDNHeldout):
 
         # deep ensemble via the shared loop (gallery/nn/_training.py): member
         # seeding, cutoff augmentation batching, AdamW, early stopping - the
-        # transformer's exact scheme, which is the point of the ablation.
+        # transformer's exact scheme, which is the point of the comparison.
         models, history = train_ensemble(
             n_c,
             config=cfg,

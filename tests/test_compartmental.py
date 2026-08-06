@@ -12,7 +12,7 @@ EX (exposure) -> OS (outstanding) -> PD (paid), with rates ker (reporting) and
 kp (payment) and scale factors RLR (reported loss ratio) and RRF (reserve
 robustness factor). The entry solves the ODE system in closed form; the fast
 tests below are what make that closed form trustworthy without paying for MCMC.
-Two ablatable variants from the monograph: ``gaussian`` (Model 1, OS + cumulative
+Two switchable variants from the monograph: ``gaussian`` (Model 1, OS + cumulative
 paid amounts) and ``lognormal`` (Model 2, OS + incremental paid loss ratios).
 """
 
@@ -308,7 +308,7 @@ def test_lognormal_variant_fits(fitted):
     """Model 2 on the same company, small run: converges loosely and its
     anchored predictive stays near the gaussian variant's.
 
-    The variants must remain ablatable (same data, same anchor, one modelling
+    The variants must remain comparable (same data, same anchor, one modelling
     choice apart), so their point predictions should not diverge wildly even
     though their spreads differ a lot. The 0.7-1.3x band and the looser
     R-hat < 1.1 both allow for the shorter run used here.
