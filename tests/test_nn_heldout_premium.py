@@ -120,7 +120,7 @@ def _matrices() -> np.ndarray:
 
 def _case_levels(cum: np.ndarray) -> np.ndarray:
     """Case reserve LEVELS on the same grid: a share of the paid cumulative that
-    shrinks with development, i.e. a reserve draining as payments replace it.
+    shrinks with development, i.e. a reserve running down as payments replace it.
 
     Positive everywhere and read off the cell it sits on - never off a later
     dev, which on this fixture would be a cell the as_of slice has not reached.

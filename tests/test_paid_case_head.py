@@ -23,8 +23,9 @@ exists. Four claims, and they fail for different reasons:
    off-diagonal is dropped, which is a perfectly valid-looking density that
    understates every case scale by the size of the correlation.
 3. **The correlation is learnable, with sign.** Synthetic data from a known
-   strongly NEGATIVE bivariate normal - the payment-drain sign this entry
-   exists to capture - recovered by gradient descent on ``nll_joint`` alone.
+   strongly NEGATIVE bivariate normal - the sign the correlation between
+   payment and case run-off carries, and what this entry exists to capture -
+   recovered by gradient descent on ``nll_joint`` alone.
 4. **The mixed-observedness loss reads exactly the cells it claims to.** Its
    three branches are pinned against a hand-computed scipy reference, and a
    cell no mask selects is poisoned with NaN to prove it is never read: the
@@ -332,7 +333,7 @@ def _fit_head(y: torch.Tensor, k: int, steps: int = 800, seed: int = 0):
     return logits.detach().log_softmax(dim=-1), mu.detach(), head.chol_from_raw(raw.detach())
 
 
-#: The truth the recovery tests fit: paid up, case DOWN - the payment drain.
+#: The truth the recovery tests fit: paid up, case DOWN - payment replacing case.
 TRUE_MU = (1.2, -0.7)
 TRUE_SD = (0.5, 0.4)
 TRUE_RHO = -0.75
@@ -370,8 +371,8 @@ def test_mixture_recovers_the_negative_correlation():
 
     With spare components the fit can split the single Gaussian several ways, so
     the quantity that must come back is the total-covariance correlation from
-    :func:`head.mixture_moments` - which is what the card's drain diagnostic
-    reports and what the rollout's sampled diagonal actually carries.
+    :func:`head.mixture_moments` - which is what the card's case run-off
+    diagnostic reports and what the rollout's sampled diagonal actually carries.
     """
     log_pi, mu, chol = _fit_head(_draw_truth(), k=3)
     _, cov = head.mixture_moments(log_pi, mu, chol)

@@ -48,7 +48,7 @@ VARIANTS = ("gaussian", "lognormal")
 def os_curve(t, ker, kp, rlr):
     """Outstanding loss ratio at age ``t`` years - the Stan ``os_curve``.
 
-    A hump: case reserves build at the reporting rate ``ker`` and drain at the
+    A hump: case reserves build at the reporting rate ``ker`` and empty at the
     settlement rate ``kp``, so OS -> 0 as t -> inf. Singular at ker == kp; the
     priors (medians 3 and 1) keep the sampler away from that ridge.
     """

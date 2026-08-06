@@ -28,7 +28,7 @@
 // Closed-form solution of the EX -> OS -> PD system, byte-identical to
 // model.stan (and to model.py's numpy mirror). No ODE integrator.
 functions {
-  // Case outstanding loss ratio at age t (builds at ker, drains at kp).
+  // Case outstanding loss ratio at age t (builds at ker, empties at kp).
   real os_curve(real t, real ker, real kp, real RLR) {
     return RLR * ker / (ker - kp) * (exp(-kp * t) - exp(-ker * t));
   }

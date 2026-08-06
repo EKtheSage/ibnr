@@ -15,6 +15,60 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
+## Unreleased
+
+### `nn_paid_case` floors the simulated case level at zero
+
+A case reserve is booked down TO zero and never past it, and 0.5.5's rollout did
+not say so: it advanced the state as `level += movement` with nothing stopping
+the walk crossing zero, and roughly half the simulated terminal levels on the
+Schedule P panel landed below it (55% with the transformer body, 45% with the
+GRU, against zero of that panel's 900 observed case cells). The state update is
+now `level = max(level + movement, 0)`.
+
+* **New config field** `NNPaidCaseConfig.floor_case_at_zero`, default `True`. It
+  is a rollout knob shared by both backbones, so it is not in `BACKBONE_KNOBS`
+  and neither body refuses it. It is also in the rollout cache key, unlike every
+  other config field, because it is the one knob a caller is meant to flip on a
+  FITTED entry - keyed on `(n_draws, seed)` alone, that flip returned the other
+  arm's cached array, byte-identical and with no error.
+* **The draw is untouched.** The clamp is arithmetic on the case STATE, applied
+  after the joint (paid increment, case movement) sample; the paid coordinate is
+  written unchanged and the generator has already advanced. The two arms
+  therefore consume the same random stream - same generator, same call order, a
+  common-random-numbers pairing - and are byte-identical **until the first
+  bind**, which is why `floor_case_at_zero=False` reproduces the 0.5.5 walk
+  exactly (verified against the published 0.5.5 wheel in a clean venv, on
+  `case_paths()` and `predict().samples`, on both backbones). Past the first
+  bind the floored arm feeds the network a different case level, so its later
+  samples legitimately differ.
+* **The floored level is the only copy of the state**: it is what feeds channel 1
+  forward on the next step AND what `case_paths()` reports, terminal and
+  per-diagonal alike. A rollout that clamped the read-out while handing the
+  network the unfloored level would pass every diagnostic; it is caught by test.
+  One exception, pre-existing and unchanged by the floor: at a PINNED dev the
+  channel-1 input is masked to the pin (standardized 0, the pooled level mean),
+  so the network sees the pin there and not the level, floored or not.
+* **The starting level is not floored.** `_initial_case_level` carries the
+  deepest observed case level as the triangle reported it, negative included; a
+  recovery can outrun the case estimate, and restating an observation is not
+  constraining a simulation. The consequence is narrow: every origin the rollout
+  projects has a cell on the first future diagonal, so a negative start is
+  clamped there and never reaches `case_paths()`. Only an origin with no future
+  cell at all can show one.
+* **What moves and what does not.** `predict()`'s rollout ultimates CAN move
+  with the floor on - the floored level feeds back and changes the next
+  diagonal's mixture - and on the small test fixtures that movement is nonzero
+  but small. The held-out board columns do NOT move: `predict_at` /
+  `log_lik_at` are a single forward pass at observed features with no level walk
+  in them, so they are byte-identical between the two arms (asserted, which
+  doubles as proof that the two fits trained identically).
+
+`floor_case_at_zero=False` is kept so the change can be measured with and
+without it, not as a fallback. Measure it on `predict()`'s ultimates and on a
+Meyers-style retrospective - **not** on the held-out board, whose rows are
+identical between the arms by construction.
+
 ## 0.5.5 - 2026-08-06
 
 The case-reserve arc built on 0.5.4's channel machinery lands: deeptriangle
@@ -35,25 +89,25 @@ same seed (measured), so existing fits are unchanged.
 ### `nn_paid_case` (#95)
 
 A joint model of paid development and case-reserve dynamics, motivated by what
-a case reserve is: a state with dynamics, not a static covariate - it drains
+a case reserve is: a state with dynamics, not a static covariate - it runs down
 toward zero as payments replace it and jumps when new information arrives. Per
 cell, a K-component bivariate Gaussian mixture predicts (paid increment, case
-movement) with full per-component covariance, so the payment-drain correlation
-is a learned per-cell quantity. The case LEVEL is an input channel the rollout
-advances (`level += movement`, in ratio space) and feeds back - both channels
-write back, both flags promote, so the frozen-feature rollout limitation the
-other five NN entries disclose does not apply here. Two switchable backbones
-(`config.backbone = "transformer" | "gru"`) share one head module; foreign
-knobs are refused by name. Training is mixed-observedness: the joint density
-where both targets are real, the closed-form margin where one is - no cell
-discarded, no target fabricated. Held-out scoring takes the paid margin of the
-joint density (a bivariate mixture's margin is a univariate mixture, test-
-pinned against the raw head output) through the shared pooled-MDN path, so the
-entry joins the board column-comparable at 10,000 draws. `case_paths()` is the
-drain diagnostic: terminal simulated case levels per draw, or the full walk
-over projected diagonals with `per_diagonal=True`. The case path's calibration
-is unvalidated in this release (no realized-case board column) and the card
-says so.
+movement) with full per-component covariance, so the correlation between payment
+and case run-off is a learned per-cell quantity. The case LEVEL is an input
+channel the rollout advances (`level += movement`, in ratio space) and feeds
+back - both channels write back, both flags promote, so the frozen-feature
+rollout limitation the other five NN entries disclose does not apply here. Two
+switchable backbones (`config.backbone = "transformer" | "gru"`) share one head
+module; foreign knobs are refused by name. Training is mixed-observedness: the
+joint density where both targets are real, the closed-form margin where one is -
+no cell discarded, no target fabricated. Held-out scoring takes the paid margin
+of the joint density (a bivariate mixture's margin is a univariate mixture,
+test-pinned against the raw head output) through the shared pooled-MDN path, so
+the entry joins the board column-comparable at 10,000 draws. `case_paths()` is
+the case run-off diagnostic: terminal simulated case levels per draw, or the
+full walk over projected diagonals with `per_diagonal=True`. The case path's
+calibration is unvalidated in this release (no realized-case board column) and
+the card says so.
 
 ### Card fixes (#96)
 

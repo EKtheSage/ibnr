@@ -104,20 +104,34 @@ def _paid() -> np.ndarray:
 
 
 def _case(paid: np.ndarray) -> np.ndarray:
-    """(2, N, N) case reserve LEVELS that drain as the paid develops.
+    """(2, N, N) case reserve LEVELS that run down as the paid develops.
 
     ``0.6 x (ultimate - paid to date)`` plus a floor, so the level falls with
     development the way a real case reserve does - which is what makes the
-    movement target predominantly negative and the drain diagnostic meaningful.
+    movement target predominantly negative and the case run-off diagnostic
+    meaningful.
     """
     ult = paid[:, :, -1][:, :, None]
     return 0.6 * (ult - paid) + 25.0
 
 
-def paid_and_case_triangle() -> Triangle:
+def _case_rising(paid: np.ndarray) -> np.ndarray:
+    """(2, N, N) case reserve LEVELS that GROW with development, from a high start.
+
+    The mirror image of :func:`_case`, and the only thing it is for: a fit whose
+    movement target is predominantly POSITIVE, so the simulated level walks away
+    from zero and the case floor never binds. That is what makes
+    ``floor_case_at_zero`` on and off byte-identical there, which is the
+    shared-draw claim; on :func:`_case`'s run-down fixture the floor binds and
+    the two runs must differ.
+    """
+    return 3.0 * paid + 2000.0
+
+
+def paid_and_case_triangle(case_fn=_case) -> Triangle:
     """Two-LOB company square carrying paid_loss, case_reserve and premium."""
     paid = _paid()
-    case = _case(paid)
+    case = case_fn(paid)
     prem = {f"lob_{k}": np.full(N, PREMIUM) for k in range(2)}
     t_paid = make_multiline_triangle(
         "duckdb",
@@ -532,16 +546,19 @@ def test_the_rollout_starts_from_the_last_observed_case_level(fitted):
     )
 
 
-def test_the_rollout_integrates_the_movement_into_the_case_level(fitted, monkeypatch):
+@pytest.mark.parametrize("move_z,must_bind", [(0.9, False), (-0.7, True)])
+def test_the_rollout_integrates_the_movement_into_the_case_level(
+    fitted, monkeypatch, move_z, must_bind
+):
     """The state update, cell by cell, against a numpy rebuild.
 
     With the joint sampler pinned to a constant, every future cell's movement is
     known, so the whole channel-1 trajectory can be rebuilt: start from the
     cohort's last observed case level, add the movement IN RATIO SPACE at each
-    projected diagonal, re-standardize with the LEVEL channel's own per-dev
-    statistics. The rebuild is compared against what the network was actually
-    handed on the NEXT forward pass - the only place the update is observable -
-    and the terminal state against ``case_paths()``.
+    projected diagonal, FLOOR the result at zero, re-standardize with the LEVEL
+    channel's own per-dev statistics. The rebuild is compared against what the
+    network was actually handed on the NEXT forward pass - the only place the
+    update is observable - and the terminal state against ``case_paths()``.
 
     The mutation this exists for is adding standardized values
     (``z_level[d] + z_move[d]``), which is not the standardized new level
@@ -549,12 +566,35 @@ def test_the_rollout_integrates_the_movement_into_the_case_level(fitted, monkeyp
     plausibly-sized case levels and plausibly-sized ultimates. Using the
     MOVEMENT's statistics to re-standardize the level, or the level's to
     un-standardize the movement, fails here for the same reason.
+
+    The two arms are what pin the FLOOR (``config.floor_case_at_zero``, on by
+    default) to this exact rebuild. A constant movement of ``-0.7`` at every
+    cell drives the walk through zero, so the fed-back channel-1 value must be
+    the FLOORED level re-standardized, not the unfloored one - a distinction
+    ``case_paths`` alone cannot see, since a rollout that floors the state it
+    REPORTS while handing the network the negative level it would otherwise have
+    had reads as perfectly healthy there, and the paid projection it conditions
+    is the thing that would be wrong. The ``+0.9`` arm is a walk that only rises,
+    so the clamp never fires and the rebuild has to match without it. Which arm
+    is which is asserted (``must_bind``), because an arm whose clamp silently
+    stopped firing would prove nothing and say nothing.
+
+    **This test does NOT guard the feed-forward half of that claim, despite the
+    paragraph above.** Under the constant ``-0.7`` movement the clamps land only
+    at PINNED devs, where the channel-1 input is masked to the pin (standardized
+    0) whatever the level is - so a rollout that floors ``case_paths`` while
+    feeding the network the unfloored level produces byte-identical grids here
+    and passes both arms (measured: such a mutation passes 52 of 54 tests in
+    this file). ``test_the_two_walks_share_every_draw_until_the_floor_first_binds``
+    is the only thing that catches it, on its channel-1 divergence assertion.
+    Keep that test alive.
     """
     entry = fitted.entry
     c = entry.contract_
     norm = entry.norm_
     n_c, _, n_w, n_d = c["x"].shape
-    paid_z, move_z = 0.3, -0.7
+    paid_z = 0.3
+    assert entry.config_.floor_case_at_zero, "this rebuild floors the walk; so must the fit"
 
     def constant_sample(log_pi, mu, chol, generator=None):
         shape = log_pi.shape[:-1]
@@ -585,11 +625,14 @@ def test_the_rollout_integrates_the_movement_into_the_case_level(fitted, monkeyp
     # a pinned dev's sampled z is forced to 0, so its movement is the pooled mean
     move_ratio = np.where(norm["move_pinned"], 0.0, move_z) * norm["move_std"] + norm["move_mean"]
     grids = [x_norm[:, 1].copy()]  # channel 1 as the k-th forward pass sees it
+    bound = False
     for lv in sorted(np.unique(cal[future.any(axis=0)])):
         cells = future & (cal == lv)  # (n_c, n_w, n_d)
         if not cells.any():
             continue
         stepped = level + (move_ratio[None, None, :] * cells).sum(axis=2)
+        bound |= bool((stepped[cells.any(axis=2)] < 0).any())
+        stepped = np.maximum(stepped, 0.0)  # the booking constraint, in ratio space
         level = np.where(cells.any(axis=2), stepped, level)
         level_z = (stepped[:, :, None] - norm["mean"][1]) / norm["std"][1]
         level_z = np.where(norm["pinned"][1], 0.0, level_z)
@@ -599,6 +642,11 @@ def test_the_rollout_integrates_the_movement_into_the_case_level(fitted, monkeyp
 
     n_steps = len(grids) - 1
     assert n_steps >= 2, "fewer than two projected diagonals; the walk tests nothing"
+    assert bound == must_bind, (
+        f"move_z={move_z} was chosen so the floor {'binds' if must_bind else 'never binds'} "
+        f"on this fixture and it {'bound' if bound else 'did not'}; without a binding arm "
+        "nothing here distinguishes a floored walk from an unfloored one"
+    )
     n_members = len(entry.models_)
     assert len(seen) == n_members * n_steps, (
         f"expected one forward pass per projected diagonal per member "
@@ -647,6 +695,347 @@ def test_case_paths_is_a_diagnostic_over_the_same_draws(fitted):
             "every step of the case path equals its endpoint - the per-diagonal "
             "walk is not being recorded, only the terminal state repeated"
         )
+
+
+# -- the case floor ------------------------------------------------------------
+
+
+def _floor_pair(backbone: str, case_fn) -> SimpleNamespace:
+    """Two fits of ONE dataset and ONE seed, floor on and off, both through
+    ``gallery.fit``.
+
+    The flag travels the whole public path here - a caller's config object into
+    ``gallery.fit`` into the rollout - which is what makes these tests delivery
+    tests rather than signature tests (the repo's named inert-parameter bug
+    class: a knob accepted, validated, and never read).
+
+    Two fits rather than one fit with the flag flipped afterwards, because the
+    flipped version cannot tell a live knob from a dead one at the point a
+    caller actually sets it. The two networks are nonetheless identical - the
+    flag is a rollout knob and training never reads it - and that is asserted
+    rather than assumed, on the held-out path, which is one forward pass at
+    observed features with no level walk in it at all.
+    """
+    triangle = paid_and_case_triangle(case_fn)
+    on = gallery.fit("nn_paid_case", triangle, as_of=AS_OF, config=tiny(backbone), seed=0)
+    off = gallery.fit(
+        "nn_paid_case",
+        triangle,
+        as_of=AS_OF,
+        config=replace(tiny(backbone), floor_case_at_zero=False),
+        seed=0,
+    )
+    assert on.config_.floor_case_at_zero and not off.config_.floor_case_at_zero
+    return SimpleNamespace(backbone=backbone, triangle=triangle, on=on, off=off)
+
+
+@pytest.fixture(scope="module", params=BACKBONES)
+def floor_pair(request):
+    """Floor on/off over the RUN-DOWN fixture, where the floor binds."""
+    return _floor_pair(request.param, _case)
+
+
+@pytest.fixture(scope="module", params=BACKBONES)
+def rising_pair(request):
+    """Floor on/off over the RISING fixture, where the floor never binds."""
+    return _floor_pair(request.param, _case_rising)
+
+
+def test_the_floor_is_on_by_default_and_belongs_to_neither_backbone():
+    """It is a ROLLOUT knob and both bodies roll out through the same code, so
+    the config's foreign-knob refusal must not claim it - a shared knob listed
+    under one backbone would make the other backbone's fits unbuildable with it
+    set, which is the opposite failure to the inert one."""
+    assert NNPaidCaseConfig().floor_case_at_zero is True
+    for owner, knobs in BACKBONE_KNOBS.items():
+        assert "floor_case_at_zero" not in knobs, f"the floor is not {owner}'s knob"
+    for backbone in BACKBONES:
+        cfg = NNPaidCaseConfig(backbone=backbone, floor_case_at_zero=False)
+        assert cfg.floor_case_at_zero is False
+
+
+def test_the_floor_keeps_every_simulated_case_level_at_or_above_zero(floor_pair):
+    """The booking constraint, end to end through ``gallery.fit``.
+
+    A case reserve is taken down TO zero and never past it. With the floor on,
+    every level the walk produces - terminal and per-diagonal, including the
+    pinned deepest dev whose movement is forced to the pooled dev mean - is at
+    or above zero. The floor-off twin is what keeps that from passing on a
+    fixture where the floor never binds: its walk MUST go negative here, and
+    both statements come off the same data, the same seed and the same networks.
+
+    **Scoped to origins the rollout SIMULATES** (``latest_dev < n_d``), which is
+    the guarantee the entry actually makes. An origin already at its deepest dev
+    has no future cell, never steps, and carries its observed starting level
+    through untouched - so with a negative case reserve in the data the array
+    read whole contains a negative number while the code is behaving exactly as
+    documented. Asserting over the whole array would be asserting the exemption
+    away, and it passes here only because this fixture's observed levels are all
+    positive; ``test_a_negative_observed_start_...`` pins both halves.
+    """
+    on, off = floor_pair.on, floor_pair.off
+    c = on.contract_
+    steps = c["latest_dev"] < c["n_d"]  # (n_c, n_w) - origins with a future cell
+    assert steps.any() and not steps.all(), (
+        "this fixture has no mix of stepping and non-stepping origins, so the scoping "
+        "below is either vacuous or the whole array"
+    )
+    for kwargs in ({}, {"per_diagonal": True}):
+        levels = on.case_paths(seed=0, **kwargs)
+        simulated = levels[..., steps]  # broadcasts over draws (and diagonals)
+        assert simulated.min() >= 0.0, (
+            f"case_paths({kwargs}) reached {simulated.min():.4f} at an origin the rollout "
+            "simulates; the walk is floored at zero"
+        )
+    unfloored = off.case_paths(seed=0, per_diagonal=True)[..., steps]
+    assert unfloored.min() < 0.0, (
+        "the unfloored walk never goes negative on this fixture, so flooring it proves "
+        "nothing - the run-down fixture is supposed to overshoot"
+    )
+    # the floor must actually have BOUND on the floored run, or "min >= 0" is
+    # a statement about the draws rather than about the clamp
+    assert (on.case_paths(seed=0, per_diagonal=True) == 0.0).any()
+
+
+def test_the_floor_changes_nothing_where_it_never_binds(rising_pair):
+    """Same seed, floor on and off, on a fixture whose case levels rise: the
+    draws are byte-identical.
+
+    This is the RNG invariant. The clamp is post-draw arithmetic on the case
+    state - the joint sample happens first and the paid coordinate is written
+    unchanged - so the generator advances identically either way and a run where
+    the clamp never fires must be bit-for-bit the 0.5.5 run. Compared as raw
+    bytes (``.view(np.uint8)``, the repo's convention) rather than with
+    ``allclose``, because the claim is identity and not agreement.
+    """
+    on, off = rising_pair.on, rising_pair.off
+    paths_on = on.case_paths(seed=11, per_diagonal=True)
+    paths_off = off.case_paths(seed=11, per_diagonal=True)
+    assert paths_off.min() > 0.0, (
+        "the floor binds on the rising fixture, so byte identity below would be "
+        "asserting something the clamp could not have preserved"
+    )
+    np.testing.assert_array_equal(paths_on.view(np.uint8), paths_off.view(np.uint8))
+    np.testing.assert_array_equal(
+        np.ascontiguousarray(on.predict(segment=SEG0, seed=11).samples).view(np.uint8),
+        np.ascontiguousarray(off.predict(segment=SEG0, seed=11).samples).view(np.uint8),
+    )
+
+
+def test_the_two_walks_share_every_draw_until_the_floor_first_binds(floor_pair, monkeypatch):
+    """On the binding fixture: identical before the first clamp, different after.
+
+    The two halves are the whole invariant. BEFORE the first bind nothing has
+    been clamped, so the two rollouts are the same arithmetic on the same draws
+    and the paths are byte-identical - including the first projected diagonal's
+    PAID draws, read off channel 0 of the next forward pass, which is where a
+    clamp that leaked into the paid coordinate would show. AFTER it, the floored
+    run hands the network a different case LEVEL on channel 1, which is the
+    floor reaching the model's input rather than only its read-out.
+
+    What this fixture cannot show is the paid ULTIMATES moving, and the reason
+    is worth writing down so nobody reads it as the floor being inert. On a 6x6
+    square as_of diagonal 6, the level only gets low enough to cross zero at the
+    deepest devs - measured, the clamps land at (origin 4, dev 4), (origin 4,
+    dev 5) and (origin 5, dev 5) - and the only paid cells that come after those
+    sit at dev 5, which is PINNED (one training-context value, so its draw is
+    forced to the pooled dev mean whatever the head says). So the changed level
+    feeds a paid draw that is a constant. The GRU ultimates come out bit-identical
+    and the transformer's move by 6e-8 relative on 1 of 480 values, purely
+    through attention. Widening the fixture until the paid side moves would mean
+    a slower, less legible test of something the leaderboard measures properly.
+    """
+    on, off = floor_pair.on, floor_pair.off
+    seen = _spy_forward(on, monkeypatch)  # both fits share the backbone's class
+    _drop_rollout_cache(on)
+    _drop_rollout_cache(off)
+    try:
+        on.predict(segment=SEG0, seed=0)
+        n_on = len(seen)
+        off.predict(segment=SEG0, seed=0)
+        path_on = on.case_paths(seed=0, per_diagonal=True)
+        path_off = off.case_paths(seed=0, per_diagonal=True)
+    finally:
+        _drop_rollout_cache(on)
+        _drop_rollout_cache(off)
+
+    seen_on, seen_off = seen[:n_on], seen[n_on:]
+    assert len(seen_on) == len(seen_off) >= 2, "too few forward passes to compare diagonals"
+    # forward pass 1 is handed what forward pass 0's sample wrote: the first
+    # projected diagonal. Channel 0 is the paid coordinate, which the clamp
+    # never touches, so it is identical whatever the floor did to channel 1.
+    first_paid_on = np.ascontiguousarray(seen_on[1][0][:, 0])
+    first_paid_off = np.ascontiguousarray(seen_off[1][0][:, 0])
+    np.testing.assert_array_equal(
+        first_paid_on.view(np.uint8),
+        first_paid_off.view(np.uint8),
+        err_msg=(
+            "the first projected diagonal's paid draws differ between the floored and "
+            "unfloored runs; the clamp is post-draw arithmetic on the case state and "
+            "must not reach the paid coordinate or the random stream"
+        ),
+    )
+
+    negative = [i for i in range(path_off.shape[1]) if (path_off[:, i] < 0.0).any()]
+    assert negative, "the unfloored walk never went negative; this fixture must bind"
+    first_bind = negative[0]
+    assert first_bind >= 1, (
+        "the unfloored walk is already negative at the first recorded step, so there is "
+        "no pre-bind stretch to compare and the identity claim is vacuous"
+    )
+    np.testing.assert_array_equal(
+        np.ascontiguousarray(path_on[:, :first_bind]).view(np.uint8),
+        np.ascontiguousarray(path_off[:, :first_bind]).view(np.uint8),
+        err_msg="the walks differ before the floor ever bound, so they are not sharing draws",
+    )
+    assert not np.array_equal(path_on[:, first_bind:], path_off[:, first_bind:])
+    # and the floored level is what the NETWORK gets, not just what case_paths
+    # reports: channel 1 must differ at some forward pass after the first bind
+    differing = [
+        k
+        for k in range(len(seen_on))
+        if not np.array_equal(seen_on[k][0][:, 1], seen_off[k][0][:, 1])
+    ]
+    assert differing and min(differing) > 0, (
+        "the two runs hand the network the same channel-1 grid at every forward pass, "
+        "so the floored level is a read-out only and never reaches the model - which is "
+        "what a rollout that clamps case_paths but feeds the unfloored state would do"
+    )
+    np.testing.assert_array_equal(
+        np.ascontiguousarray(seen_on[0][0]).view(np.uint8),
+        np.ascontiguousarray(seen_off[0][0]).view(np.uint8),
+        err_msg="the two runs differ at the FIRST forward pass, before anything is sampled",
+    )
+
+
+def test_the_held_out_paid_path_does_not_run_the_case_walk(floor_pair):
+    """The board column is untouched by the floor, and that is structural.
+
+    ``predict_at``/``log_lik_at`` are a single forward pass at the cohort's
+    OBSERVED features (``PooledMDNHeldout._heldout_draws``): the held-out
+    diagonal sits one step past the as_of context, so there is no level to
+    simulate and no state update to floor. Byte identity between the floored and
+    unfloored fits therefore doubles as the proof that the two fits trained
+    identically - the flag reaches the rollout and nothing else.
+    """
+    on, off = floor_pair.on, floor_pair.off
+    paid = _paid()
+    one = make_multiline_triangle(
+        "duckdb",
+        {"lob_0": paid[0]},
+        premium_by_lob={"lob_0": np.full(N, PREMIUM)},
+        start_year=START,
+    )
+    cells = next_diagonal(one, as_of=AS_OF, fields="paid_loss", premium_field="earned_premium")
+    np.testing.assert_array_equal(
+        np.ascontiguousarray(on.predict_at(cells, field="paid_loss", seed=5)).view(np.uint8),
+        np.ascontiguousarray(off.predict_at(cells, field="paid_loss", seed=5)).view(np.uint8),
+    )
+    pinned_devs = np.nonzero(on.norm_["pinned"][0])[0] + 1
+    live_mask = ~cells.frame["dev_lag"].isin([12 * int(d) for d in pinned_devs])
+    live = replace(cells, frame=cells.frame[live_mask].reset_index(drop=True))
+    assert live.n_cells, "every held-out cell is pinned; the density leg tests nothing"
+    np.testing.assert_array_equal(
+        np.ascontiguousarray(on.log_lik_at(live, field="paid_loss")).view(np.uint8),
+        np.ascontiguousarray(off.log_lik_at(live, field="paid_loss")).view(np.uint8),
+    )
+
+
+def test_flipping_the_floor_on_a_fitted_entry_re_runs_the_rollout(floor_pair):
+    """The rollout cache is keyed on the FLAG, not only on (n_draws, seed).
+
+    This is the one config field a caller is invited to change on a fitted
+    entry: it exists to be compared with and without, and re-fitting to flip it
+    would re-draw the networks, which is exactly what such a comparison must not
+    do. Keyed on ``(n_draws, seed)`` alone, the second call returned the FIRST
+    arm's cached array - same seed, byte-identical, no error - so the two arms
+    would look like they agreed everywhere, on a fixture built to make them
+    disagree.
+
+    Both directions, because a cache is a two-way trap: on -> off must re-run,
+    and off -> on must re-run back to the floored answer rather than to some
+    third thing. The final identity check is what makes the middle assertion
+    about the FLAG rather than about the rollout being nondeterministic.
+    """
+    entry = floor_pair.on
+    _drop_rollout_cache(entry)
+    try:
+        floored = entry.case_paths(seed=0, per_diagonal=True).copy()
+        entry.config_.floor_case_at_zero = False
+        unfloored = entry.case_paths(seed=0, per_diagonal=True).copy()
+        assert unfloored.min() < 0.0, (
+            "flipping the flag on the fitted entry returned a walk with no negative "
+            "level, i.e. the floored arm's cached array"
+        )
+        assert not np.array_equal(floored, unfloored)
+        entry.config_.floor_case_at_zero = True
+        np.testing.assert_array_equal(
+            entry.case_paths(seed=0, per_diagonal=True).view(np.uint8),
+            floored.view(np.uint8),
+            err_msg="flipping back did not reproduce the floored walk exactly",
+        )
+    finally:
+        entry.config_.floor_case_at_zero = True
+        _drop_rollout_cache(entry)
+
+
+def test_a_negative_observed_start_survives_only_where_the_rollout_never_steps(fitted):
+    """Both halves of the starting-level exemption, which nothing else covers.
+
+    ``_initial_case_level`` returns the deepest observed case level as the
+    triangle reported it, negative included: an observed negative case reserve
+    is data (a recovery outrunning the estimate), and the floor constrains the
+    SIMULATION, not the observation. The exemption is documented as narrow and
+    this pins exactly how narrow.
+
+    (a) An origin with no future cell never steps, so its reported level passes
+        straight through to ``case_paths`` - negative and unchanged, at every
+        recorded diagonal.
+    (b) An origin the rollout projects has a cell on the FIRST future diagonal,
+        so the clamp absorbs the negative start at step 0 and it never appears
+        at all.
+
+    Forced through ``_initial_case_level`` rather than through a fixture,
+    because on a run-off triangle the deepest observed level is the one at the
+    anchor, and building a negative one there would also move every movement
+    target the head trains on - which would make this a test of a different fit.
+    """
+    entry = fitted.entry
+    c = entry.contract_
+    n_c, n_w = c["latest_dev"].shape
+    steps = c["latest_dev"] < c["n_d"]  # (n_c, n_w)
+    never = np.nonzero(~steps)
+    always = np.nonzero(steps)
+    assert len(never[0]) and len(always[0]), "need one origin of each kind on this fixture"
+    still = (int(never[0][0]), int(never[1][0]))
+    moving = (int(always[0][0]), int(always[1][0]))
+
+    start = entry._initial_case_level()
+    forced = start.copy()
+    forced[still] = -0.5
+    forced[moving] = -0.5
+    assert forced.shape == (n_c, n_w)
+
+    _drop_rollout_cache(entry)
+    try:
+        entry._initial_case_level = lambda: forced.copy()
+        path = entry.case_paths(seed=0, per_diagonal=True)
+    finally:
+        del entry._initial_case_level  # restore the bound method
+        _drop_rollout_cache(entry)
+
+    np.testing.assert_allclose(
+        path[:, :, still[0], still[1]],
+        -0.5,
+        err_msg=(
+            "an origin the rollout never steps had its observed negative case level "
+            "rewritten; the floor constrains the simulation, not the data"
+        ),
+    )
+    assert (path[:, :, moving[0], moving[1]] >= 0.0).all(), (
+        "a projected origin's negative start reached case_paths; the first simulated "
+        "diagonal must clamp it away"
+    )
 
 
 # -- held-out wiring -----------------------------------------------------------

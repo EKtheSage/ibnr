@@ -134,8 +134,8 @@ not by a knob**:
   `level_fields=("case_reserve",)`): the target is that level ratio itself,
   trained where that one channel is real. This is Kuo's own second task read
   literally, and the level is the harder and more informative thing to learn: a
-  case reserve does not accumulate, it drains toward zero as payments replace it
-  and jumps upward when new information arrives - a hospital bill reported
+  case reserve does not accumulate, it runs down toward zero as payments replace
+  it and jumps upward when new information arrives - a hospital bill reported
   months late - so its rundown is neither linear nor monotone.
 
 Standardization is the same either way: per dev, from training-context cells,

@@ -1,6 +1,6 @@
 """nn_paid_case gallery entry: the joint paid + case-reserve model. See card.md.
 
-Case reserves are a STATE with dynamics - they drain toward zero as payments
+Case reserves are a STATE with dynamics - they run down toward zero as payments
 replace them and jump upward when new information arrives - so a frozen input
 channel cannot carry them into a multi-year projection. Every other NN entry in
 the gallery discloses exactly that limitation ("features are not simulated
@@ -455,7 +455,7 @@ class NNPaidCase(GalleryEntry, PooledMDNHeldout):
         deepest projected diagonal. With ``per_diagonal=True``: the FULL walk,
         ``(n_draws, n_levels, n_c, n_w)`` - axis 1 is the rollout's future
         calendar diagonals in ascending order, its last step identical to the
-        terminal read, so the drain TRAJECTORY (where the level steps down,
+        terminal read, so the run-off TRAJECTORY (where the level steps down,
         where a shock lands) is inspectable, not only its endpoint.
 
         Not a ``PredictiveDistribution`` and deliberately not one: it is the
@@ -465,14 +465,28 @@ class NNPaidCase(GalleryEntry, PooledMDNHeldout):
         to that origin's premium - multiply by ``contract_["premium"]`` for
         dollars.
 
-        **The drain diagnostic** (card.md): a case reserve that has done its job
-        is nearly exhausted by the end of the projection, so this should
-        concentrate near zero. A fat positive tail is the model saying
-        development continues past the triangle's window - useful information
-        about the tail, and a reason to distrust the ultimate at face value. A
-        mass of NEGATIVE terminal levels is a defect rather than a finding: the
-        movement head is unconstrained, so nothing stops a drain from
-        overshooting, and the card records that as an open limitation.
+        **The case run-off diagnostic** (card.md): a case reserve that has done
+        its job is nearly exhausted by the end of the projection, so this should
+        concentrate near zero. The walk is floored there
+        (``config.floor_case_at_zero``), so zero is a value the simulation can
+        reach and not pass, the way a booked reserve is. It is NOT absorbing -
+        the next diagonal's sampled movement can be positive, which is the
+        upward shock half of what this entry models. A fat positive tail is the
+        model saying development continues past the triangle's window - useful
+        information about the tail, and a reason to distrust the ultimate at
+        face value.
+
+        Read mass at zero as "the reserve fully ran down" ONLY for origins that
+        started from a real observed case level. An origin the triangle carries
+        no case cell for starts at the 0.0 fallback (see
+        :meth:`_initial_case_level`), and a walk whose movements are negative
+        never leaves it, so its zeros say nothing about run-down.
+
+        With ``floor_case_at_zero=False`` (the 0.5.5 walk, kept so the change
+        can be measured with and without it) the movement head is unconstrained
+        and a run-down can overshoot into a case reserve below zero; roughly
+        half the simulated terminal levels did on the Schedule P panel. Read
+        negative mass there as the defect the floor exists for, not a finding.
 
         The case path's own calibration is unvalidated in v1 - no realized-case
         board column exists to score it against - so read it as a diagnostic of
@@ -564,9 +578,18 @@ class NNPaidCase(GalleryEntry, PooledMDNHeldout):
     # -- internals ---------------------------------------------------------------
 
     def _ensure_rollout(self, n_draws: int | None, seed: int | None) -> tuple:
-        """The cached ``(ultimates, terminal case levels)`` for this (n_draws, seed)."""
+        """The cached ``(ultimates, case level walk)`` for this rollout request.
+
+        ``floor_case_at_zero`` is IN the key, unlike every other config field.
+        It is the one knob a caller is invited to change on a fitted entry - it
+        exists to be compared with and without, and re-fitting to flip it would
+        also re-draw the networks, which is exactly what a comparison must not
+        do. Keyed on ``(n_draws, seed)`` alone, that flip returned the other
+        arm's cached array: same seed, byte-identical, no error, and the two
+        arms would look like they agreed everywhere.
+        """
         n_draws = n_draws or self.config_.n_draws
-        key = (n_draws, seed)
+        key = (n_draws, seed, bool(self.config_.floor_case_at_zero))
         if self._rollout_key != key:
             self._rollout_ults, self._rollout_case = self._rollout(n_draws, seed)
             self._rollout_key = key
@@ -582,13 +605,24 @@ class NNPaidCase(GalleryEntry, PooledMDNHeldout):
         diagonal than the paid anchor cannot be counted twice - once as the
         starting level and again as a cell the rollout simulates over.
 
+        **Returned as the triangle reported it, negative included**, and NOT
+        floored: ``floor_case_at_zero`` constrains the simulation, and an
+        observed negative case reserve (a recovery outrunning the estimate) is
+        data. What that exemption is worth in practice is small and worth
+        stating: every origin the rollout projects has a cell on the FIRST
+        future diagonal, so a negative start is clamped at that first step and
+        never reaches :meth:`case_paths`. The only origin whose negative start
+        survives is one with no future cell at all - already at its deepest dev,
+        never stepped, its reported level passed straight through.
+
         Known approximation, disclosed in the card: when the case cell AT the
         paid anchor is missing but an earlier one exists, the state starts from
         that stale level and the movements over the skipped devs are never
-        sampled (the rollout only visits ``d >= latest_dev``), so a draining
-        reserve's start is overstated by the skipped drain - silently, every
-        number finite. Bridging it would mean sampling movements on pre-anchor
-        diagonals, which the double-count rule above exists to forbid.
+        sampled (the rollout only visits ``d >= latest_dev``), so for a reserve
+        that is running down the start is overstated by the run-down that was
+        skipped - silently, every number finite. Bridging it would mean sampling
+        movements on pre-anchor diagonals, which the double-count rule above
+        exists to forbid.
         """
         c = self.contract_
         level, obs = c["x"][:, 1], c["x_obs"][:, 1]  # (n_c, n_w, n_d)
@@ -604,13 +638,14 @@ class NNPaidCase(GalleryEntry, PooledMDNHeldout):
         """Autoregressive rollout of BOTH channels, diagonal by diagonal.
 
         Per future calendar diagonal, per draw: one forward pass, one JOINT
-        sample of (paid increment, case movement) at that diagonal's future
-        cells - same mixture component, same ``z``, so the learned payment-drain
-        correlation survives into the simulated diagonal - then
+        sample of (paid increment, case movement) at that diagonal's future cells
+        - same mixture component, same ``z``, so the learned correlation between
+        payment and case run-off survives into the simulated diagonal - then
 
         1. the un-standardized paid increment ratio is written into channel 0;
-        2. the case LEVEL STATE is advanced, ``level += movement``, in RATIO
-           space, and the re-standardized level is written into channel 1;
+        2. the case LEVEL STATE is advanced, ``level = max(level + movement, 0)``,
+           in RATIO space, and the re-standardized level is written into
+           channel 1;
         3. BOTH channels' flags are promoted at those cells;
         4. the grid is re-encoded and the next diagonal follows.
 
@@ -622,6 +657,36 @@ class NNPaidCase(GalleryEntry, PooledMDNHeldout):
         values cannot simply be added: each dev has its own mean and spread, so
         ``z_level[d] + z_move[d]`` is not the standardized new level, and it
         would look entirely plausible.
+
+        The ``max(..., 0)`` is ``config.floor_case_at_zero`` (default on): a
+        case reserve is booked down TO zero and never past it, so the walk is
+        truncated there. It is applied to the STATE only, AFTER the joint draw,
+        which is what keeps it out of the random stream: the paid coordinate is
+        written unchanged and the generator has already advanced, so the floored
+        and unfloored arms consume the SAME random stream - same generator, same
+        seed, same call order, a proper common-random-numbers pairing. That is
+        not the same as the same SAMPLES throughout. Until the first bind the two
+        are identical, and ``floor_case_at_zero=False`` therefore reproduces the
+        0.5.5 walk exactly. After a bind the floored arm hands the network a
+        different channel-1 grid, so the same underlying randomness maps through
+        a different mixture and the two arms' samples legitimately differ.
+
+        The floored value is the ONLY copy of the state: it is what feeds
+        channel 1 forward and what :meth:`case_paths` reports. One exception,
+        and it is pre-existing pin behaviour rather than anything the floor
+        does - at a PINNED dev the channel-1 input is masked to the pin
+        (standardized 0, i.e. the pooled level mean), so the network sees the
+        pin and not the level at all, floored or not.
+
+        What is NOT floored is the STARTING level: :meth:`_initial_case_level`
+        carries the deepest observed case level exactly as the triangle reported
+        it, negative included (a recovery can outrun the case estimate, and
+        restating an observation is not constraining a simulation). The
+        consequence is narrower than it sounds: an origin the rollout PROJECTS
+        steps on the very first future diagonal, so a negative start is clamped
+        away at that first step and never appears in :meth:`case_paths`. The
+        exemption is only observable for an origin that never steps - one
+        already at its deepest dev. Every level the SIMULATION produced is >= 0.
 
         Step 3 is what the per-channel promotion of 0.5.4 exists for: this
         rollout SIMULATED both channels at those cells, so both flags rise -
@@ -679,6 +744,7 @@ class NNPaidCase(GalleryEntry, PooledMDNHeldout):
         comp_t = t(c["company_idx"], torch.long)  # (n_c,)
         prem_t = t(prem_norm, torch.float32)  # (n_c,)
         level0_t = t(self._initial_case_level(), torch.float32)  # (n_c, n_w) ratio
+        floor_case = bool(self.config_.floor_case_at_zero)
 
         # split the requested draws as evenly as possible across ensemble
         # members (remainder spread over the first few members).
@@ -747,6 +813,14 @@ class NNPaidCase(GalleryEntry, PooledMDNHeldout):
                         move_ratio = move_z * move_std_t + move_mean_t  # (B, W, D)
                         delta = (move_ratio * cells.to(move_ratio.dtype)).sum(dim=2)  # (B, W)
                         stepped = level + delta
+                        if floor_case:
+                            # a case reserve is booked down TO zero, never past
+                            # it. Post-draw arithmetic on the STATE only, after
+                            # the sample: the paid coordinate is untouched and
+                            # the generator has already advanced, so the two
+                            # arms share the random stream and are identical
+                            # until the first bind.
+                            stepped = stepped.clamp(min=0.0)
                         level = torch.where(cells.any(dim=2), stepped, level)
                         # re-standardize the NEW level with the LEVEL channel's
                         # own per-dev statistics - never by adding standardized
