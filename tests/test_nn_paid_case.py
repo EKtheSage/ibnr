@@ -104,11 +104,12 @@ def _paid() -> np.ndarray:
 
 
 def _case(paid: np.ndarray) -> np.ndarray:
-    """(2, N, N) case reserve LEVELS that drain as the paid develops.
+    """(2, N, N) case reserve LEVELS that run down as the paid develops.
 
     ``0.6 x (ultimate - paid to date)`` plus a floor, so the level falls with
     development the way a real case reserve does - which is what makes the
-    movement target predominantly negative and the drain diagnostic meaningful.
+    movement target predominantly negative and the case run-off diagnostic
+    meaningful.
     """
     ult = paid[:, :, -1][:, :, None]
     return 0.6 * (ult - paid) + 25.0

@@ -173,7 +173,7 @@ def _punched() -> np.ndarray:
 
 
 #: case reserve as a share of the paid cumulative, by dev step: a level that
-#: shrinks with development, i.e. a reserve draining as payments replace it.
+#: shrinks with development, i.e. a reserve running down as payments replace it.
 CASE_SHARE = np.linspace(0.6, 0.05, N)
 
 

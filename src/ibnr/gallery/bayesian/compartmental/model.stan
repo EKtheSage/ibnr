@@ -29,7 +29,7 @@
 // step. The (ker - kp) denominator is singular at ker == kp; the priors
 // (medians 3 vs 1) keep the sampler away from it.
 functions {
-  // Case outstanding at age t: builds at the reporting rate ker, drains at
+  // Case outstanding at age t: builds at the reporting rate ker, empties at
   // the settlement rate kp, so OS -> 0 as t -> inf (a hump, not a curve).
   real os_curve(real t, real ker, real kp, real RLR) {
     return RLR * ker / (ker - kp) * (exp(-kp * t) - exp(-ker * t));

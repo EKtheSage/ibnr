@@ -130,7 +130,7 @@ def nn_triangle(start_year: int) -> Triangle:
     fields: ``nn_data`` refuses an absent field by name, so without it that
     entry's fit would fail on the DATA, before the stubbed trainer runs, and the
     atomicity claim would never be exercised. The level is a share of the paid
-    cumulative that shrinks with development - a reserve draining as payments
+    cumulative that shrinks with development - a reserve running down as payments
     replace it, never negative, and read off the cell it sits on rather than off
     any later one. The other five entries are fitted with ``feature_fields=()``
     and never read the channel.

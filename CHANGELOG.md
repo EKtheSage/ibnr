@@ -72,25 +72,25 @@ same seed (measured), so existing fits are unchanged.
 ### `nn_paid_case` (#95)
 
 A joint model of paid development and case-reserve dynamics, motivated by what
-a case reserve is: a state with dynamics, not a static covariate - it drains
+a case reserve is: a state with dynamics, not a static covariate - it runs down
 toward zero as payments replace it and jumps when new information arrives. Per
 cell, a K-component bivariate Gaussian mixture predicts (paid increment, case
-movement) with full per-component covariance, so the payment-drain correlation
-is a learned per-cell quantity. The case LEVEL is an input channel the rollout
-advances (`level += movement`, in ratio space) and feeds back - both channels
-write back, both flags promote, so the frozen-feature rollout limitation the
-other five NN entries disclose does not apply here. Two switchable backbones
-(`config.backbone = "transformer" | "gru"`) share one head module; foreign
-knobs are refused by name. Training is mixed-observedness: the joint density
-where both targets are real, the closed-form margin where one is - no cell
-discarded, no target fabricated. Held-out scoring takes the paid margin of the
-joint density (a bivariate mixture's margin is a univariate mixture, test-
-pinned against the raw head output) through the shared pooled-MDN path, so the
-entry joins the board column-comparable at 10,000 draws. `case_paths()` is the
-drain diagnostic: terminal simulated case levels per draw, or the full walk
-over projected diagonals with `per_diagonal=True`. The case path's calibration
-is unvalidated in this release (no realized-case board column) and the card
-says so.
+movement) with full per-component covariance, so the correlation between payment
+and case run-off is a learned per-cell quantity. The case LEVEL is an input
+channel the rollout advances (`level += movement`, in ratio space) and feeds
+back - both channels write back, both flags promote, so the frozen-feature
+rollout limitation the other five NN entries disclose does not apply here. Two
+switchable backbones (`config.backbone = "transformer" | "gru"`) share one head
+module; foreign knobs are refused by name. Training is mixed-observedness: the
+joint density where both targets are real, the closed-form margin where one is -
+no cell discarded, no target fabricated. Held-out scoring takes the paid margin
+of the joint density (a bivariate mixture's margin is a univariate mixture,
+test-pinned against the raw head output) through the shared pooled-MDN path, so
+the entry joins the board column-comparable at 10,000 draws. `case_paths()` is
+the case run-off diagnostic: terminal simulated case levels per draw, or the
+full walk over projected diagonals with `per_diagonal=True`. The case path's
+calibration is unvalidated in this release (no realized-case board column) and
+the card says so.
 
 ### Card fixes (#96)
 

@@ -1,6 +1,6 @@
 """nn_paid_case gallery entry: the joint paid + case-reserve model. See card.md.
 
-Case reserves are a STATE with dynamics - they drain toward zero as payments
+Case reserves are a STATE with dynamics - they run down toward zero as payments
 replace them and jump upward when new information arrives - so a frozen input
 channel cannot carry them into a multi-year projection. Every other NN entry in
 the gallery discloses exactly that limitation ("features are not simulated
@@ -455,7 +455,7 @@ class NNPaidCase(GalleryEntry, PooledMDNHeldout):
         deepest projected diagonal. With ``per_diagonal=True``: the FULL walk,
         ``(n_draws, n_levels, n_c, n_w)`` - axis 1 is the rollout's future
         calendar diagonals in ascending order, its last step identical to the
-        terminal read, so the drain TRAJECTORY (where the level steps down,
+        terminal read, so the run-off TRAJECTORY (where the level steps down,
         where a shock lands) is inspectable, not only its endpoint.
 
         Not a ``PredictiveDistribution`` and deliberately not one: it is the
@@ -591,10 +591,11 @@ class NNPaidCase(GalleryEntry, PooledMDNHeldout):
         Known approximation, disclosed in the card: when the case cell AT the
         paid anchor is missing but an earlier one exists, the state starts from
         that stale level and the movements over the skipped devs are never
-        sampled (the rollout only visits ``d >= latest_dev``), so a draining
-        reserve's start is overstated by the skipped drain - silently, every
-        number finite. Bridging it would mean sampling movements on pre-anchor
-        diagonals, which the double-count rule above exists to forbid.
+        sampled (the rollout only visits ``d >= latest_dev``), so for a reserve
+        that is running down the start is overstated by the run-down that was
+        skipped - silently, every number finite. Bridging it would mean sampling
+        movements on pre-anchor diagonals, which the double-count rule above
+        exists to forbid.
         """
         c = self.contract_
         level, obs = c["x"][:, 1], c["x_obs"][:, 1]  # (n_c, n_w, n_d)
@@ -610,9 +611,9 @@ class NNPaidCase(GalleryEntry, PooledMDNHeldout):
         """Autoregressive rollout of BOTH channels, diagonal by diagonal.
 
         Per future calendar diagonal, per draw: one forward pass, one JOINT
-        sample of (paid increment, case movement) at that diagonal's future
-        cells - same mixture component, same ``z``, so the learned payment-drain
-        correlation survives into the simulated diagonal - then
+        sample of (paid increment, case movement) at that diagonal's future cells
+        - same mixture component, same ``z``, so the learned correlation between
+        payment and case run-off survives into the simulated diagonal - then
 
         1. the un-standardized paid increment ratio is written into channel 0;
         2. the case LEVEL STATE is advanced, ``level = max(level + movement, 0)``,

@@ -9,12 +9,12 @@ wider, and follows those conventions deliberately: free functions over plain
 tensors, an explicit ``torch.Generator`` on every sampler, mean-over-masked-
 cells losses.
 
-Why a FULL 2x2 covariance rather than two independent heads: the payment-drain
-correlation - paid up, case down - is the quantity this entry exists to learn,
-and it is a per-cell quantity (strong late in development, weak at dev 1). Two
-marginal heads would give the same means and the wrong joint, so a sampled
-diagonal fed back into the rollout would carry paid and case movements that do
-not offset each other.
+Why a FULL 2x2 covariance rather than two independent heads: the correlation
+between payment and case run-off - paid up, case down - is the quantity this
+entry exists to learn, and it is a per-cell quantity (strong late in
+development, weak at dev 1). Two marginal heads would give the same means and
+the wrong joint, so a sampled diagonal fed back into the rollout would carry
+paid and case movements that do not offset each other.
 
 The pieces, all consumed by the entry's networks and training loop:
 
@@ -32,7 +32,7 @@ The pieces, all consumed by the entry's networks and training loop:
   the ``(log_pi, mu, sigma)`` shape ``PooledMDNHeldout`` already scores;
 - :func:`sample_joint` - one (paid, case) draw per cell for the rollout;
 - :func:`implied_correlation` / :func:`mixture_moments` - read-outs of the
-  fitted head (the card's drain diagnostic, and the tests' reference).
+  fitted head (the card's case run-off diagnostic, and the tests' reference).
 
 PARAMETERIZATION. Per cell and component: a mixture logit, a mean vector
 ``mu (2,)``, and a lower-triangular Cholesky factor built from 3 free numbers,
@@ -349,9 +349,9 @@ def implied_correlation(chol: torch.Tensor) -> torch.Tensor:
 
     ``cov_01 / sqrt(cov_00 cov_11) = L00 L10 / (L00 sqrt(L10**2 + L11**2))``,
     where ``L00`` cancels. The entry's headline learned quantity: negative is
-    the payment drain (paid up, case down). The ``L11 >= SIGMA_FLOOR`` floor
-    keeps the denominator positive, so the value is inside ``(-1, 1)`` in exact
-    arithmetic for every ``L`` this head can build.
+    payment replacing case reserve (paid up, case down). The
+    ``L11 >= SIGMA_FLOOR`` floor keeps the denominator positive, so the value is
+    inside ``(-1, 1)`` in exact arithmetic for every ``L`` this head can build.
 
     In float64 it can still ROUND to exactly ``+-1``: at ``|b| / L11 = 1e9`` the
     true value is ``1 - 5e-19``, below the spacing of 1.0. That is a property of
@@ -370,7 +370,7 @@ def mixture_moments(
     """Mean ``(..., 2)`` and covariance ``(..., 2, 2)`` of the whole mixture.
 
     Law of total covariance: ``Cov = sum_k pi_k (Sigma_k + d_k d_k^T)`` with
-    ``d_k = mu_k - mean``. Used by the card's drain diagnostic and as the
+    ``d_k = mu_k - mean``. Used by the card's case run-off diagnostic and as the
     reference the sampler's empirical moments are checked against; the mixture
     correlation it implies is NOT any component's :func:`implied_correlation`
     unless K is 1.

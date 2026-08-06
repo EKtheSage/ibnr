@@ -4,17 +4,17 @@
 does not)
 **Lineage:** the pooled-NN reserving line of this gallery (`nn_transformer`,
 `deeptriangle`) crossed with the compartmental entry's structural idea - that
-outstanding claims DRAIN into paid - but with no functional form imposed on the
-rundown. Where `deeptriangle`'s case-reserve head predicts the case level as a
-training-time auxiliary task nothing downstream reads, this entry predicts the
+outstanding claims RUN OFF into paid - but with no functional form imposed on
+the rundown. Where `deeptriangle`'s case-reserve head predicts the case level as
+a training-time auxiliary task nothing downstream reads, this entry predicts the
 paid increment and the case MOVEMENT jointly and consumes both.
 
-## Why this entry exists: drain and shock
+## Why this entry exists: run-off and shock
 
 A case reserve is not a covariate that sits still. It is a **state with
 dynamics**, and it moves two ways at once:
 
-- it **drains** toward zero as payments replace it - the claim department's
+- it **runs down** toward zero as payments replace it - the claim department's
   estimate is converted into cash, so paid up and case down is the normal
   quarter;
 - it **jumps** upward when new information arrives - a hospital bill reported
@@ -33,8 +33,8 @@ mixture component and the same normal draw, writes the sampled paid increment
 into channel 0, integrates the sampled movement into the case LEVEL and writes
 that into channel 1, promotes both channels' flags and re-encodes. The paid
 projection therefore conditions on a live case position at every step, and the
-learned payment-drain correlation - paid up, case down - is what keeps the two
-simulated paths consistent with each other.
+learned correlation between payment and case run-off - paid up, case down - is
+what keeps the two simulated paths consistent with each other.
 
 ## Data
 
@@ -88,11 +88,11 @@ component via a Cholesky factor `L = [[softplus(a) + floor, 0], [b, softplus(c)
 the correlation is free over (-1, 1) and no matrix is ever inverted (the
 Mahalanobis term is a triangular solve).
 
-**Full covariance is the point.** The payment-drain correlation is a per-cell
-quantity - strong late in development, weak at dev 1 - and it is what this entry
-exists to learn. Two independent marginal heads would give the same means and
-the wrong joint, so a sampled diagonal fed back into the rollout would carry
-paid and case movements that do not offset each other.
+**Full covariance is the point.** The correlation between payment and case
+run-off is a per-cell quantity - strong late in development, weak at dev 1 - and
+it is what this entry exists to learn. Two independent marginal heads would give
+the same means and the wrong joint, so a sampled diagonal fed back into the
+rollout would carry paid and case movements that do not offset each other.
 
 **The loss is MIXED-OBSERVEDNESS** (`head.nll_mixed`): one scalar, three
 disjoint masks, no data discarded.
@@ -356,7 +356,8 @@ unfloored = gallery.fit("nn_paid_case", tri, config=cfg, as_of="1997-12-31")
   ultimates.
 - When the case cell at the paid anchor is missing while an earlier one exists,
   the rollout starts the state from that stale earlier level and the movements
-  over the skipped devs are never sampled - on a draining reserve the start is
-  overstated by the skipped drain, silently, and the paid projection conditions
-  on it. Rare on the mart (the case reserve sits on the same statement rows as
-  paid) but reachable through the hole-inheritance path above.
+  over the skipped devs are never sampled - for a reserve that is running down
+  the start is overstated by the run-down that was skipped, silently, and the
+  paid projection conditions on it. Rare on the mart (the case reserve sits on
+  the same statement rows as paid) but reachable through the hole-inheritance
+  path above.
