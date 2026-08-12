@@ -15,9 +15,15 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
-## Unreleased
+## 0.5.6 - 2026-08-12
 
-### `nn_paid_case` floors the simulated case level at zero
+A one-fix release: the case-level floor in `nn_paid_case` (#100), on `main`
+since 2026-08-06 but not in any published wheel until now. Also ships the
+`schedule_p` docstring correction (#99): `case_reserve` is reported minus paid
+(net of bulk), not incurred minus paid - the stored values were always right,
+the description of them was not.
+
+### `nn_paid_case` floors the simulated case level at zero (#100)
 
 A case reserve is booked down TO zero and never past it, and 0.5.5's rollout did
 not say so: it advanced the state as `level += movement` with nothing stopping
