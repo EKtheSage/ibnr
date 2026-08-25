@@ -33,6 +33,7 @@ import numpy as np
 from ibnr.kernels.densities import MEASURES, to_amount_scale
 from ibnr.kernels.holdout import CellIndex, HoldoutCells, index_into, training_index
 from ibnr.kernels.predictive import PredictiveDistribution
+from ibnr.kernels.rng import heldout_stream
 from ibnr.kernels.scores import crps
 from ibnr.triangle.core import Triangle
 
@@ -439,6 +440,16 @@ class PredictsHeldout(_HeldoutCapability):
 
         Aligned with :attr:`~ibnr.kernels.holdout.HoldoutCells.values`, so the
         caller scores against those and never has to know what the entry drew.
+
+        ``seed`` is a **study-level** seed, not the generator's own. The stream
+        actually drawn from is derived from it together with the cells' cohort
+        identity, the field being scored and the training cutoff, so a study
+        that fits many cohorts and passes one seed no longer has every cohort
+        reading the same random numbers - while the identical call still
+        reproduces its draws bit for bit. A ``Generator`` or ``SeedSequence``
+        passed as ``seed`` is used exactly as given.
+        :func:`ibnr.kernels.rng.heldout_stream` is the derivation, importable
+        when a test needs to rebuild the exact stream.
         """
         if not isinstance(cells, HoldoutCells):
             raise TypeError(
@@ -454,7 +465,11 @@ class PredictsHeldout(_HeldoutCapability):
             )
 
         idx = index_into(self._keyed_to_fit(cells), self.contract_, field=field)
-        rng = np.random.default_rng(seed)
+        # The ORIGINAL cells, not the narrowed copy index_into consumes: two
+        # entries handed the same cells must derive the same stream, which is
+        # what keeps them comparable on common random numbers. Derived after
+        # index_into so its richer refusals are the ones a caller meets first.
+        rng = np.random.default_rng(heldout_stream(seed, cells, field=field))
         draws = np.asarray(self._draws_native(idx, rng=rng), dtype=float)
         if draws.ndim != 2 or draws.shape[1] != idx.n_cells:
             raise ValueError(

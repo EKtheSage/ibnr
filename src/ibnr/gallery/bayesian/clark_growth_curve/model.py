@@ -25,6 +25,7 @@ from ibnr.gallery.statistical.clark.model import Clark, age_interval, growth
 from ibnr.kernels.contract import odp_stan_data, realized_values
 from ibnr.kernels.holdout import CellIndex
 from ibnr.kernels.predictive import PredictiveDistribution
+from ibnr.kernels.rng import cohort_stream
 from ibnr.triangle.core import Triangle
 
 STAN_FILE = Path(__file__).parent / "model.stan"
@@ -334,7 +335,9 @@ class ClarkGrowthCurve(GalleryEntry, PredictsHeldout):
         # across origins (Clark's recommendation for triangle-sized data).
         elr_prem = np.exp(logelr[:, None] + np.log(c["premium"])[None, :])  # (draws, n_w)
 
-        rng = np.random.default_rng(seed)
+        rng = np.random.default_rng(
+            cohort_stream(seed, label="predict", cohorts=self.cohorts(), field=self._loss_field)
+        )
         # Anchor each origin at its observed paid-to-date, then add simulated
         # future increments cell-by-cell (fully-developed origins get no cells).
         ults = np.tile(c["paid_to_date"], (n_draws, 1)).astype(float)  # (draws, n_w)

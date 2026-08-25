@@ -62,6 +62,7 @@ from ibnr.gallery.statistical.clark.model import growth
 from ibnr.kernels.contract import realized_values, stan_data
 from ibnr.kernels.holdout import CellIndex
 from ibnr.kernels.predictive import PredictiveDistribution
+from ibnr.kernels.rng import cohort_stream
 from ibnr.triangle.core import Triangle
 
 STAN_FILE = Path(__file__).parent / "model.stan"
@@ -406,7 +407,9 @@ class GuszczaGrowthCurve(GalleryEntry, ScoresHeldout, PredictsHeldout):
 
         w_arr = np.asarray(c["w"], dtype=int)
         d_arr = np.asarray(c["d"], dtype=int)
-        rng = np.random.default_rng(seed)
+        rng = np.random.default_rng(
+            cohort_stream(seed, label="predict", cohorts=self.cohorts(), field=self._loss_field)
+        )
         ults = np.empty((ulr.shape[0], n_w))
         for j in range(n_w):
             mine = w_arr == j + 1

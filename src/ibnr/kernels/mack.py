@@ -536,7 +536,7 @@ def simulate_ultimates(
     fit: MackFit,
     *,
     n_draws: int = 10_000,
-    seed: int | None = None,
+    seed: int | np.random.SeedSequence | None = None,
     process: str = "gamma",
     parameter_risk: bool = True,
 ) -> PredictiveDistribution:
@@ -555,6 +555,10 @@ def simulate_ultimates(
     dropping it (``parameter_risk=False``) leaves pure, independent process
     risk. The ``total`` column is the row-sum of the same draws, so the
     diversification is in the samples rather than assumed.
+
+    ``seed`` is anything ``np.random.default_rng`` accepts. The ``mack`` gallery
+    entry hands a per-cohort ``SeedSequence`` through here; a plain integer keeps
+    the byte-exact meaning it has always had.
     """
     # a non-positive diagonal would give var = sigma2 * state <= 0, which
     # draw_step returns at its mean - a silent point mass, not an error

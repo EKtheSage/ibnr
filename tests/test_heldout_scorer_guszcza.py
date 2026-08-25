@@ -43,6 +43,7 @@ from ibnr.gallery.statistical.clark.model import GROWTH_CURVES, growth
 from ibnr.kernels.contract import stan_data
 from ibnr.kernels.densities import check_normalization, normal_lpdf
 from ibnr.kernels.holdout import CellIndex, index_into, next_diagonal, training_index
+from ibnr.kernels.rng import heldout_stream
 from ibnr.triangle.core import Triangle
 
 N_W = N_D = 6
@@ -465,7 +466,15 @@ def test_predict_at_is_a_pass_through_and_threads_its_seed(contract, heldout):
     assert not np.array_equal(got, entry.predict_at(heldout, field="paid_loss", seed=8))
 
     idx = index_into(heldout, contract, field="paid_loss")
-    raw = scorer.draw_cells(contract, post, idx, rng=np.random.default_rng(7), curve="loglogistic")
+    # the stream predict_at derives, rebuilt: a study-level seed no longer names
+    # a generator directly (kernels.rng)
+    raw = scorer.draw_cells(
+        contract,
+        post,
+        idx,
+        rng=np.random.default_rng(heldout_stream(7, heldout, field="paid_loss")),
+        curve="loglogistic",
+    )
     np.testing.assert_array_equal(got, raw)
     # the anchors are far from zero here, so an anchor wrongly added would be
     # a large shift - this equality has teeth

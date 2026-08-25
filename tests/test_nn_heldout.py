@@ -53,6 +53,7 @@ from ibnr.kernels.holdout import (  # noqa: E402
     index_into,
     next_diagonal,
 )
+from ibnr.kernels.rng import heldout_stream  # noqa: E402
 
 from .conftest import BACKENDS, make_multiline_triangle  # noqa: E402
 
@@ -373,8 +374,10 @@ def test_predict_at_anchors_increments_through_the_base_class(fitted):
     The entry draws INCREMENTS (~30-500 here) while the triangle is cumulative
     (anchors ~450-2000), so draws scored without the declared-scale conversion
     are wrong by the whole anchor - the CRPS-996-where-truth-is-3.4 bug class.
-    ``predict_at`` seeds ``default_rng(seed)`` exactly as the base does, so the
-    native draws are reproducible here and the assertion is exact equality.
+    ``predict_at`` derives its generator from the seed together with the cells'
+    cohort identity, the field and the cutoff (``kernels.rng``), so rebuilding
+    that stream here makes the native draws reproducible and the assertion
+    exact equality.
 
     Mutation this must catch: ``heldout_draw_scale = "cumulative"`` (or any
     skipped conversion) makes ``got == native``, off by every anchor.
@@ -383,7 +386,8 @@ def test_predict_at_anchors_increments_through_the_base_class(fitted):
     cells = fitted.cells0
     view = entry.at_cohort(SEG0)
     idx = index_into(cells, view.contract_, field="paid_loss")
-    native = view._draws_native(idx, rng=np.random.default_rng(11))
+    stream = heldout_stream(11, cells, field="paid_loss")
+    native = view._draws_native(idx, rng=np.random.default_rng(stream))
     got = entry.predict_at(cells, field="paid_loss", seed=11)
     anchor = idx.prev_value
     np.testing.assert_allclose(got, native + anchor[None, :], rtol=1e-12)

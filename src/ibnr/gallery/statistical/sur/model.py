@@ -41,6 +41,7 @@ from ibnr.kernels.multiline import (
     realized_multiline,
 )
 from ibnr.kernels.predictive import PredictiveDistribution
+from ibnr.kernels.rng import cohort_stream
 from ibnr.triangle.core import Triangle
 
 #: smallest eigenvalue allowed in any estimated covariance (PD floor)
@@ -258,7 +259,9 @@ class SUR(GalleryEntry):
         n_lob, n_w, n_d = c["n_lob"], c["n_w"], c["n_d"]
         cum, mask = c["cum"], c["obs_mask"]
         p = 2 if self._intercept else 1
-        rng = np.random.default_rng(seed)
+        rng = np.random.default_rng(
+            cohort_stream(seed, label="predict", cohorts=self.cohorts(), field=self._loss_field)
+        )
 
         # Pre-draw, per transition: a stack of coefficient vectors (parameter
         # risk) and the Cholesky factor of the whitened residual covariance
