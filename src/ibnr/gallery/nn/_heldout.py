@@ -32,6 +32,13 @@ returns the 3-tuple bare, DeepTriangle returns it alongside its auxiliary
 head). Entry-identifying text in the error messages reads ``self.name``, so
 an entry parameterizes those by existing rather than by declaring anything.
 
+The multi-line entry (``nn_transformer_ml``) is the one NN entry this pair
+cannot serve, because its cohort is a COMPANY while a held-out cohort is a
+(company, line) pair. Its adapter lives in ``gallery/nn/_heldout_ml.py`` and
+calls the free functions in the middle of this module - the density algebra,
+the refusals, the exposure check and the draw loop - so the two entry shapes
+share one implementation of everything except how a cohort is identified.
+
 Torch-free at MODULE level: every forward pass imports torch inside the method
 that runs it, here as much as in the entries. ``ibnr.gallery`` must import
 (and NN entries must register) without the ``[nn]`` extra - subprocess-tested
@@ -51,7 +58,22 @@ from scipy.special import logsumexp
 from ibnr.gallery.entry import PredictsHeldout, ScoresHeldout
 from ibnr.kernels.holdout import CellIndex, HoldoutCells
 
-__all__ = ["CohortHeldout", "PooledMDNHeldout", "cohort_contract", "heldout_cutoff"]
+__all__ = [
+    "CohortHeldout",
+    "PooledMDNHeldout",
+    "cell_premium",
+    "cohort_contract",
+    "heldout_cutoff",
+    "heldout_segment",
+    "mixture_log_density",
+    "refuse_all_pinned_draws",
+    "refuse_missing_predecessor",
+    "refuse_pinned_density",
+    "require_ensemble",
+    "sample_mixture_draws",
+    "standardized_increment",
+    "unstandardize_to_amounts",
+]
 
 LOG_2PI = math.log(2.0 * math.pi)
 
@@ -148,6 +170,263 @@ def cohort_contract(contract: dict, cohort: int, *, models: Sequence[str]) -> di
         "d": np.array([p[1] for p in pairs], dtype=int),
         "premium": np.asarray(contract["premium"][ci], dtype=float),  # (n_w,)
     }
+
+
+# -- head-agnostic pieces of the two hooks ---------------------------------------
+#
+# Everything below is called by :class:`PooledMDNHeldout` for the single-line
+# entries and by ``gallery/nn/_heldout_ml.py`` for the multi-line one. It is the
+# part of held-out scoring that does not depend on how a cohort is identified or
+# on which network produced the mixture: the density algebra, the refusals, the
+# exposure check, and the draw loop. Splitting a (company, line) pair out of a
+# company-shaped contract is the only thing the multi-line entry genuinely does
+# differently, so it is the only thing written twice.
+
+
+def require_ensemble(n_members: int) -> None:
+    """Refuse a one-member ensemble on the density path.
+
+    The density's draw axis is the ensemble members, so a single member is a
+    plug-in density rather than a predictive distribution.
+    """
+    if n_members < 2:
+        raise ValueError(
+            f"the ensemble has {n_members} member(s); the members are the "
+            "density's draw axis and one member is a plug-in, not a predictive "
+            "distribution - fit with ensemble_size >= 2"
+        )
+
+
+def refuse_pinned_density(name: str, d0: np.ndarray, pinned: np.ndarray) -> None:
+    """Refuse a density at a dev step whose per-dev normalizer is pinned.
+
+    ``d0`` is 0-based dev indices, one per cell; ``pinned`` is the target
+    channel's per-dev pin mask for the line being scored. A pinned dev has no
+    trained head and a degenerate scale, so a density there would be dishonest.
+    The same cells stay CRPS-scorable through the draw path - the documented
+    asymmetry in each entry's card.
+    """
+    bad = pinned[d0]
+    if bad.any():
+        devs = sorted({int(v) + 1 for v in d0[bad]})
+        raise ValueError(
+            f"{int(bad.sum())} cell(s) sit at pinned dev step(s) {devs}: fewer than "
+            "two training-context values reached the per-dev normalizer there, so "
+            f"the MDN head is untrained and its scale is degenerate. {name} "
+            "refuses to score a density at a pinned dev; the cells remain "
+            "CRPS-scorable via predict_at, where a pinned draw is the pooled dev mean"
+        )
+
+
+def refuse_missing_predecessor(prev: np.ndarray) -> None:
+    """Refuse cells with no training predecessor: no increment can be formed."""
+    if np.isnan(prev).any():
+        raise ValueError(
+            f"{int(np.isnan(prev).sum())} cell(s) have no training predecessor, so "
+            "no increment can be formed to evaluate the density at"
+        )
+
+
+def refuse_all_pinned_draws(pinned_cells: np.ndarray) -> None:
+    """Refuse a draw request whose every cell sits at a pinned dev step.
+
+    A pinned draw is the point mass at the pooled dev mean, which is legal for
+    CRPS as long as some requested cell is live. All of them pinned would be a
+    point mass in every column, which is not a predictive distribution.
+    """
+    if pinned_cells.all():
+        raise ValueError(
+            "every requested cell sits at a pinned dev step, so every draw column "
+            "would be the point mass at the pooled dev mean - not a predictive "
+            "distribution. A pinned dev has no trained head (fewer than two "
+            "training-context values reached the per-dev normalizer)"
+        )
+
+
+def standardized_increment(
+    value: np.ndarray,
+    prev: np.ndarray,
+    premium: np.ndarray,
+    *,
+    mean: np.ndarray,
+    std: np.ndarray,
+) -> np.ndarray:
+    """``(n_cells,)`` standardized incremental loss ratio the head models.
+
+    ``mean`` and ``std`` are already selected at each cell's dev step. The
+    divisor is the exposure the fit standardized against (:func:`cell_premium`),
+    not whatever the cells carry.
+    """
+    return ((value - prev) / premium - mean) / std
+
+
+def mixture_log_density(
+    log_pi: np.ndarray,
+    mu: np.ndarray,
+    sigma: np.ndarray,
+    z: np.ndarray,
+    *,
+    std: np.ndarray,
+) -> np.ndarray:
+    """``(n_members, n_cells)`` log density of the loss RATIO.
+
+    ``log_pi``/``mu``/``sigma`` are ``(n_members, n_cells, K)`` mixture
+    parameters of the STANDARDIZED ratio and ``z`` is the standardized outcome.
+    The ``- log std`` term is the standardization change of variable, which
+    leaves a density on the ratio itself - what ``heldout_measure =
+    "loss_ratio"`` declares, so the base class's ``- log premium`` completes the
+    carry to Lebesgue-on-amount.
+
+    ``logsumexp`` comes from scipy rather than a hand-rolled maximum shift: the
+    textbook form returns NaN when every component gives the outcome zero
+    density, where the honest answer is minus infinity.
+    """
+    comp = -0.5 * ((z[None, :, None] - mu) / sigma) ** 2 - np.log(sigma) - 0.5 * LOG_2PI
+    ll_z = logsumexp(log_pi + comp, axis=-1)  # (n_members, n_cells) density of z
+    return ll_z - np.log(std)[None, :]
+
+
+def unstandardize_to_amounts(
+    draws: np.ndarray, *, mean: np.ndarray, std: np.ndarray, premium: np.ndarray
+) -> np.ndarray:
+    """Standardized draws back to INCREMENTAL dollar amounts.
+
+    ``mean``/``std``/``premium`` are per cell. The exposure is the contract's,
+    which is the one the sampled ratio is a ratio to.
+    """
+    ratios = draws * std[None, :] + mean[None, :]
+    return ratios * premium[None, :]
+
+
+def sample_mixture_draws(
+    models: Sequence[Any],
+    *,
+    n_draws: int,
+    rng: np.random.Generator,
+    cell_params,
+    pinned_cells: np.ndarray,
+    device: Any,
+) -> np.ndarray:
+    """``(n_draws, n_cells)`` STANDARDIZED draws, split across ensemble members.
+
+    ``cell_params(model)`` returns that member's ``(log_pi, mu, sigma)`` at the
+    requested cells, each an ``(n_cells, K)`` torch tensor - the one thing an
+    entry has to supply, because indexing a mixture at a cell is where the
+    single-line grid and the multi-line one differ.
+
+    Draws are split across members exactly as the rollouts split them, and one
+    torch seed per member is drawn from ``rng`` for EVERY member, including ones
+    that get zero draws. That keeps the numpy stream identical whatever the
+    split, which is what makes ``predict_at(seed=...)`` reproducible.
+
+    Pinned devs keep rollout semantics: the sampled value is forced to 0, i.e.
+    the pooled dev mean once un-standardized. A request where every cell is
+    pinned is refused earlier, by :func:`refuse_all_pinned_draws`.
+    """
+    import torch
+
+    # the MDN sampler is shared by every mixture-head NN entry; it lives in
+    # the transformer's network module, which was simply the first to need it
+    from ibnr.gallery.nn.transformer.network import mdn_sample
+
+    n_members = len(models)
+    member_draws = [n_draws // n_members] * n_members
+    for i in range(n_draws % n_members):
+        member_draws[i] += 1
+    member_seeds = [int(rng.integers(0, 2**63 - 1)) for _ in range(n_members)]
+    pin_t = torch.as_tensor(pinned_cells, device=device)
+
+    pieces: list[np.ndarray] = []
+    with torch.no_grad():
+        for model, m_draws, m_seed in zip(models, member_draws, member_seeds, strict=True):
+            if m_draws == 0:
+                continue
+            log_pi, mu, sigma = cell_params(model)
+            # replicate the per-cell mixture across this member's draws
+            log_pi_c = log_pi.unsqueeze(0).expand(m_draws, -1, -1)
+            mu_c = mu.unsqueeze(0).expand(m_draws, -1, -1)
+            sigma_c = sigma.unsqueeze(0).expand(m_draws, -1, -1)
+            gen = torch.Generator(device=device)
+            gen.manual_seed(m_seed)
+            sample = mdn_sample(log_pi_c, mu_c, sigma_c, generator=gen)
+            sample = sample.masked_fill(pin_t[None, :], 0.0)
+            pieces.append(sample.cpu().numpy())
+    return np.concatenate(pieces, axis=0)  # (n_draws, n_cells) standardized
+
+
+def cell_premium(name: str, per_origin: np.ndarray, cells: CellIndex) -> np.ndarray:
+    """``(n_cells,)`` exposure the ratio math uses: the CONTRACT's per-origin
+    premium, with the cells' own premium VERIFIED against it.
+
+    **The number the fit used is the only one either hook may divide or multiply
+    by.** ``nn_data`` forms the target as ``increment / premium`` from exactly
+    this array, and ``norm_stats`` then estimates the per-dev mean and spread
+    over the result, so an exposure from anywhere else standardizes the
+    observation on a scale the network was never trained on and rescales every
+    draw by the same factor - silently, both finite, both plausible (measured on
+    the test fixture: a x1.5 premium moved the ensemble log density from -3.8 to
+    -28.7 nats/cell and multiplied every incremental draw by 1.5, with no error
+    on either path).
+
+    Verified rather than ignored, which is the rule
+    ``guszcza_growth_curve``/``compartmental`` already state: the base class's
+    measure carry legitimately divides by the CELLS' premium (the holdout
+    frame's, attached by ``next_diagonal`` from the training slice), so the two
+    sources must agree or the carried density silently stops integrating to 1 -
+    a wrong Jacobian, the bug class nothing downstream can see. Cells carrying
+    no premium (NaN) are exempt from the comparison: ``index_into`` falls back
+    to this same contract array when the frame has no premium column, and the
+    carry has its own refusal for a genuinely absent one.
+
+    A NaN in the CONTRACT's premium is refused outright. ``nn_data`` writes NaN
+    for an origin the premium field never observed, and both hooks would
+    otherwise return NaN for that cell rather than say so - which is exactly the
+    read the cells' premium could paper over, since a holdout frame can carry an
+    exposure at an origin the fit had none for.
+    """
+    w0 = np.asarray(cells.w, dtype=int) - 1
+    premium = np.asarray(per_origin, dtype=float)[w0]
+    if np.isnan(premium).any():
+        raise ValueError(
+            f"{int(np.isnan(premium).sum())} cell(s) sit at an origin the fitted "
+            f"contract carries no premium for, so {name}'s loss ratio is "
+            "undefined there and neither a density nor a draw can be formed"
+        )
+    supplied = np.asarray(cells.premium, dtype=float)
+    mismatched = ~np.isnan(supplied) & ~np.isclose(supplied, premium)
+    if mismatched.any():
+        raise ValueError(
+            f"{int(mismatched.sum())} cell(s) carry a premium that disagrees with the "
+            "fitted contract's per-origin premium (the cells' comes from the holdout "
+            "frame, attached by next_diagonal from the training slice; the contract's "
+            "is the nn_data grid this fit standardized against). The loss ratio is "
+            "formed with the contract's number while the measure carry divides by the "
+            "cells', so a mismatch would rescale every draw and leave a density that "
+            "no longer integrates to 1"
+        )
+    return premium
+
+
+def heldout_segment(name: str, cells: Any) -> dict[str, str]:
+    """The one segment combination a set of held-out cells describes.
+
+    How a pooled entry's ``log_lik_at``/``predict_at`` decide which cohort to
+    bind before delegating. ``next_diagonal`` builds cells one cohort at a time,
+    so more than one combination means the caller assembled them by hand.
+    """
+    if not isinstance(cells, HoldoutCells):
+        raise TypeError(
+            f"{name} resolves which cohort to score from the cells' segment "
+            f"values, and only HoldoutCells carries them; got {type(cells).__name__}. "
+            "For a bare CellIndex, bind the cohort first: at_cohort(segment)"
+        )
+    combos = cells.frame[list(cells.segments)].drop_duplicates()
+    if len(combos) != 1:
+        raise ValueError(
+            f"held-out cells span {len(combos)} segment combinations; "
+            "next_diagonal scores one cohort at a time"
+        )
+    return {col: combos.iloc[0][col] for col in combos.columns}
 
 
 class CohortHeldout(ScoresHeldout, PredictsHeldout):
@@ -336,19 +615,7 @@ class PooledMDNHeldout(ScoresHeldout, PredictsHeldout):
 
     def _heldout_segment(self, cells) -> dict[str, str]:
         """The one segment combination the held-out cells describe."""
-        if not isinstance(cells, HoldoutCells):
-            raise TypeError(
-                f"{self.name} resolves which cohort to score from the cells' segment "
-                f"values, and only HoldoutCells carries them; got {type(cells).__name__}. "
-                "For a bare CellIndex, bind the cohort first: at_cohort(segment)"
-            )
-        combos = cells.frame[list(cells.segments)].drop_duplicates()
-        if len(combos) != 1:
-            raise ValueError(
-                f"held-out cells span {len(combos)} segment combinations; "
-                "next_diagonal scores one cohort at a time"
-            )
-        return {col: combos.iloc[0][col] for col in combos.columns}
+        return heldout_segment(self.name, cells)
 
     def _heldout_log_lik(self, ci: int, cells: CellIndex) -> np.ndarray:
         """``(n_members, n_cells)`` log density of the loss RATIO at the cells.
@@ -374,40 +641,22 @@ class PooledMDNHeldout(ScoresHeldout, PredictsHeldout):
         """
         if self.models_ is None or self.contract_ is None:
             raise RuntimeError("call fit() first")
-        if len(self.models_) < 2:
-            raise ValueError(
-                f"the ensemble has {len(self.models_)} member(s); the members are the "
-                "density's draw axis and one member is a plug-in, not a predictive "
-                "distribution - fit with ensemble_size >= 2"
-            )
+        require_ensemble(len(self.models_))
         d0 = np.asarray(cells.d, dtype=int) - 1
-        pinned0 = self.norm_["pinned"][0]
-        bad = pinned0[d0]
-        if bad.any():
-            devs = sorted({int(v) + 1 for v in d0[bad]})
-            raise ValueError(
-                f"{int(bad.sum())} cell(s) sit at pinned dev step(s) {devs}: fewer than "
-                "two training-context values reached the per-dev normalizer there, so "
-                f"the MDN head is untrained and its scale is degenerate. {self.name} "
-                "refuses to score a density at a pinned dev; the cells remain "
-                "CRPS-scorable via predict_at, where a pinned draw is the pooled dev mean"
-            )
+        refuse_pinned_density(self.name, d0, self.norm_["pinned"][0])
         prev = np.asarray(cells.prev_value, dtype=float)
-        if np.isnan(prev).any():
-            raise ValueError(
-                f"{int(np.isnan(prev).sum())} cell(s) have no training predecessor, so "
-                "no increment can be formed to evaluate the density at"
-            )
+        refuse_missing_predecessor(prev)
         premium = self._cell_premium(ci, cells)
-        increment = np.asarray(cells.value, dtype=float) - prev
         mean0, std0 = self.norm_["mean"][0], self.norm_["std"][0]  # (n_d,)
-        z = (increment / premium - mean0[d0]) / std0[d0]  # (n_cells,)
-
+        z = standardized_increment(
+            np.asarray(cells.value, dtype=float),
+            prev,
+            premium,
+            mean=mean0[d0],
+            std=std0[d0],
+        )
         log_pi, mu, sigma = self._heldout_mixture(ci, cells)  # (n_members, n_cells, K)
-        comp = -0.5 * ((z[None, :, None] - mu) / sigma) ** 2 - np.log(sigma) - 0.5 * LOG_2PI
-        ll_z = logsumexp(log_pi + comp, axis=-1)  # (n_members, n_cells) density of z
-        # z -> ratio change of variable: r = z * std0 + ..., so divide by std0
-        return ll_z - np.log(std0[d0])[None, :]
+        return mixture_log_density(log_pi, mu, sigma, z, std=std0[d0])
 
     def _heldout_draws(self, ci: int, cells: CellIndex, *, rng: np.random.Generator) -> np.ndarray:
         """``(config.heldout_n_draws, n_cells)`` INCREMENTAL dollar draws.
@@ -432,119 +681,44 @@ class PooledMDNHeldout(ScoresHeldout, PredictsHeldout):
         """
         import torch
 
-        # the MDN sampler is shared by every mixture-head NN entry; it lives in
-        # the transformer's network module, which was simply the first to need it
-        from ibnr.gallery.nn.transformer.network import mdn_sample
-
         if self.models_ is None or self.contract_ is None:
             raise RuntimeError("call fit() first")
         d0 = np.asarray(cells.d, dtype=int) - 1
         pin_cells = self.norm_["pinned"][0][d0]  # (n_cells,)
-        if pin_cells.all():
-            raise ValueError(
-                "every requested cell sits at a pinned dev step, so every draw column "
-                "would be the point mass at the pooled dev mean - not a predictive "
-                "distribution. A pinned dev has no trained head (fewer than two "
-                "training-context values reached the per-dev normalizer)"
-            )
+        refuse_all_pinned_draws(pin_cells)
         premium = self._cell_premium(ci, cells)
         mean0, std0 = self.norm_["mean"][0], self.norm_["std"][0]  # (n_d,)
         dev = torch.device(self._device)
         inputs = self._heldout_inputs(ci)
         w0_t = torch.as_tensor(np.asarray(cells.w, dtype=int) - 1, device=dev)
         d0_t = torch.as_tensor(d0, device=dev)
-        pin_t = torch.as_tensor(pin_cells, device=dev)
 
-        # split the requested draws across members exactly like _rollout.
+        def cell_params(model):
+            """One member's mixture at the requested cells, ``(n_cells, K)`` each."""
+            log_pi, mu, sigma = self._forward_mixture(model, inputs)
+            return log_pi[0, w0_t, d0_t], mu[0, w0_t, d0_t], sigma[0, w0_t, d0_t]
+
         # config_.n_draws is the ROLLOUT's budget and is not read here: a
         # held-out diagonal costs one forward pass per member whatever the draw
         # count, so the two are sized independently and this path carries the
         # 10,000 draws the rest of the leaderboard is scored on.
-        n_draws = self.config_.heldout_n_draws
-        n_members = len(self.models_)
-        member_draws = [n_draws // n_members] * n_members
-        for i in range(n_draws % n_members):
-            member_draws[i] += 1
-        # one torch seed per member, drawn from the caller's generator for
-        # EVERY member (zero-draw ones too) so the numpy stream is identical
-        # whatever the split - predict_at(seed=) stays reproducible
-        member_seeds = [int(rng.integers(0, 2**63 - 1)) for _ in range(n_members)]
-
-        pieces: list[np.ndarray] = []
-        with torch.no_grad():
-            for model, m_draws, m_seed in zip(
-                self.models_, member_draws, member_seeds, strict=True
-            ):
-                if m_draws == 0:
-                    continue
-                log_pi, mu, sigma = self._forward_mixture(model, inputs)
-                # index the grid at the requested cells, replicate per draw
-                log_pi_c = log_pi[0, w0_t, d0_t].unsqueeze(0).expand(m_draws, -1, -1)
-                mu_c = mu[0, w0_t, d0_t].unsqueeze(0).expand(m_draws, -1, -1)
-                sigma_c = sigma[0, w0_t, d0_t].unsqueeze(0).expand(m_draws, -1, -1)
-                gen = torch.Generator(device=dev)
-                gen.manual_seed(m_seed)
-                sample = mdn_sample(log_pi_c, mu_c, sigma_c, generator=gen)
-                # pinned devs -> 0 (pooled dev mean after un-standardizing),
-                # the same rule _rollout applies
-                sample = sample.masked_fill(pin_t[None, :], 0.0)
-                pieces.append(sample.cpu().numpy())
-        draws = np.concatenate(pieces, axis=0)  # (n_draws, n_cells) standardized
-        ratios = draws * std0[d0][None, :] + mean0[d0][None, :]
-        return ratios * premium[None, :]  # incremental dollars
+        draws = sample_mixture_draws(
+            self.models_,
+            n_draws=self.config_.heldout_n_draws,
+            rng=rng,
+            cell_params=cell_params,
+            pinned_cells=pin_cells,
+            device=dev,
+        )
+        return unstandardize_to_amounts(
+            draws, mean=mean0[d0], std=std0[d0], premium=premium
+        )  # incremental dollars
 
     def _cell_premium(self, ci: int, cells: CellIndex) -> np.ndarray:
-        """``(n_cells,)`` exposure the ratio math uses: the CONTRACT's
-        per-origin premium, with the cells' own premium VERIFIED against it.
-
-        **The number the fit used is the only one either hook may divide or
-        multiply by.** ``nn_data`` forms this entry's target as
-        ``increment / premium`` from exactly this array, and ``norm_stats``
-        then estimates ``mean0``/``std0`` over the result, so an exposure from
-        anywhere else standardizes the observation on a scale the network was
-        never trained on and rescales every draw by the same factor - silently,
-        both finite, both plausible (measured on the test fixture: a x1.5
-        premium moved the ensemble log density from -3.8 to -28.7 nats/cell and
-        multiplied every incremental draw by 1.5, with no error on either path).
-
-        Verified rather than ignored, which is the rule
-        ``guszcza_growth_curve``/``compartmental`` already state: the base
-        class's measure carry legitimately divides by the CELLS' premium (the
-        holdout frame's, attached by ``next_diagonal`` from the training
-        slice), so the two sources must agree or the carried density silently
-        stops integrating to 1 - a wrong Jacobian, the bug class nothing
-        downstream can see. Cells carrying no premium (NaN) are exempt from the
-        comparison: ``index_into`` falls back to this same contract array when
-        the frame has no premium column, and the carry has its own refusal for
-        a genuinely absent one.
-
-        A NaN in the CONTRACT's premium is refused outright. ``nn_data`` writes
-        NaN for an origin the premium field never observed, and both hooks
-        would otherwise return NaN for that cell rather than say so - which is
-        exactly the read the cells' premium could paper over, since a holdout
-        frame can carry an exposure at an origin the fit had none for.
-        """
-        w0 = np.asarray(cells.w, dtype=int) - 1
-        premium = np.asarray(self.contract_["premium"][ci], dtype=float)[w0]
-        if np.isnan(premium).any():
-            raise ValueError(
-                f"{int(np.isnan(premium).sum())} cell(s) sit at an origin the fitted "
-                f"contract carries no premium for, so {self.name}'s loss ratio is "
-                "undefined there and neither a density nor a draw can be formed"
-            )
-        supplied = np.asarray(cells.premium, dtype=float)
-        mismatched = ~np.isnan(supplied) & ~np.isclose(supplied, premium)
-        if mismatched.any():
-            raise ValueError(
-                f"{int(mismatched.sum())} cell(s) carry a premium that disagrees with the "
-                "fitted contract's per-origin premium (the cells' comes from the holdout "
-                "frame, attached by next_diagonal from the training slice; the contract's "
-                "is the nn_data grid this fit standardized against). The loss ratio is "
-                "formed with the contract's number while the measure carry divides by the "
-                "cells', so a mismatch would rescale every draw and leave a density that "
-                "no longer integrates to 1"
-            )
-        return premium
+        """This cohort's row of the contract's premium grid, checked against the
+        cells' own. See :func:`cell_premium` for why it is checked and not
+        ignored."""
+        return cell_premium(self.name, self.contract_["premium"][ci], cells)
 
     def _heldout_mixture(self, ci: int, cells: CellIndex) -> tuple[np.ndarray, ...]:
         """``(n_members, n_cells, K)`` MDN parameters at the cells, one forward

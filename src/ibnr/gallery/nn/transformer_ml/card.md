@@ -74,6 +74,75 @@ layout - per-(lob, origin) ultimates, per-lob totals, grand total - so
 cross-line diversification is visible in the draws and directly comparable
 against `sur` / `copula_glm`.
 
+## Held-out scoring
+
+The entry mixes in `ScoresHeldout` and `PredictsHeldout`, so it reaches the
+ELPD and CRPS boards like the single-line NN entries. What it needed that they
+did not is an adapter: their cohort is already a (company, line) pair, while
+this fit's cohort is a **company** and a held-out cohort built by
+`next_diagonal` is one (company, line) pair. `gallery/nn/_heldout_ml.py` is
+that adapter - `company_line_contract` slices one pair out of the company
+contract and puts `line_of_business` back into the segment key, so
+`index_into`'s cohort-identity, measure and training-overlap guards apply here
+exactly as they do to a Stan fit. The density algebra, the refusals, the
+exposure check and the draw loop come from `gallery/nn/_heldout.py`, unchanged
+and shared with the four single-line entries.
+
+Capability is therefore served **per pair**: `entry.at_cohort(segment)` returns
+a scorer view whose `log_lik_at`/`predict_at` are the unmodified base-class
+implementations. The segment must name the line - `at_cohort` refuses one that
+does not, because the company alone does not identify a held-out cohort. The
+entry-level `log_lik_at`/`predict_at` read the pair off the cells' own segment
+values and delegate.
+
+- **Conditioning and cutoff are read differently, on purpose.** The forward
+  pass conditions on everything the COMPANY observed at as_of, per channel and
+  across all its lines - that cross-line context is the entry's reason to
+  exist. The relative-calendar cutoff, by contrast, is the **scored line's own**
+  as_of diagonal, so its held-out cell sits at distance 1: the most-supervised
+  position and the rollout's first step. Reading the cutoff off the company's
+  deepest line instead would push a slower-reporting line's held-out diagonal
+  two or three steps out, into a different embedding row and a different
+  predictive distribution. On complete squares every line of a company reaches
+  the same diagonal and the two readings coincide.
+- **Draw scale: `incremental`.** One forward pass per ensemble member, mixture
+  sampling at the requested cells, un-standardized on the scored line's own
+  per-dev statistics (`z * std0[li, d] + mean0[li, d]`) and scaled by premium:
+  an incremental dollar amount. The base class anchors it onto the cell's
+  training-diagonal predecessor to reach the cumulative triangle basis, and
+  derives the draw stream from the study seed together with the cells' cohort
+  identity - so two lines of one company under one seed draw different random
+  numbers.
+- **Density measure: `loss_ratio`.** Per member, the mixture log density of the
+  standardized ratio with the standardization Jacobian folded in; the base
+  class subtracts `log premium` to reach Lebesgue-on-amount. The **draw axis is
+  the ensemble members** (>= 2 required).
+- **The `"joint"` head is marginalized to the scored line.** Its output is a
+  mixture of L-variate Gaussians over the whole line vector, and a one-line
+  score needs its marginal. The marginal of a mixture of multivariate Gaussians
+  is the mixture of the components' marginals with the **weights unchanged**,
+  so component *k* contributes weight `pi_k`, mean `mu_k[li]`, and standard
+  deviation `sqrt(Cov_k[li, li])`. With `Cov = L L'` that variance is
+  `sum_j L[li, j]^2`, i.e. the squared length of row `li` of the Cholesky
+  factor, which is read directly rather than by forming the covariance matrix.
+  The `"ar"` head is already univariate per cell, so there the line is just an
+  axis to index. Both heads then run through the same density and sampling
+  code.
+- **Pinned-dev asymmetry**, per LINE (the normalizer is per (line, channel,
+  dev)). At a pinned dev - fewer than two training-context values reached that
+  line's per-dev normalizer, in practice the deepest dev - there is no trained
+  head. Draws keep rollout semantics: the sampled value is forced to the pooled
+  dev mean, a point-mass column, legal for CRPS; a request where EVERY cell is
+  pinned is refused. The density is REFUSED outright, naming the dev steps. The
+  entry is therefore CRPS-scorable at cells where it is not ELPD-scorable.
+- **Display segments are narrowed away, and verified on the way.**
+  `nn_company_data` keeps display-only columns (`company_name`) out of the
+  company key, so this fit's key is narrower than the triangle's segment
+  schema. `log_lik_at`/`predict_at` re-key the supplied `HoldoutCells` onto the
+  fit's own schema first, checking each dropped value against the pair's full
+  identity, so cells belonging to a different spelling are refused rather than
+  quietly scored here.
+
 ## Dependence diagnostics (what to check first)
 
 - diversification ratio: grand-total sd / sum of per-line sds, vs SUR and

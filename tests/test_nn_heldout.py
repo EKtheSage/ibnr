@@ -438,19 +438,31 @@ def test_every_heldout_nn_entry_defaults_to_ten_thousand_heldout_draws():
     """The default every held-out NN entry puts on the board, which is the
     10,000 draws the Bayesian posteriors and ``mack`` already deliver.
 
-    Derived from the registry rather than a hand list: membership is "inherits
-    the held-out mixin", so an entry cloned from one of these joins the pin the
-    day it registers instead of shipping a smaller default under a new name.
+    Derived from the registry rather than a hand list: an entry is covered when
+    it is an NN entry that can draw at held-out cells, so one cloned from any of
+    these joins the pin the day it registers instead of shipping a smaller
+    default under a new name.
+
+    The rule is deliberately NOT "inherits ``PooledMDNHeldout``".
+    ``nn_transformer_ml`` cannot inherit it - its cohort is a company while a
+    held-out cohort is a (company, line) pair, so it carries its own adapter -
+    and it would have slipped out of this pin the day it gained held-out
+    scoring, which is the hand-list failure one level up.
     """
     configs = {
         name: cls.config_class
         for name, cls in ((n, gallery.get(n)) for n in gallery.list())
-        if issubclass(cls, PooledMDNHeldout)
+        if cls.family == "nn" and issubclass(cls, PredictsHeldout)
     }
-    # guard on the guard: a loop over an empty registry passes for free. Four
-    # is what this release ships (transformer, mdn, resnet, deeptriangle); a
-    # fifth joins the loop by registering, without moving this floor.
-    assert len(configs) >= 4
+    # guard on the guard: a loop over an empty registry passes for free. Six is
+    # what this release ships (transformer, transformer_ml, mdn, resnet,
+    # deeptriangle, nn_paid_case); a seventh joins the loop by registering,
+    # without moving this floor.
+    assert len(configs) >= 6
+    # and every entry that CAN share one mixin still does, so the split above
+    # stays a statement about the multi-line contract rather than a licence to
+    # fork the scoring code once per entry
+    assert sum(issubclass(gallery.get(n), PooledMDNHeldout) for n in configs) == len(configs) - 1
     for name, config_class in configs.items():
         assert config_class().heldout_n_draws == 10_000, name
 
