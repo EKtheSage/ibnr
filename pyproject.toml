@@ -1,6 +1,6 @@
 [project]
 name = "ibnr"
-version = "0.5.7"
+version = "0.5.8"
 description = "Gallery-centric probabilistic loss reserving: Bayesian MCMC and neural network methods with mandatory evaluation, over a long-format triangle data layer."
 readme = "README.md"
 license = "MPL-2.0"

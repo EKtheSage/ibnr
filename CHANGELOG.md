@@ -15,6 +15,32 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
+## 0.5.8 - 2026-08-24
+
+A one-feature release: `nn_transformer_ml` gains held-out scoring (#105), the
+adapter notebook 3c's first execution had to work without. Purely additive -
+no existing entry's draws or densities change on this version.
+
+### The multi-line transformer scores held-out cells (#105)
+
+The entry's fitted cohort is a company - all of its lines are one training
+example - while a held-out cohort built by `next_diagonal` is a single
+(company, line) pair. The new `gallery/nn/_heldout_ml.py` bridges the two: it
+slices a per-(company, line) contract out of the company-shaped one (putting
+`line_of_business` back into the segment key, with the same training-closure
+and identity guards every other entry answers to), and the entry now
+subclasses `ScoresHeldout` and `PredictsHeldout`, so `log_lik_at` and
+`predict_at` work through the ordinary calls. The forward pass conditions on
+everything the company observed across all its lines; the scored line's
+predictive is read off the head - under the `"joint"` head as that line's
+marginal of the multivariate mixture, whose weights are unchanged and whose
+per-component scale is the matching row of the Cholesky factor. The density
+algebra and draw loop were extracted from `gallery/nn/_heldout.py` and are
+shared, not copied; the single-line entries' behavior was verified unchanged
+byte for byte. `TransformerMLConfig` gains `heldout_n_draws = 10_000` to match
+its siblings, and per-cohort draw streams (0.5.7) apply to the new path
+automatically.
+
 ## 0.5.7 - 2026-08-24
 
 A one-fix release: per-cohort draw streams (#104), found by notebook 3c's
