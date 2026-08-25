@@ -18,12 +18,26 @@ from collections.abc import Mapping
 import numpy as np
 import pandas as pd
 
-from ibnr.gallery.entry import GalleryEntry
+from ibnr.gallery.entry import GalleryEntry, PredictsHeldout, ScoresHeldout
+from ibnr.gallery.nn._heldout import (
+    cell_premium,
+    heldout_segment,
+    mixture_log_density,
+    refuse_all_pinned_draws,
+    refuse_missing_predecessor,
+    refuse_pinned_density,
+    require_ensemble,
+    sample_mixture_draws,
+    standardized_increment,
+    unstandardize_to_amounts,
+)
+from ibnr.gallery.nn._heldout_ml import LOB_COLUMN, MLCohortHeldout, company_line_cutoff
 from ibnr.gallery.nn._scheme import norm_stats, splits
 from ibnr.gallery.nn._training import train_ensemble
 from ibnr.gallery.nn.transformer_ml.config import TransformerMLConfig
 from ibnr.gallery.registry import register
 from ibnr.kernels.contract import _as_date
+from ibnr.kernels.holdout import CellIndex, HoldoutCells
 from ibnr.kernels.multiline import assemble_predictive, flatten_with_totals, multiline_targets
 from ibnr.kernels.nn_contract import cohort_identities, nn_company_data
 from ibnr.kernels.predictive import PredictiveDistribution
@@ -34,7 +48,7 @@ MAX_ROLLOUT_BATCH = 2048
 
 
 @register
-class NNTransformerML(GalleryEntry):
+class NNTransformerML(GalleryEntry, ScoresHeldout, PredictsHeldout):
     """Multi-line triangle transformer entry (see card.md).
 
     One encoder is fit across every company in the training triangle (each
@@ -43,6 +57,12 @@ class NNTransformerML(GalleryEntry):
     layout (per-(lob, origin) ultimates, per-lob totals, grand total) so
     cross-line diversification is visible in the draws and directly comparable
     to the ``sur`` / ``copula_glm`` baselines.
+
+    Held-out scoring is served per (company, line) pair, not per company: the
+    fit's cohort is a company while ``next_diagonal``'s is a (company, line)
+    pair. ``gallery/nn/_heldout_ml.py`` is the adapter that bridges the two, and
+    the density algebra and draw loop come from ``gallery/nn/_heldout.py``, so
+    this entry scores by the same code as the single-line ones.
     """
 
     name = "nn_transformer_ml"
@@ -51,15 +71,19 @@ class NNTransformerML(GalleryEntry):
     #: ``gallery.get("nn_transformer_ml").config_class`` without importing it by path
     config_class = TransformerMLConfig
 
-    # NOTE: no held-out (milestone 6) wiring here yet, deliberately. The
-    # multiline contract's (company, line, origin, dev) layout needs its own
-    # per-(company, line) adapter design - a company cohort is NOT one
-    # next_diagonal cohort, which is exactly the assumption gallery/nn/
-    # _heldout.py is built on, so this entry cannot simply mix in
-    # PooledMDNHeldout the way the single-line entries do. That module is
-    # still the pattern to follow (cohort_contract, CohortHeldout,
-    # PooledMDNHeldout); what it needs is a multiline sibling of
-    # cohort_contract, not a fourth copy of the scoring code.
+    #: both heads are densities of the STANDARDIZED incremental loss ratio;
+    #: ``_heldout_log_lik`` folds the standardization Jacobian (``-log std0[d]``)
+    #: in, leaving a density on the loss RATIO - this declaration then makes
+    #: ``ScoresHeldout.log_lik_at`` subtract ``log premium`` to reach
+    #: Lebesgue-on-amount. See card.md "Held-out scoring".
+    heldout_measure = "loss_ratio"
+
+    #: a draw is ``premium x un-standardized ratio`` - an INCREMENTAL dollar
+    #: amount, one dev step's emergence for one line. The Schedule P triangles
+    #: are cumulative, so ``PredictsHeldout.predict_at`` adds each cell's
+    #: training-diagonal anchor; declaring the scale is what makes that
+    #: conversion the base class's job rather than a silent 996-vs-3.4 bug.
+    heldout_draw_scale = "incremental"
 
     def __init__(self) -> None:
         self.contract_: dict | None = None  # nn_company_data() dict
@@ -337,6 +361,295 @@ class NNTransformerML(GalleryEntry):
             for li in np.nonzero(c["line_mask"][ci])[0]:
                 out.append(lookup(crow, c["lob_levels"][li]))
         return np.concatenate(out)
+
+    # -- held-out scoring --------------------------------------------------------
+
+    def at_cohort(self, segment: Mapping) -> MLCohortHeldout:
+        """A per-(company, line) held-out scorer view.
+
+        The fit's cohort is a COMPANY - all its lines are one training example -
+        while ``kernels.holdout`` scores one (company, line) pair at a time, so
+        the segment has to name both. The view carries a single-pair adapter
+        contract that ``index_into`` accepts unchanged (cohort-identity and
+        training-overlap guards included), and its ``log_lik_at``/``predict_at``
+        are the unmodified mixin implementations.
+        """
+        if self.models_ is None or self.contract_ is None:
+            raise RuntimeError("call fit() first")
+        if not isinstance(segment, Mapping):
+            raise TypeError(
+                f"{self.name}: at_cohort needs a mapping of segment column -> value, "
+                f"got {type(segment).__name__}"
+            )
+        if LOB_COLUMN not in segment:
+            raise ValueError(
+                f"{self.name}: at_cohort needs {LOB_COLUMN!r} in the segment. This fit's "
+                f"cohort is a company (keyed on {list(self.contract_['segment_columns'])}), "
+                "but a held-out cohort is one (company, line) pair, because next_diagonal "
+                "builds cells for a single line at a time - so the line has to be named. "
+                f"Got {sorted(segment)}"
+            )
+        company_keys = {k: v for k, v in segment.items() if k != LOB_COLUMN}
+        ci = self.cohort_index(company_keys)
+        if ci is None:  # pragma: no cover - cohort_index answers None only to None
+            raise ValueError(f"{self.name}: at_cohort needs a segment naming one company")
+        levels = list(self.contract_["lob_levels"])
+        wanted = segment[LOB_COLUMN]
+        if wanted not in levels:
+            raise ValueError(
+                f"{self.name}: unknown {LOB_COLUMN} {wanted!r}; this fit's line axis is "
+                f"{levels}. The line axis is the training triangle's whole vocabulary, so "
+                "a line that is not on it was never fitted for any company"
+            )
+        return MLCohortHeldout(self, ci, levels.index(wanted))
+
+    def log_lik_at(self, cells, *, field: str | None = None) -> np.ndarray:
+        """``(n_members, n_cells)`` log density on Lebesgue-on-amount.
+
+        Resolves the (company, line) pair from the cells' own segment values -
+        which include ``line_of_business``, exactly what :meth:`at_cohort` needs
+        - then delegates to that view, whose ``log_lik_at`` IS
+        ``ScoresHeldout.log_lik_at``: the measure carry and every guard run in
+        the base class against the per-pair contract."""
+        return self.at_cohort(heldout_segment(self.name, cells)).log_lik_at(cells, field=field)
+
+    def predict_at(
+        self, cells: HoldoutCells, *, field: str | None = None, seed: int | None = None
+    ) -> np.ndarray:
+        """``(n_draws, n_cells)`` draws on the TRIANGLE's basis, in cell order.
+
+        Same delegation as :meth:`log_lik_at`: the view's ``predict_at`` is
+        ``PredictsHeldout.predict_at`` unchanged, so the incremental draws are
+        anchored onto each cell's training-diagonal predecessor in the base
+        class, and the draw stream is derived from ``seed`` together with the
+        cells' cohort identity there rather than here - which is what gives two
+        lines of one company different random numbers under one study seed."""
+        return self.at_cohort(heldout_segment(self.name, cells)).predict_at(
+            cells, field=field, seed=seed
+        )
+
+    def training_cells(self) -> CellIndex:
+        raise NotImplementedError(
+            "the NN contract carries loss ratios, not per-cell loss values, so the "
+            "in-sample agreement gate's CellIndex cannot be built from it; the fast "
+            "closed-form tests play that role for the NN entries"
+        )
+
+    def _log_lik_native(self, cells: CellIndex) -> np.ndarray:
+        raise NotImplementedError(
+            f"{self.name}'s fit spans many (company, line) pairs and a bare CellIndex "
+            "cannot name one; call log_lik_at(HoldoutCells) or "
+            "at_cohort(segment).log_lik_at(...)"
+        )
+
+    def _draws_native(self, cells: CellIndex, *, rng: np.random.Generator) -> np.ndarray:
+        raise NotImplementedError(
+            f"{self.name}'s fit spans many (company, line) pairs and a bare CellIndex "
+            "cannot name one; call predict_at(HoldoutCells) or "
+            "at_cohort(segment).predict_at(...)"
+        )
+
+    def _cell_identity(self) -> dict:
+        """The pooled entry cannot be scored without binding a pair first.
+
+        Its ``contract_`` is the multi-company ``nn_company_data`` dict, which
+        carries no single ``segment`` - and ``log_lik_at``/``predict_at`` here
+        delegate to an :class:`MLCohortHeldout`, which supplies the real
+        identity.
+        """
+        raise RuntimeError(
+            f"{self.name}'s fit spans many companies and lines and has no single "
+            "identity; bind one with at_cohort(segment) first"
+        )
+
+    def _heldout_log_lik(self, cohort: tuple[int, int], cells: CellIndex) -> np.ndarray:
+        """``(n_members, n_cells)`` log density of one line's loss RATIO.
+
+        Per ensemble member: the mixture density of the STANDARDIZED increment
+        ratio ``z = (increment/premium - mean0[d]) / std0[d]``, with the
+        standardization Jacobian folded in, leaving a density on the ratio -
+        which is what ``heldout_measure = "loss_ratio"`` declares, so the base
+        class's ``- log premium`` completes the carry to Lebesgue-on-amount.
+        Every per-dev statistic is read at the SCORED LINE's row of ``norm_``,
+        because the normalizer is estimated per (line, channel, dev) and another
+        line's scale would standardize the observation against a spread the head
+        never saw.
+
+        The draw axis is the ENSEMBLE MEMBERS, so ``logmeanexp`` over it is the
+        ensemble-average predictive density - two members minimum.
+
+        Cells at a PINNED dev are refused: no trained head exists there and the
+        standardized scale is degenerate. The same cells remain CRPS-scorable
+        through :meth:`predict_at` - the documented asymmetry (card.md "Held-out
+        scoring").
+        """
+        if self.models_ is None or self.contract_ is None:
+            raise RuntimeError("call fit() first")
+        ci, li = int(cohort[0]), int(cohort[1])
+        require_ensemble(len(self.models_))
+        d0 = np.asarray(cells.d, dtype=int) - 1
+        refuse_pinned_density(self.name, d0, self.norm_["pinned"][li, 0])
+        prev = np.asarray(cells.prev_value, dtype=float)
+        refuse_missing_predecessor(prev)
+        premium = self._cell_premium((ci, li), cells)
+        mean0, std0 = self.norm_["mean"][li, 0], self.norm_["std"][li, 0]  # (n_d,)
+        z = standardized_increment(
+            np.asarray(cells.value, dtype=float),
+            prev,
+            premium,
+            mean=mean0[d0],
+            std=std0[d0],
+        )
+        log_pi, mu, sigma = self._heldout_mixture((ci, li), cells)  # (n_members, n_cells, K)
+        return mixture_log_density(log_pi, mu, sigma, z, std=std0[d0])
+
+    def _heldout_draws(
+        self, cohort: tuple[int, int], cells: CellIndex, *, rng: np.random.Generator
+    ) -> np.ndarray:
+        """``(config.heldout_n_draws, n_cells)`` INCREMENTAL dollar draws.
+
+        One forward pass per ensemble member at the company's as_of conditioning
+        (:meth:`_heldout_inputs`) - the held-out diagonal is one step past that
+        context, the most-supervised position and the rollout's first step, so
+        no rollout is needed here. Then mixture sampling at the requested cells,
+        un-standardized on the scored line's own per-dev statistics and scaled
+        by the contract's premium.
+
+        Pinned devs keep rollout semantics: the sampled value is forced to the
+        pooled dev mean, a point-mass column, legal for CRPS as long as some
+        requested cell is live. A request whose every cell is pinned is refused.
+        """
+        import torch
+
+        if self.models_ is None or self.contract_ is None:
+            raise RuntimeError("call fit() first")
+        ci, li = int(cohort[0]), int(cohort[1])
+        d0 = np.asarray(cells.d, dtype=int) - 1
+        pin_cells = self.norm_["pinned"][li, 0][d0]  # (n_cells,)
+        refuse_all_pinned_draws(pin_cells)
+        premium = self._cell_premium((ci, li), cells)
+        mean0, std0 = self.norm_["mean"][li, 0], self.norm_["std"][li, 0]  # (n_d,)
+        dev = torch.device(self._device)
+        inputs = self._heldout_inputs(ci, li)
+        w0_t = torch.as_tensor(np.asarray(cells.w, dtype=int) - 1, device=dev)
+        d0_t = torch.as_tensor(d0, device=dev)
+
+        def cell_params(model):
+            return self._cell_mixture(model, inputs, li, w0_t, d0_t)
+
+        # config_.n_draws is the ROLLOUT's budget and is not read here: a
+        # held-out diagonal costs one forward pass per member whatever the draw
+        # count, so the two are sized independently.
+        draws = sample_mixture_draws(
+            self.models_,
+            n_draws=self.config_.heldout_n_draws,
+            rng=rng,
+            cell_params=cell_params,
+            pinned_cells=pin_cells,
+            device=dev,
+        )
+        return unstandardize_to_amounts(
+            draws, mean=mean0[d0], std=std0[d0], premium=premium
+        )  # incremental dollars
+
+    def _heldout_mixture(self, cohort: tuple[int, int], cells: CellIndex) -> tuple[np.ndarray, ...]:
+        """``(n_members, n_cells, K)`` univariate mixture parameters of the
+        SCORED LINE, one forward pass per ensemble member at the company's as_of
+        conditioning."""
+        import torch
+
+        ci, li = int(cohort[0]), int(cohort[1])
+        inputs = self._heldout_inputs(ci, li)
+        dev = torch.device(self._device)
+        w0_t = torch.as_tensor(np.asarray(cells.w, dtype=int) - 1, device=dev)
+        d0_t = torch.as_tensor(np.asarray(cells.d, dtype=int) - 1, device=dev)
+        acc: tuple[list, list, list] = ([], [], [])
+        with torch.no_grad():
+            for model in self.models_:
+                params = self._cell_mixture(model, inputs, li, w0_t, d0_t)
+                for out, t in zip(acc, params, strict=True):
+                    out.append(t.cpu().numpy())  # (n_cells, K)
+        return tuple(np.stack(a) for a in acc)
+
+    def _cell_mixture(self, model, inputs: dict, li: int, w0_t, d0_t) -> tuple:
+        """One member's ``(log_pi, mu, sigma)`` for one line at the requested
+        cells, each ``(n_cells, K)``.
+
+        The one place the two heads differ on the held-out path.
+
+        - ``"ar"``: the head is already univariate per (line, origin, dev) cell,
+          so the line is just an axis to index.
+        - ``"joint"``: the head is a mixture of L-variate Gaussians over the
+          whole line vector, and what a one-line score needs is its MARGINAL.
+          The marginal of a mixture of multivariate Gaussians is the mixture of
+          the components' marginals with the weights UNCHANGED, so the mixture
+          weights carry over as they are, the mean is component k's entry for
+          this line, and the standard deviation is the square root of that
+          line's diagonal entry of the covariance. With ``Cov = L L'`` that
+          entry is ``sum_j L[li, j]^2``, i.e. the length of row ``li`` of the
+          Cholesky factor - taken directly rather than by forming ``Cov``,
+          which would build an ``(L, L)`` matrix per component per cell to read
+          one number off it.
+        """
+        import torch
+
+        args = (
+            inputs["x"],
+            inputs["ctx"],
+            inputs["line_mask"],
+            inputs["prem"],
+            inputs["cutoff"],
+        )
+        if self.config_.dependence == "ar":
+            log_pi, mu, sigma = model.forward_ar(*args)  # each (1, L, W, D, K)
+            return log_pi[0, li, w0_t, d0_t], mu[0, li, w0_t, d0_t], sigma[0, li, w0_t, d0_t]
+        # (1, W, D, K), (1, W, D, K, L), (1, W, D, K, L, L)
+        log_pi, mu, scale_tril = model.forward_joint(*args)
+        weights = log_pi[0, w0_t, d0_t]  # (n_cells, K)
+        mu_li = mu[0, w0_t, d0_t][..., li]  # (n_cells, K)
+        sigma_li = torch.linalg.vector_norm(scale_tril[0, w0_t, d0_t][:, :, li, :], dim=-1)
+        return weights, mu_li, sigma_li
+
+    def _heldout_inputs(self, ci: int, li: int) -> dict:
+        """One company's forward inputs, as already-batched torch tensors.
+
+        Context is everything the COMPANY observed at as_of, per channel and
+        across ALL its lines (the contract's ``x_obs``), because a held-out cell
+        of one line is exactly what the other lines' reported experience is
+        supposed to inform - that is the entry's reason to exist. The cutoff is
+        the SCORED LINE's own as_of diagonal, so its held-out cell sits at
+        distance 1 in the relative calendar embedding; see
+        :func:`~ibnr.gallery.nn._heldout_ml.company_line_cutoff` for why the two
+        are read differently and why they coincide on complete squares.
+        """
+        import torch
+
+        c, n = self.contract_, self.norm_
+        # same standardize + pin as fit()/_rollout(), for this company only
+        x_norm = (c["x"][ci] - n["mean"][:, :, None, :]) / n["std"][:, :, None, :]
+        x_norm = np.where(n["pinned"][:, :, None, :], 0.0, x_norm)
+        prem_norm = np.where(
+            c["line_mask"][ci],
+            (c["log_premium"][ci] - n["prem_mean"]) / n["prem_std"],
+            0.0,
+        )
+        cut_level = company_line_cutoff(c, ci, li)
+        dev = torch.device(self._device)
+        return {
+            "x": torch.tensor(x_norm[None], dtype=torch.float32, device=dev),
+            "ctx": torch.tensor(c["x_obs"][ci][None], device=dev),
+            "line_mask": torch.tensor(c["line_mask"][ci][None], device=dev),
+            "prem": torch.tensor(prem_norm[None], dtype=torch.float32, device=dev),
+            "cutoff": torch.tensor([cut_level], dtype=torch.long, device=dev),
+        }
+
+    def _cell_premium(self, cohort: tuple[int, int], cells: CellIndex) -> np.ndarray:
+        """This (company, line) pair's row of the contract's premium grid,
+        checked against the cells' own. See
+        :func:`~ibnr.gallery.nn._heldout.cell_premium` for why it is checked and
+        not ignored."""
+        ci, li = int(cohort[0]), int(cohort[1])
+        return cell_premium(self.name, self.contract_["premium"][ci, li], cells)
 
     # -- internals ---------------------------------------------------------------
 

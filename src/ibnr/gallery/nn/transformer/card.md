@@ -202,8 +202,12 @@ values and delegate.
   not ELPD-scorable**; a retro harness should map the pinned-dev refusal to a
   cohort-level `scoring_refused` absence on the density axis only.
 
-`nn_transformer_ml` has none of this wiring yet: its multiline layout needs
-its own per-(company, line) adapter design.
+`nn_transformer_ml` scores held-out cells too, through its own adapter
+(`gallery/nn/_heldout_ml.py`): its cohort is a company while a held-out cohort
+is a (company, line) pair, so it cannot mix in `PooledMDNHeldout` as this entry
+does. It calls the same free functions - the density algebra, the refusals, the
+exposure check and the draw loop - so the scoring code is shared even though
+the cohort adapter is not. See that entry's card.
 
 - **Display segments are narrowed away, and verified on the way.** `nn_data`
   keeps display-only columns (`company_name`) out of the cohort key so two
