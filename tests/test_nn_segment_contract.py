@@ -42,6 +42,7 @@ from ibnr.gallery.nn.mdn.config import MDNConfig  # noqa: E402
 from ibnr.gallery.nn.mdn.model import MDN  # noqa: E402
 from ibnr.kernels.forecast import CohortForecast  # noqa: E402
 from ibnr.kernels.holdout import next_diagonal  # noqa: E402
+from ibnr.kernels.rng import heldout_stream  # noqa: E402
 
 from .conftest import make_multiline_triangle  # noqa: E402
 
@@ -191,6 +192,14 @@ def test_narrowing_changed_the_key_and_nothing_else(wide, narrow):
 
     Both fits see identical numbers - the display column is not a feature - so
     any difference here would mean the narrowing moved a cell, not just a column.
+
+    The draws need one shared stream to be comparable at all. ``predict_at``
+    derives its stream from the cells' own cohort identity, and these two cell
+    sets are keyed on three columns and on two, so an integer seed would
+    legitimately give them different draws. Handing both the same
+    ``SeedSequence`` uses ``kernels.rng``'s passthrough rule to hold the noise
+    fixed, which leaves the narrowing itself as the only thing that could still
+    move a number.
     """
     wide_entry, wide_cells = wide
     narrow_entry, narrow_cells = narrow
@@ -200,9 +209,10 @@ def test_narrowing_changed_the_key_and_nothing_else(wide, narrow):
         wide_entry.log_lik_at(wide_cells, field=FIELD),
         narrow_entry.log_lik_at(narrow_cells, field=FIELD),
     )
+    shared = heldout_stream(1, narrow_cells, field=FIELD)
     np.testing.assert_allclose(
-        wide_entry.predict_at(wide_cells, field=FIELD, seed=1),
-        narrow_entry.predict_at(narrow_cells, field=FIELD, seed=1),
+        wide_entry.predict_at(wide_cells, field=FIELD, seed=shared),
+        narrow_entry.predict_at(narrow_cells, field=FIELD, seed=shared),
     )
 
 

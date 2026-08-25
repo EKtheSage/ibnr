@@ -35,6 +35,7 @@ from ibnr.gallery.deterministic.mack.model import Mack
 from ibnr.gallery.entry import PredictsHeldout, ScoresHeldout
 from ibnr.kernels.holdout import CellIndex, index_into, next_diagonal
 from ibnr.kernels.mack import draw_next_cells, fit_mack
+from ibnr.kernels.rng import heldout_stream
 
 from .conftest import make_cohort_triangle
 
@@ -249,14 +250,25 @@ def test_index_into_refuses_training_cells(entry, heldout):
 def test_predict_at_is_reproducible_and_passed_through(entry, heldout):
     """Seed reproducibility, plus the cumulative pass-through: mack draws
     cumulatives and the triangle is cumulative, so the base class's anchor
-    step must not touch the draws - they equal the kernel's exactly."""
+    step must not touch the draws - they equal the kernel's exactly.
+
+    The kernel is handed the stream ``predict_at`` derives from the seed and
+    these cells, not ``default_rng(11)``: a study-level seed no longer names a
+    generator directly (``kernels.rng``), so rebuilding the stream the same way
+    is what keeps this an equality against the kernel rather than against the
+    derivation."""
     a = entry.predict_at(heldout, seed=11)
     b = entry.predict_at(heldout, seed=11)
     np.testing.assert_array_equal(a, b)
     assert not np.array_equal(a, entry.predict_at(heldout, seed=12))
 
     idx = index_into(heldout, entry.contract_)
-    want = draw_next_cells(entry.fit_, idx, rng=np.random.default_rng(11), n_draws=10_000)
+    want = draw_next_cells(
+        entry.fit_,
+        idx,
+        rng=np.random.default_rng(heldout_stream(11, heldout)),
+        n_draws=10_000,
+    )
     np.testing.assert_array_equal(a, want)
     assert a.shape == (10_000, heldout.n_cells)
 
@@ -281,7 +293,7 @@ def test_heldout_knobs_reach_the_kernel(triangle, heldout):
     want = draw_next_cells(
         entry.fit_,
         idx,
-        rng=np.random.default_rng(5),
+        rng=np.random.default_rng(heldout_stream(5, heldout)),
         n_draws=64,
         process="normal",
         parameter_risk=False,

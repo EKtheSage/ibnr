@@ -45,6 +45,7 @@ from ibnr.gallery.registry import register
 from ibnr.kernels.contract import odp_stan_data, realized_values
 from ibnr.kernels.holdout import CellIndex
 from ibnr.kernels.predictive import PredictiveDistribution
+from ibnr.kernels.rng import cohort_stream
 from ibnr.triangle.core import Triangle
 
 GROWTH_CURVES = ("loglogistic", "weibull")
@@ -497,7 +498,9 @@ class Clark(GalleryEntry, PredictsHeldout):
         # scorer so predict() and predict_at() cannot drift apart.
         from ibnr.gallery.statistical.clark import scorer  # local: scorer imports this module
 
-        rng = np.random.default_rng(seed)
+        rng = np.random.default_rng(
+            cohort_stream(seed, label="predict", cohorts=self.cohorts(), field=self._loss_field)
+        )
         post = scorer.param_draws(c, prm, n_draws=n_draws, rng=rng)
         om = post["omega"]  # (n_draws,) curve shape per draw
         th = post["theta"]  # (n_draws,) curve scale per draw

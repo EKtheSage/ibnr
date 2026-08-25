@@ -52,6 +52,7 @@ from ibnr.kernels.contract import cohort_grid, realized_values
 from ibnr.kernels.holdout import CellIndex
 from ibnr.kernels.mack import MackFit, draw_next_cells, fit_mack_grid, simulate_ultimates
 from ibnr.kernels.predictive import PredictiveDistribution
+from ibnr.kernels.rng import cohort_stream
 from ibnr.triangle.core import Triangle
 
 
@@ -163,7 +164,9 @@ class Mack(GalleryEntry, PredictsHeldout):
         return simulate_ultimates(
             self._fitted(),
             n_draws=n_draws,
-            seed=seed,
+            seed=cohort_stream(
+                seed, label="predict", cohorts=self.cohorts(), field=self._loss_field
+            ),
             process=process,
             parameter_risk=parameter_risk,
         )
@@ -214,11 +217,17 @@ class Mack(GalleryEntry, PredictsHeldout):
             entry.cdr_distribution(generator="odp_bootstrap")   # England-Verrall
 
         Whichever generator is used, the reserve is re-estimated with the same
-        volume-weighted chain ladder, so the two answers are comparable. Passed
-        straight through to :func:`ibnr.kernels.cdr.simulate_one_year_cdr`,
-        including its refusal of ``process``/``parameter_risk`` beside an
-        explicit ``generator`` - they are ``MackDiagonal``'s knobs and would
-        otherwise be inert.
+        volume-weighted chain ladder, so the two answers are comparable. Every
+        argument but ``seed`` is passed straight through to
+        :func:`ibnr.kernels.cdr.simulate_one_year_cdr`, including its refusal of
+        ``process``/``parameter_risk`` beside an explicit ``generator`` - they
+        are ``MackDiagonal``'s knobs and would otherwise be inert. ``seed`` is
+        first turned into this cohort's own stream
+        (:func:`ibnr.kernels.rng.cohort_stream`), so a study that fits many
+        cohorts and passes one seed does not have every cohort's claims
+        development result reading the same random numbers. The kernel
+        function's own behavior for a plain integer seed is unchanged, for
+        anyone calling it directly.
 
         ``n_draws=None`` means "this generator's own count", exactly as on the
         kernel function, and it is the DEFAULT here rather than a literal
@@ -232,7 +241,11 @@ class Mack(GalleryEntry, PredictsHeldout):
         return simulate_one_year_cdr(
             self._fitted(),
             n_draws=n_draws,
-            seed=seed,
+            # A distinct label keeps this cohort's CDR draws on their own
+            # stream, separate from the same fit's run-off and held-out draws.
+            seed=cohort_stream(
+                seed, label="cdr_distribution", cohorts=self.cohorts(), field=self._loss_field
+            ),
             generator=generator,
             process=process,
             parameter_risk=parameter_risk,

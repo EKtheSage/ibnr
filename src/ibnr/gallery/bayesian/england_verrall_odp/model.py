@@ -24,6 +24,7 @@ from ibnr.gallery.registry import register
 from ibnr.kernels.contract import odp_stan_data, realized_values
 from ibnr.kernels.holdout import CellIndex
 from ibnr.kernels.predictive import PredictiveDistribution
+from ibnr.kernels.rng import cohort_stream
 from ibnr.triangle.core import Triangle
 
 STAN_FILE = Path(__file__).parent / "model.stan"
@@ -363,7 +364,9 @@ class EnglandVerrallODP(GalleryEntry, PredictsHeldout):
         # Ultimate = observed paid-to-date + simulated future increments.
         # Start every draw at the origin's latest cumulative paid (constant),
         # then add process draws for each still-unobserved dev lag.
-        rng = np.random.default_rng(seed)
+        rng = np.random.default_rng(
+            cohort_stream(seed, label="predict", cohorts=self.cohorts(), field=self._loss_field)
+        )
         ults = np.tile(c["paid_to_date"], (n_draws, 1)).astype(float)  # (draws, n_w)
         for j in range(n_w):  # per origin
             # Only lags strictly beyond this origin's latest observed lag are

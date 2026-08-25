@@ -56,6 +56,7 @@ from ibnr.gallery.nn.resnet.network import TriangleResNet, mdn_nll  # noqa: E402
 from ibnr.kernels.densities import MEASURES, check_normalization  # noqa: E402
 from ibnr.kernels.forecast import logmeanexp  # noqa: E402
 from ibnr.kernels.holdout import CellIndex, index_into, next_diagonal  # noqa: E402
+from ibnr.kernels.rng import heldout_stream  # noqa: E402
 
 from .conftest import BACKENDS, make_multiline_triangle  # noqa: E402
 
@@ -590,10 +591,13 @@ def test_predict_at_shape_seed_and_anchor(fitted):
     assert (a[:, pinned_col].max(axis=0) == a[:, pinned_col].min(axis=0)).all()
     np.testing.assert_allclose(a[0, pinned_col], expected[pinned_col], rtol=1e-6)
 
-    # the anchor conversion runs in the base class, exactly once
+    # the anchor conversion runs in the base class, exactly once. The stream is
+    # rebuilt the way predict_at derives it - from the seed together with the
+    # cells' cohort identity, field and cutoff (kernels.rng).
     view = entry.at_cohort(SEG0)
     idx = index_into(cells, view.contract_, field="paid_loss")
-    native = view._draws_native(idx, rng=np.random.default_rng(11))
+    stream = heldout_stream(11, cells, field="paid_loss")
+    native = view._draws_native(idx, rng=np.random.default_rng(stream))
     np.testing.assert_allclose(a, native + idx.prev_value[None, :], rtol=1e-12)
     assert idx.prev_value.min() > 100.0
     assert np.abs(native).mean() < idx.prev_value.min()

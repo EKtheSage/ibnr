@@ -40,6 +40,7 @@ from ibnr.gallery.statistical.clark import scorer as mle_scorer
 from ibnr.gallery.statistical.clark.model import Clark, age_interval, growth
 from ibnr.kernels.contract import odp_stan_data
 from ibnr.kernels.holdout import CellIndex, index_into, next_diagonal, training_index
+from ibnr.kernels.rng import heldout_stream
 from ibnr.triangle.core import Triangle
 
 N_W = N_D = 6
@@ -550,7 +551,10 @@ def test_odp_predict_at_adds_the_training_anchor(contract, heldout):
     idx = index_into(heldout, contract)
 
     got = entry.predict_at(heldout, field="paid_loss", seed=7)
-    native = entry._draws_native(idx, rng=np.random.default_rng(7))
+    # the stream predict_at derives, rebuilt: a study-level seed no longer names
+    # a generator directly (kernels.rng)
+    stream = heldout_stream(7, heldout, field="paid_loss")
+    native = entry._draws_native(idx, rng=np.random.default_rng(stream))
     np.testing.assert_allclose(got, native + idx.prev_value[None, :])
 
     carried_err = np.abs(got.mean(axis=0) - heldout.values)
@@ -564,7 +568,8 @@ def test_clark_predict_at_adds_the_training_anchor(contract, heldout):
     entry = _StubClarkGC(contract, clark_posterior(400, jitter=0.0))
     idx = index_into(heldout, contract)
     got = entry.predict_at(heldout, field="paid_loss", seed=7)
-    native = entry._draws_native(idx, rng=np.random.default_rng(7))
+    stream = heldout_stream(7, heldout, field="paid_loss")
+    native = entry._draws_native(idx, rng=np.random.default_rng(stream))
     np.testing.assert_allclose(got, native + idx.prev_value[None, :])
     assert (idx.prev_value > 0).all()
 
@@ -573,7 +578,8 @@ def test_mle_predict_at_adds_the_training_anchor(clark_cape, heldout):
     """Same carry, MLE Clark - through the real fitted entry end to end."""
     idx = index_into(heldout, clark_cape.contract_)
     got = clark_cape.predict_at(heldout, field="paid_loss", seed=5)
-    native = clark_cape._draws_native(idx, rng=np.random.default_rng(5))
+    stream = heldout_stream(5, heldout, field="paid_loss")
+    native = clark_cape._draws_native(idx, rng=np.random.default_rng(stream))
     np.testing.assert_allclose(got, native + idx.prev_value[None, :])
 
 

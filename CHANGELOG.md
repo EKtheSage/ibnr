@@ -15,6 +15,56 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
+## Unreleased
+
+### Gallery draws stop sharing one noise stream across cohorts
+
+Notebook 3c measured a defect in how the gallery turned a seed into random
+numbers. A gallery entry is fitted to one cohort, so a study over twenty-five
+companies is twenty-five separate fits, and a script that wants reproducible
+results passes all of them the same seed - which is what notebooks 3b and 3c
+do. Every `predict` and the shared `predict_at` answered that seed with
+`np.random.default_rng(seed)`, starting the same generator from scratch each
+time, so draw `i` of every company read the same underlying random numbers and
+the companies' simulated ultimates rose and fell together. For `mack` the mean
+implied correlation between cohorts came out at 0.255, where independent draws
+at 10,000 draws would sit near 0.01 of sampling noise.
+
+Each cohort's own distribution was never affected. What was affected is every
+quantity read across cohorts *within a draw*: a company total, a panel total,
+the spread of either, and any calibration statistic computed from those sums.
+
+* **The fix.** Entries now derive a stream from the caller's seed before drawing
+  anything. The new `kernels/rng.py` builds a short text naming what is being
+  drawn - the method (`predict`, `predict_at`, `cdr_distribution`), the cohort's
+  segment identity, the loss field, the training cutoff - hashes it with sha256,
+  and folds eight 32-bit numbers from that digest into a
+  `numpy.random.SeedSequence` behind the seed. sha256 rather than Python's own
+  `hash()`, which is salted differently in every process and would make a rerun
+  of the same script produce different numbers. Wired into
+  `PredictsHeldout.predict_at` (the one shared held-out path, so it covers the
+  pooled NN entries too), the nine single-cohort `predict` methods, and both of
+  the `mack` entry's kernel calls.
+* **What changes for users.** Draws from an entry's `predict`, `predict_at` and
+  `cdr_distribution` differ from 0.5.6 for the same seed. Each cohort's own
+  distribution is statistically unchanged - the numbers are a different sample
+  from the same distribution, not a different distribution. The same seed and
+  the same cohort still reproduce bit for bit, in any process and on any
+  machine. A `Generator` or `SeedSequence` passed as `seed` is used exactly as
+  given: a caller who built their own stream gets that stream, not one derived
+  from it, which is also how two entries can still be held on common random
+  numbers when a comparison wants that.
+* **What does not change.** The kernel functions are untouched:
+  `kernels.mack.simulate_ultimates`, `kernels.mack.draw_next_cells` and
+  `kernels.cdr.simulate_one_year_cdr` called with a plain integer seed are
+  byte-identical to 0.5.6, so the CDR byte pins and the R `ChainLadder` tie-outs
+  still hold. Their `seed` annotation widened to
+  `int | np.random.SeedSequence | None`, which is documentation of what
+  `np.random.default_rng` already accepted, not a behavior change. The NN
+  entries' `predict()` is deliberately untouched as well: one pooled fit runs a
+  single cached rollout and slices it per cohort, so its cohorts already read
+  different positions of one stream and the defect never arose there.
+
 ## 0.5.6 - 2026-08-12
 
 A one-fix release: the case-level floor in `nn_paid_case` (#100), on `main`

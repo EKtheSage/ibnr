@@ -37,6 +37,7 @@ from ibnr.gallery.registry import register
 from ibnr.kernels.contract import realized_values, stan_data
 from ibnr.kernels.holdout import CellIndex
 from ibnr.kernels.predictive import PredictiveDistribution
+from ibnr.kernels.rng import cohort_stream
 from ibnr.triangle.core import Triangle
 
 STAN_FILE = Path(__file__).parent / "model.stan"
@@ -378,7 +379,9 @@ class MeyersCCL(GalleryEntry, ScoresHeldout, PredictsHeldout):
             )
         c1_ult = float(c["loss"][first_mask][0])
 
-        rng = np.random.default_rng(seed)
+        rng = np.random.default_rng(
+            cohort_stream(seed, label="predict", cohorts=self.cohorts(), field=self._loss_field)
+        )
         ults = np.empty((n_draws, n_w))  # (draws, n_w) cumulative ultimates
         # Origin 1's ultimate is observed, hence degenerate across draws.
         ults[:, 0] = c1_ult

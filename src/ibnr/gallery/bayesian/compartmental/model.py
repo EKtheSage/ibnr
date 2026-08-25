@@ -59,6 +59,7 @@ from ibnr.gallery.registry import register
 from ibnr.kernels.contract import compartmental_stan_data, realized_values
 from ibnr.kernels.holdout import CellIndex
 from ibnr.kernels.predictive import PredictiveDistribution
+from ibnr.kernels.rng import cohort_stream
 from ibnr.triangle.core import Triangle
 
 #: one Stan program per variant - the eject pattern (CLAUDE.md design note 6):
@@ -490,7 +491,9 @@ class Compartmental(GalleryEntry, ScoresHeldout, PredictsHeldout):
         if self.idata_ is None or self.contract_ is None:
             raise RuntimeError("call fit() first")
         c = self.contract_
-        rng = np.random.default_rng(seed)
+        rng = np.random.default_rng(
+            cohort_stream(seed, label="predict", cohorts=self.cohorts(), field=self._loss_field)
+        )
         ults = (
             self._predict_gaussian(rng)
             if self.variant_ == "gaussian"

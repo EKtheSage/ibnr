@@ -54,6 +54,7 @@ from ibnr.kernels.holdout import (
     next_diagonal,
     training_index,
 )
+from ibnr.kernels.rng import heldout_stream
 from ibnr.triangle.core import Triangle
 
 #: ground-truth curve parameters for the synthetic cohort (same values as
@@ -722,7 +723,15 @@ def test_lognormal_draws_are_anchored_to_cumulative_and_seeded(contract, heldout
     assert not np.array_equal(got, entry.predict_at(heldout, field="paid_loss", seed=8))
 
     idx = index_into(heldout, contract, field="paid_loss")
-    raw = scorer.draw_cells(contract, post, idx, rng=np.random.default_rng(7), variant="lognormal")
+    # the stream predict_at derives, rebuilt: a study-level seed no longer names
+    # a generator directly (kernels.rng)
+    raw = scorer.draw_cells(
+        contract,
+        post,
+        idx,
+        rng=np.random.default_rng(heldout_stream(7, heldout, field="paid_loss")),
+        variant="lognormal",
+    )
     np.testing.assert_allclose(got, raw + idx.prev_value[None, :])
     # the anchor is two orders of magnitude above the deep-dev increments, so
     # the uncarried mutant is far away, not adjacent
@@ -736,7 +745,13 @@ def test_gaussian_draws_pass_through_on_a_cumulative_triangle(contract, heldout)
     entry = _StubCompartmental(contract, post, "gaussian")
     got = entry.predict_at(heldout, field="paid_loss", seed=3)
     idx = index_into(heldout, contract, field="paid_loss")
-    raw = scorer.draw_cells(contract, post, idx, rng=np.random.default_rng(3), variant="gaussian")
+    raw = scorer.draw_cells(
+        contract,
+        post,
+        idx,
+        rng=np.random.default_rng(heldout_stream(3, heldout, field="paid_loss")),
+        variant="gaussian",
+    )
     np.testing.assert_array_equal(got, raw)
 
 

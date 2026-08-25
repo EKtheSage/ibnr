@@ -43,6 +43,7 @@ from ibnr.kernels.multiline import (
     realized_multiline,
 )
 from ibnr.kernels.predictive import PredictiveDistribution
+from ibnr.kernels.rng import cohort_stream
 from ibnr.triangle.core import Triangle
 
 EIG_FLOOR = 1e-10
@@ -228,7 +229,9 @@ class CopulaGLM(GalleryEntry):
             )
         c = self.contract_
         n_lob, n_w, n_d = c["n_lob"], c["n_w"], c["n_d"]
-        rng = np.random.default_rng(seed)
+        rng = np.random.default_rng(
+            cohort_stream(seed, label="predict", cohorts=self.cohorts(), field=self._loss_field)
+        )
 
         # Assemble per-draw parameters. Bootstrap: draw n_boot refits, then assign
         # each of the n_draws predictive draws a random replicate (parameter risk

@@ -786,7 +786,7 @@ def simulate_one_year_cdr(
     fit: MackFit,
     *,
     n_draws: int | None = None,
-    seed: int | None = None,
+    seed: int | np.random.SeedSequence | None = None,
     generator: DiagonalGenerator | str | None = None,
     process: str | None = None,
     parameter_risk: bool | None = None,
@@ -819,6 +819,10 @@ def simulate_one_year_cdr(
     "that generator's default", so the defaults and every explicit call are
     unchanged. They cannot be combined with ``generator=``; pass them to the
     generator instead, and see :func:`_resolve_generator` for why.
+
+    ``seed`` is anything ``np.random.default_rng`` accepts. The ``mack`` gallery
+    entry hands a per-cohort ``SeedSequence`` through here; a plain integer keeps
+    the byte-exact meaning it has always had.
 
     ``generator="merz_wuthrich"`` is refused by name: the closed form is a
     linearization of the chain-ladder factor update around Mack's moments, not a
