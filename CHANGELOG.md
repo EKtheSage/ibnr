@@ -15,9 +15,15 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
-## Unreleased
+## 0.5.7 - 2026-08-24
 
-### Gallery draws stop sharing one noise stream across cohorts
+A one-fix release: per-cohort draw streams (#104), found by notebook 3c's
+multi-company study (#103). Draws from entry-level `predict`, `predict_at` and
+`cdr_distribution` change for a given integer seed - a different sample from
+the same distribution - so any pipeline pinning those draws byte-for-byte
+re-pins on this version. The kernel functions' own seed behavior is untouched.
+
+### Gallery draws stop sharing one noise stream across cohorts (#104)
 
 Notebook 3c measured a defect in how the gallery turned a seed into random
 numbers. A gallery entry is fitted to one cohort, so a study over twenty-five
