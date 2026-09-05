@@ -15,6 +15,27 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
+## Unreleased
+
+### A missing outcome or a missing draw gives a missing percentile, not 0
+
+`PredictiveDistribution.cdf` counted the draws at or below the outcome and
+returned that fraction. Every comparison against NaN is False, so a target whose
+outcome had not emerged yet came back as exactly 0.0: the lowest percentile
+there is, and to the uniformity test the worst possible over-prediction. The
+same held one axis over, for a target carrying a missing draw. `cdf` now returns
+NaN at those targets, which is what its own docstring already promised and what
+`mean`, `std` and `kernels.scores.crps` were already answering beside it. The
+mask is per target, so a finite neighbour keeps its percentile, and infinite
+outcomes and draws are left alone: an outcome below every draw is a real verdict
+of 0.0 and has to stay distinguishable from a missing one. No published result
+changes, because the Schedule P mart carries an outcome for every scored origin;
+what changes is a backtest on a triangle whose cutoff leaves an origin short of
+the fit's final development lag, the case the `mack` entry documents by name.
+`scripts/meyers_validation.py` used to define `failed` as a missing percentile,
+which would now also count such a row; it counts fits that raised instead, and
+reports `missing_outcome` beside it.
+
 ## 0.5.8 - 2026-08-24
 
 A one-feature release: `nn_transformer_ml` gains held-out scoring (#105), the

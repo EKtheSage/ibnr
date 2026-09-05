@@ -354,8 +354,9 @@ def main() -> int:
 
     # THE headline test: are the predictive distributions honest? Percentiles
     # are PIT values in 0-100, so divide by 100 before the uniformity test.
-    # Failure rows have a null percentile and drop out here - read `failed`
-    # in the JSON report alongside `n`.
+    # Two kinds of row have a null percentile and drop out here: a fit that
+    # raised (`failed`) and a fit that worked but had no outcome to score
+    # against (`missing_outcome`). Both are reported in the JSON alongside `n`.
     ok = df[df.get("percentile").notna()] if "percentile" in df else pd.DataFrame()
     if len(ok) >= 5:  # KS on a handful of points says nothing; don't print it
         print("\nUniformity of total-outcome percentiles (Meyers p-p test):")
@@ -364,11 +365,17 @@ def main() -> int:
         for line, grp in ok.groupby("line"):
             print(f"  {line:<24} n={len(grp):>3}  {ks_uniformity(grp['percentile'] / 100)}")
         print(f"  {'ALL':<24} n={len(ok):>3}  {ks_uniformity(ok['percentile'] / 100)}")
+        # `error` is written only by the harness's except branch, so counting it
+        # separates a fit that raised from one that ran and had no outcome
+        errored = df["error"].notna() if "error" in df else pd.Series(False, index=df.index)
         # machine-readable one-liner for the calling harness/notebook
         report = {
             "n": len(ok),
             "ks_all": ks_uniformity(ok["percentile"] / 100).statistic,
-            "failed": int(df["percentile"].isna().sum()) if "percentile" in df else 0,
+            "failed": int(errored.sum()),
+            "missing_outcome": (
+                int((df["outcome"].isna() & ~errored).sum()) if "outcome" in df else 0
+            ),
         }
         print(json.dumps(report))
     return 0
