@@ -52,14 +52,18 @@ def _month_end(origin: str, dev_lag: int):
     return (pd.Timestamp(origin) + pd.DateOffset(months=dev_lag) - pd.Timedelta(days=1)).date()
 
 
-def _tri(rows, backend_name, *, dev_grain: str):
-    """Build a Triangle from a long frame, with an explicitly declared dev grain."""
+def _tri(rows, backend_name, *, dev_grain: str, origin_grain: str = "Y"):
+    """Build a Triangle from a long frame, with both grains declared explicitly."""
     df = pd.DataFrame(rows, columns=["origin_period", "dev_lag", "eval_date", "value"])
     df["origin_period"] = pd.to_datetime(df["origin_period"]).dt.date
     df["eval_date"] = pd.to_datetime(df["eval_date"]).dt.date
     df["field"] = "paid_loss"
     return Triangle.from_long(
-        df, measure="cumulative", origin_grain="Y", dev_grain=dev_grain, backend=backend_name
+        df,
+        measure="cumulative",
+        origin_grain=origin_grain,
+        dev_grain=dev_grain,
+        backend=backend_name,
     )
 
 
@@ -92,15 +96,20 @@ def test_from_bermuda_falls_back_to_the_origin_grain_on_a_single_diagonal(backen
     Nothing in the data says how far apart the next diagonal would be, so the
     origin grain is the honest default - and it is used only here, where there is
     genuinely no answer, rather than as the general rule.
+
+    The origins are QUARTERS on purpose. On an annual axis "fall back to the origin
+    grain" and "hand back 'Y'" produce the same answer, so an annual fixture cannot
+    tell the two apart; here the fallback has to say OQDQ, which no fixed answer
+    can give.
     """
     rows = [
-        ("2019-01-01", 24, "2020-12-31", 20.0),
-        ("2020-01-01", 12, "2020-12-31", 10.0),
+        ("2020-01-01", 6, "2020-06-30", 20.0),
+        ("2020-04-01", 3, "2020-06-30", 10.0),
     ]
-    src = _tri(rows, backend_name, dev_grain="Y")
+    src = _tri(rows, backend_name, dev_grain="Q", origin_grain="Q")
     assert src.to_bermuda().eval_date_resolution is None
     back = Triangle.from_bermuda(src.to_bermuda(), backend=backend_name)
-    assert back.meta.grain == "OYDY"
+    assert back.meta.grain == "OQDQ"
 
 
 def test_from_bermuda_refuses_an_unrepresentable_dev_resolution(backend_name):

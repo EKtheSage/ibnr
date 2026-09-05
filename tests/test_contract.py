@@ -308,19 +308,29 @@ def _month_end(origin: str, dev_lag: int):
     return (pd.Timestamp(origin) + pd.DateOffset(months=dev_lag) - pd.Timedelta(days=1)).date()
 
 
-def _geometry_triangle(origin_years, dev_lags, *, lines=("lob_a",), through="2021-03-31"):
+def _geometry_triangle(
+    origin_periods,
+    dev_lags,
+    *,
+    lines=("lob_a",),
+    through="2021-03-31",
+    origin_grain="Y",
+    dev_grain="Y",
+):
     """One company's cells on a caller-chosen origin/dev geometry.
 
     Carries paid_loss, reported_loss and earned_premium on every cell, and takes a
     second line on request, so the same triangle can be handed to all six contract
     builders. Cells whose evaluation date is past ``through`` are simply absent,
-    which is what makes the shape a run-off staircase.
+    which is what makes the shape a run-off staircase. An origin is a year (the
+    January 1 of it) or an explicit start date, so the same helper builds the
+    quarterly axis the acceptance cases need.
     """
     rows = []
     limit = pd.Timestamp(through).date()
     for lob in lines:
-        for year in origin_years:
-            origin = f"{year}-01-01"
+        for period in origin_periods:
+            origin = f"{period}-01-01" if isinstance(period, int) else period
             for lag in dev_lags:
                 ev = _month_end(origin, lag)
                 if ev > limit:
@@ -341,7 +351,12 @@ def _geometry_triangle(origin_years, dev_lags, *, lines=("lob_a",), through="202
                             "value": value,
                         }
                     )
-    return Triangle.from_long(pd.DataFrame(rows), measure="cumulative")
+    return Triangle.from_long(
+        pd.DataFrame(rows),
+        measure="cumulative",
+        origin_grain=origin_grain,
+        dev_grain=dev_grain,
+    )
 
 
 def _one_line(t):
@@ -427,6 +442,37 @@ def test_a_non_positive_dev_lag_is_refused_by_name():
     with pytest.raises(ValueError, match="dev_lag must be positive"):
         stan_data(t, loss_field="paid_loss")
 
+    # and a NEGATIVE age is a sign problem, not an anchoring one. -3 % 12 is 9, so
+    # testing the offset first would report this triangle as anchored three months
+    # off the grain and the positivity message would never be reachable for it
+    negative = _geometry_triangle((2019, 2020), (-3, 12))
+    with pytest.raises(ValueError, match="dev_lag must be positive"):
+        stan_data(negative, loss_field="paid_loss")
+
+
+def test_compartmental_names_the_geometry_before_a_missing_field():
+    """Why the dev-step check runs twice in ``compartmental_stan_data``.
+
+    The pivot needs paid and reported on identical cells, and it says so. But a
+    triangle with anchored dev ages that is ALSO missing a reported cell has two
+    problems, and the geometry is the one to report: fix the missing cell and the
+    triangle still cannot be indexed, while re-anchoring it may well leave nothing
+    to fix. The second call, after the pivot, is the one that computes the dev
+    index; this first one only decides which message the caller reads.
+    """
+    t = _geometry_triangle((2019, 2020), (3, 15, 27))
+    e = t.expr
+    holed = t.filter(~((e.field == "reported_loss") & (e.dev_lag == 15)))
+    from ibnr.kernels.contract import compartmental_stan_data
+
+    with pytest.raises(ValueError, match="grain boundary"):
+        compartmental_stan_data(
+            holed,
+            paid_field="paid_loss",
+            reported_field="reported_loss",
+            premium_field="earned_premium",
+        )
+
 
 def test_stan_data_refuses_a_gapped_origin_axis():
     """An origin axis with a hole in it, through the cross-classified contract.
@@ -438,6 +484,36 @@ def test_stan_data_refuses_a_gapped_origin_axis():
     neighbours. The triangle is refused rather than quietly re-indexed.
     """
     t = _geometry_triangle((2019, 2021, 2022), (12, 24, 36), through="2022-12-31")
+    # the TRIANGLE is clean: the refusal belongs to the contract, which needs a
+    # dense (w, d) grid, and not to the data, which is a perfectly ordinary set of
+    # cells for three accident years
+    assert t.validate(strict=False) == []
     with pytest.raises(ValueError, match="origin axis") as exc:
         stan_data(t, loss_field="paid_loss")
     assert "2019-01-01" in str(exc.value) and "2021-01-01" in str(exc.value)
+
+
+QUARTERLY_ORIGINS = [f"{y}-{m:02d}-01" for y in (2018, 2019) for m in (1, 4, 7, 10)]
+
+
+@pytest.mark.parametrize("builder", [_stan_data, _nn_data], ids=["stan_data", "nn_data"])
+def test_a_quarterly_origin_axis_on_a_quarterly_dev_grain_is_accepted(builder):
+    """What the origin-axis rule asks for is one origin step per DEV step.
+
+    Eight quarterly origins on a quarterly dev grain: every origin step is three
+    months and so is every dev step, so ``w + d`` is calendar time here exactly as
+    it is on the annual geometry, and the contract must build. Without this case
+    the whole suite stays green for a rule that refuses every triangle whose
+    origins are not twelve months apart, because every other case that reaches the
+    rule is annual.
+    """
+    t = _geometry_triangle(
+        QUARTERLY_ORIGINS,
+        [3 * k for k in range(1, 9)],
+        through="2019-12-31",
+        origin_grain="Q",
+        dev_grain="Q",
+    )
+    assert t.validate(strict=False) == []
+    data = builder(t)
+    assert data["n_w"] == 8

@@ -381,9 +381,18 @@ def _bermuda_dev_grain(tri, months_to_grain: dict[int, str], *, origin_grain: st
     ``eval_date_resolution`` is bermuda's own answer, the months between
     evaluation dates, and it is ``None`` when the triangle carries a single
     diagonal - where the data genuinely does not say how far apart the next one
-    would be. The origin grain is the fallback there, and only there.
+    would be. The origin grain is the fallback there, and only there: the
+    attribute is read directly, so a bermuda release that renames it raises
+    ``AttributeError`` here instead of quietly restoring the wrong label this
+    function exists to stop.
+
+    The one limit worth knowing before trusting the round trip: bermuda carries
+    cells, not declarations, so the grain that comes back is the spacing bermuda
+    could observe. A triangle declared quarterly that holds only annual diagonals
+    (ages 3 and 15, say) comes back annual, because nothing in the cells says
+    otherwise.
     """
-    resolution = getattr(tri, "eval_date_resolution", None)
+    resolution = tri.eval_date_resolution
     if resolution is None:
         return origin_grain
     resolution = int(resolution)

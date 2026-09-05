@@ -54,7 +54,17 @@ def dev_lag_on_grain(t: Triangle) -> list[str]:
     not a whole number of dev steps apart cannot both be a development period of
     the declared length, and ``dev_lag // step`` floors them onto the same step.
     The anchor is the offset carried by the latest evaluation date, since that is
-    the diagonal the bucketing was anchored on.
+    the diagonal the bucketing was anchored on. That diagonal can itself carry
+    several offsets - quarterly origins regrained to an annual dev grain do it,
+    since four origins then land on the same evaluation date at four different
+    ages - and then no single offset anchors the triangle. The smallest is taken
+    so that a count can be reported at all, and the message says the latest
+    diagonal was mixed rather than presenting the choice as the triangle's own.
+
+    Only positive ages are given an offset. ``%`` follows Python's sign rule, so
+    an age of -3 has a remainder of 9 against an annual grain on one backend's
+    arithmetic and something else on another's; a negative age is already reported
+    by the first rule, so nothing is lost by leaving it out of the second.
 
     A strict relaxation of the old rule: everything it flagged that is really
     broken is still flagged. It is deliberately NOT what the kernels accept - a
@@ -71,7 +81,7 @@ def dev_lag_on_grain(t: Triangle) -> list[str]:
     # mutate the offset into a REAL column before reading it back: a derived
     # expression that lives only inside a predicate is the polars-backend trap
     # documented in transforms.py
-    off = e.mutate(_dev_offset=e.dev_lag % step)
+    off = e.filter(e.dev_lag > 0).mutate(_dev_offset=e.dev_lag % step)
     # one small frame rather than several queries: at most (eval dates x offsets)
     # rows, and the anchor has to be picked out of the same set that finds them
     pairs = off.select("eval_date", "_dev_offset").distinct().execute()
@@ -79,14 +89,23 @@ def dev_lag_on_grain(t: Triangle) -> list[str]:
     if len(found) <= 1:  # also the empty-triangle case, which is clean
         return issues
     latest = pairs["eval_date"].max()
-    anchor = min(int(v) for v in pairs.loc[pairs["eval_date"] == latest, "_dev_offset"])
+    at_latest = sorted({int(v) for v in pairs.loc[pairs["eval_date"] == latest, "_dev_offset"]})
+    anchor = at_latest[0]
     # a backend can hand the date back as a timestamp; report the date the
     # triangle stores rather than "2020-12-31 00:00:00"
     latest = latest.date() if hasattr(latest, "date") else latest
+    where = (
+        f"anchor taken from the latest eval_date {latest}"
+        if len(at_latest) == 1
+        else (
+            f"the latest eval_date {latest} carries offsets {at_latest} itself, so no single "
+            "offset anchors the triangle and the smallest of them is taken"
+        )
+    )
     bad = int(off.filter(off["_dev_offset"] != anchor).count().execute())
     issues.append(
         f"{bad} rows whose dev_lag offset against the {step}-month dev grain is not "
-        f"{anchor}: offsets found {found}, anchor taken from the latest eval_date {latest}"
+        f"{anchor}: offsets found {found}, {where}"
     )
     return issues
 

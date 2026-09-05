@@ -90,6 +90,11 @@ def stan_data(
     The triangle must contain exactly one segment combination (one company x
     line); slice with ``triangle.filter`` first. Slice training data with
     ``triangle.as_of(...)`` before calling - this function uses every row.
+
+    Consecutive origins must also be one dev step apart, because ``prev_idx``
+    reads the step from one origin to the next as one elapsed development period
+    (see :func:`require_origin_axis_step`, which says what that costs the one
+    entry here that does not read ``w`` that way).
     """
     if triangle.meta.measure != "cumulative":
         raise ValueError("stan_data requires a cumulative triangle")
@@ -356,8 +361,10 @@ def compartmental_stan_data(
     df["origin_period"] = _as_date(df["origin_period"])
     df["eval_date"] = _as_date(df["eval_date"])
     step = GRAIN_MONTHS[triangle.meta.dev_grain]
-    # on `df`, before the pivot: the pivot indexes on dev_lag, so an age off the
-    # grain boundary would become a column of the grid rather than an error
+    # the same check runs on `wide` below, where d is actually computed; this one
+    # only moves the refusal earlier, so a triangle whose ages are off the grain
+    # boundary is named by its geometry rather than by whichever field the pivot
+    # then reports as missing on some cells
     dev_step_index(df["dev_lag"], step=step)
 
     wide = df.pivot_table(
@@ -677,10 +684,22 @@ def dev_step_index(dev_lag, *, step: int) -> np.ndarray:
       so the first cell of a 12-month grain is at 12; a zero or negative age would
       index step 0 or below.
 
+    The sign is tested first, because ``%`` here follows Python's sign rule: an
+    age of -3 leaves a remainder of 9 against a 12-month grain, so testing the
+    offset first would report a negative age as an anchoring problem and the
+    positivity message could never be reached for it.
+
     Returns an ``int64`` array aligned with the input, so a caller can assign it
     straight into its frame.
     """
     months = np.asarray(dev_lag, dtype=np.int64)
+    non_positive = months <= 0
+    if non_positive.any():
+        ages = sorted({int(a) for a in np.unique(months[non_positive])})
+        raise ValueError(
+            f"dev_lag must be positive, got {ages[:5]}; dev_lag is months from the origin "
+            f"period start, so the first cell of a {step}-month dev grain is at {step}"
+        )
     offsets = months % step
     off_grain = offsets != 0
     if off_grain.any():
@@ -697,14 +716,7 @@ def dev_step_index(dev_lag, *, step: int) -> np.ndarray:
             "valuation on a grain boundary before with_dev_grain(), or keep the finer dev "
             "grain."
         )
-    d = months // step
-    if (d < 1).any():
-        ages = sorted({int(a) for a in np.unique(months[d < 1])})
-        raise ValueError(
-            f"dev_lag must be positive, got {ages[:5]}; dev_lag is months from the origin "
-            f"period start, so the first cell of a {step}-month dev grain is at {step}"
-        )
-    return d
+    return months // step
 
 
 def _months_between(a: dt.date, b: dt.date) -> int:
@@ -735,9 +747,23 @@ def require_origin_axis_step(origins: list[dt.date], *, step: int) -> None:
     trains on the other two - it trains on the diagonal it is scored on. Nothing
     raises, and nothing about the result looks wrong.
 
+    What is asked for is one origin step per dev step, not an annual grain: a
+    quarterly origin axis on a quarterly dev grain is accepted, and so is a
+    monthly one on a monthly grain.
+
     The axis checked here is the POOLED one, the union of origins over every
     cohort, so one cohort that skips an accident year its neighbours carry is
     unaffected: it keeps its row on the shared axis and is simply masked out.
+
+    One consumer is caught by sharing a door rather than by its own reading of
+    ``w``. ``stan_data`` is used by three gallery entries: ``meyers_ccl`` and
+    ``meyers_csr`` read ``w`` as a clock, and ``guszcza_growth_curve`` does not,
+    using it only to index ``ulr[w]`` and ``premium[w-1]``, exactly as
+    ``odp_stan_data`` and ``compartmental_stan_data`` use theirs (which is why
+    those two are NOT checked). So Guszcza will refuse a gapped origin axis it
+    could in principle fit. That is a deliberate cost of putting the check on the
+    shared contract rather than in two model files, and it is written down here so
+    it can be revisited rather than discovered.
     """
     pairs = list(zip(origins[:-1], origins[1:], strict=True))
     bad = [(a, b, _months_between(a, b)) for a, b in pairs if _months_between(a, b) != step]

@@ -725,9 +725,10 @@ def test_cutoff_masks_partition():
 
 def _pooled_origin_triangle(
     backend_name: str,
-    origin_years,
+    origin_periods,
     dev_lags,
     *,
+    origin_grain: str = "Y",
     dev_grain: str = "Y",
     through: str = "2013-12-31",
 ) -> Triangle:
@@ -735,12 +736,14 @@ def _pooled_origin_triangle(
 
     ``nn_data`` builds ONE origin axis shared by every cohort, so the geometry that
     matters is the pooled set of origins and the declared dev grain - which is what
-    this varies. Cells past ``through`` are absent, the usual run-off shape.
+    this varies. Cells past ``through`` are absent, the usual run-off shape. An
+    origin is a year (the January 1 of it) or an explicit start date, so a
+    quarterly axis is written the same way.
     """
     limit = dt.date.fromisoformat(through)
     rows = []
-    for year in origin_years:
-        origin = dt.date(year, 1, 1)
+    for period in origin_periods:
+        origin = dt.date(period, 1, 1) if isinstance(period, int) else dt.date.fromisoformat(period)
         for lag in dev_lags:
             ev = (pd.Timestamp(origin) + pd.DateOffset(months=lag) - pd.Timedelta(days=1)).date()
             if ev > limit:
@@ -760,7 +763,7 @@ def _pooled_origin_triangle(
     return Triangle.from_long(
         pd.DataFrame(rows),
         measure="cumulative",
-        origin_grain="Y",
+        origin_grain=origin_grain,
         dev_grain=dev_grain,
         backend=backend_name,
     )
@@ -777,6 +780,8 @@ def test_nn_data_refuses_a_gap_in_the_pooled_origin_axis(backend_name):
     two - training on data from the diagonal it is scored on.
     """
     t = _pooled_origin_triangle(backend_name, (2010, 2012, 2013), (12, 24, 36, 48))
+    # the TRIANGLE is clean: this is the contract's precondition, not a data defect
+    assert t.validate(strict=False) == []
     with pytest.raises(ValueError, match="origin axis") as exc:
         nn_data(t, loss_field="paid_loss", premium_field="earned_premium")
     assert "2010-01-01" in str(exc.value) and "2012-01-01" in str(exc.value)
@@ -793,5 +798,34 @@ def test_nn_data_refuses_annual_origins_on_a_quarterly_dev_grain(backend_name):
     t = _pooled_origin_triangle(
         backend_name, (2010, 2011, 2012, 2013), [3 * k for k in range(1, 17)], dev_grain="Q"
     )
+    assert t.validate(strict=False) == []
     with pytest.raises(ValueError, match="origin axis"):
         nn_data(t, loss_field="paid_loss", premium_field="earned_premium")
+
+
+def test_quarterly_origins_on_a_quarterly_dev_grain_are_accepted(backend_name):
+    """The acceptance side of the same rule, which is what makes it a rule.
+
+    The test above refuses annual origins on a quarterly dev grain; move the
+    origins to quarters and the geometry is sound again, because one origin step
+    is one dev step. Every other case that reaches the rule is annual, so without
+    this one a version of the check that measured the gap in years rather than in
+    months - refusing every quarterly and monthly triangle in the package - would
+    leave the whole suite green.
+    """
+    origins = [f"{y}-{m:02d}-01" for y in (2018, 2019) for m in (1, 4, 7, 10)]
+    t = _pooled_origin_triangle(
+        backend_name,
+        origins,
+        [3 * k for k in range(1, 9)],
+        origin_grain="Q",
+        dev_grain="Q",
+        through="2019-12-31",
+    )
+    assert t.validate(strict=False) == []
+    data = nn_data(t, loss_field="paid_loss", premium_field="earned_premium")
+    assert data["n_w"] == 8
+    # and the calendar index really is the diagonal number: the four origins that
+    # reach 2019-12-31 sit on cal_idx values that differ by one, as they must when
+    # a step down the origin axis is a step along the dev axis
+    assert data["cal_idx"][0, 7] == data["cal_idx"][7, 0] == 8

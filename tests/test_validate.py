@@ -119,6 +119,49 @@ def test_the_dev_grain_anchor_comes_from_the_latest_diagonal(backend_name):
     ]
 
 
+def test_a_latest_diagonal_carrying_several_offsets_says_so(backend_name):
+    """When the anchor diagonal is itself mixed, the message must not pretend it is not.
+
+    Quarterly origins on an annual dev grain put four origins on the same
+    evaluation date at four different ages, so the latest diagonal carries several
+    offsets and no single one anchors the triangle. The smallest is taken so a
+    count can be reported at all, and the message says the diagonal was mixed
+    rather than presenting that choice as something the data decided.
+    """
+    t = _tri(
+        backend_name,
+        [
+            ("2020-01-01", 3, "2020-03-31", 1.0),
+            ("2020-01-01", 15, "2021-03-31", 2.0),
+            ("2020-04-01", 12, "2021-03-31", 3.0),
+        ],
+    )
+    assert t.validate(strict=False) == [
+        "2 rows whose dev_lag offset against the 12-month dev grain is not 0: "
+        "offsets found [0, 3], the latest eval_date 2021-03-31 carries offsets [0, 3] "
+        "itself, so no single offset anchors the triangle and the smallest of them is taken"
+    ]
+
+
+def test_a_negative_dev_lag_is_reported_once_and_the_same_way_on_both_backends(backend_name):
+    """A negative age is a sign problem, and only that.
+
+    ``%`` follows the backend's own sign rule, so an age of -3 against an annual
+    grain leaves a remainder of -3 on one backend and 9 on the other. Feeding
+    negative ages to the offset rule therefore made the offsets reported for the
+    SAME triangle differ by backend, and dressed a negative age up as an anchoring
+    problem on top of the positivity finding it already has. Only positive ages get
+    an offset now, so this triangle has exactly one finding on both backends.
+    """
+    t = _tri(
+        backend_name,
+        [("2020-01-01", -3, "2019-09-30", 1.0), ("2020-01-01", 12, "2020-12-31", 2.0)],
+    )
+    issues = t.validate(strict=False)
+    assert "1 rows where dev_lag is not positive" in issues
+    assert not any("offset" in i for i in issues)
+
+
 def test_anchored_dev_ages_are_on_grain(backend_name):
     """Ages 3, 15, 27 on an ANNUAL dev grain are a clean triangle, not a finding.
 
