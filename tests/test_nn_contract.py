@@ -433,6 +433,28 @@ def test_nn_data_origin_missing_from_one_cohort(backend_name):
     assert data["latest_cum"][k, 2] == 0.0
 
 
+def test_a_cohort_may_skip_an_origin_its_neighbour_carries(backend_name):
+    """The origin-spacing rule is about the POOLED axis, and only that.
+
+    lob_a here has no 2011 at all while lob_b does, so lob_a's own origins are
+    2010 and 2012, two years apart. That is not a hole in the axis: the axis is
+    the union, 2010, 2011, 2012, one year apart throughout, and lob_a simply
+    occupies the 2011 row masked out. Reading the rule per cohort instead would
+    refuse an ordinary triangle - the case above removes the LAST origin, which
+    leaves a contiguous run either way, so it cannot tell the two rules apart.
+    """
+    partial = CUM.copy()
+    partial[1, :] = np.nan  # lob_a has no 2011 origin; lob_b does
+    t = make_multiline_triangle(
+        backend_name, {"lob_a": partial, "lob_b": CUM * 2.0}, premium_by_lob=PREMIUM
+    )
+    data = nn_data(t, loss_field="paid_loss", premium_field="earned_premium")
+    assert data["n_w"] == 3
+    k = data["cohorts"]["line_of_business"].tolist().index("lob_a")
+    assert not data["obs_mask"][k, 1].any()
+    assert data["obs_mask"][k, 0].any() and data["obs_mask"][k, 2].any()
+
+
 def test_nn_company_data_regroups_lines(two_cohorts):
     """``nn_company_data`` is the multi-line layout (company, line, channel, n_w, n_d)
     used by ``nn_transformer_ml`` to attend across lines. Asserted to be a pure

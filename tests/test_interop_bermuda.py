@@ -53,7 +53,7 @@ def _month_end(origin: str, dev_lag: int):
 
 
 def _tri(rows, backend_name, *, dev_grain: str):
-    """Long frame -> Triangle, with an explicitly declared dev grain."""
+    """Build a Triangle from a long frame, with an explicitly declared dev grain."""
     df = pd.DataFrame(rows, columns=["origin_period", "dev_lag", "eval_date", "value"])
     df["origin_period"] = pd.to_datetime(df["origin_period"]).dt.date
     df["eval_date"] = pd.to_datetime(df["eval_date"]).dt.date

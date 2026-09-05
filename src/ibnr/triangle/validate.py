@@ -80,6 +80,9 @@ def dev_lag_on_grain(t: Triangle) -> list[str]:
         return issues
     latest = pairs["eval_date"].max()
     anchor = min(int(v) for v in pairs.loc[pairs["eval_date"] == latest, "_dev_offset"])
+    # a backend can hand the date back as a timestamp; report the date the
+    # triangle stores rather than "2020-12-31 00:00:00"
+    latest = latest.date() if hasattr(latest, "date") else latest
     bad = int(off.filter(off["_dev_offset"] != anchor).count().execute())
     issues.append(
         f"{bad} rows whose dev_lag offset against the {step}-month dev grain is not "

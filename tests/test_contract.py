@@ -414,6 +414,20 @@ def test_anchored_dev_ages_are_refused_by_name(builder):
         builder(t)
 
 
+def test_a_non_positive_dev_lag_is_refused_by_name():
+    """The dev-step helper's other half, which nothing used to cover.
+
+    ``dev_lag`` counts months from the origin period start, so the first cell of
+    an annual grain is at 12 and an age of 0 is not a development period at all -
+    floored to ``d = 0`` it would index the step before the first one. The refusal
+    lived in six copies before the helper and was reachable by no test: deleting
+    every copy left the whole suite green.
+    """
+    t = _geometry_triangle((2019, 2020), (0, 12))
+    with pytest.raises(ValueError, match="dev_lag must be positive"):
+        stan_data(t, loss_field="paid_loss")
+
+
 def test_stan_data_refuses_a_gapped_origin_axis():
     """An origin axis with a hole in it, through the cross-classified contract.
 

@@ -74,18 +74,49 @@ def test_dev_lag_off_grain(backend_name):
     of dev steps apart, so ``dev_lag // 12`` floors them onto the same step. And
     dev_lag 0 is not a development age at all: dev_lag counts months from the
     origin period start, so the first annual cell is 12.
+
+    The message is pinned whole, because every part of it is what tells a reader
+    which rows to look at: the count, the anchor offset, the offsets found, and
+    the evaluation date the anchor came from, written as the date the triangle
+    stores rather than as a timestamp.
     """
     mixed = _tri(
         backend_name,
         [("2020-01-01", 9, "2020-09-30", 1.0), ("2020-01-01", 12, "2020-12-31", 2.0)],
     )
-    assert any("offset" in i for i in mixed.validate(strict=False))
+    assert mixed.validate(strict=False) == [
+        "1 rows whose dev_lag offset against the 12-month dev grain is not 0: "
+        "offsets found [0, 9], anchor taken from the latest eval_date 2020-12-31"
+    ]
 
     zero = _tri(
         backend_name,
         [("2020-01-01", 0, "2019-12-31", 1.0), ("2020-01-01", 12, "2020-12-31", 2.0)],
     )
     assert any("not positive" in i for i in zero.validate(strict=False))
+
+
+def test_the_dev_grain_anchor_comes_from_the_latest_diagonal(backend_name):
+    """Which offset is the right one is decided by the LATEST evaluation date.
+
+    The bucketing was anchored there, so that is the offset the triangle means.
+    Here the latest diagonal is a March 31 with offset 3 and the two older rows
+    sit at offset 0, so both of those are the rows to look at. Reading the anchor
+    off the smallest offset, or off the offset most rows carry, would name the
+    single newest row instead and send a reader to the wrong end of the triangle.
+    """
+    t = _tri(
+        backend_name,
+        [
+            ("2019-01-01", 12, "2019-12-31", 1.0),
+            ("2019-01-01", 24, "2020-12-31", 2.0),
+            ("2019-01-01", 39, "2022-03-31", 3.0),
+        ],
+    )
+    assert t.validate(strict=False) == [
+        "2 rows whose dev_lag offset against the 12-month dev grain is not 3: "
+        "offsets found [0, 3], anchor taken from the latest eval_date 2022-03-31"
+    ]
 
 
 def test_anchored_dev_ages_are_on_grain(backend_name):
