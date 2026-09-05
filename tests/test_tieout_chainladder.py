@@ -22,6 +22,7 @@ which is a dev dependency (interop is sacred), not an optional extra.
 """
 
 import numpy as np
+import pandas as pd
 import pytest
 
 # chainladder ships in the [interop] extra; guard it so this file SKIPS without
@@ -82,6 +83,27 @@ def test_raa_round_trip(raa, backend_name):
     np.testing.assert_allclose(back.values, raa.values)
     # and the long forms agree exactly
     assert_triangles_equal(Triangle.from_chainladder(back, backend=backend_name), t)
+
+
+def test_to_chainladder_refuses_misaligned_rows(backend_name):
+    """chainladder derives development from origin and valuation, so the export
+    hands it eval_date and chainladder never sees our stored dev_lag. Two rows
+    sharing an eval_date are then one chainladder cell: the pair below, 95 at dev
+    12 and 150 at dev 24 both carried at 12/31/2021, used to export as a single
+    245.0 at dev 24. The round trips above are the aligned control, where
+    eval_date and dev_lag agree on every row and the export is faithful.
+    """
+    rows = [
+        ("2020-01-01", 12, "2021-12-31", 95.0),  # eval_date says dev 24, not 12
+        ("2020-01-01", 24, "2021-12-31", 150.0),
+    ]
+    df = pd.DataFrame(rows, columns=["origin_period", "dev_lag", "eval_date", "value"])
+    df["origin_period"] = pd.to_datetime(df["origin_period"]).dt.date
+    df["eval_date"] = pd.to_datetime(df["eval_date"]).dt.date
+    df["field"] = "paid_loss"
+    t = Triangle.from_long(df, measure="cumulative", backend=backend_name)
+    with pytest.raises(ValueError, match="does not align"):
+        t.to_chainladder()
 
 
 def test_raa_latest_diagonal(raa, backend_name):

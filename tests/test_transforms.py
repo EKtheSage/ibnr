@@ -162,6 +162,71 @@ def test_origin_grain(backend_name):
     assert dict(zip(df_out["dev_lag"], df_out["value"], strict=True)) == {12: 70.0, 24: 105.0}
 
 
+def _origin_grain_frame(rows):
+    """Long frame for the origin-grain tests, one field, dates as ``date``."""
+    df = pd.DataFrame(rows, columns=["origin_period", "dev_lag", "eval_date", "value"])
+    df["origin_period"] = pd.to_datetime(df["origin_period"]).dt.date
+    df["eval_date"] = pd.to_datetime(df["eval_date"]).dt.date
+    df["field"] = "paid_loss"
+    return df
+
+
+def test_origin_grain_unchanged_is_a_no_op(backend_name):
+    """Asking for the origin grain the triangle already has returns the *same
+    object*, as ``with_dev_grain`` does - nothing is recomputed, so nothing moves.
+
+    The input here is one a coarsening would have to refuse: both rows sit at the
+    12/31/2021 eval, one of them stored at dev 12, so eval_date and dev_lag
+    disagree on that row. Recomputing dev_lag from eval_date turned the two cells
+    into one cell of 245.0, and the total was preserved, so nothing downstream
+    could tell. Doing nothing cannot corrupt anything, so the unchanged grain is
+    still a no-op on data a coarsening refuses.
+    """
+    rows = [
+        ("2020-01-01", 12, "2021-12-31", 95.0),  # eval_date says dev 24, not 12
+        ("2020-01-01", 24, "2021-12-31", 150.0),
+    ]
+    t = Triangle.from_long(
+        _origin_grain_frame(rows),
+        measure="cumulative",
+        origin_grain="Y",
+        dev_grain="Y",
+        backend=backend_name,
+    )
+    before = sorted_long(t)
+    out = t.with_origin_grain("Y")
+    assert out is t
+    pd.testing.assert_frame_equal(sorted_long(out), before)
+
+
+def test_origin_grain_refuses_misaligned_rows(backend_name):
+    """A real coarsening re-derives dev_lag from eval_date, so it reads eval_date
+    as the whole truth about a row's development. A row whose stored dev_lag says
+    something else is therefore summed into whichever cell its eval_date names,
+    which is a wrong number rather than a missing one. Refuse it by name.
+
+    The rows are ``test_origin_grain``'s quarterly fixture (which still passes,
+    unchanged, as the aligned control) plus one restated Q2 dev-9 value carried at
+    the 12/31/2021 eval, where dev 21 is the aligned lag.
+    """
+    rows = [
+        ("2020-01-01", 12, "2020-12-31", 40.0),
+        ("2020-04-01", 9, "2020-12-31", 30.0),
+        ("2020-01-01", 24, "2021-12-31", 60.0),
+        ("2020-04-01", 21, "2021-12-31", 45.0),
+        ("2020-04-01", 9, "2021-12-31", 33.0),  # eval_date says dev 21, not 9
+    ]
+    t = Triangle.from_long(
+        _origin_grain_frame(rows),
+        measure="cumulative",
+        origin_grain="Q",
+        dev_grain="Q",
+        backend=backend_name,
+    )
+    with pytest.raises(ValueError, match="does not align"):
+        t.with_origin_grain("Y")
+
+
 def test_as_of_drops_restatements(backend_name):
     """With restatement history in the table, ``as_of`` must return what was booked
     at that date, not the latest revision - otherwise backtests leak the future.

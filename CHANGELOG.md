@@ -15,6 +15,23 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
+## Unreleased
+
+### Origin regrain and the two exports refuse a misaligned eval_date
+
+`change_origin_grain`, `to_chainladder` and `to_bermuda` all work out a row's
+development from its `eval_date` and drop the stored `dev_lag`. A row where the
+two disagree, which `validate()` had only ever reported as a finding, was
+therefore moved into the cell its `eval_date` names and added to whatever was
+already there: two cells of 95 and 150 carried at one evaluation date came out
+as a single 245, on both backends, with the triangle total unchanged so nothing
+downstream could notice. All three now refuse such a row by name, through the
+new `validate.require_eval_alignment`, which shares its wording and its query
+with the `validate()` finding. Ingestion is unchanged and still permissive: a
+triangle nobody regrains or exports is usable as it is. Separately,
+`with_origin_grain` at the grain a triangle already has is now a no-op that
+returns the same object, as `with_dev_grain` already was.
+
 ## 0.5.8 - 2026-08-24
 
 A one-feature release: `nn_transformer_ml` gains held-out scoring (#105), the

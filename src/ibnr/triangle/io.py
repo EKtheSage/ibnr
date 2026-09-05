@@ -39,7 +39,7 @@ from ibis.backends import BaseBackend
 from ibis.expr.types import Table as IbisTable
 
 from ibnr.triangle.core import CORE_COLUMNS, GRAIN_MONTHS, Triangle, TriangleMeta
-from ibnr.triangle.validate import null_segment_counts
+from ibnr.triangle.validate import null_segment_counts, require_eval_alignment
 
 
 def _require_interop(module: str, feature: str):
@@ -280,17 +280,32 @@ def to_chainladder(t: Triangle):
     reproduces its own dev bucketing (including the latest-diagonal anchoring of
     ``grain('OYDY')``) instead of second-guessing it. chainladder re-materializes
     the NaN padding cells that the long format omitted.
+
+    Handing over the valuation is also why eval_date has to agree with
+    origin_period + dev_lag on every row: chainladder never sees the stored
+    dev_lag, so a row that disagrees is exported at the development its eval_date
+    implies, and two such rows at one eval_date are added together into one cell.
     """
     cl = _require_interop("chainladder", "Triangle.to_chainladder()")
     import pandas as pd
 
+    require_eval_alignment(
+        t,
+        operation="to_chainladder()",
+        reason=(
+            "The export hands chainladder the valuation and lets it derive development, "
+            "so a row whose stored dev_lag disagrees with its eval_date is exported at a "
+            "different development, and two such rows at one eval_date become one cell."
+        ),
+    )
     df = t.expr.execute()
     fields = sorted(df["field"].unique())
     segments = t.segments
     # Long -> wide: one column per field, one row per (segment, origin, eval).
-    # aggfunc="sum" is a no-op on a well-formed triangle (cells are unique);
-    # it exists so a triangle that has not been collapsed to one row per cell
-    # still produces a valid frame rather than raising.
+    # dev_lag is not in that index, so the pivot is only faithful when eval_date
+    # implies it - which is exactly what the check above requires. Given it,
+    # aggfunc="sum" adds nothing up: two rows can share (segment, origin, eval)
+    # only by being the same cell twice, which validate() reports as a duplicate.
     wide = df.pivot_table(
         index=[*segments, "origin_period", "eval_date"],
         columns="field",
@@ -376,9 +391,25 @@ def to_bermuda(t: Triangle):
     ``period_end`` and let bermuda derive its own end-anchored dev lag - the
     dev_lag column is deliberately not exported (see the convention note in the
     module docstring).
+
+    Letting bermuda derive the dev lag is also why eval_date has to agree with
+    origin_period + dev_lag on every row: a row that disagrees comes back at the
+    dev_lag its evaluation date implies, and two such rows at one evaluation date
+    are grouped into a single cell, where one value for a field replaces the
+    other.
     """
     bermuda = _require_interop("bermuda", "Triangle.to_bermuda()")
 
+    require_eval_alignment(
+        t,
+        operation="to_bermuda()",
+        reason=(
+            "A bermuda cell is (period, evaluation date) and from_bermuda derives dev_lag "
+            "from that evaluation date, so a row whose stored dev_lag disagrees comes back "
+            "at a different one, and two such rows at one evaluation date are merged into "
+            "one cell."
+        ),
+    )
     # cumulative vs incremental is carried by the cell class on bermuda's side
     cell_cls = bermuda.CumulativeCell if t.meta.measure == "cumulative" else bermuda.IncrementalCell
     months = GRAIN_MONTHS[t.meta.origin_grain]

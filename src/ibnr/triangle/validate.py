@@ -4,6 +4,11 @@ Checks return human-readable issue strings (empty list = clean). ``validate``
 aggregates them; with strict=True it raises on any issue. eval_date is stored,
 not derived, so misalignment with origin_period + dev_lag is a *warning-level*
 finding surfaced here rather than an error enforced at construction.
+
+The operations that cannot live with that misalignment call
+:func:`require_eval_alignment` themselves, which raises with the same wording
+plus what the operation would otherwise have done. Ingestion stays permissive:
+a triangle nobody regrains or exports is usable as it is.
 """
 
 from __future__ import annotations
@@ -30,11 +35,53 @@ def restated_cells(t: Triangle) -> list[str]:
     return [f"{n} cells observed at multiple eval_dates (restated history)"] if n else []
 
 
+def misaligned_rows(expr) -> int:
+    """Rows whose eval_date does not fall in the last month of origin + dev_lag.
+
+    The one query behind both the warning-level :func:`eval_alignment` finding and
+    the hard :func:`require_eval_alignment` refusal, so the two can never come to
+    different answers about the same triangle.
+    """
+    return int(
+        expr.filter(implied_dev_lag(expr.origin_period, expr.eval_date) != expr.dev_lag)
+        .count()
+        .execute()
+    )
+
+
 def eval_alignment(t: Triangle) -> list[str]:
     """eval_date should fall in the last month of origin_period + dev_lag."""
-    e = t.expr
-    n = int(e.filter(implied_dev_lag(e.origin_period, e.eval_date) != e.dev_lag).count().execute())
+    n = misaligned_rows(t.expr)
     return [f"{n} rows where eval_date does not align with origin_period + dev_lag"] if n else []
+
+
+def require_eval_alignment(t: Triangle, *, operation: str, reason: str) -> None:
+    """Refuse a triangle whose eval_date and dev_lag disagree on any row.
+
+    Most of the package treats misalignment as the warning-level finding above:
+    eval_date is stored rather than derived, so a row that disagrees with the
+    convention is odd data, not an impossible state. Three operations cannot be
+    that relaxed, because each one reads eval_date as the whole truth about a
+    row's development and drops the stored dev_lag: coarsening the origin grain,
+    and the two exports. On a misaligned row they do not fail, they answer, and
+    the answer puts the row in a different cell from the one it came from, adding
+    two cells' values together. The total is preserved, so nothing downstream can
+    tell.
+
+    ``operation`` names the caller and ``reason`` says what it would have done,
+    because the repair belongs in the source data and a generic message would not
+    tell the caller which of dev_lag and eval_date is the wrong one.
+    """
+    n = misaligned_rows(t.expr)
+    if not n:
+        return
+    raise ValueError(
+        f"{n} rows where eval_date does not align with origin_period + dev_lag, "
+        f"which {operation} cannot work with. {reason} Correct dev_lag or eval_date in "
+        "the source data: as_of() and latest_diagonal() choose which stored observation "
+        "of a cell to keep, they never change its eval_date, so slicing first does not "
+        "repair this. validate() reports the same rows as a finding."
+    )
 
 
 def dev_lag_on_grain(t: Triangle) -> list[str]:
