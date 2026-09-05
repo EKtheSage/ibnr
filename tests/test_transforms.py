@@ -173,7 +173,7 @@ def _origin_grain_frame(rows):
 
 def test_origin_grain_unchanged_is_a_no_op(backend_name):
     """Asking for the origin grain the triangle already has returns the *same
-    object*, as ``with_dev_grain`` does - nothing is recomputed, so nothing moves.
+    object*, as ``with_dev_grain`` does: nothing is recomputed, so nothing moves.
 
     The input here is one a coarsening would have to refuse: both rows sit at the
     12/31/2021 eval, one of them stored at dev 12, so eval_date and dev_lag
@@ -215,7 +215,14 @@ def test_origin_grain_refuses_misaligned_rows(backend_name):
 
     The message is checked past its first phrase as well. ``operation`` and
     ``reason`` are arguments the caller passes in, so a test that only looked for
-    the shared "does not align" wording could not tell whether they arrived.
+    the shared "does not align" wording could not tell whether they arrived: the
+    pattern below reaches the operation's own name, a phrase only this caller's
+    reason carries, and the note about slicing that follows both.
+
+    The last case puts both extra rows in one triangle and pins the count the
+    message opens with. Every other misaligned fixture in the suite carries
+    exactly one row, so a counter that answered "is there any" rather than "how
+    many" would tell a user with three hundred bad rows that there is one.
     """
     aligned = [
         ("2020-01-01", 12, "2020-12-31", 40.0),
@@ -225,16 +232,70 @@ def test_origin_grain_refuses_misaligned_rows(backend_name):
     ]
     carried_later = ("2020-04-01", 9, "2021-12-31", 33.0)  # eval_date says dev 21
     carried_earlier = ("2020-04-01", 21, "2020-12-31", 33.0)  # eval_date says dev 9
-    for extra in (carried_later, carried_earlier):
+    one_row = r"^1 rows where eval_date does not align"
+    two_rows = r"^2 rows where eval_date does not align"
+    reason = r"does not align.*with_origin_grain\(\).*Coarsening sums the origins.*as_of\(\)"
+    cases = [
+        ([carried_later], one_row),
+        ([carried_earlier], one_row),
+        ([carried_later, carried_earlier], two_rows),
+    ]
+    for extra, count in cases:
         t = Triangle.from_long(
-            _origin_grain_frame([*aligned, extra]),
+            _origin_grain_frame([*aligned, *extra]),
             measure="cumulative",
             origin_grain="Q",
             dev_grain="Q",
             backend=backend_name,
         )
-        with pytest.raises(ValueError, match=r"does not align.*with_origin_grain\(\).*as_of\(\)"):
+        with pytest.raises(ValueError, match=reason):
             t.with_origin_grain("Y")
+        with pytest.raises(ValueError, match=count):
+            t.with_origin_grain("Y")
+
+
+def test_origin_grain_takes_restated_history_once_it_is_sliced(backend_name):
+    """The second way a row becomes misaligned is restatement, and there the way
+    out is the slice the refusal names rather than a correction to the source.
+
+    A restated cell keeps its dev_lag and gets a later eval_date, so it disagrees
+    with the convention by construction and ``validate`` reports it under both
+    findings. Slicing cannot align such a row, because neither ``as_of`` nor
+    ``latest_diagonal`` ever changes an eval_date, but it can drop it, and that is
+    what the refusal tells the caller to try. This checks the three outcomes the
+    message promises: ``latest_diagonal()`` and an ``as_of`` before the restatement
+    both leave a triangle that coarsens, and an ``as_of`` at the restatement keeps
+    the row and is refused again.
+    """
+    rows = [
+        ("2020-01-01", 12, "2020-12-31", 40.0),
+        ("2020-04-01", 9, "2020-12-31", 30.0),
+        ("2020-01-01", 24, "2021-12-31", 60.0),
+        ("2020-04-01", 21, "2021-12-31", 45.0),
+        ("2020-01-01", 12, "2021-12-31", 42.0),  # the 40 above, restated a year later
+    ]
+    t = Triangle.from_long(
+        _origin_grain_frame(rows),
+        measure="cumulative",
+        origin_grain="Q",
+        dev_grain="Q",
+        backend=backend_name,
+    )
+    with pytest.raises(ValueError, match="does not align"):
+        t.with_origin_grain("Y")
+
+    # latest_diagonal keeps each cohort's greatest dev_lag, which the restatement
+    # is not, so the misaligned row goes and the coarsening runs.
+    assert t.latest_diagonal().with_origin_grain("Y").count() == 1
+
+    # as_of before the restatement drops it and leaves the aligned 12/31/2020
+    # diagonal, which coarsens to the same 70.0 the aligned fixture above gives.
+    early = sorted_long(t.as_of("2020-12-31").with_origin_grain("Y"))
+    assert dict(zip(early["dev_lag"], early["value"], strict=True)) == {12: 70.0}
+
+    # as_of at the restatement keeps it instead of the value it replaced.
+    with pytest.raises(ValueError, match="does not align"):
+        t.as_of("2021-12-31").with_origin_grain("Y")
 
 
 def test_as_of_drops_restatements(backend_name):

@@ -45,9 +45,9 @@ def test_to_bermuda_refuses_misaligned_rows(backend_name):
     ``paid_loss`` is whichever of the two pandas grouped last. The Meyers round
     trip above is the aligned control.
 
-    The message is checked past its first phrase, so the operation's own name and
-    the note that slicing does not repair the row, both of which this caller
-    passes in, are covered by a test rather than only by reading the code.
+    The message is checked past its first phrase, so the operation's own name, a
+    phrase only this caller's reason carries, and the note about slicing that
+    follows both are covered by a test rather than only by reading the code.
     """
     rows = [
         ("2020-01-01", 12, "2021-12-31", 95.0),  # eval_date says dev 24, not 12
@@ -58,7 +58,8 @@ def test_to_bermuda_refuses_misaligned_rows(backend_name):
     df["eval_date"] = pd.to_datetime(df["eval_date"]).dt.date
     df["field"] = "paid_loss"
     t = Triangle.from_long(df, measure="cumulative", backend=backend_name)
-    with pytest.raises(ValueError, match=r"does not align.*to_bermuda\(\).*as_of\(\)"):
+    reason = r"does not align.*to_bermuda\(\).*A bermuda cell is.*as_of\(\)"
+    with pytest.raises(ValueError, match=reason):
         t.to_bermuda()
 
 

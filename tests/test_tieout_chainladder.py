@@ -93,20 +93,29 @@ def test_to_chainladder_refuses_misaligned_rows(backend_name):
     245.0 at dev 24. The round trips above are the aligned control, where
     eval_date and dev_lag agree on every row and the export is faithful.
 
-    The message is checked past its first phrase, so the operation's own name and
-    the note that slicing does not repair the row, both of which this caller
-    passes in, are covered by a test rather than only by reading the code.
+    The message is checked past its first phrase, so the operation's own name, a
+    phrase only this caller's reason carries, and the note about slicing that
+    follows both are covered by a test rather than only by reading the code.
+
+    This fixture is the shape a mart triangle has rather than the smallest one
+    that reproduces the bug: it carries a segment column and a second field, and
+    the misaligned row sits in ``paid_loss`` while ``earned_premium`` (which sorts
+    first) is aligned. A check that looked at one field, or that skipped a
+    triangle with segments, would pass on a two-row single-field fixture and let
+    the mart through.
     """
     rows = [
-        ("2020-01-01", 12, "2021-12-31", 95.0),  # eval_date says dev 24, not 12
-        ("2020-01-01", 24, "2021-12-31", 150.0),
+        ("auto", "2020-01-01", 12, "2020-12-31", "earned_premium", 1000.0),
+        ("auto", "2020-01-01", 12, "2021-12-31", "paid_loss", 95.0),  # eval says dev 24
+        ("auto", "2020-01-01", 24, "2021-12-31", "paid_loss", 150.0),
     ]
-    df = pd.DataFrame(rows, columns=["origin_period", "dev_lag", "eval_date", "value"])
+    cols = ["lob", "origin_period", "dev_lag", "eval_date", "field", "value"]
+    df = pd.DataFrame(rows, columns=cols)
     df["origin_period"] = pd.to_datetime(df["origin_period"]).dt.date
     df["eval_date"] = pd.to_datetime(df["eval_date"]).dt.date
-    df["field"] = "paid_loss"
     t = Triangle.from_long(df, measure="cumulative", backend=backend_name)
-    with pytest.raises(ValueError, match=r"does not align.*to_chainladder\(\).*as_of\(\)"):
+    reason = r"does not align.*to_chainladder\(\).*hands chainladder the valuation.*as_of\(\)"
+    with pytest.raises(ValueError, match=reason):
         t.to_chainladder()
 
 
