@@ -20,19 +20,24 @@ corrected decision 8.)
 ### The compute image installs the data package its own default command needs
 
 The Dockerfile installed `.[bayesian]` and nothing else, so the image's own
-`CMD`, `python scripts/meyers_validation.py --help`, stopped at
+`CMD`, `python scripts/meyers_validation.py --help`, would stop at
 `ModuleNotFoundError: No module named 'cas_schedule_p'` before printing a line
-of help. That script and the three other study scripts read the Meyers company
-selection rule out of `cas_schedule_p.screens`, and the package is deliberately
-absent from the wheel: ibnr itself never imports it, only `scripts/` does. The
-image now installs it, pinned to the version `uv.lock` resolves, because the
-wheel carries the mart and its vintage decides which companies a run selects.
+of help. The image was not built to find this: there is no Docker on the
+development machine, so the command was run with `cas_schedule_p` absent from
+the import path, which is the same failure one line earlier. That script and
+the three other study scripts read the Meyers company selection rule out of
+`cas_schedule_p.screens`, and the package is deliberately absent from the wheel:
+ibnr itself never imports it, only `scripts/` does. The image now installs it,
+pinned to the version `uv.lock` resolves, because the wheel carries the mart and
+its vintage decides which companies a run selects.
 
 `tests/test_compute_image.py` is what keeps this true. It reads the install
 lines out of the Dockerfile, works out which distributions those lines put in
 the image, then starts each promised script's `--help` in a subprocess that
 refuses any module the image would not have, and separately reads every import
-in those scripts at any nesting depth. Nothing in it can skip.
+in those scripts at any nesting depth. Nothing in it can skip. It stands in for
+building the image, which no machine here can do, and it is exact for the
+failure that mattered.
 
 ## 0.5.8 - 2026-08-24
 

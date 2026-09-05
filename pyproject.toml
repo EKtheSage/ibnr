@@ -189,7 +189,13 @@ Issues = "https://github.com/EKtheSage/ibnr/issues"
 # image runs those scripts and nothing else would put it there;
 # tests/test_compute_image.py holds that pin equal to the version uv.lock
 # resolves for the floor here.
-test = ["pytest>=8", "ruff>=0.16", "cas-schedule-p>=2026.6.13"]
+#
+# packaging is written down because tests/test_compute_image.py imports it
+# directly, to read the Dockerfile's requirements the way pip would. It was
+# already present everywhere as a dependency of pytest, and that is the reason
+# to declare it rather than not to: a test the core CI leg requires should not
+# rest on what another package happens to bring with it.
+test = ["pytest>=8", "ruff>=0.16", "cas-schedule-p>=2026.6.13", "packaging>=22"]
 dev = [
     # dev is test plus everything a contributor needs; the floors above are not
     # repeated here, so there is still only one place to bump them.

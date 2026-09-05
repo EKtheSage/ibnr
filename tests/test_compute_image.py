@@ -3,29 +3,35 @@
 The Dockerfile builds the image other services call, and its own ``CMD`` is
 ``python scripts/meyers_validation.py --help``. That script imports
 ``cas_schedule_p.screens`` at module level, and the image installed
-``.[bayesian]`` and nothing else, so the published image's default command died
-with ``ModuleNotFoundError: No module named 'cas_schedule_p'`` before printing a
-line of help.
+``.[bayesian]`` and nothing else, so the default command of the image as written
+would stop at ``ModuleNotFoundError: No module named 'cas_schedule_p'`` before
+printing a line of help. The image itself was never built, here or in CI (there
+is no Docker on the development machine, which is why the Dockerfile has said
+"build untested" since it landed); the failure was measured by running that
+command with ``cas_schedule_p`` absent from the import path.
 
 Nothing in this repository could have noticed. ``cas-schedule-p`` sits in the
 ``test`` dependency group, so every developer machine and every CI leg has it,
 and the one environment that does not is the one nobody runs pytest in. The data
 package is deliberately not a dependency of the wheel: ibnr itself never imports
 it, only ``scripts/`` does, and a reserving library should not pull a 17 MB
-parquet of one regulator's filings into every install. So it belongs in the
-image, pinned, and these tests are what keep it there.
+wheel of one regulator's filings, about 20 MB of parquet once installed, into
+every install. So it belongs in the image, pinned, and these tests are what keep
+it there.
 
 The checks reconstruct the image's install set from the Dockerfile itself rather
 than from a hand-written list:
 
-* every quoted requirement on every ``pip install`` line is collected, and the
+* every requirement on every ``pip install`` line is collected, and the
   distribution names those requirements reach are computed from the metadata
   installed here, with markers evaluated once per requested extra;
 * each script the image promises is then started as ``<script> --help`` in a
   subprocess whose ``sys.meta_path`` refuses any module whose distribution is
-  installed on this machine but outside that set. That is a stand-in for the
-  image, and an exact one for the failure that matters: an import of something
-  the image does not carry;
+  installed on this machine but outside that set. The guarantee runs in one
+  direction: everything the image would not have is refused, which is the
+  failure that matters, but a package the image HAS and this leg does not
+  cannot be supplied, and if a script ever imports one the failure message
+  says which of the two cases it is;
 * a static scan then reads every import in those scripts at any nesting depth,
   following imports of sibling scripts, because a package needed only by a
   branch that ``--help`` never reaches is still a package the image needs.
@@ -40,6 +46,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -60,9 +67,9 @@ SCRIPTS = REPO / "scripts"
 DATA_PACKAGE = "cas-schedule-p"
 
 #: Scripts besides the CMD's own that the image is expected to be able to run.
-#: These are the three the harness documentation and the analysis notebooks call
-#: for a retrospective, and each of them selects companies, so each of them
-#: needs the data package.
+#: These are the three other scripts CLAUDE.md's 2026-08-04 paragraph names as
+#: importing ``meyers_validation``, and each of them picks its companies with
+#: the rule that module re-exports, so each of them needs the data package.
 ALSO_PROMISED = ("compare_gallery.py", "heldout_leaderboard.py", "parity_gallery.py")
 
 #: Scripts the image is NOT expected to run, each with the reason. Named rather
@@ -105,20 +112,40 @@ def _dockerfile() -> str:
 
 
 def _install_specs() -> list[str]:
-    """Every quoted requirement on every ``pip install`` line.
+    """Every requirement on every ``pip install`` line.
 
     Reading ALL of them is the point. A parser that stops at the first quoted
     string on a line reads ``pip install ".[bayesian]" "cas-schedule-p==..."``
     as installing only the first, which makes a present fix look absent.
-    Comment lines are dropped so that prose in the header cannot be mistaken for
-    an install.
+
+    The line is tokenized the way a shell would, so a requirement counts whether
+    it is written in double quotes, single quotes or bare, and continuation
+    lines are joined first so a requirement on the second line of a wrapped
+    ``RUN`` is still read. Comment lines are dropped so that prose in the header
+    cannot be mistaken for an install, and tokens starting with ``-`` are
+    dropped as pip's own flags.
     """
-    return [
-        spec
-        for line in _dockerfile().splitlines()
-        if "pip install" in line and not line.lstrip().startswith("#")
-        for spec in re.findall(r'"([^"]+)"', line)
-    ]
+    text = "\n".join(
+        line
+        for line in _dockerfile().replace("\r\n", "\n").splitlines()
+        if not line.lstrip().startswith("#")
+    ).replace("\\\n", " ")
+    specs: list[str] = []
+    for line in text.splitlines():
+        if "pip install" not in line:
+            continue
+        tokens = shlex.split(line)
+        i = 0
+        while i < len(tokens) - 1:
+            if tokens[i] != "pip" or tokens[i + 1] != "install":
+                i += 1
+                continue
+            i += 2
+            while i < len(tokens) and tokens[i] not in {"&&", "||", "|", ";"}:
+                if not tokens[i].startswith("-"):
+                    specs.append(tokens[i])
+                i += 1
+    return specs
 
 
 def _cmd_argv() -> list[str]:
@@ -132,10 +159,16 @@ def _reachable_distributions(name: str, extras: tuple[str, ...]) -> set[str]:
     """Distribution names reachable from ``name[extras]`` through local metadata.
 
     A requirement whose distribution is not installed on this machine still
-    counts by name; only its own dependencies are unknown. That is the right
-    reading: the image installs from PyPI and gets those dependencies whether or
-    not this machine has them, and a stricter rule would make the answer depend
-    on which extras the CI leg happened to sync.
+    counts by name; only its own dependencies are unknown, because there is no
+    metadata here to read them from. The direct requirements of every extra the
+    Dockerfile asks for are therefore always present, since they come from
+    ibnr's own metadata, which is installed wherever this file runs. What can be
+    missing is the layer below: on a leg that does not sync ``[bayesian]``, the
+    packages arviz and numpyro bring with them (matplotlib, xarray, tqdm and the
+    rest) are not reachable, so the set is smaller there than in the image. That
+    costs nothing today, because no script the image promises imports one of
+    them, and the checks below say so when it starts to matter rather than
+    blaming the Dockerfile for it.
     """
     seen: set[tuple[str, frozenset[str]]] = set()
     stack = [(canonicalize_name(name), frozenset(extras))]
@@ -226,16 +259,32 @@ def test_the_image_pins_the_data_package_to_the_locked_version():
     )
 
 
+def _distribution_names(module: str, modules: dict[str, list[str]]) -> list[str]:
+    """Which distributions a top-level module belongs to, by its own name if none.
+
+    ``packages_distributions()`` only knows what is installed here, and the fall
+    back to the module's own name is what keeps a distribution the image has and
+    this leg does not, cmdstanpy on the core leg for instance, from reading as a
+    package the image lacks.
+    """
+    return [canonicalize_name(d) for d in modules.get(module, [])] or [canonicalize_name(module)]
+
+
 def test_the_refusal_can_actually_refuse_something():
     """Guard the guard.
 
     The subprocess check below refuses a module by looking its top-level name up
     in ``packages_distributions()`` and asking whether that distribution is in
-    the image's install set. Two ways it could pass while testing nothing: the
-    map comes back without the names the check leans on, or the install set
-    turns out to hold everything this machine has. Both are checked here
-    directly, on a package that is installed in every CI leg and must never be
-    in the image.
+    the image's install set. Three ways it could pass while testing nothing: the
+    map comes back without the names the check leans on, the install set turns
+    out to hold everything this machine has, or the extras are read wrongly and
+    the set is not the image's. The first two are checked on pytest, which every
+    CI leg installs and the image must never have. The third is checked on the
+    extras themselves: the Dockerfile asks for ``[bayesian]`` and for no other,
+    so a requirement carried by that extra has to be in and a requirement
+    carried by ``[nn]`` or ``[interop]`` has to be out. Those three come from
+    ibnr's own metadata, which is installed wherever this file runs, so this
+    reads the same on every leg.
     """
     modules = md.packages_distributions()
     assert [canonicalize_name(d) for d in modules.get("pytest", [])] == ["pytest"], (
@@ -253,7 +302,27 @@ def test_the_refusal_can_actually_refuse_something():
     )
     assert DATA_PACKAGE in image, (
         f"{DATA_PACKAGE} is outside the image's install set, so every script "
-        "that selects companies fails at import inside the image"
+        "that picks its companies fails at import inside the image"
+    )
+    assert "cmdstanpy" in image, (
+        "cmdstanpy is a requirement of ibnr[bayesian] and the Dockerfile asks "
+        "for that extra, so it has to be in the install set. It is not, which "
+        "means the extras on the pip install line are not being read and the "
+        "set is smaller than the image"
+    )
+    for extra, distribution in (("nn", "torch"), ("interop", "chainladder")):
+        assert distribution not in image, (
+            f"{distribution} is a requirement of ibnr[{extra}], an extra the "
+            "Dockerfile does not ask for, yet it is in the install set. That "
+            "means every extra is being treated as requested and the set is "
+            "bigger than the image"
+        )
+    assert any(d in image for d in _distribution_names("cmdstanpy", modules)), (
+        "cmdstanpy is in the image's install set and still grades as outside "
+        "it. On a leg that does not sync [bayesian] there is no entry for it "
+        "in packages_distributions(), so without the fall back to the module's "
+        "own name the static scan below would report the image as missing a "
+        "package the Dockerfile installs"
     )
 
 
@@ -300,26 +369,120 @@ except SystemExit as exc:
 """
 
 
-@pytest.mark.parametrize("name", _promised_scripts())
-def test_every_promised_script_starts_on_what_the_image_installs(name):
-    """``<script> --help`` must reach argparse with only the image's packages.
+def _run_in_image(script: Path) -> subprocess.CompletedProcess[str]:
+    """Run ``<script> --help`` in the refusing child. One code path, two callers.
 
-    ``--help`` is the cheapest command that still executes every module-level
-    import, which is where this failure lives: the image's CMD is itself a
-    ``--help``, and it was the ``--help`` that crashed.
+    The positive control below and the promised-script runs go through this
+    function together, so the control cannot pass on a child the real runs never
+    use.
     """
-    script = SCRIPTS / name
-    assert script.exists(), f"scripts/{name} is promised by this test but does not exist"
-    proc = subprocess.run(
+    return subprocess.run(
         [sys.executable, "-c", _SMOKE, json.dumps(sorted(_image_distributions())), str(script)],
         cwd=REPO,
         capture_output=True,
         text=True,
         timeout=600,
     )
+
+
+#: A plain import failure, as opposed to the child finder's own refusal, whose
+#: wording is different on purpose.
+_PLAIN_IMPORT_FAILURE = re.compile(r"No module named '([^']+)'")
+
+
+def _why_it_failed(stderr: str, image: frozenset[str]) -> str:
+    """Name which of the two failures this is, so the remedy is the right one.
+
+    The child refuses what the image lacks, and that refusal says so in its own
+    words. The other way an import can fail there is a package the image HAS and
+    this test environment does not, which the child cannot conjure up: a leg
+    that syncs no extras has none of ``[bayesian]``. Sending someone to add such
+    a package to the Dockerfile, which already installs it, is the wrong
+    direction entirely, so it is named here instead.
+    """
+    names = _PLAIN_IMPORT_FAILURE.findall(stderr)
+    if not names:
+        return ""
+    top = names[-1].split(".")[0]
+    if canonicalize_name(top) in image:
+        return (
+            f"\n{top!r} IS in the image's install set. What is missing is this "
+            "test environment's copy of it, which is a fact about the CI leg "
+            "and not about the Dockerfile: run the leg that installs the extra "
+            "carrying it. Do NOT add it to the image, which has it already."
+        )
+    return ""
+
+
+def test_a_failed_run_says_which_of_the_two_failures_it_is():
+    """The two ways the child can fail need opposite remedies.
+
+    Checked on the strings rather than by arranging each failure, because
+    arranging the second one means a package that is absent here and present on
+    another leg, which would make the test read differently depending on where
+    it runs. cmdstanpy is the example either way: it is a requirement of
+    ibnr[bayesian], so it is in the image on every leg, and it is installed only
+    on the legs that sync that extra.
+    """
+    image = _image_distributions()
+    refused = (
+        "ModuleNotFoundError: 'pytest' is not in the compute image: its "
+        "distribution 'pytest' is outside what the Dockerfile's pip install "
+        "lines put there"
+    )
+    assert _why_it_failed(refused, image) == "", (
+        "the child's own refusal is already the right message and must not be "
+        "second-guessed: that module really is outside the image"
+    )
+    assert _why_it_failed("ModuleNotFoundError: No module named 'torch'", image) == "", (
+        "torch is outside the image too, so a plain failure on it needs no further explanation"
+    )
+    leg = _why_it_failed("ModuleNotFoundError: No module named 'cmdstanpy'", image)
+    assert "IS in the image's install set" in leg and "Do NOT add it to the image" in leg, (
+        "a package the image installs went missing because this leg does not "
+        "have it, and the message does not say so. Read literally, the run "
+        "above then tells someone to add cmdstanpy to a Dockerfile that "
+        f"installs it already. Got: {leg!r}"
+    )
+
+
+def test_the_refusing_child_refuses(tmp_path):
+    """The child is the mechanism, so run it once on something it must refuse.
+
+    Without this the four runs below prove nothing on their own: with the
+    Dockerfile fixed, a child whose refusal never fires passes every one of
+    them, because the scripts then import only packages the image really has.
+    pytest is the probe because it is installed wherever this file runs and is
+    outside the image on purpose.
+    """
+    script = tmp_path / "imports_something_the_image_lacks.py"
+    script.write_text("import pytest\n", encoding="utf-8")
+    proc = _run_in_image(script)
+    assert proc.returncode != 0, (
+        "the child imported pytest, which the image does not install, and "
+        f"exited cleanly. It is refusing nothing:\n{proc.stdout}\n{proc.stderr}"
+    )
+    assert "'pytest' is not in the compute image" in proc.stderr, (
+        "the child failed, but not with its own refusal, so the run below "
+        f"would not be testing the image's install set:\n{proc.stderr}"
+    )
+
+
+@pytest.mark.parametrize("name", _promised_scripts())
+def test_every_promised_script_starts_on_what_the_image_installs(name):
+    """``<script> --help`` must reach argparse with only the image's packages.
+
+    ``--help`` is the cheapest command that still executes every module-level
+    import, which is where this failure lives: the image's CMD is itself a
+    ``--help``, and it was the ``--help`` that stopped.
+    """
+    script = SCRIPTS / name
+    assert script.exists(), f"scripts/{name} is promised by this test but does not exist"
+    proc = _run_in_image(script)
     assert proc.returncode == 0, (
         f"scripts/{name} --help cannot start inside the compute image:\n"
         f"{proc.stdout}\n{proc.stderr}"
+        f"{_why_it_failed(proc.stderr, _image_distributions())}"
     )
 
 
@@ -377,23 +540,27 @@ def test_no_promised_script_needs_a_package_the_image_lacks():
     The subprocess check above only sees what ``--help`` executes. This one
     reads the source, so a package a real run needs on a branch ``--help`` never
     takes is still found. A module this machine does not have falls back to its
-    own name as the distribution name, which is how ``torch`` is graded in a leg
-    that never installs it.
+    own name as the distribution name: that is what keeps a distribution which
+    is in the image but absent from this leg, such as cmdstanpy on the core leg,
+    from being reported as a package the image lacks.
     """
     image = _image_distributions()
     modules = md.packages_distributions()
     outside = set()
     for name in _promised_scripts():
         for where, top in _third_party_imports(name):
-            dists = [canonicalize_name(d) for d in modules.get(top, [])] or [canonicalize_name(top)]
-            if not any(dist in image for dist in dists):
+            if not any(dist in image for dist in _distribution_names(top, modules)):
                 outside.add((where, top))
     assert outside == set(ALLOWED_OUTSIDE_IMAGE), (
         "the set of imports the compute image cannot satisfy changed.\n"
         f"  newly outside the image: {sorted(outside - set(ALLOWED_OUTSIDE_IMAGE))}\n"
         f"  no longer outside:       {sorted(set(ALLOWED_OUTSIDE_IMAGE) - outside)}\n"
         "Either install the package in the image, move the import into the "
-        "branch that needs it, or add it above with the reason it is accepted."
+        "branch that needs it, or add it above with the reason it is accepted. "
+        "One case first, before doing any of those: a package that reaches the "
+        "image underneath arviz, numpyro or pymc is only reachable here on a "
+        "leg that syncs [bayesian] (see _reachable_distributions), so check the "
+        "Dockerfile before concluding the image lacks it."
     )
 
 
