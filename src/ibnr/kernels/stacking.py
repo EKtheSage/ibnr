@@ -19,17 +19,54 @@ never positionally. Two equal-length unlabelled vectors can agree with each
 other perfectly and describe different cells; the sum is permutation-invariant,
 so the fitted weights would be garbage while every total stayed plausible.
 
-**The ``-inf`` floor.** A pointwise ELPD of ``-inf`` is a legitimate verdict on
-this board ("the model gave the outcome zero density"), but bayesblend's own lpd
-reduction is the textbook max shift, which turns ``-inf`` into NaN - measured in
-this environment: ``Draws.from_lpd([-10, -inf, -9]).lpd`` -> ``[-10, nan, -9]``.
-That NaN then flows into the SLSQP objective and the weights come back NaN. So
-``-inf`` is floored at :data:`LPD_FLOOR` = -700.0 BEFORE bayesblend:
-``exp(-700)`` is ~1e-304, a weight contribution indistinguishable from zero,
-while staying a normal float - no NaN, and no exact 0.0 row to make MLE's
-``log(Y @ w)`` blow up when every member missed the same cell. The floored cell
-count is carried on the result (``n_floored_neg_inf``) so a run where the floor
-did real work is visible.
+**Relative, then floored.** bayesblend never sees the pointwise ELPD itself.
+Each cell's values are passed RELATIVE to that cell's best finite member and
+then floored at :data:`LPD_FLOOR` = -700.0, so every number bayesblend receives
+lies in ``[-700, 0]`` with each cell's best member at exactly 0. There are two
+reasons for that, and only the second one is about ``-inf``.
+
+``MleStacking`` works in linear space: it exponentiates, minimizes
+``-sum(log(Y @ w))`` and hands SLSQP the Jacobian ``1 / (Y @ w)``. The boundary
+is NOT ``exp`` underflowing to zero, which takes about -746; it is that
+reciprocal, which overflows to infinity as soon as ``Y @ w`` drops into the
+subnormals a little below -709.4. SLSQP then stops at iteration 1 with
+``success = False`` and returns its uniform starting vector, a valid simplex and
+no fit at all. Measured on 16 board-like cells: one cell at -710 shared by every
+member turned a 1.0/0.0 fit into 0.5/0.5, with the other fifteen cells at the
+usual -9. A common per-cell offset cannot move the optimum (it scales the
+mixture density at that cell by the same factor for every weight vector), so
+subtracting each cell's best finite member changes no correct answer and takes
+the matrix out of that range whatever the absolute level of the densities.
+
+A pointwise ELPD of ``-inf`` is a legitimate verdict on this board ("the model
+gave the outcome zero density"), but bayesblend's own lpd reduction is the
+textbook max shift, which turns ``-inf`` into NaN - measured in this
+environment: ``Draws.from_lpd([-10, -inf, -9]).lpd`` -> ``[-10, nan, -9]``. That
+NaN would flow into the SLSQP objective and the weights would come back NaN. The
+same floor answers it: ``exp(-700)`` is ~1e-304, a weight contribution
+indistinguishable from zero, while staying a normal float - no NaN, and no exact
+0.0 row to make ``log(Y @ w)`` blow up when every member missed the same cell.
+The count of ``-inf`` entries is carried on the result (``n_floored_neg_inf``)
+so a run where that verdict was reached is visible; a finite member clipped by
+the same floor is NOT counted, because 700 nats behind the cell's best is
+already zero at double precision and clipping it changes no weight.
+
+The order is what makes the ranking right: each cell's maximum over its FINITE
+members first, the floor second. Flooring first puts a member that gave zero
+density (floored to -700) ABOVE a finite member 800 nats back, which is the two
+verdicts the wrong way round. A cell no member covered has no finite maximum and
+uses 0.0 as its reference, so it floors to one constant across members and adds
+the same number to the objective for every weight vector - which is what "every
+member missed it" has to mean for weight fitting. Do not write the subtraction
+as ``matrix - matrix.max(axis=0)``: on such a cell that is ``-inf - -inf``,
+i.e. NaN, which is the one thing the floor exists to prevent.
+
+**The optimizer's own verdict is read.** A failed SLSQP solve is not an
+exception in bayesblend: it stores the failed ``OptimizeResult`` and returns the
+starting vector as the weights, which is finite, non-negative and sums to 1, so
+no check on the vector itself can tell it from a fitted even split.
+``_fit_weights`` refuses it by name instead, carrying scipy's status and
+message.
 
 Methods: ``"mle"`` (default, ``MleStacking`` - pure scipy, no cmdstan),
 ``"pseudo_bma"`` (``PseudoBma``, numpy/scipy), ``"bayes"`` (``BayesStacking``)
@@ -113,10 +150,14 @@ __all__ = [
     "stack",
 ]
 
-#: Where a pointwise ELPD of ``-inf`` is floored before bayesblend sees it.
-#: ``exp(-700)`` is ~1e-304: still a normal positive float (no exact-zero row in
-#: MLE's ``log(Y @ w)``), yet a weight contribution indistinguishable from 0.
-#: bayesblend's own max-shift lpd reduction turns a raw ``-inf`` into NaN.
+#: How far below its cell's best finite member a pointwise ELPD may reach before
+#: bayesblend sees it. ``exp(-700)`` is ~1e-304: still a normal positive float
+#: (no exact-zero row in MLE's ``log(Y @ w)``), yet a weight contribution
+#: indistinguishable from 0. It has to stay above about -709.4, where ``Y @ w``
+#: enters the subnormals and the Jacobian's ``1 / (Y @ w)`` overflows; ``exp``
+#: itself does not reach zero until about -746, which is the wrong boundary and
+#: 36 nats too late. It catches ``-inf`` too, which bayesblend's own max-shift
+#: lpd reduction would otherwise turn into NaN.
 LPD_FLOOR: float = -700.0
 
 #: method name -> the bayesblend fitter it resolves to (resolved lazily inside
@@ -144,9 +185,13 @@ class StackingResult:
     ``method``             key into :data:`METHODS`.
     ``n_cells_weight_fit`` cells the weights were fitted on (the weight panel's
                            ELPD panel size).
-    ``n_floored_neg_inf``  (model, cell) lpd entries floored at
-                           :data:`LPD_FLOOR`. Nonzero means some member gave
-                           some weight-panel outcome zero density.
+    ``n_floored_neg_inf``  (model, cell) entries whose pointwise ELPD was
+                           ``-inf``. Nonzero means some member gave some
+                           outcome the weights were fitted on zero density. A
+                           finite member clipped by :data:`LPD_FLOOR` is not
+                           counted here: 700 nats behind its cell's best is
+                           already zero at double precision, so the clip is
+                           numerics rather than a verdict.
     ``weights_as_of``      the weight panel's cutoff - strictly earlier than
                            the evaluation cutoff, by construction.
     ``weights_fingerprint`` the weight panel's ``elpd_fingerprint``, so the cell
@@ -336,20 +381,20 @@ def _one(name: str, values: set):
 
 
 def _lpd_matrix(panel: ForecastPanel) -> tuple[dict[str, np.ndarray], np.ndarray, int]:
-    """Per member, the pointwise ELPD over the panel's ELPD cells, floored.
+    """Per member, the pointwise ELPD over the ELPD cells, relative and floored.
 
     Every model's vector is sorted by the SAME canonical key order (the panel's
     key columns), and the key sequences are checked identical across members -
-    the pivot is by key, never by position. Returns ``(lpd_by_model, dev_lag,
-    n_floored)`` with ``dev_lag`` in the same canonical order (the hierarchical
-    method's covariate).
+    the pivot is by key, never by position. The values are then handed to
+    :func:`_relative_lpd`, which is what bayesblend actually receives. Returns
+    ``(lpd_by_model, dev_lag, n_floored)`` with ``dev_lag`` in the same
+    canonical order (the hierarchical method's covariate).
     """
     pointwise = panel.pointwise
     live = pointwise[pointwise["on_elpd_panel"] & pointwise["model"].isin(panel.elpd_members)]
     out: dict[str, np.ndarray] = {}
     reference_keys: list | None = None
     dev_lag = np.empty(0)
-    n_floored = 0
     for model in panel.elpd_members:
         mine = live[live["model"] == model].sort_values(panel.key_columns, kind="stable")
         keys = mine["key"].tolist()
@@ -369,11 +414,43 @@ def _lpd_matrix(panel: ForecastPanel) -> tuple[dict[str, np.ndarray], np.ndarray
                 "(-inf is the legitimate zero-density verdict), find it rather than fit "
                 "weights around it"
             )
-        floored = np.isneginf(values)
-        n_floored += int(floored.sum())
-        values = np.where(floored, LPD_FLOOR, values)
         out[model] = values
-    return out, dev_lag, n_floored
+    relative, n_floored = _relative_lpd(out)
+    return relative, dev_lag, n_floored
+
+
+def _relative_lpd(lpd: Mapping[str, np.ndarray]) -> tuple[dict[str, np.ndarray], int]:
+    """Each cell's pointwise ELPD relative to that cell's best finite member.
+
+    The returned values are in ``[LPD_FLOOR, 0]``, with each cell's best member
+    at exactly 0, whatever the absolute level of the densities was. That is what
+    keeps ``MleStacking``'s linear-space arithmetic away from the subnormals,
+    where its Jacobian overflows and SLSQP hands back its starting vector; the
+    optimum itself is unchanged, because a common per-cell offset scales the
+    mixture density at that cell by the same factor for every weight vector. The
+    module docstring has the boundary and the reason the order matters.
+
+    Also returns the count of ``-inf`` entries, which is the zero-density
+    verdict and goes on the record. Finite entries clipped by the same floor are
+    not counted: they are already zero at double precision.
+    """
+    names = list(lpd)
+    matrix = np.vstack([lpd[name] for name in names])
+    finite = np.isfinite(matrix)
+    n_neg_inf = int(np.isneginf(matrix).sum())
+    # A cell with no finite member has no reference to be relative to, so it
+    # takes 0.0 and floors to one constant across members: uninformative, which
+    # is what "every member missed it" means here. Do NOT let -inf into the
+    # maximum, in either direction: including it makes an all-missed cell NaN,
+    # and flooring before the maximum ranks a zero-density member above a finite
+    # one further back.
+    best = np.where(
+        finite.any(axis=0),
+        np.max(np.where(finite, matrix, -np.inf), axis=0),
+        0.0,
+    )
+    relative = np.maximum(matrix - best, LPD_FLOOR)
+    return {name: relative[i] for i, name in enumerate(names)}, n_neg_inf
 
 
 def _fit_weights(
@@ -393,6 +470,18 @@ def _fit_weights(
     draws = {model: bayesblend.Draws.from_lpd(values) for model, values in lpd.items()}
     if method == "mle":
         fitted = bayesblend.MleStacking(draws).fit()
+        # bayesblend does not raise on a failed solve: it keeps the failed
+        # OptimizeResult and returns SLSQP's starting point as the weights,
+        # which is uniform 1/K - finite, non-negative and summing to 1, so no
+        # check on the vector can tell it from a fitted even split.
+        solve = fitted.model_info
+        if not solve.success:
+            raise RuntimeError(
+                f"MleStacking's SLSQP solve did not converge (status {solve.status}: "
+                f"{solve.message!r}, objective {solve.fun!r} after {solve.nit} "
+                "iteration(s)). The weights bayesblend hands back are its STARTING "
+                "vector, uniform 1/K: a valid simplex and no fit at all"
+            )
     elif method == "pseudo_bma":
         fitted = bayesblend.PseudoBma(draws, seed=seed).fit()
     elif method == "bayes":
