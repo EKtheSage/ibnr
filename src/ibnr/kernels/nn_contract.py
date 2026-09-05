@@ -53,7 +53,11 @@ CORE CONVENTIONS
 - Calendar index ``cal_idx[w, d] = w + d + 1`` is the 1-based diagonal number
   (cell (0,0) sits on diagonal 1). Constant calendar time = constant
   cal_idx, which is what ``as_of``/eval_date means on a dense grid; it drives
-  cutoff augmentation and the eval_date-style validation split.
+  cutoff augmentation and the eval_date-style validation split. That equality
+  holds only while ONE ORIGIN STEP IS ONE DEV STEP: a gap in the pooled origin
+  axis, or annual origins on a quarterly dev grain, makes ``w + d`` something
+  other than calendar time, so both geometries are refused by name (see
+  ``contract.require_origin_axis_step``) rather than quietly indexed.
 
 THE CONTRACT - keys returned by ``nn_data`` (shape; dtype; meaning). n_c =
 kept cohorts, n_f = channels (= 1 + len(feature_fields)), n_w origins,
@@ -124,7 +128,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ibnr.kernels.contract import _as_date
+from ibnr.kernels.contract import _as_date, require_origin_axis_step
 from ibnr.triangle.core import GRAIN_MONTHS, Triangle
 
 #: segment columns that are display-only and never define a cohort
@@ -315,6 +319,10 @@ def nn_data(
     # to sit in the same (w, d) coordinate system, and a cohort that lacks an
     # origin is just masked out rather than shifted
     origins = sorted(df["origin_period"].unique())
+    # cal_idx = w + d + 1 below is calendar time only while one origin step is one
+    # dev step, and the validation split, the cutoff augmentation and the held-out
+    # cutoff all read it as the evaluation date
+    require_origin_axis_step(origins, step=step)
     n_w, n_d = len(origins), int(df["d"].max())
     w_of = {o: w for w, o in enumerate(origins)}
     n_f = len(fields)
@@ -459,7 +467,10 @@ def nn_data(
 
     # calendar/diagonal index: cells with equal w + d share an evaluation date,
     # so cal_idx is the dense-grid stand-in for eval_date. +1 makes it the
-    # 1-based diagonal number (the first diagonal, dev 12 months, is 1).
+    # 1-based diagonal number (the first diagonal, dev 12 months, is 1). Cells
+    # with equal w + d share an evaluation date BECAUSE the origin axis was
+    # checked to step by one dev step above; without that check the two are
+    # different clocks and this grid is not eval_date at all.
     w_grid, d_grid = np.meshgrid(np.arange(n_w), np.arange(n_d), indexing="ij")
     # see the module docstring for the per-key contract
     return {

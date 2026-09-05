@@ -15,6 +15,24 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
+## Unreleased
+
+### An origin axis that is not one dev step apart is refused by name
+
+`nn_data`'s calendar index `cal_idx = w + d + 1` and `stan_data`'s `prev_idx`
+both read the origin index and the dev index as one shared clock, which they are
+only while one origin step equals one dev step. Two geometries break that
+without being malformed data: a gap in the pooled origin axis (accident years
+2010, 2012 and 2013, with 2011 missing) and annual origins on a quarterly dev
+grain. On the first of those, three cells whose real evaluation date was
+2013-12-31 were given calendar indices 4, 3 and 3, so the validation split held
+one of them out and trained on the other two, which is training on the diagonal
+it is scored on. Nothing raised and nothing about the result looked wrong. Both
+geometries are now refused, with a message naming the offending pair of origins,
+the gap in months and what to do about it. The check is on the pooled origin
+axis, so a single cohort that skips an accident year its neighbours carry is
+unaffected: it keeps its row on the shared axis and is masked out as before.
+
 ## 0.5.8 - 2026-08-24
 
 A one-feature release: `nn_transformer_ml` gains held-out scoring (#105), the

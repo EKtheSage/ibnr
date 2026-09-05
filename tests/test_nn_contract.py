@@ -696,3 +696,80 @@ def test_cutoff_masks_partition():
     np.testing.assert_array_equal(target, obs & (cal > 2))
     assert not (context & target).any()
     np.testing.assert_array_equal(context | target, obs)
+
+
+# -- the pooled origin axis has to be one dev step apart --------------------------
+
+
+def _pooled_origin_triangle(
+    backend_name: str,
+    origin_years,
+    dev_lags,
+    *,
+    dev_grain: str = "Y",
+    through: str = "2013-12-31",
+) -> Triangle:
+    """One cohort on a caller-chosen origin/dev geometry, with premium on every cell.
+
+    ``nn_data`` builds ONE origin axis shared by every cohort, so the geometry that
+    matters is the pooled set of origins and the declared dev grain - which is what
+    this varies. Cells past ``through`` are absent, the usual run-off shape.
+    """
+    limit = dt.date.fromisoformat(through)
+    rows = []
+    for year in origin_years:
+        origin = dt.date(year, 1, 1)
+        for lag in dev_lags:
+            ev = (pd.Timestamp(origin) + pd.DateOffset(months=lag) - pd.Timedelta(days=1)).date()
+            if ev > limit:
+                continue
+            for field, value in (("paid_loss", 100.0 + lag), ("earned_premium", 1000.0)):
+                rows.append(
+                    {
+                        "company_code": "0001",
+                        "line_of_business": "lob_a",
+                        "origin_period": origin,
+                        "dev_lag": lag,
+                        "eval_date": ev,
+                        "field": field,
+                        "value": value,
+                    }
+                )
+    return Triangle.from_long(
+        pd.DataFrame(rows),
+        measure="cumulative",
+        origin_grain="Y",
+        dev_grain=dev_grain,
+        backend=backend_name,
+    )
+
+
+def test_nn_data_refuses_a_gap_in_the_pooled_origin_axis(backend_name):
+    """Accident years 2010, 2012, 2013 - 2011 is missing from every cohort.
+
+    ``cal_idx = w + d + 1`` is the evaluation date the validation split, the cutoff
+    augmentation and the held-out cutoff all slice on, and it is calendar time only
+    while one origin step is one dev step. With 2011 absent it is not: measured on
+    this triangle, the three cells that really sit on the 2013-12-31 diagonal get
+    cal_idx 4, 3 and 3, so the split holds out one of them and trains on the other
+    two - training on data from the diagonal it is scored on.
+    """
+    t = _pooled_origin_triangle(backend_name, (2010, 2012, 2013), (12, 24, 36, 48))
+    with pytest.raises(ValueError, match="origin axis") as exc:
+        nn_data(t, loss_field="paid_loss", premium_field="earned_premium")
+    assert "2010-01-01" in str(exc.value) and "2012-01-01" in str(exc.value)
+
+
+def test_nn_data_refuses_annual_origins_on_a_quarterly_dev_grain(backend_name):
+    """The same fault without any gap: annual origins, quarterly development.
+
+    Every origin step is 12 months and every dev step is 3, so moving one row down
+    the grid advances four diagonals while ``cal_idx`` advances one. The origins are
+    contiguous and the ages are on the grain; the geometry is still not one the
+    calendar index can describe.
+    """
+    t = _pooled_origin_triangle(
+        backend_name, (2010, 2011, 2012, 2013), [3 * k for k in range(1, 17)], dev_grain="Q"
+    )
+    with pytest.raises(ValueError, match="origin axis"):
+        nn_data(t, loss_field="paid_loss", premium_field="earned_premium")

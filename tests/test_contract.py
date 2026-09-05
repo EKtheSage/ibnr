@@ -298,3 +298,62 @@ def test_realized_values():
     # only the 2020 origin has reached dev 36 in this triangle
     np.testing.assert_allclose(realized[0], 175.0)
     assert np.isnan(realized[1]) and np.isnan(realized[2])
+
+
+# -- grid geometry: the origin axis and the dev-age boundary ---------------------
+
+
+def _month_end(origin: str, dev_lag: int):
+    """Last day of the month that ``origin + dev_lag`` months lands in."""
+    return (pd.Timestamp(origin) + pd.DateOffset(months=dev_lag) - pd.Timedelta(days=1)).date()
+
+
+def _geometry_triangle(origin_years, dev_lags, *, lines=("lob_a",), through="2021-03-31"):
+    """One company's cells on a caller-chosen origin/dev geometry.
+
+    Carries paid_loss, reported_loss and earned_premium on every cell, and takes a
+    second line on request, so the same triangle can be handed to all six contract
+    builders. Cells whose evaluation date is past ``through`` are simply absent,
+    which is what makes the shape a run-off staircase.
+    """
+    rows = []
+    limit = pd.Timestamp(through).date()
+    for lob in lines:
+        for year in origin_years:
+            origin = f"{year}-01-01"
+            for lag in dev_lags:
+                ev = _month_end(origin, lag)
+                if ev > limit:
+                    continue
+                for field, value in (
+                    ("paid_loss", 100.0 + lag),
+                    ("reported_loss", 125.0 + lag),
+                    ("earned_premium", 1000.0),
+                ):
+                    rows.append(
+                        {
+                            "company": "co1",
+                            "line_of_business": lob,
+                            "origin_period": pd.Timestamp(origin).date(),
+                            "dev_lag": lag,
+                            "eval_date": ev,
+                            "field": field,
+                            "value": value,
+                        }
+                    )
+    return Triangle.from_long(pd.DataFrame(rows), measure="cumulative")
+
+
+def test_stan_data_refuses_a_gapped_origin_axis():
+    """An origin axis with a hole in it, through the cross-classified contract.
+
+    The origin index ``w`` and the dev index ``d`` are one shared calendar clock:
+    stepping from origin w to w+1 is meant to be one elapsed development period.
+    With 2020 absent, origin 2021 sits two years after 2019 but one index step
+    after it, so ``prev_idx`` links cells two calendar years apart as if they were
+    neighbours. The triangle is refused rather than quietly re-indexed.
+    """
+    t = _geometry_triangle((2019, 2021, 2022), (12, 24, 36), through="2022-12-31")
+    with pytest.raises(ValueError, match="origin axis") as exc:
+        stan_data(t, loss_field="paid_loss")
+    assert "2019-01-01" in str(exc.value) and "2021-01-01" in str(exc.value)

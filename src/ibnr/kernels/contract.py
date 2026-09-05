@@ -110,6 +110,10 @@ def stan_data(
         raise ValueError(f"dev_lag values are not multiples of the {step}-month dev grain")
 
     origins = sorted(df["origin_period"].unique())
+    # w and d are one shared calendar clock here - prev_idx links origin w-1 to
+    # origin w as one elapsed development period - so the origin axis has to step
+    # by exactly one dev step
+    require_origin_axis_step(origins, step=step)
     dev_steps = sorted((df["dev_lag"] // step).unique())
     if dev_steps[0] < 1:
         raise ValueError("dev_lag must be positive")
@@ -665,3 +669,53 @@ def _as_date(series):
     if str(series.dtype).startswith("datetime64"):
         return series.dt.date
     return series
+
+
+def _months_between(a: dt.date, b: dt.date) -> int:
+    return (b.year - a.year) * 12 + b.month - a.month
+
+
+def require_origin_axis_step(origins: list[dt.date], *, step: int) -> None:
+    """Refuse an origin axis whose consecutive periods are not one dev step apart.
+
+    ``stan_data`` and ``nn_data`` both index a cell by a pair of integers, origin
+    index ``w`` and dev step ``d``, and both then read those two as one shared
+    calendar clock. In ``nn_data`` it is explicit: ``cal_idx = w + d + 1`` is the
+    diagonal number that the validation split, the cutoff augmentation and the
+    held-out cutoff all slice on, standing in for the evaluation date. In
+    ``stan_data`` it is the step from one origin to the next, which ``prev_idx``
+    links as one elapsed development period.
+
+    Both readings hold only while one origin step equals one dev step. Two
+    geometries break it, and neither one is malformed data:
+
+    * an origin axis with a hole in it (accident years 2010, 2012, 2013), where the
+      index advances one step over two calendar years;
+    * annual origins on a quarterly dev grain, where each row of the grid sits four
+      diagonals below the row above it but one ``cal_idx`` apart.
+
+    Measured on the first: three cells whose real evaluation date is 2013-12-31 are
+    given cal_idx 4, 3 and 3, so the validation split holds one of them out and
+    trains on the other two - it trains on the diagonal it is scored on. Nothing
+    raises, and nothing about the result looks wrong.
+
+    The axis checked here is the POOLED one, the union of origins over every
+    cohort, so one cohort that skips an accident year its neighbours carry is
+    unaffected: it keeps its row on the shared axis and is simply masked out.
+    """
+    pairs = list(zip(origins[:-1], origins[1:], strict=True))
+    bad = [(a, b, _months_between(a, b)) for a, b in pairs if _months_between(a, b) != step]
+    if not bad:
+        return
+    a, b, gap = bad[0]
+    raise ValueError(
+        f"the origin axis is not spaced one dev step apart: {a} to {b} is {gap} months "
+        f"against a {step}-month dev grain ({len(bad)} of {len(pairs)} origin steps). The "
+        "origin index w and the dev index d are read as one shared calendar clock: the "
+        "neural contract's cal_idx = w + d + 1 is the evaluation date that the validation "
+        "split, the cutoff augmentation and the held-out cutoff all slice on, and the "
+        "cross-classified models step from one origin to the next as one elapsed "
+        "development period. Neither is calendar time when one origin step is not one dev "
+        "step. Restrict the triangle to a contiguous run of origins, or bring the dev "
+        "grain to the origin step with with_dev_grain()."
+    )
