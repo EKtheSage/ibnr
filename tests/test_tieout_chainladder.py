@@ -92,6 +92,10 @@ def test_to_chainladder_refuses_misaligned_rows(backend_name):
     12 and 150 at dev 24 both carried at 12/31/2021, used to export as a single
     245.0 at dev 24. The round trips above are the aligned control, where
     eval_date and dev_lag agree on every row and the export is faithful.
+
+    The message is checked past its first phrase, so the operation's own name and
+    the note that slicing does not repair the row, both of which this caller
+    passes in, are covered by a test rather than only by reading the code.
     """
     rows = [
         ("2020-01-01", 12, "2021-12-31", 95.0),  # eval_date says dev 24, not 12
@@ -102,7 +106,7 @@ def test_to_chainladder_refuses_misaligned_rows(backend_name):
     df["eval_date"] = pd.to_datetime(df["eval_date"]).dt.date
     df["field"] = "paid_loss"
     t = Triangle.from_long(df, measure="cumulative", backend=backend_name)
-    with pytest.raises(ValueError, match="does not align"):
+    with pytest.raises(ValueError, match=r"does not align.*to_chainladder\(\).*as_of\(\)"):
         t.to_chainladder()
 
 

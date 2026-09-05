@@ -206,25 +206,35 @@ def test_origin_grain_refuses_misaligned_rows(backend_name):
     which is a wrong number rather than a missing one. Refuse it by name.
 
     The rows are ``test_origin_grain``'s quarterly fixture (which still passes,
-    unchanged, as the aligned control) plus one restated Q2 dev-9 value carried at
-    the 12/31/2021 eval, where dev 21 is the aligned lag.
+    unchanged, as the aligned control) plus one row that disagrees with its
+    eval_date. Both directions of that disagreement are checked, because a
+    comparison written one way round would refuse the first and accept the
+    second: the extra row is carried either later than its stored dev_lag says
+    (dev 9 at the 12/31/2021 eval, where 21 is the aligned lag) or earlier (dev
+    21 at the 12/31/2020 eval, where 9 is).
+
+    The message is checked past its first phrase as well. ``operation`` and
+    ``reason`` are arguments the caller passes in, so a test that only looked for
+    the shared "does not align" wording could not tell whether they arrived.
     """
-    rows = [
+    aligned = [
         ("2020-01-01", 12, "2020-12-31", 40.0),
         ("2020-04-01", 9, "2020-12-31", 30.0),
         ("2020-01-01", 24, "2021-12-31", 60.0),
         ("2020-04-01", 21, "2021-12-31", 45.0),
-        ("2020-04-01", 9, "2021-12-31", 33.0),  # eval_date says dev 21, not 9
     ]
-    t = Triangle.from_long(
-        _origin_grain_frame(rows),
-        measure="cumulative",
-        origin_grain="Q",
-        dev_grain="Q",
-        backend=backend_name,
-    )
-    with pytest.raises(ValueError, match="does not align"):
-        t.with_origin_grain("Y")
+    carried_later = ("2020-04-01", 9, "2021-12-31", 33.0)  # eval_date says dev 21
+    carried_earlier = ("2020-04-01", 21, "2020-12-31", 33.0)  # eval_date says dev 9
+    for extra in (carried_later, carried_earlier):
+        t = Triangle.from_long(
+            _origin_grain_frame([*aligned, extra]),
+            measure="cumulative",
+            origin_grain="Q",
+            dev_grain="Q",
+            backend=backend_name,
+        )
+        with pytest.raises(ValueError, match=r"does not align.*with_origin_grain\(\).*as_of\(\)"):
+            t.with_origin_grain("Y")
 
 
 def test_as_of_drops_restatements(backend_name):
