@@ -33,6 +33,34 @@ the gap in months and what to do about it. The check is on the pooled origin
 axis, so a single cohort that skips an accident year its neighbours carry is
 unaffected: it keeps its row on the shared axis and is masked out as before.
 
+### Anchored dev ages validate, and are refused by name at the kernel doors
+
+`with_dev_grain('Y')` on a triangle whose latest valuation is a March 31 gives
+dev ages 3, 15, 27, matching chainladder's `grain('OYDY')` exactly, which is what
+the tie-out test asserts. `validate` then reported all 156 rows of that triangle
+as broken and `validate(strict=True)` raised on it, because the rule asked for a
+multiple of the grain rather than for one shared offset. The rule now asks every
+row to share ONE offset against the declared grain, with the offset at the latest
+evaluation date as the anchor, and reports the offsets it found when they are
+mixed. That is a strict relaxation: a triangle mixing 9-month and 12-month ages,
+or carrying a dev age of zero, is still reported.
+
+The kernels take the opposite decision and now say so. Ages off the grain
+boundary are a coherent triangle and are not a grid a contract can index, since
+every contract stores a cell at `dev_lag // step`, so one helper,
+`kernels.contract.dev_step_index`, replaces the six copies of that check and
+refuses them by name: it gives the step, the offsets it measured, example ages,
+the cause and the two ways out. `kernels.holdout` keeps its own check, which is
+about a fit rather than a triangle.
+
+`from_bermuda` now reads the dev grain from bermuda's `eval_date_resolution`
+instead of reusing the origin grain, and refuses a resolution it cannot represent
+(six months, say) rather than rounding it. Annual periods observed every quarter
+used to come back declared OYDY with every cell intact under a wrong label, and
+`to_incremental` then kept 2 rows out of 8, looking for each cell's predecessor
+12 months back. The origin grain remains the fallback for a single-diagonal
+triangle, where the data does not say.
+
 ## 0.5.8 - 2026-08-24
 
 A one-feature release: `nn_transformer_ml` gains held-out scoring (#105), the

@@ -38,11 +38,54 @@ def eval_alignment(t: Triangle) -> list[str]:
 
 
 def dev_lag_on_grain(t: Triangle) -> list[str]:
-    """dev_lag (months) should be a positive multiple of the declared dev grain."""
+    """dev_lag (months) must be positive, and every row must share ONE offset
+    against the declared dev grain.
+
+    Not "a multiple of the grain". chainladder anchors dev buckets to the LATEST
+    diagonal, so a triangle regrained to an annual dev grain from a March 31
+    valuation carries ages 3, 15, 27: a perfectly regular annual triangle whose
+    offset happens to be 3 rather than 0. The old rule reported every one of those
+    rows as a finding - 156 of them on chainladder's quarterly sample, through
+    chainladder's own ``grain('OYDY')`` and through our ``with_dev_grain('Y')``
+    alike, with ``validate(strict=True)`` raising on a triangle the tie-out test
+    asserts we reproduce cell for cell.
+
+    What is genuinely wrong is a triangle that MIXES offsets: two ages that are
+    not a whole number of dev steps apart cannot both be a development period of
+    the declared length, and ``dev_lag // step`` floors them onto the same step.
+    The anchor is the offset carried by the latest evaluation date, since that is
+    the diagonal the bucketing was anchored on.
+
+    A strict relaxation of the old rule: everything it flagged that is really
+    broken is still flagged. It is deliberately NOT what the kernels accept - a
+    consistently anchored triangle is coherent and is still not a grid the
+    contracts can index, so ``kernels.contract.dev_step_index`` refuses it
+    separately, by name, at the door of every contract.
+    """
     step = GRAIN_MONTHS[t.meta.dev_grain]
     e = t.expr
-    n = int(e.filter((e.dev_lag <= 0) | (e.dev_lag % step != 0)).count().execute())
-    return [f"{n} rows where dev_lag is not a positive multiple of {step} months"] if n else []
+    issues = []
+    n = int(e.filter(e.dev_lag <= 0).count().execute())
+    if n:
+        issues.append(f"{n} rows where dev_lag is not positive")
+    # mutate the offset into a REAL column before reading it back: a derived
+    # expression that lives only inside a predicate is the polars-backend trap
+    # documented in transforms.py
+    off = e.mutate(_dev_offset=e.dev_lag % step)
+    # one small frame rather than several queries: at most (eval dates x offsets)
+    # rows, and the anchor has to be picked out of the same set that finds them
+    pairs = off.select("eval_date", "_dev_offset").distinct().execute()
+    found = sorted({int(v) for v in pairs["_dev_offset"]})
+    if len(found) <= 1:  # also the empty-triangle case, which is clean
+        return issues
+    latest = pairs["eval_date"].max()
+    anchor = min(int(v) for v in pairs.loc[pairs["eval_date"] == latest, "_dev_offset"])
+    bad = int(off.filter(off["_dev_offset"] != anchor).count().execute())
+    issues.append(
+        f"{bad} rows whose dev_lag offset against the {step}-month dev grain is not "
+        f"{anchor}: offsets found {found}, anchor taken from the latest eval_date {latest}"
+    )
+    return issues
 
 
 def null_values(t: Triangle) -> list[str]:

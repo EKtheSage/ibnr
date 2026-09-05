@@ -67,8 +67,47 @@ def test_eval_misalignment(backend_name):
 
 
 def test_dev_lag_off_grain(backend_name):
-    t = _tri(backend_name, [("2020-01-01", 9, "2020-09-30", 1.0)])
-    assert any("multiple of 12 months" in i for i in t.validate(strict=False))
+    """Two diagonals on DIFFERENT offsets against the declared annual grain, plus a
+    non-positive age.
+
+    Mixing a 9-month age with a 12-month one means the two are not a whole number
+    of dev steps apart, so ``dev_lag // 12`` floors them onto the same step. And
+    dev_lag 0 is not a development age at all: dev_lag counts months from the
+    origin period start, so the first annual cell is 12.
+    """
+    mixed = _tri(
+        backend_name,
+        [("2020-01-01", 9, "2020-09-30", 1.0), ("2020-01-01", 12, "2020-12-31", 2.0)],
+    )
+    assert any("offset" in i for i in mixed.validate(strict=False))
+
+    zero = _tri(
+        backend_name,
+        [("2020-01-01", 0, "2019-12-31", 1.0), ("2020-01-01", 12, "2020-12-31", 2.0)],
+    )
+    assert any("not positive" in i for i in zero.validate(strict=False))
+
+
+def test_anchored_dev_ages_are_on_grain(backend_name):
+    """Ages 3, 15, 27 on an ANNUAL dev grain are a clean triangle, not a finding.
+
+    This is what chainladder's ``grain('OYDY')`` and our ``with_dev_grain('Y')``
+    both produce when the latest valuation is a March 31: dev buckets are anchored
+    to the latest diagonal, so the ages step by 12 months from an offset of 3
+    rather than from 0. The rule is that every row shares ONE offset, not that the
+    offset is zero - the old rule called chainladder's own output invalid, on all
+    156 rows of its quarterly sample.
+    """
+    rows = [
+        ("2019-01-01", 3, "2019-03-31", 1.0),
+        ("2019-01-01", 15, "2020-03-31", 2.0),
+        ("2019-01-01", 27, "2021-03-31", 3.0),
+        ("2020-01-01", 3, "2020-03-31", 4.0),
+        ("2020-01-01", 15, "2021-03-31", 5.0),
+    ]
+    t = _tri(backend_name, rows)
+    assert t.dev_lags == [3, 15, 27]
+    assert t.validate(strict=False) == []
 
 
 def test_validate_handles_an_empty_triangle(backend_name):

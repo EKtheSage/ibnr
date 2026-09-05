@@ -106,22 +106,17 @@ def stan_data(
     df["origin_period"] = _as_date(df["origin_period"])
     df["eval_date"] = _as_date(df["eval_date"])
     step = GRAIN_MONTHS[triangle.meta.dev_grain]
-    if (df["dev_lag"] % step != 0).any():
-        raise ValueError(f"dev_lag values are not multiples of the {step}-month dev grain")
+    df["d"] = dev_step_index(df["dev_lag"], step=step)
 
     origins = sorted(df["origin_period"].unique())
     # w and d are one shared calendar clock here - prev_idx links origin w-1 to
     # origin w as one elapsed development period - so the origin axis has to step
     # by exactly one dev step
     require_origin_axis_step(origins, step=step)
-    dev_steps = sorted((df["dev_lag"] // step).unique())
-    if dev_steps[0] < 1:
-        raise ValueError("dev_lag must be positive")
-    n_w, n_d = len(origins), int(dev_steps[-1])
+    n_w, n_d = len(origins), int(df["d"].max())
     w_of = {o: i + 1 for i, o in enumerate(origins)}
 
     df["w"] = df["origin_period"].map(w_of)
-    df["d"] = (df["dev_lag"] // step).astype(int)
     if df.duplicated(["w", "d"]).any():
         raise ValueError(
             "multiple rows per (origin, dev) cell; slice with as_of()/latest_diagonal() first"
@@ -259,18 +254,13 @@ def odp_stan_data(
     df["origin_period"] = _as_date(df["origin_period"])
     df["eval_date"] = _as_date(df["eval_date"])
     step = GRAIN_MONTHS[triangle.meta.dev_grain]
-    if (df["dev_lag"] % step != 0).any():
-        raise ValueError(f"dev_lag values are not multiples of the {step}-month dev grain")
+    df["d"] = dev_step_index(df["dev_lag"], step=step)
 
     origins = sorted(df["origin_period"].unique())
-    dev_steps = sorted((df["dev_lag"] // step).unique())
-    if dev_steps[0] < 1:
-        raise ValueError("dev_lag must be positive")
-    n_w, n_d = len(origins), int(dev_steps[-1])
+    n_w, n_d = len(origins), int(df["d"].max())
     w_of = {o: i + 1 for i, o in enumerate(origins)}
 
     df["w"] = df["origin_period"].map(w_of)
-    df["d"] = (df["dev_lag"] // step).astype(int)
     if df.duplicated(["w", "d"]).any():
         raise ValueError(
             "multiple rows per (origin, dev) cell; slice with as_of()/latest_diagonal() first"
@@ -366,8 +356,9 @@ def compartmental_stan_data(
     df["origin_period"] = _as_date(df["origin_period"])
     df["eval_date"] = _as_date(df["eval_date"])
     step = GRAIN_MONTHS[triangle.meta.dev_grain]
-    if (df["dev_lag"] % step != 0).any():
-        raise ValueError(f"dev_lag values are not multiples of the {step}-month dev grain")
+    # on `df`, before the pivot: the pivot indexes on dev_lag, so an age off the
+    # grain boundary would become a column of the grid rather than an error
+    dev_step_index(df["dev_lag"], step=step)
 
     wide = df.pivot_table(
         index=["origin_period", "dev_lag"], columns="field", values="value", aggfunc="first"
@@ -386,13 +377,10 @@ def compartmental_stan_data(
     wide = wide.reset_index()
 
     origins = sorted(wide["origin_period"].unique())
-    dev_steps = sorted((wide["dev_lag"] // step).unique())
-    if dev_steps[0] < 1:
-        raise ValueError("dev_lag must be positive")
-    n_w, n_d = len(origins), int(dev_steps[-1])
+    wide["d"] = dev_step_index(wide["dev_lag"], step=step)
+    n_w, n_d = len(origins), int(wide["d"].max())
     w_of = {o: i + 1 for i, o in enumerate(origins)}
     wide["w"] = wide["origin_period"].map(w_of)
-    wide["d"] = (wide["dev_lag"] // step).astype(int)
     wide = wide.sort_values(["w", "d"]).reset_index(drop=True)
 
     # the paid anchors (and the lognormal variant's incremental differencing)
@@ -587,12 +575,7 @@ def cohort_grid_frame(
     # loop, so per-row pandas iteration here would put the loop's cost right
     # back after the engine round-trips were removed.
     step = dev_grain_months
-    dev = df["dev_lag"].to_numpy(dtype=np.int64)
-    if (dev % step != 0).any():
-        raise ValueError(f"dev_lag values are not multiples of the {step}-month dev grain")
-    d = dev // step
-    if (d < 1).any():
-        raise ValueError("dev_lag must be positive")
+    d = dev_step_index(df["dev_lag"], step=step)
     w_idx, origin_arr = pd.factorize(_as_date(df["origin_period"]), sort=True)
     origins = list(origin_arr)
     n_w, n_d = len(origins), int(d.max())
@@ -669,6 +652,59 @@ def _as_date(series):
     if str(series.dtype).startswith("datetime64"):
         return series.dt.date
     return series
+
+
+def dev_step_index(dev_lag, *, step: int) -> np.ndarray:
+    """The 1-based dev step index ``d = dev_lag // step``, or a refusal by name.
+
+    Every contract in this package - the three Stan ones, the dense cohort grid,
+    the multi-LOB grid and the neural grids - stores a cell at dev index
+    ``dev_lag // step`` and reads dev step 1 as the first development period.
+    Two things break that division and both used to be checked separately in six
+    places, in six copies of two lines:
+
+    * an age that is not a whole number of dev steps. Floor division does not
+      refuse it, it moves it: on a 12-month grain, ages 3, 15, 27 land on steps 0,
+      1, 2 rather than 1, 2, 3, so every origin reads one development period
+      younger than it is and the first cell falls off the grid entirely. Those
+      exact ages are what chainladder's latest-diagonal anchoring produces, and
+      what our own ``with_dev_grain`` produces to match it, whenever the latest
+      valuation is a March 31 - so this is a shape the triangle layer emits, not
+      one only bad input can reach. It is a coherent triangle (``validate``
+      accepts it: every age shares one offset) and it is not a grid these
+      contracts can index, which is why the refusal is here and not there.
+    * a non-positive age. ``dev_lag`` counts months from the origin period start,
+      so the first cell of a 12-month grain is at 12; a zero or negative age would
+      index step 0 or below.
+
+    Returns an ``int64`` array aligned with the input, so a caller can assign it
+    straight into its frame.
+    """
+    months = np.asarray(dev_lag, dtype=np.int64)
+    offsets = months % step
+    off_grain = offsets != 0
+    if off_grain.any():
+        ages = sorted({int(a) for a in np.unique(months[off_grain])})
+        found = sorted({int(o) for o in np.unique(offsets)})
+        raise ValueError(
+            f"{int(off_grain.sum())} dev_lag value(s) are not on a {step}-month grain "
+            f"boundary: ages {ages[:5]} leave offsets {found} against the declared dev "
+            f"grain. Every contract indexes a cell by d = dev_lag // {step}, so an age off "
+            "the boundary is floored onto the step below it and the whole triangle reads "
+            "one development period younger. This is what chainladder's latest-diagonal "
+            "anchoring produces: a March 31 valuation regrained to an annual dev grain "
+            "gives ages 3, 15, 27 rather than 12, 24, 36. Slice with as_of() to a "
+            "valuation on a grain boundary before with_dev_grain(), or keep the finer dev "
+            "grain."
+        )
+    d = months // step
+    if (d < 1).any():
+        ages = sorted({int(a) for a in np.unique(months[d < 1])})
+        raise ValueError(
+            f"dev_lag must be positive, got {ages[:5]}; dev_lag is months from the origin "
+            f"period start, so the first cell of a {step}-month dev grain is at {step}"
+        )
+    return d
 
 
 def _months_between(a: dt.date, b: dt.date) -> int:

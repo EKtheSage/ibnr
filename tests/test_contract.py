@@ -344,6 +344,76 @@ def _geometry_triangle(origin_years, dev_lags, *, lines=("lob_a",), through="202
     return Triangle.from_long(pd.DataFrame(rows), measure="cumulative")
 
 
+def _one_line(t):
+    """The single-cohort builders take one line; the multi-line ones take both."""
+    return t.filter(t.expr.line_of_business == "lob_a")
+
+
+def _stan_data(t):
+    return stan_data(_one_line(t), loss_field="paid_loss")
+
+
+def _odp_stan_data(t):
+    from ibnr.kernels.contract import odp_stan_data
+
+    return odp_stan_data(_one_line(t), loss_field="paid_loss")
+
+
+def _compartmental_stan_data(t):
+    from ibnr.kernels.contract import compartmental_stan_data
+
+    return compartmental_stan_data(
+        _one_line(t),
+        paid_field="paid_loss",
+        reported_field="reported_loss",
+        premium_field="earned_premium",
+    )
+
+
+def _cohort_grid(t):
+    from ibnr.kernels.contract import cohort_grid
+
+    return cohort_grid(_one_line(t), loss_field="paid_loss")
+
+
+def _multiline_data(t):
+    from ibnr.kernels.multiline import multiline_data
+
+    return multiline_data(t, loss_field="paid_loss")
+
+
+def _nn_data(t):
+    from ibnr.kernels.nn_contract import nn_data
+
+    return nn_data(t, loss_field="paid_loss", premium_field="earned_premium")
+
+
+BUILDERS = [
+    _stan_data,
+    _odp_stan_data,
+    _compartmental_stan_data,
+    _cohort_grid,
+    _multiline_data,
+    _nn_data,
+]
+
+
+@pytest.mark.parametrize("builder", BUILDERS, ids=[b.__name__.lstrip("_") for b in BUILDERS])
+def test_anchored_dev_ages_are_refused_by_name(builder):
+    """Dev ages 3, 15, 27 on an ANNUAL dev grain must be refused, by every builder.
+
+    Those ages are what chainladder's latest-diagonal anchoring produces from a
+    March 31 valuation, and every contract here indexes a cell by
+    ``d = dev_lag // step``. Floored that way, ages 3 and 15 land on dev steps 0
+    and 1 rather than 1 and 2, so the whole triangle shifts one development period
+    younger and the first age becomes a zero step. A triangle is either on the
+    grain or it is refused; nothing here silently re-anchors it.
+    """
+    t = _geometry_triangle((2019, 2020), (3, 15, 27), lines=("lob_a", "lob_b"))
+    with pytest.raises(ValueError, match="grain boundary"):
+        builder(t)
+
+
 def test_stan_data_refuses_a_gapped_origin_axis():
     """An origin axis with a hole in it, through the cross-classified contract.
 

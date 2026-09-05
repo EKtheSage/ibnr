@@ -128,7 +128,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ibnr.kernels.contract import _as_date, require_origin_axis_step
+from ibnr.kernels.contract import _as_date, dev_step_index, require_origin_axis_step
 from ibnr.triangle.core import GRAIN_MONTHS, Triangle
 
 #: segment columns that are display-only and never define a cohort
@@ -302,11 +302,7 @@ def nn_data(
     # dev_lag is months from origin start (CLAUDE.md milestone 1); d is the
     # 1-based dev step, stored at index d-1 in every grid below
     step = GRAIN_MONTHS[triangle.meta.dev_grain]
-    if (df["dev_lag"] % step != 0).any():
-        raise ValueError(f"dev_lag values are not multiples of the {step}-month dev grain")
-    df["d"] = (df["dev_lag"] // step).astype(int)
-    if (df["d"] < 1).any():
-        raise ValueError("dev_lag must be positive")
+    df["d"] = dev_step_index(df["dev_lag"], step=step)
     # duplicates = several evaluation dates survived; the grid write below
     # would keep whichever row landed last, so refuse instead
     if df.duplicated([*seg_cols, "field", "origin_period", "d"]).any():
