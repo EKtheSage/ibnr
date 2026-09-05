@@ -66,25 +66,21 @@ class PredictiveDistribution:
         This is the PIT value / "outcome percentile" of Meyers' validation
         tables (he reports it x100). One value per target.
 
-        A target with no outcome, or with any missing draw, gets NaN rather
-        than a number. Every comparison against NaN is False, so the plain
-        fraction of draws at or below the outcome gets those two cases wrong in
-        two different ways. A missing outcome makes every comparison False and
-        the fraction is exactly 0.0: the lowest percentile there is, and to the
-        uniformity test the worst possible over-prediction. A missing draw
-        compares False as well, so it is counted as lying above the outcome and
-        the fraction comes out too low by one draw's worth. NaN is the designed
-        value for an outcome that has not emerged yet
+        A target whose outcome is missing, or whose draws hold any missing
+        value, gets NaN rather than a number. Every comparison against NaN is
+        False, so the plain fraction of draws at or below the outcome reads a
+        missing outcome as exactly 0.0, the lowest percentile there is, and
+        counts every missing draw as lying above the outcome. NaN is the
+        designed value for an outcome that has not emerged yet
         (``contract.realized_values``, and the mack entry's total for a
-        partially unemerged cohort), and ``mean``, ``std`` and
-        ``kernels.scores.crps`` already answer NaN for a target with a missing
-        draw, so this is the answer those methods were giving all along.
+        partially unemerged cohort).
 
         The mask is per target, so a neighbouring target whose values are all
         present keeps its percentile. Infinite outcomes and infinite draws are
         NOT masked: the empirical CDF is well defined there, and an outcome
         below every draw is a real verdict of 0.0 that has to stay
-        distinguishable from a missing one.
+        distinguishable from a missing one. The CHANGELOG entry has the rest of
+        the story, including the one published figure this moved.
         """
         obs = np.asarray(observed, dtype=float)
         if obs.shape != (self.n_targets,):

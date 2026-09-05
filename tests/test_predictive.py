@@ -80,6 +80,9 @@ def test_cdf_propagates_a_missing_outcome():
     # an outcome below every draw is a genuine verdict and stays 0.0; this is
     # what keeps a missing outcome distinguishable from an over-prediction
     assert pred.cdf([-np.inf, 1.5])[0] == 0.0
+    # a draw tied with the outcome counts as at or below it: the PIT is the
+    # fraction of draws <= the outcome, not < it
+    assert pred.cdf([np.nan, 2.0])[1] == 1.0
     table = pred.summary(observed=[np.nan, 1.5])
     assert np.isnan(table["outcome"].iloc[0]) and np.isnan(table["percentile"].iloc[0])
     assert table["percentile"].iloc[1] == 50.0
@@ -92,18 +95,22 @@ def test_cdf_propagates_a_missing_draw():
     compares False against the outcome, so it is silently counted as lying above
     it and the fraction comes out too low. ``mean``, ``std`` and
     ``kernels.scores.crps`` already answer NaN for such a target, and the
-    percentile now agrees with them. An infinite draw is a different case and is
-    deliberately not masked, so target b keeps its percentile.
+    percentile now agrees with them. Infinite draws are a different case and are
+    deliberately not masked, so target b keeps its percentile even though it
+    carries draws of both signs, which makes its own mean NaN. That is the whole
+    difference between masking on a missing draw and masking on a NaN column
+    mean, so target b pins it.
     """
     pred = PredictiveDistribution(
-        samples=np.array([[1.0, 1.0], [2.0, 2.0], [np.nan, np.inf]]),
+        samples=np.array([[1.0, 1.0], [2.0, 2.0], [np.nan, np.inf], [1.0, -np.inf]]),
         targets=pd.DataFrame({"label": ["a", "b"]}),
     )
     pit = pred.cdf([2.5, 2.5])
     assert np.isnan(pit[0])
-    # the +inf draw compares perfectly well: it lies above 2.5, and two of b's
-    # three draws lie at or below it
-    assert pit[1] == pytest.approx(2 / 3)
+    # infinite draws compare perfectly well: 1, 2 and -inf lie at or below 2.5
+    # and +inf lies above it, so three of b's four draws count
+    assert pit[1] == pytest.approx(3 / 4)
+    assert np.isnan(pred.mean()[1])  # b's mean is NaN and its percentile is not
     # the sibling methods on the same object give the same verdict for target a
     assert np.isnan(pred.mean()[0])
     assert np.isnan(crps(pred.samples, [2.5, 2.5])[0])
