@@ -438,17 +438,40 @@ def test_odp_draw_caps_only_the_cells_past_the_rate():
     ``phi = 1`` so the mean IS the rate and the boundary can be named exactly:
     one cell sits on the cap (drawn) and one a single double above it (not).
 
+    The generator's own STATE is compared, not only the values it produced. A
+    Poisson draw takes a variable number of random doubles, so an extra one
+    usually shifts everything after it - but only usually: the first version of
+    this test compared values alone, and the mutation that hands the capped
+    cells to the generator anyway passed it, because the shifted draw landed on
+    the same integer by chance. Comparing states cannot land on anything.
+
     Mutations (verified): passing the whole array to ``rng.poisson`` (numpy
     raises); handing the capped cells to the generator and discarding the
-    result afterwards (the live draws move, because the stream advanced)."""
+    result afterwards; the boundary tested with ``<`` instead of ``<=``;
+    returning the caller's own array at ``phi == 0``."""
     phi = 1.0
-    mu = np.array([3.0, POISSON_RATE_MAX, 7.0, np.nextafter(POISSON_RATE_MAX, np.inf), 11.0, 1e30])
-    live = np.array([True, True, True, False, True, False])
+    mu = np.array(
+        [
+            3.0,
+            POISSON_RATE_MAX,
+            7.0,
+            np.nextafter(POISSON_RATE_MAX, np.inf),
+            11.0,
+            1e30,
+            5.0,
+            40.0,
+            2.5,
+        ]
+    )
+    live = np.array([True, True, True, False, True, False, True, True, True])
 
-    got = odp_draw(np.random.default_rng(7), mu, phi)
-    want_live = phi * np.random.default_rng(7).poisson(mu[live] / phi)
+    rng = np.random.default_rng(7)
+    got = odp_draw(rng, mu, phi)
+    reference = np.random.default_rng(7)
+    want_live = phi * reference.poisson(mu[live] / phi)
     assert np.array_equal(got[live].view(np.uint8), want_live.view(np.uint8))
     assert np.array_equal(got[~live].view(np.uint8), mu[~live].view(np.uint8))
+    assert rng.bit_generator.state == reference.bit_generator.state
 
     # phi == 0 is the same statement with no dispersion left at all: the mean,
     # and not one random number taken
