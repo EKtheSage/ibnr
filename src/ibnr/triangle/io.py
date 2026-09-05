@@ -303,7 +303,7 @@ def to_chainladder(t: Triangle):
     segments = t.segments
     # Long -> wide: one column per field, one row per (segment, origin, eval).
     # dev_lag is not in that index, so the pivot is only faithful when eval_date
-    # implies it - which is exactly what the check above requires. Given it,
+    # implies it, which is exactly what the check above requires. Given it,
     # aggfunc="sum" adds nothing up: two rows can share (segment, origin, eval)
     # only by being the same cell twice, which validate() reports as a duplicate.
     wide = df.pivot_table(

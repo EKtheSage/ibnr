@@ -15,8 +15,10 @@ assuming it: eval_date must sit in the last month of origin_period + dev_lag on
 every row, because the coarsened dev_lag is derived from eval_date and the
 stored one is dropped. A row where the two disagree lands in a different cell
 and is added to whatever is already there, so it is refused (see
-``validate.require_eval_alignment``). Slicing does not help here, since as_of()
-and latest_diagonal() pick a stored observation without changing its eval_date.
+``validate.require_eval_alignment``). Slicing is a partial answer only: as_of()
+and latest_diagonal() pick a stored observation without changing its eval_date,
+so they cannot align such a row, but they do drop a restated one, which is the
+common way a triangle acquires one.
 
 Every join below is a plain equi-join on those keys, which is only safe because
 segment values are guaranteed non-null: SQL join equality is false for
@@ -172,7 +174,10 @@ def change_origin_grain(t: Triangle, grain: str) -> Triangle:
     development, because it derives the new dev_lag from it and drops the stored
     one. A row where the two disagree would be summed into whichever cell its
     eval_date names, which is a wrong number rather than a missing one, so such
-    rows are refused by name before any of that happens.
+    rows are refused by name before any of that happens. Restated history is
+    refused too, because a restatement keeps its dev_lag and takes a later
+    eval_date; there the answer is to slice it away with ``latest_diagonal()`` or
+    an ``as_of()`` before the restatement, which the refusal says.
     """
     if _grain_step(t.meta.origin_grain, grain, "origin") == 1:
         return t

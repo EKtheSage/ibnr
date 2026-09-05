@@ -22,15 +22,27 @@ corrected decision 8.)
 `change_origin_grain`, `to_chainladder` and `to_bermuda` all work out a row's
 development from its `eval_date` and drop the stored `dev_lag`. A row where the
 two disagree, which `validate()` had only ever reported as a finding, was
-therefore moved into the cell its `eval_date` names and added to whatever was
-already there: two cells of 95 and 150 carried at one evaluation date came out
-as a single 245, on both backends, with the triangle total unchanged so nothing
-downstream could notice. All three now refuse such a row by name, through the
-new `validate.require_eval_alignment`, which shares its wording and its query
-with the `validate()` finding. Ingestion is unchanged and still permissive: a
-triangle nobody regrains or exports is usable as it is. Separately,
-`with_origin_grain` at the grain a triangle already has is now a no-op that
-returns the same object, as `with_dev_grain` already was.
+therefore moved into the cell its `eval_date` names: the regrain and the
+chainladder export added it to whatever was already there, so two cells of 95
+and 150 carried at one evaluation date came out as a single 245 on both
+backends, with the triangle total unchanged so nothing downstream could notice,
+while `to_bermuda` kept one of the two values for the field and dropped the
+other. All three now refuse such a row by name, through the new
+`validate.require_eval_alignment`, which shares its wording and its query with
+the `validate()` finding. Ingestion is unchanged and still permissive: a
+triangle nobody regrains or exports is usable as it is.
+
+A row gets into that state in one of two ways and the refusal names both,
+because the way out differs. Either `dev_lag` or `eval_date` is wrong in the
+source data, where the repair belongs, or the cell was restated at a later
+`eval_date`, which is legal stored history. Slicing never changes a row's
+`eval_date`, so it cannot align one, but it can drop it: a restatement goes
+under `latest_diagonal()`, or under `as_of()` at a date before the restatement,
+and the operation then runs. `as_of()` at or after the restatement keeps the
+restated row and the refusal stands.
+
+Separately, `with_origin_grain` at the grain a triangle already has is now a
+no-op that returns the same object, as `with_dev_grain` already was.
 
 ## 0.5.8 - 2026-08-24
 
