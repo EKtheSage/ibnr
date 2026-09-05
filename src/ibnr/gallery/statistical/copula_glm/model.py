@@ -408,12 +408,16 @@ class CopulaGLM(GalleryEntry):
             f"the usable cells do not identify {labels}"
         )
         if dev_effect == "factor":
-            # Keep the word "hoerl" in this message: scripts/compare_gallery.py
-            # keys its retry with the coarser marginal on it.
+            # Keep the lowercase word "hoerl" in this message and ONLY in this
+            # message: scripts/compare_gallery.py keys its retry with the
+            # coarser marginal on that exact substring.
             raise ValueError(f'{head} - try dev_effect="hoerl"')
+        # "Hoerl" is capitalized here on purpose. This is the message that says
+        # there is nothing coarser left to retry, so it must not match the
+        # retry key above.
         raise ValueError(
-            f"{head} - hoerl is already the coarsest marginal, so widen the data "
-            "instead: keep more cells, or fit a cohort with more development steps"
+            f"{head} - the Hoerl curve is already the coarsest marginal, so widen the "
+            "data instead: keep more cells, or fit a cohort with more development steps"
         )
 
 

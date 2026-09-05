@@ -148,9 +148,10 @@ class SUR(GalleryEntry):
             # hundreds of times too large, every draw finite.
             if n < p:
                 raise ValueError(
-                    f"development transition {d + 1} -> {d + 2} has {n} origin pair(s) "
-                    f"for the {p}-column [1, C_d] design, so its intercept and slope "
-                    "are unidentified. Every square triangle has one pair at its last "
+                    f"the development transition between dev steps {d + 1} and {d + 2} "
+                    f"has {n} origin pair(s) for the {p}-column [1, C_d] design, so its "
+                    "intercept and slope are unidentified. "
+                    "Every square triangle has one pair at its last "
                     "step. Use intercept=False, or fit a triangle whose every "
                     "development step has at least 2 origin pairs."
                 )

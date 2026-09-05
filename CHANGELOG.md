@@ -37,6 +37,17 @@ design's rank and names the columns a null direction touches. Both refusals
 happen before anything is stamped on the entry, so a rejected fit leaves the
 entry unfitted.
 
+What this reaches on the Schedule P retrospective, measured on the pinned mart
+publish `20260613_041006` across all 60 selected multiline companies with
+`scripts/compare_gallery.py`'s own default of `--copula-nonpositive drop`: on the
+published `paid_loss` field nothing changes, all 60 companies still fit (45 of
+them through the existing fallback to the Hoerl curve). On `reported_loss` the
+new rank check refuses companies 13439 and 16373, which previously fitted at rank
+11 of 12 under the Hoerl curve. The published copula rows are `paid_loss` only,
+so no published result changes. `sur` is unaffected on the mart because the
+retrospective runs its `intercept=False` default, where the design has one column
+and the pre-existing no-origin-pair refusal already covers it.
+
 ## 0.5.8 - 2026-08-24
 
 A one-feature release: `nn_transformer_ml` gains held-out scoring (#105), the

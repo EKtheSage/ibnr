@@ -257,7 +257,9 @@ def test_copula_drop_refuses_collinear_hoerl_design(backend_name):
     the intercept, so no data separates them.
 
     There is no coarser marginal below Hoerl, so the message says that instead
-    of pointing at one.
+    of pointing at one, and it must not carry the lowercase word the factor
+    message carries: ``scripts/compare_gallery.py`` reads that substring as
+    "refit with the Hoerl curve", which is the one thing that cannot help here.
     """
     rng = np.random.default_rng(32)
     n_w = n_d = 10
@@ -277,6 +279,31 @@ def test_copula_drop_refuses_collinear_hoerl_design(backend_name):
     # The origin levels are perfectly well identified here, so naming one would
     # mean the message is reading a direction the data can see.
     assert "origin[" not in message
+    # No retry pointer: this message says there is nothing coarser to retry
+    # with, so it must not match compare_gallery.py's lowercase retry key.
+    assert "hoerl" not in message
+
+
+def test_copula_names_the_uncovered_origin_before_the_rank(backend_name):
+    """An origin with no usable cell leaves an all-zero dummy column, so the
+    rank check would catch it too, but with a worse message: a list of columns
+    that trade off instead of the origin that has no data. The coverage checks
+    run first for exactly that reason, and this pins the order card.md states.
+    """
+    rng = np.random.default_rng(33)
+    n_w = n_d = 8
+    # origin 4 (index 3) observes devs 1-5 in the as_of slice; zero all of them.
+    zero_cells = [(3, d) for d in range(n_d - 3)]
+    cum = zeroed_square(rng, n_w=n_w, n_d=n_d, zero_cells=zero_cells)
+    lobs = {f"lob_{k}": cum[k] for k in range(2)}
+    prem = {f"lob_{k}": np.full(n_w, 1000.0) for k in range(2)}
+    t = make_multiline_triangle(backend_name, lobs, premium_by_lob=prem, start_year=START)
+
+    entry = CopulaGLM()
+    with pytest.raises(ValueError, match="have no usable cells") as raised:
+        entry.fit(t, as_of=dt.date(START + n_w - 1, 12, 31), nonpositive="drop")
+    assert entry.contract_ is None  # fit() is atomic
+    assert "origins [4]" in str(raised.value)
 
 
 def test_copula_predict_before_fit_raises():
