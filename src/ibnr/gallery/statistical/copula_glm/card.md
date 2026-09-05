@@ -31,9 +31,15 @@ curve option collapses the dev effects to 2 parameters for thin triangles.
   machinery). `sigma_k` from residuals with `df = n_obs - p`.
 - Copula: Pearson correlation of standardized log-residuals across lines,
   matched on common cells, eigenvalue-floored to PD.
-- Identification guards: every origin and (factor case) every dev step must
-  have at least one usable cell; `n_obs > p` enforced with a pointer to
-  `dev_effect="hoerl"`.
+- Identification checks, in the order `fit()` applies them: `n_obs > p`; every
+  origin and (factor case) every dev step has at least one usable cell; and the
+  built design has full column rank. The first two count cells per column and
+  are necessary but not sufficient. A pattern that covers every origin and every
+  dev step can still split into groups sharing no origin and no dev step, whose
+  levels then trade off against each other with every fitted training mean
+  unchanged, so the rank is what decides. A refusal names the columns a null
+  vector of the design touches, and points at `dev_effect="hoerl"` when the
+  factor design is the one that failed.
 
 ## Prediction
 
@@ -59,6 +65,14 @@ at late lags (case releases), which a lognormal marginal cannot represent.**
 count; `nonpositive="drop"` censors those cells in every line (documented as
 biased - it truncates the left tail of the marginals).
 
+`"drop"` has a second cost beyond that bias, and it is the reason the rank check
+above exists. Cells are excluded one at a time, with nothing looking at the
+shape they leave behind, so a run of exclusions can strand a design that every
+count still accepts: on an 8x8 two-line square where one origin keeps only its
+last cell, 29 usable cells remain against 15 columns, every origin and every dev
+step is covered, and the design is rank 14. `fit()` refuses that rather than
+letting the pseudo-inverse pick one answer out of an unbounded family.
+
 ## Extensions (scaffold ideas, not implemented)
 
 - Student-t copula (tail dependence) - swap the Gaussian scores for t scores.
@@ -74,4 +88,8 @@ biased - it truncates the left tail of the marginals).
   uncertainty is approximated, not fully propagated.
 - The last origin's level effect rests on a single observed cell (inherent to
   the design, as in Shi & Frees).
+- The Hoerl curve needs usable cells at three or more development steps. Over
+  two steps `ln(dev)` and `dev` fall on one straight line through the intercept,
+  and there is no coarser marginal below Hoerl to fall back on, so that cohort
+  is refused rather than fitted.
 - No tail development beyond the last observed dev step.

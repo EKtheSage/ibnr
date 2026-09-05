@@ -160,7 +160,7 @@ class CopulaGLM(GalleryEntry):
                 f"{n_obs} usable cells for {p} marginal parameters; "
                 'not enough data - try dev_effect="hoerl" or a coarser model'
             )
-        self._check_identified(obs_w, obs_d, n_w, n_d, dev_effect)
+        self._check_identified(obs_w, obs_d, n_w, n_d, dev_effect, x)
 
         # Marginals: OLS on logs is exact ML for a lognormal regression - no GLM
         # IRLS needed. One pseudo-inverse solves all K lines at once.
@@ -336,9 +336,11 @@ class CopulaGLM(GalleryEntry):
         dev dummies (d >= 2) or the 2-parameter Hoerl curve [ln(d), d].
 
         The w=0 origin and d=0 dev are the reference levels folded into the
-        intercept (dummies start at index 1), so the design stays full rank.
-        Returns (n_obs, p): p = 1 + (n_w-1) + (n_d-1) for factor, 1 + (n_w-1) + 2
-        for hoerl.
+        intercept (dummies start at index 1), which removes the one collinearity
+        a complete grid of cells would have. It does not make the design full
+        rank: rank depends on WHICH cells are usable, and ``_check_identified``
+        is what measures that. Returns (n_obs, p): p = 1 + (n_w-1) + (n_d-1) for
+        factor, 1 + (n_w-1) + 2 for hoerl.
         """
         n = len(obs_w)
         cols = [np.ones(n)]  # intercept column
@@ -355,10 +357,33 @@ class CopulaGLM(GalleryEntry):
         return np.column_stack(cols)  # (n_obs, p)
 
     @staticmethod
-    def _check_identified(obs_w, obs_d, n_w: int, n_d: int, dev_effect: str) -> None:
-        """Guard the dummy design: every origin needs a usable cell, and (factor
-        case) every dev step too, or its coefficient is unidentified. Fail with a
-        pointer to the coarser Hoerl parameterization rather than a rank error."""
+    def _column_labels(n_w: int, n_d: int, dev_effect: str) -> list[str]:
+        """Names for the design's columns, in ``_design``'s own column order, so
+        a refusal can say which coefficients the data cannot separate."""
+        labels = ["intercept"] + [f"origin[{w + 1}]" for w in range(1, n_w)]
+        if dev_effect == "factor":
+            return labels + [f"dev[{d + 1}]" for d in range(1, n_d)]
+        return labels + ["ln(dev)", "dev"]
+
+    @staticmethod
+    def _check_identified(obs_w, obs_d, n_w: int, n_d: int, dev_effect: str, x: np.ndarray) -> None:
+        """Refuse a design the usable cells cannot pin down.
+
+        Two coverage checks come first because they name the culprit directly:
+        every origin needs a usable cell, and (factor case) every dev step too.
+        They are necessary and NOT sufficient. Coverage is a count per column;
+        identification is a property of the whole incidence pattern, and a
+        pattern that covers every origin and every dev step can still split into
+        groups sharing no origin and no dev step, whose levels then trade off
+        against each other with every fitted training mean unchanged.
+
+        So the rank of the built design is the check that decides. Without it
+        ``np.linalg.pinv`` still answers on a rank-deficient design, picking the
+        minimum-norm solution out of an unbounded family; the fit returns, the
+        residuals are the same, and the prediction is one arbitrary member of
+        that family. The refusal reads a null vector off the SVD and names the
+        columns it touches.
+        """
         missing_w = [w + 1 for w in range(n_w) if not (obs_w == w).any()]
         if missing_w:
             raise ValueError(f"origins {missing_w} have no usable cells; effects unidentified")
@@ -369,6 +394,27 @@ class CopulaGLM(GalleryEntry):
                     f"dev steps {missing_d} have no usable cells; "
                     'factor effects unidentified - try dev_effect="hoerl"'
                 )
+        p = x.shape[1]
+        rank = int(np.linalg.matrix_rank(x))
+        if rank == p:
+            return
+        # A null vector of x is a direction the training cells cannot see; the
+        # columns it weights are the ones that trade off against each other.
+        null = np.linalg.svd(x)[2][rank:]
+        names = CopulaGLM._column_labels(n_w, n_d, dev_effect)
+        labels = ", ".join(nm for nm, v in zip(names, null[0], strict=True) if abs(v) > 1e-8)
+        head = (
+            f"the fitted design is rank {rank} of {p} after exclusions: "
+            f"the usable cells do not identify {labels}"
+        )
+        if dev_effect == "factor":
+            # Keep the word "hoerl" in this message: scripts/compare_gallery.py
+            # keys its retry with the coarser marginal on it.
+            raise ValueError(f'{head} - try dev_effect="hoerl"')
+        raise ValueError(
+            f"{head} - hoerl is already the coarsest marginal, so widen the data "
+            "instead: keep more cells, or fit a cohort with more development steps"
+        )
 
 
 def _nearest_pd(mat: np.ndarray) -> np.ndarray:

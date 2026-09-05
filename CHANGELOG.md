@@ -15,6 +15,28 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
+## Unreleased
+
+### `sur` and `copula_glm` refuse designs the data cannot pin down
+
+Both frequentist dependence entries could return a fit whose coefficients the
+usable cells never determined. `sur` with `intercept=True` fits a two-column
+`[1, C_d]` design at every development transition, and a square triangle's last
+transition has exactly one origin pair: one equation for two unknowns. Depending
+on the data that either raised `LinAlgError: Singular matrix`, which names a
+matrix rather than the model, or rounded through and returned a coefficient
+covariance of order 1e15, which parameter risk turned into a predicted grand
+total hundreds of times too large with every draw finite. `copula_glm` checked
+that every origin and every development step had a usable cell, which counts
+cells per column and misses the shape they form: after `nonpositive="drop"`
+exclusions the usable cells can split into groups sharing no origin and no
+development step, and `np.linalg.pinv` then answers with the minimum-norm member
+of an unbounded family. `sur` now refuses a transition with fewer origin pairs
+than design columns before estimation starts, and `copula_glm` checks the built
+design's rank and names the columns a null direction touches. Both refusals
+happen before anything is stamped on the entry, so a rejected fit leaves the
+entry unfitted.
+
 ## 0.5.8 - 2026-08-24
 
 A one-feature release: `nn_transformer_ml` gains held-out scoring (#105), the
