@@ -268,9 +268,14 @@ def test_a_neg_inf_pointwise_elpd_is_floored_not_nan(rng):
     # the floored member gave a weight-panel outcome zero density; the floor is
     # low enough that MLE reads that cell as (effectively) zero support
     assert result.weights["model_b"] < 0.5
-    assert LPD_FLOOR == -700.0 and np.exp(LPD_FLOOR) > 0.0, (
-        "the floor must stay a normal float: exp(-700) ~ 1e-304, not exactly 0"
+    log_smallest_normal = float(np.log(np.finfo(float).tiny))
+    assert log_smallest_normal < LPD_FLOOR, (
+        "the floor must stay above the log of the smallest normal double, -708.40, so "
+        "that exp(LPD_FLOOR) is a normal float and MleStacking's Jacobian 1 / (Y @ w) "
+        "stays finite. exp reaching exactly zero, at about -746, is the wrong boundary "
+        "and 37 nats too late"
     )
+    assert LPD_FLOOR == -700.0, "the floor is part of what the result publishes"
 
 
 @pytest.mark.parametrize("offset", sorted(OFFSETS))
@@ -278,15 +283,20 @@ def test_mle_weights_are_invariant_to_a_common_per_cell_offset(offset):
     """Adding the same number to every member at a cell cannot move the
     optimum, so the weights must not move either.
 
-    MleStacking does its arithmetic in linear space. ``exp(lpd)`` enters the
-    subnormals a little below -709, the Jacobian's ``1 / (Y @ w)`` overflows to
-    infinity there, SLSQP stops at iteration 1 and hands back its uniform
-    starting vector - a valid simplex and no fit at all. Feeding bayesblend
-    each cell's ELPD relative to that cell's best finite member keeps every
-    value it sees in [LPD_FLOOR, 0], whatever the absolute level.
+    MleStacking does its arithmetic in linear space. Once the mixture
+    ``Y @ w`` falls below 1 / DBL_MAX, about 5.6e-309, the Jacobian's
+    ``1 / (Y @ w)`` overflows to infinity, SLSQP stops at iteration 1 and hands
+    back the uniform vector it started from - a valid simplex and no fit at
+    all. Feeding bayesblend each cell's ELPD relative to that cell's best
+    finite member keeps every value it sees in [LPD_FLOOR, 0], whatever the
+    absolute level.
 
-    Mutation: drop the per-cell subtraction in ``_relative_lpd``. The three deep
-    offsets then come back 0.5/0.5 against the unshifted fit's 1.0/0.0.
+    Before the fix all three deep offsets came back 0.5/0.5 against the
+    unshifted fit's 1.0/0.0. Mutation: drop the per-cell subtraction in
+    ``_relative_lpd`` but keep the floor. The two whole-matrix offsets still
+    fail; ``one_shared_deep_cell`` survives that one, because a floor applied
+    to finite values clips its single deep cell to -700 for both members, which
+    is inside the safe range.
     """
     pytest.importorskip("bayesblend")
     raw = stack(*_stack_inputs())
@@ -297,14 +307,16 @@ def test_mle_weights_are_invariant_to_a_common_per_cell_offset(offset):
 
 
 def test_an_unconverged_mle_solve_is_refused_not_returned(monkeypatch):
-    """SLSQP failing leaves ``res.x`` at the uniform starting point, which
-    passes every check a weight vector faces: finite, non-negative, sums to 1.
-    So a failed solve is indistinguishable from a fitted even split unless the
-    optimizer's own verdict is read.
+    """SLSQP failing leaves ``res.x`` wherever it stopped, which at the first
+    iteration is the uniform starting point. That passes every check a weight
+    vector faces: finite, non-negative, sums to 1. So a failed solve is
+    indistinguishable from a fitted answer unless the optimizer's own verdict
+    is read.
 
-    The patched result is the one measured on the reviewer's data before the
-    fix: status 4, 'Inequality constraints incompatible', objective infinite
-    after one iteration.
+    The patched result is the one measured before the fix on two members at
+    -1000 and -1003 on every cell: status 4, 'Inequality constraints
+    incompatible', after one iteration, with an infinite objective because
+    every density had underflowed to exactly zero.
 
     Mutation: drop the ``res.success`` check in ``_fit_weights``; the call then
     returns {'model_a': 0.5, 'model_b': 0.5} and nothing raises.
@@ -386,6 +398,22 @@ def test_a_cell_every_member_missed_is_uninformative_not_nan():
         "a cell every member missed is as uninformative as a cell they all scored "
         "identically; both leave the weights to the other cells"
     )
+
+
+def test_a_pointwise_elpd_of_plus_inf_is_refused_by_name():
+    """``-inf`` is a verdict here and ``+inf`` is a bug: an infinite density.
+
+    It has to be refused where it arrives, not left to the solve. Passed on, it
+    survives the relative transform as ``+inf``, makes the SLSQP objective NaN
+    and comes back as a convergence complaint, which points the reader at the
+    optimizer instead of at the density that is wrong.
+
+    Mutation: check only for NaN, as the code did before. The call then raises
+    RuntimeError about a solve that did not converge.
+    """
+    pytest.importorskip("bayesblend")
+    with pytest.raises(ValueError, match="NaN or \\+inf"):
+        stack(*_stack_inputs(edit=_first_cell(np.inf, -12.0)))
 
 
 # =============================================================================

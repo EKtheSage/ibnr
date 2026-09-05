@@ -28,24 +28,31 @@ reasons for that, and only the second one is about ``-inf``.
 ``MleStacking`` works in linear space: it exponentiates, minimizes
 ``-sum(log(Y @ w))`` and hands SLSQP the Jacobian ``1 / (Y @ w)``. The boundary
 is NOT ``exp`` underflowing to zero, which takes about -746; it is that
-reciprocal, which overflows to infinity as soon as ``Y @ w`` drops into the
-subnormals a little below -709.4. SLSQP then stops at iteration 1 with
-``success = False`` and returns its uniform starting vector, a valid simplex and
-no fit at all. Measured on 16 board-like cells: one cell at -710 shared by every
-member turned a 1.0/0.0 fit into 0.5/0.5, with the other fifteen cells at the
-usual -9. A common per-cell offset cannot move the optimum (it scales the
-mixture density at that cell by the same factor for every weight vector), so
-subtracting each cell's best finite member changes no correct answer and takes
-the matrix out of that range whatever the absolute level of the densities.
+reciprocal, which overflows to infinity as soon as ``Y @ w`` falls below
+``1 / DBL_MAX``, about 5.6e-309, whose log is about -709.78. Where that lands in
+the log densities themselves depends on the weights and on how far apart the
+members are, because ``Y @ w`` is a weighted mixture and so sits below its
+largest term: on the 16 board-like cells measured here (two members three nats
+apart, at the uniform starting weights) it is reached between -709.0 and -709.4.
+SLSQP then stops at iteration 1 with ``success = False``, and the vector it
+stopped at is the uniform one it started from: a valid simplex and no fit at
+all. Measured on those cells: one cell at -710 shared by every member turned a
+1.0/0.0 fit into 0.5/0.5, with the other fifteen cells at the usual -9, and
+0.5/0.5 scores 10.3 nats below the answer the fit should have given. A common
+per-cell offset cannot move the optimum (it scales the mixture density at that
+cell by the same factor for every weight vector), so subtracting each cell's
+best finite member changes no correct answer and takes the matrix out of that
+range whatever the absolute level of the densities.
 
 A pointwise ELPD of ``-inf`` is a legitimate verdict on this board ("the model
 gave the outcome zero density"), but bayesblend's own lpd reduction is the
 textbook max shift, which turns ``-inf`` into NaN - measured in this
-environment: ``Draws.from_lpd([-10, -inf, -9]).lpd`` -> ``[-10, nan, -9]``. That
-NaN would flow into the SLSQP objective and the weights would come back NaN. The
-same floor answers it: ``exp(-700)`` is ~1e-304, a weight contribution
-indistinguishable from zero, while staying a normal float - no NaN, and no exact
-0.0 row to make ``log(Y @ w)`` blow up when every member missed the same cell.
+environment: ``Draws.from_lpd([-10, -inf, -9]).lpd`` comes back as
+``[-10, nan, -9]``. That NaN would flow into the SLSQP objective and the weights
+would come back NaN. The same floor answers it: ``exp(-700)`` is ~1e-304, a
+weight contribution indistinguishable from zero, while staying a normal float -
+no NaN, and no exact 0.0 row to make ``log(Y @ w)`` blow up when every member
+missed the same cell.
 The count of ``-inf`` entries is carried on the result (``n_floored_neg_inf``)
 so a run where that verdict was reached is visible; a finite member clipped by
 the same floor is NOT counted, because 700 nats behind the cell's best is
@@ -62,11 +69,13 @@ as ``matrix - matrix.max(axis=0)``: on such a cell that is ``-inf - -inf``,
 i.e. NaN, which is the one thing the floor exists to prevent.
 
 **The optimizer's own verdict is read.** A failed SLSQP solve is not an
-exception in bayesblend: it stores the failed ``OptimizeResult`` and returns the
-starting vector as the weights, which is finite, non-negative and sums to 1, so
-no check on the vector itself can tell it from a fitted even split.
-``_fit_weights`` refuses it by name instead, carrying scipy's status and
-message.
+exception in bayesblend: it stores the failed ``OptimizeResult`` and hands back
+whatever vector SLSQP stopped at, which is finite, non-negative and sums to 1
+whatever the status, so no check on the vector itself can tell it from a fitted
+answer. At the boundary above that vector is the uniform starting point, because
+SLSQP stops at its first iteration; a solve that ran out of iterations instead
+would hand back a partly fitted vector, equally unmarked. ``_fit_weights``
+refuses either by name, carrying scipy's status and message.
 
 Methods: ``"mle"`` (default, ``MleStacking`` - pure scipy, no cmdstan),
 ``"pseudo_bma"`` (``PseudoBma``, numpy/scipy), ``"bayes"`` (``BayesStacking``)
@@ -153,11 +162,13 @@ __all__ = [
 #: How far below its cell's best finite member a pointwise ELPD may reach before
 #: bayesblend sees it. ``exp(-700)`` is ~1e-304: still a normal positive float
 #: (no exact-zero row in MLE's ``log(Y @ w)``), yet a weight contribution
-#: indistinguishable from 0. It has to stay above about -709.4, where ``Y @ w``
-#: enters the subnormals and the Jacobian's ``1 / (Y @ w)`` overflows; ``exp``
-#: itself does not reach zero until about -746, which is the wrong boundary and
-#: 36 nats too late. It catches ``-inf`` too, which bayesblend's own max-shift
-#: lpd reduction would otherwise turn into NaN.
+#: indistinguishable from 0. It has to stay above ``log`` of the smallest normal
+#: double, -708.40, so that ``exp(LPD_FLOOR)`` is a normal float and the
+#: Jacobian's ``1 / (Y @ w)`` stays finite; the overflow itself starts once
+#: ``Y @ w`` falls below ``1 / DBL_MAX``, whose log is about -709.78. ``exp``
+#: does not reach zero until about -746, which is the wrong boundary and about
+#: 37 nats too late. The floor catches ``-inf`` too, which bayesblend's own
+#: max-shift lpd reduction would otherwise turn into NaN.
 LPD_FLOOR: float = -700.0
 
 #: method name -> the bayesblend fitter it resolves to (resolved lazily inside
@@ -271,7 +282,11 @@ def stack(
       leaves its weight stranded, an extra one has no weight at all. Evaluation
       forecasts from draws-only models are ignored (they are not in the stack;
       see the module docstring);
-    * fewer than two ELPD members - there is nothing to weight.
+    * fewer than two ELPD members - there is nothing to weight;
+    * an ``mle`` solve whose scipy result reports ``success = False``
+      (``RuntimeError``, carrying scipy's status and message): bayesblend
+      returns the vector SLSQP stopped at rather than raising, and that vector
+      passes every check on the weights themselves.
 
     ``seed`` reaches the fitters that take one (``pseudo_bma``, ``bayes``,
     ``hierarchical``); ``mle`` is deterministic and ignores it.
@@ -408,11 +423,15 @@ def _lpd_matrix(panel: ForecastPanel) -> tuple[dict[str, np.ndarray], np.ndarray
                 "an lpd matrix built from it would align rows across different cells"
             )
         values = mine["elpd"].to_numpy(dtype=float)
-        if np.isnan(values).any():
+        # -inf is the one non-finite verdict this board has; NaN and +inf are
+        # both bugs upstream, and letting either through hands the failure to
+        # SLSQP, which then reports a convergence problem instead of the input.
+        bad = ~(np.isfinite(values) | np.isneginf(values))
+        if bad.any():
             raise ValueError(
-                f"{model} has NaN pointwise ELPD on the panel; NaN is a bug upstream "
-                "(-inf is the legitimate zero-density verdict), find it rather than fit "
-                "weights around it"
+                f"{model} has {int(bad.sum())} NaN or +inf pointwise ELPD value(s) among "
+                "the cells the weights are fitted on; both are bugs upstream (-inf is the "
+                "legitimate zero-density verdict), find it rather than fit weights around it"
             )
         out[model] = values
     relative, n_floored = _relative_lpd(out)
@@ -423,9 +442,11 @@ def _relative_lpd(lpd: Mapping[str, np.ndarray]) -> tuple[dict[str, np.ndarray],
     """Each cell's pointwise ELPD relative to that cell's best finite member.
 
     The returned values are in ``[LPD_FLOOR, 0]``, with each cell's best member
-    at exactly 0, whatever the absolute level of the densities was. That is what
-    keeps ``MleStacking``'s linear-space arithmetic away from the subnormals,
-    where its Jacobian overflows and SLSQP hands back its starting vector; the
+    at exactly 0, whatever the absolute level of the densities was - which holds
+    because every value reaching here is finite or ``-inf``, refused by name in
+    :func:`_lpd_matrix` otherwise. That is what keeps ``MleStacking``'s
+    linear-space arithmetic away from the level where its Jacobian overflows and
+    SLSQP hands back a vector it never fitted; the
     optimum itself is unchanged, because a common per-cell offset scales the
     mixture density at that cell by the same factor for every weight vector. The
     module docstring has the boundary and the reason the order matters.
@@ -471,16 +492,22 @@ def _fit_weights(
     if method == "mle":
         fitted = bayesblend.MleStacking(draws).fit()
         # bayesblend does not raise on a failed solve: it keeps the failed
-        # OptimizeResult and returns SLSQP's starting point as the weights,
-        # which is uniform 1/K - finite, non-negative and summing to 1, so no
-        # check on the vector can tell it from a fitted even split.
+        # OptimizeResult and hands back whatever vector SLSQP stopped at, which
+        # is finite, non-negative and sums to 1 whatever the status, so no check
+        # on the vector can tell it from a fitted answer.
         solve = fitted.model_info
         if not solve.success:
+            n_cells = next(iter(lpd.values())).size
             raise RuntimeError(
-                f"MleStacking's SLSQP solve did not converge (status {solve.status}: "
-                f"{solve.message!r}, objective {solve.fun!r} after {solve.nit} "
-                "iteration(s)). The weights bayesblend hands back are its STARTING "
-                "vector, uniform 1/K: a valid simplex and no fit at all"
+                f"stacking {len(lpd)} members over {n_cells} cells: MleStacking's SLSQP "
+                f"solve did not converge (status {solve.status}: {solve.message!r}, "
+                f"objective {float(solve.fun):g} after {solve.nit} iteration(s)). The "
+                "weights bayesblend hands back are the vector SLSQP stopped at - its "
+                "uniform starting point when it stops at the first iteration - which is a "
+                "valid simplex and no fit at all. Every value it was given lies in "
+                f"[{LPD_FLOOR}, 0], so the numerical range that used to cause this is "
+                "ruled out; read those members' pointwise ELPD over the cells the weights "
+                "are fitted on before trying another method"
             )
     elif method == "pseudo_bma":
         fitted = bayesblend.PseudoBma(draws, seed=seed).fit()
