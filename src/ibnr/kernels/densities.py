@@ -213,8 +213,8 @@ def odp_draw(rng: np.random.Generator, mu, phi) -> np.ndarray:
     Mean ``mu``, variance ``phi * mu`` - England & Verrall's process law, and
     the one every ODP entry in the gallery simulates with. One implementation,
     shared, because the three gallery entries and the bootstrap kernel wrote
-    the same expression five times and only the kernel handled its one hard
-    edge.
+    the same expression seven times - twice in each entry and once in the
+    kernel - and only the kernel handled its one hard edge.
 
     Returns an array shaped like ``mu``. ``rng`` is consumed only for the cells
     that are actually drawn, so a fit with nothing at the limit reads exactly
@@ -229,31 +229,48 @@ def odp_draw(rng: np.random.Generator, mu, phi) -> np.ndarray:
     and returns a copy of ``mu``. Both follow the convention
     ``kernels.mack.draw_step`` already documents for a zero-variance step.
 
-    This is reachable on real data, not a defensive branch: a triangle that
-    develops exactly on the fitted curve fits itself to rounding error, and the
-    Pearson scale collapses to about 1e-29 while the means stay in the
-    thousands (``tests/test_clark.py`` and ``tests/test_odp_bootstrap.py`` both
-    build one and pin the answer).
+    How far the collapse has to go, measured rather than asserted: a triangle
+    that develops exactly on its own fitted curve fits itself to rounding
+    error, and the Pearson scale falls to about 1e-29 while the means stay in
+    the thousands, which puts the rate 4e11 times past the limit
+    (``tests/test_clark.py`` and ``tests/test_odp_bootstrap.py`` both build one
+    and pin the answer). Any noise at all keeps a fit well clear: the same
+    triangle with its amounts rounded to whole units sits at 1e-14 of the
+    limit, and with a relative noise of one part in a million, at 1e-8 of it.
+    So this is the answer for a degenerate fit, not a branch an ordinary one
+    takes.
 
-    **The refusals.** A mean that is not finite, or is negative, never came
-    from the model: it is a parameter sample that overflowed before any draw,
-    and it is named as such rather than left for numpy to report as a rate
-    problem. Same for a negative or non-finite ``phi``. The checks run before
-    the ``phi == 0`` shortcut, so a broken mean is refused whatever the
-    dispersion is.
+    **The refusals.** A mean that is not finite never came from the model: it
+    is a parameter sample that overflowed before any draw was asked for, and it
+    is named as such rather than left for numpy to report as a rate problem. A
+    negative mean is a different defect - a sign the caller was supposed to
+    handle, by flooring the mean (the gallery entries use
+    ``clark.scorer.MU_FLOOR``) or by reflecting it (the bootstrap kernel) - so
+    it is refused separately and its message says which. Same for a negative or
+    non-finite ``phi``. All the checks run before the ``phi == 0`` shortcut, so
+    a broken mean is refused whatever the dispersion is.
+
+    A mean of exactly 0 is none of those things: it is a legal Poisson rate,
+    drawn like any other and answering 0.
     """
     mu = np.asarray(mu, dtype=float)
     phi = float(phi)
 
     not_finite = ~np.isfinite(mu)
-    negative = np.isfinite(mu) & (mu < 0.0)
-    n_bad = int(not_finite.sum() + negative.sum())
-    if n_bad:
+    if not_finite.any():
         raise ValueError(
-            f"odp_draw needs a finite, non-negative mean at every cell: {n_bad} of "
-            f"{mu.size} fail ({int(not_finite.sum())} not finite, {int(negative.sum())} "
-            "negative). A mean like that is a parameter sample that overflowed "
-            "upstream, before any draw was asked for"
+            f"odp_draw needs a finite mean at every cell: {int(not_finite.sum())} of "
+            f"{mu.size} are not finite. A mean like that is a parameter sample that "
+            "overflowed upstream, before any draw was asked for"
+        )
+    negative = mu < 0.0
+    if negative.any():
+        raise ValueError(
+            f"odp_draw needs a non-negative mean at every cell: {int(negative.sum())} of "
+            f"{mu.size} are negative, the smallest {float(mu.min())!r}. An over-dispersed "
+            "Poisson draw has no negative mean: floor it (the gallery entries use "
+            "clark.scorer.MU_FLOOR) or reflect its sign (the bootstrap kernel does) "
+            "before asking for the draw"
         )
     if not np.isfinite(phi) or phi < 0.0:
         raise ValueError(f"odp_draw needs a finite, non-negative dispersion phi, got {phi!r}")

@@ -291,6 +291,22 @@ def _od_process_noise(
     ``od_poisson`` is the shared :func:`~ibnr.kernels.densities.odp_draw`, so
     the rate numpy can no longer represent is handled here exactly as it is in
     the gallery's ODP entries - by returning the mean, and in one place.
+
+    One consequence, worth writing down because the two laws are otherwise
+    meant to differ only in support and tail: ``odp_draw`` refuses a mean that
+    is not finite, so ``od_poisson`` names a NaN mean by count, while ``gamma``
+    still hands it to ``rng.gamma`` and returns NaN without a word, which is
+    what both laws did before. Neither is reachable from
+    :func:`draw_next_increments` on a triangle ``fit_odp_bootstrap`` accepted:
+    every mean there is a finite pseudo-diagonal cell times a finite factor.
+
+    The ``live`` mask below is an optimization and nothing more, so do not
+    write a test that expects it to change an answer. numpy returns 0 for a
+    Poisson rate of 0 and for a gamma shape of 0 *without* taking a random
+    number (measured, numpy 2.4.6), so passing the zero cells through would
+    give the same values off the same generator state. It is kept because
+    ``sign(0) * draw`` reading as 0 is an accident of ``sign``, and because the
+    mask says out loud that a cell with nothing to develop has nothing to draw.
     """
     out = np.array(mu, dtype=float, copy=True)
     live = mu != 0

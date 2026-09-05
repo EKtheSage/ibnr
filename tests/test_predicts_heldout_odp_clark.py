@@ -49,9 +49,10 @@ N_W = N_D = 6
 PHI = 50.0
 
 #: a dispersion small enough that every cell's Poisson rate ``mu / phi`` is
-#: past the largest rate numpy can draw. Reachable on real fits: a triangle
-#: that develops exactly on the fitted curve fits itself to rounding error and
-#: the Pearson scale collapses to about 1e-29 (``tests/test_clark.py``).
+#: past the largest rate numpy can draw. Degenerate, but a real fit gets
+#: there: a triangle that develops exactly on its own fitted curve fits itself
+#: to rounding error and the Pearson scale falls to about 1e-29
+#: (``tests/test_clark.py`` builds one and measures it).
 TINY_PHI = 1e-30
 
 
@@ -574,24 +575,49 @@ def test_negligible_dispersion_draws_the_mean_exactly(contract, heldout, clark_c
     assert np.array_equal(got.view(np.uint8), mu.view(np.uint8))
 
 
+@pytest.mark.parametrize("phi", [PHI, TINY_PHI])
 @pytest.mark.parametrize("which", ["odp", "clark_growth_curve", "clark_mle"])
-def test_predict_routes_through_the_shared_odp_draw(contract, clark_cape, which):
-    """The same collapse through the PUBLIC entry point, for all three
-    ``predict()`` methods. Each one adds a process draw per future cell, so
-    each one has to reach the shared draw; a site left writing
-    ``phi * rng.poisson(mu / phi)`` directly raises here while every scorer
-    test above still passes (the inert-parameter bug class, one layer up).
+def test_predict_routes_through_the_shared_odp_draw(contract, clark_cape, which, phi):
+    """All three ``predict()`` methods, through the PUBLIC entry point, at an
+    ordinary dispersion and at a collapsed one.
+
+    Each method adds a process draw per future cell, so each one has to reach
+    the shared draw. The collapsed arm is the fix: a site left writing
+    ``phi * rng.poisson(mu / phi)`` directly raises there while every scorer
+    test above still passes (the inert-parameter bug class, one layer up). The
+    ordinary arm is the other half of the promise - that nothing else moved -
+    and it is the only place a NON-degenerate ``predict()`` is pinned byte for
+    byte against the literal expression the six sites used to write. It passes
+    on the pre-change code too, which is exactly what a regression pin should
+    do.
 
     The expected ultimates are rebuilt cell by cell in the same order
-    ``predict()`` accumulates them, so the comparison is byte exact - which
-    also pins that a capped cell consumes NO random numbers: the MLE arm
-    rebuilds the whole generator stream from its parameter sample alone.
+    ``predict()`` accumulates them, off a generator seeded the same way, so the
+    comparison is byte exact. In the collapsed arm that also pins that a capped
+    cell consumes NO random numbers: the MLE arm rebuilds the whole generator
+    stream from its parameter sample alone.
 
-    Pre-fix (verified): ``ValueError: lam value too large`` from all three."""
+    Pre-fix (verified): ``ValueError: lam value too large`` from all three
+    collapsed arms; all three ordinary arms passed, as they must.
+
+    Mutation (verified): consuming the generator for a capped cell and
+    overwriting the result breaks the collapsed MLE arm."""
+
+    def process(mu, rng):
+        """The term ``predict()`` adds at one cell, rebuilt here."""
+        rate = mu / phi
+        if phi == TINY_PHI:
+            # precondition: the collapsed arm really is past the cap, or it is
+            # a test of ordinary Poisson draws that happen to be tight
+            assert (rate > POISSON_RATE_MAX).all()
+            return mu
+        assert (rate <= POISSON_RATE_MAX).all()  # precondition: really drawn
+        return phi * rng.poisson(rate)
+
     if which == "clark_mle":
         entry = copy.deepcopy(clark_cape)
         entry.params_ = dict(entry.params_)
-        entry.params_["phi"] = TINY_PHI
+        entry.params_["phi"] = phi
         c = entry.contract_
         pred = entry.predict(n_draws=40, seed=5)
 
@@ -607,28 +633,32 @@ def test_predict_routes_through_the_shared_odp_draw(contract, clark_cape, which)
                     lo, post["omega"], post["theta"], "loglogistic"
                 )
                 mu = np.maximum(post["level"][:, j] * ginc, 1e-12)
-                assert (mu / TINY_PHI > POISSON_RATE_MAX).all()
-                want[:, j] += mu
+                want[:, j] += process(mu, rng)
     else:
         c = dict(contract)
-        c["phi"] = TINY_PHI
+        c["phi"] = phi
         want = np.tile(np.asarray(c["paid_to_date"], dtype=float), (40, 1))
         if which == "odp":
             post = odp_posterior(contract, n_draws=40, jitter=0.0)
             entry = _StubODP(c, post)
             pred = entry.predict(seed=5)
+            rng = np.random.default_rng(
+                cohort_stream(5, label="predict", cohorts=entry.cohorts(), field=entry._loss_field)
+            )
             logprem = np.log(np.asarray(c["premium"], dtype=float))
             for j in range(c["n_w"]):
                 for dev in range(int(c["latest_d"][j]) + 1, c["n_d"] + 1):
                     mu = np.exp(
                         logprem[j] + post["c"] + post["alpha"][:, j] + post["beta"][:, dev - 1]
                     )
-                    assert (mu / TINY_PHI > POISSON_RATE_MAX).all()
-                    want[:, j] += mu
+                    want[:, j] += process(mu, rng)
         else:
             post = clark_posterior(n_draws=40, jitter=0.0)
             entry = _StubClarkGC(c, post)
             pred = entry.predict(seed=5)
+            rng = np.random.default_rng(
+                cohort_stream(5, label="predict", cohorts=entry.cohorts(), field=entry._loss_field)
+            )
             elr_prem = np.exp(
                 post["logelr"][:, None] + np.log(np.asarray(c["premium"], dtype=float))[None, :]
             )
@@ -639,8 +669,7 @@ def test_predict_routes_through_the_shared_odp_draw(contract, clark_cape, which)
                         lo, post["omega"], post["theta"], "loglogistic"
                     )
                     mu = np.maximum(elr_prem[:, j] * ginc, 1e-12)
-                    assert (mu / TINY_PHI > POISSON_RATE_MAX).all()
-                    want[:, j] += mu
+                    want[:, j] += process(mu, rng)
 
     got = pred.samples[:, :-1]  # the last column is the total with_total() adds
     assert got.shape == want.shape

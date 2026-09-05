@@ -22,20 +22,25 @@ corrected decision 8.)
 The three ODP gallery entries (`clark`, `clark_growth_curve`,
 `england_verrall_odp`) each wrote `phi * rng.poisson(mu / phi)` in two places,
 six copies in all, and none of them handled the case numpy refuses: a Poisson
-rate larger than about 9.2e18. That is reachable on ordinary data, because a
-triangle that develops exactly on the fitted curve fits itself to rounding
-error, the Pearson dispersion collapses to about 1e-29, and the rate runs to
-1e30. `predict()` then raised `ValueError: lam value too large` on a perfectly
-good fit. The bootstrap kernel already had a cap for this, but its constant was
+rate larger than about 9.2e18. A triangle that develops exactly on its own
+fitted curve gets there: it fits itself to rounding error, the Pearson
+dispersion collapses to about 1e-29, and the rate runs to 1e30, so `predict()`
+raised `ValueError: lam value too large` on a fit that had nothing wrong with
+it. That is a degenerate fit rather than an everyday one, and the measurements
+say how far: the same triangle with its amounts rounded to whole units sits at
+1e-14 of the limit, and with a relative noise of one part in a million, 1e-8 of
+it. The bootstrap kernel already had a cap for this, but its constant was
 the int64 maximum rather than numpy's own limit, which is 30 billion lower, so
 rates in between passed the check and made numpy raise anyway.
 
 All six sites and the kernel now call one function,
 `ibnr.kernels.densities.odp_draw`. Cells past `POISSON_RATE_MAX` come back at
 their mean, which is what the law says there: the draw's coefficient of
-variation is below 3.3e-10, so it is a point mass. A mean that is not finite or
-is negative, and a negative or non-finite dispersion, are refused by name and by
-count instead of being reported by numpy as a rate problem. Nothing else moves:
+variation is below 3.3e-10, so it is a point mass. A mean that is not finite, a
+negative mean, and a negative or non-finite dispersion are each refused by name
+and by count instead of being reported by numpy as a rate problem, and they are
+refused separately, because a mean that overflowed upstream and a mean the
+caller forgot to floor or reflect are two different defects. Nothing else moves:
 the generator is consumed only for the cells that are actually drawn, so every
 seeded output of every ordinary fit is byte for byte what it was.
 

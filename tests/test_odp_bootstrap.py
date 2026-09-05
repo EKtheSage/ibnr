@@ -40,6 +40,7 @@ from ibnr.kernels.densities import POISSON_RATE_MAX, odp_draw
 from ibnr.kernels.mack import fit_mack
 from ibnr.kernels.odp_bootstrap import (
     ODP_PROCESS_LAWS,
+    _od_process_noise,
     draw_next_increments,
     fit_odp_bootstrap,
 )
@@ -382,8 +383,8 @@ def test_poisson_rate_cap_is_numpys():
     exactly how this went wrong: the first version of this constant was
     9.223372036854776e18, the int64 maximum, while numpy's own value is
     ``int64max - 10 * sqrt(int64max)`` - about 30 billion lower. Every rate in
-    between passed the check and then made numpy raise, which is the whole of
-    finding F9 on the kernel side.
+    between passed the check and then made numpy raise, which is this defect's
+    whole kernel half.
 
     Mutation (verified): setting POISSON_RATE_MAX back to the int64 maximum."""
     lo, hi = 1e18, 1e19
@@ -405,8 +406,14 @@ def test_poisson_rate_cap_is_numpys():
 
 def test_odp_draw_refuses_a_non_finite_mean():
     """A mean that is not a finite non-negative number never came from the
-    model: it is a parameter sample that overflowed before any draw, and the
-    error says so by name and by count.
+    model, and the error says which defect it is, by name and by count.
+
+    The two are refused separately because they are not the same mistake. A
+    mean that is not finite is a parameter sample that overflowed before any
+    draw was asked for. A negative mean is a sign the caller was supposed to
+    handle - by flooring, as the gallery entries do, or by reflecting, as the
+    bootstrap kernel does - so that message names the value and the remedy
+    rather than blaming an overflow that did not happen.
 
     numpy's own answer here is ``lam value too large``, which names neither
     how many cells are broken nor that the cause is upstream of the draw.
@@ -415,12 +422,13 @@ def test_odp_draw_refuses_a_non_finite_mean():
     message); dropping the negative-mu check (numpy raises `lam < 0`);
     dropping the phi check (a NaN phi silently returns every cell at its mean,
     because ``mu / nan`` is never below the cap); putting the ``phi == 0``
-    shortcut ahead of the checks (a broken mean is then returned as itself)."""
+    shortcut ahead of the checks (a broken mean is then returned as itself);
+    giving both refusals the one overflow message."""
     rng = np.random.default_rng(0)
-    with pytest.raises(ValueError, match="2 of 4"):
+    with pytest.raises(ValueError, match="2 of 4 are not finite.*overflowed"):
         odp_draw(rng, np.array([100.0, np.inf, 50.0, np.nan]), 2.0)
-    with pytest.raises(ValueError, match="negative"):
-        odp_draw(rng, np.array([100.0, -1.0]), 2.0)
+    with pytest.raises(ValueError, match="1 of 2 are negative, the smallest -1.5"):
+        odp_draw(rng, np.array([100.0, -1.5]), 2.0)
     for bad_phi in (-1.0, np.nan, np.inf):
         with pytest.raises(ValueError, match="phi"):
             odp_draw(rng, np.array([100.0, 50.0]), bad_phi)
@@ -437,6 +445,8 @@ def test_odp_draw_caps_only_the_cells_past_the_rate():
 
     ``phi = 1`` so the mean IS the rate and the boundary can be named exactly:
     one cell sits on the cap (drawn) and one a single double above it (not).
+    The other boundary is in there too: a mean of exactly 0 is a legal Poisson
+    rate, drawn like any other, and is not to be mistaken for a bad mean.
 
     The generator's own STATE is compared, not only the values it produced. A
     Poisson draw takes a variable number of random doubles, so an extra one
@@ -448,7 +458,8 @@ def test_odp_draw_caps_only_the_cells_past_the_rate():
     Mutations (verified): passing the whole array to ``rng.poisson`` (numpy
     raises); handing the capped cells to the generator and discarding the
     result afterwards; the boundary tested with ``<`` instead of ``<=``;
-    returning the caller's own array at ``phi == 0``."""
+    returning the caller's own array at ``phi == 0``; refusing a mean of
+    exactly 0 along with the negative ones."""
     phi = 1.0
     mu = np.array(
         [
@@ -458,12 +469,13 @@ def test_odp_draw_caps_only_the_cells_past_the_rate():
             np.nextafter(POISSON_RATE_MAX, np.inf),
             11.0,
             1e30,
+            0.0,
             5.0,
             40.0,
             2.5,
         ]
     )
-    live = np.array([True, True, True, False, True, False, True, True, True])
+    live = np.array([True, True, True, False, True, False, True, True, True, True])
 
     rng = np.random.default_rng(7)
     got = odp_draw(rng, mu, phi)
@@ -472,6 +484,7 @@ def test_odp_draw_caps_only_the_cells_past_the_rate():
     assert np.array_equal(got[live].view(np.uint8), want_live.view(np.uint8))
     assert np.array_equal(got[~live].view(np.uint8), mu[~live].view(np.uint8))
     assert rng.bit_generator.state == reference.bit_generator.state
+    assert got[6] == 0.0  # the zero-mean cell: drawn, and Poisson(0) is 0
 
     # phi == 0 is the same statement with no dispersion left at all: the mean,
     # and not one random number taken
@@ -481,6 +494,56 @@ def test_odp_draw_caps_only_the_cells_past_the_rate():
     assert np.array_equal(zero.view(np.uint8), mu.view(np.uint8))
     assert rng.bit_generator.state == before
     assert zero is not mu  # a copy, never the caller's array
+
+
+@pytest.mark.parametrize("law", ODP_PROCESS_LAWS)
+def test_process_noise_reflects_the_sign_and_leaves_a_zero_mean_alone(law):
+    """The two things the bootstrap's noise step does around the shared draw,
+    tested directly rather than through a CDR that averages them away.
+
+    1. **The sign reflection**, R's ``processTriangle``: the draw is taken at
+       ``|mu|`` and the sign put back, so a resampled triangle that refits to
+       ``f* < 1`` and projects a negative increment still gets noise about its
+       own mean instead of an error. Nothing else in this file sees it - the
+       fixtures never project a negative increment - so without this test the
+       reflection could be deleted and every other test would pass.
+    2. **A zero mean comes back at 0, and no random number is spent on it.**
+
+    Point 2 is pinned here and NOT attributed to the ``live`` mask, which is an
+    optimization with no observable effect: numpy answers a Poisson rate of 0,
+    and a gamma shape of 0, with 0 and takes nothing off the generator, so
+    widening the mask to every cell leaves both the values and the generator's
+    state identical (mutation run, escaped as it must). What this test pins is
+    the answer and the consumption, which is what a caller can see.
+
+    The capped cell is here as well, so this also shows the reflection and the
+    cap composing: ``od_poisson`` returns the mean at ``-1e30``, sign and all.
+
+    Mutations (verified): dropping the ``sign *`` on either law's branch."""
+    phi = 18.55
+    mu = np.array([-100.0, 100.0, 0.0, -1e30])
+    live = mu != 0.0
+
+    rng = np.random.default_rng(3)
+    got = _od_process_noise(rng, mu, phi, law=law)
+
+    reference = np.random.default_rng(3)
+    magnitude = np.abs(mu[live])
+    if law == "od_poisson":
+        drawn = magnitude.copy()
+        under = magnitude / phi <= POISSON_RATE_MAX
+        assert under.tolist() == [True, True, False]  # the case really is mixed
+        drawn[under] = phi * reference.poisson(magnitude[under] / phi)
+    else:
+        drawn = reference.gamma(shape=magnitude / phi, scale=phi)
+    want = mu.copy()
+    want[live] = np.sign(mu[live]) * drawn
+
+    assert np.array_equal(got.view(np.uint8), want.view(np.uint8))
+    assert got[0] < 0.0 and got[1] > 0.0  # reflected, not folded onto one side
+    assert got[0] != mu[0] and got[1] != mu[1]  # and genuinely drawn, not the mean
+    assert got[2] == 0.0
+    assert rng.bit_generator.state == reference.bit_generator.state
 
 
 def test_process_laws_are_moment_matched(odp_fit):

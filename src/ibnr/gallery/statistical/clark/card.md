@@ -109,8 +109,10 @@ final spread) is kept rather than discarded, so a stalling cohort in a
   entry and the bootstrap ODP baselines. Every one of those draws goes
   through the shared `kernels.densities.odp_draw`, which returns the mean
   exactly when the dispersion has collapsed so far that `mu / phi` is past
-  the largest Poisson rate numpy can draw at - reachable here, because a
-  triangle sitting exactly on the fitted curve drives `phi` to about 1e-29.
+  the largest Poisson rate numpy can draw at. A triangle sitting exactly on
+  the fitted curve drives `phi` to about 1e-29 and gets there; rounding the
+  same triangle to whole units leaves the rate 1e-14 of the limit, so this is
+  the answer for a degenerate fit and not a branch an ordinary one takes.
 
 **Truncation:** increments are projected only to the triangle's final age
 (`n_d`) - no tail beyond the curve's support in the data. The backtest
