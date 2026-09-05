@@ -20,13 +20,16 @@ zero, ``msep = E[CDR^2 | D_I]``.
 
 ANNUAL DEVELOPMENT GRAIN ONLY. "One year" here means one development step, and
 the two are the same span only when the triangle develops in twelve-month
-steps. Every entry point in this module therefore refuses a fit whose
-development grain is quarterly or monthly, naming the grain it measured: the
-arithmetic would be correct for one step and the label wrong by a factor of
-four or twelve, which nothing in the answer would show. The remedy is to
-aggregate the triangle to an annual grain first, or, when the whole run-off is
-the question rather than one year of it, to read ``MackFit.msep_runoff()``,
-which does not depend on the grain.
+steps. The three functions that name a year, :func:`one_year_cdr`,
+:func:`simulate_one_year_cdr` and :func:`rereserve`, therefore refuse a fit
+whose development grain is quarterly or monthly, naming the grain they
+measured. The two generators do not, because a generator only draws the next
+step and never calls it a year. The arithmetic would be right for one step, but
+on a quarterly or a monthly fit that step is three months or one rather than
+the twelve the name promises, and nothing in the answer would show it. The
+remedy is to aggregate the triangle to an annual grain first, from a year-end
+valuation, or, when the whole run-off is the question rather than one year of
+it, to read ``MackFit.msep_runoff()``, which does not depend on the grain.
 
 TWO INDEPENDENT AXES, because that is what the question has.
 
@@ -114,10 +117,12 @@ class CDRResult:
         error, run-off standard error, and the share of run-off risk that
         emerges in the first year (``one_year_share`` = cdr_se / runoff_se).
 
-        ``cdr_se`` is a one-year figure because the fit it came from develops in
-        twelve-month steps; every route that builds a :class:`CDRResult` refuses
-        any other development grain, so the column heading and the span always
-        agree."""
+        ``cdr_se`` is a one-year figure when this result came from
+        :func:`one_year_cdr`, which refuses any development grain other than
+        twelve months, so there the column heading and the span agree. A
+        :class:`CDRResult` decoded from Arrow bytes carries no grain and is not
+        checked, so a payload written by an older version can hold a figure for
+        a shorter span."""
         cdr_se = np.sqrt(self.msep)
         runoff_se = np.sqrt(self.runoff_msep)
         out = pd.DataFrame(
@@ -176,13 +181,21 @@ def _require_annual_step(fit: MackFit) -> None:
     the same thing only on an annual triangle. On a quarterly or a monthly fit
     the step is three months or one, so the number would be a three-month or a
     one-month development result reported under a one-year name: finite,
-    plausible, and wrong by a factor nothing in the output reveals.
+    plausible, and covering a shorter span than the name says, with nothing in
+    the output to show it.
 
     Called inside :func:`one_year_cdr`, :func:`simulate_one_year_cdr` and
     :func:`rereserve` rather than on :meth:`DiagonalGenerator.check`, because a
     third-party diagonal re-reserved through :func:`rereserve` reaches no
     generator at all, and because the gallery's ``mack`` entry binds these
     functions by name when it is imported.
+
+    The first remedy the message names is qualified, because the aggregation on
+    its own is not enough: ``with_dev_grain("Y")`` anchors the annual buckets to
+    the latest diagonal, so a triangle whose latest valuation is not a year end
+    aggregates to development lags such as 9, 21 and 33, which ``validate``
+    flags and ``fit_mack`` then refuses. Slicing to a year end with ``as_of``
+    first is what makes the route work.
     """
     step = fit.dev_grain_months
     if step == 12:
@@ -190,14 +203,15 @@ def _require_annual_step(fit: MackFit) -> None:
     raise ValueError(
         "the one-year claims development result needs an annual development grain, and "
         f"this fit has a {step}-month development grain. Every route here advances the "
-        "triangle by exactly one development step: the Merz-Wuthrich closed form, every "
-        f"DiagonalGenerator and rereserve() all move it on by one step, and here that is a "
-        f"{step}-month step rather than a twelve-month one, so the answer would be a "
-        f"{step}-month development "
-        "result reported under a one-year name. Either aggregate the triangle first with "
-        'Triangle.with_origin_grain("Y").with_dev_grain("Y"), which costs development '
-        "resolution, or read the run-off uncertainty from MackFit.msep_runoff(), which "
-        "does not depend on the development grain"
+        "triangle by exactly one development step (the Merz-Wuthrich closed form, every "
+        "DiagonalGenerator and rereserve()), and here that step is not twelve months, so "
+        f"the answer would be a {step}-month development result reported under a one-year "
+        "name. Either aggregate the triangle to an annual grain first, "
+        "which costs development resolution: slice to a year-end valuation with as_of() "
+        'and then call Triangle.with_origin_grain("Y").with_dev_grain("Y"), since the '
+        "annual buckets are anchored to the latest diagonal and a mid-year one gives "
+        "development lags the annual grain rejects. Or read the run-off uncertainty from "
+        "MackFit.msep_runoff(), which does not depend on the development grain"
     )
 
 

@@ -17,7 +17,7 @@ corrected decision 8.)
 
 ## Unreleased
 
-### The one-year CDR refuses a non-annual development grain
+### The one-year CDR refuses a non-annual development grain (#108)
 
 Every route to a one-year claims development result advances the triangle by
 exactly one development step: the Merz-Wuthrich closed form, each
@@ -28,7 +28,9 @@ labelled as a one-year figure, finite and plausible, with nothing in the output
 saying otherwise. `one_year_cdr`, `simulate_one_year_cdr` and `rereserve` now
 refuse such a fit, naming the grain they measured, saying that one step is that
 many months rather than twelve, and giving the two ways forward: aggregate the
-triangle to an annual grain first, or read the run-off uncertainty from
+triangle to an annual grain first, from a year-end valuation, because the annual
+buckets are anchored to the latest diagonal and a mid-year one gives development
+lags the annual grain rejects; or read the run-off uncertainty from
 `MackFit.msep_runoff()`, which does not depend on the grain. The gallery `mack`
 entry's `one_year_cdr()` and `cdr_distribution()` inherit the refusal. Annual
 triangles are untouched, the MW2014 tie-out against R included.

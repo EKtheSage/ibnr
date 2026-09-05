@@ -595,14 +595,24 @@ def test_a_non_annual_dev_grain_is_refused_by_name(backend_name, dev_grain, step
     and ``rereserve``. On a quarterly or monthly triangle that step is three
     months or one, so the answer would be a three-month or one-month claims
     development result reported under a one-year name, with no sign that
-    anything was off. Every entry point therefore refuses, naming the grain it
-    measured and the two ways out."""
+    anything was off. The three functions that name a year therefore refuse,
+    naming the grain they measured and the two ways out, and so do the two
+    gallery methods that call them."""
     cum = synthetic_triangle(backend_name)
     tri = make_cohort_triangle(backend_name, cum, dev_grain=dev_grain)
     assert tri.validate(strict=False) == []
     fit = fit_mack(tri, loss_field="paid_loss")
     assert fit.dev_grain_months == step
-    expected = rf"{step}-month development grain.*one development step.*with_origin_grain"
+    # the remedy is pinned call by call, not just by the name of the method: an
+    # aggregation to the wrong grain letter, or one that forgets the year-end
+    # slice the annual buckets need, would send the caller into a second error.
+    expected = (
+        rf"{step}-month development grain"
+        r".*one development step"
+        r".*as_of\(\)"
+        r'.*with_origin_grain\("Y"\)\.with_dev_grain\("Y"\)'
+        r".*msep_runoff\(\)"
+    )
 
     with pytest.raises(ValueError, match=expected):
         one_year_cdr(fit)
@@ -621,3 +631,33 @@ def test_a_non_annual_dev_grain_is_refused_by_name(backend_name, dev_grain, step
     # the refusal is about the grain and not about this cohort.
     annual = fit_mack(make_cohort_triangle(backend_name, cum), loss_field="paid_loss")
     assert np.isfinite(one_year_cdr(annual).msep_total)
+
+
+def test_the_aggregation_remedy_works_only_from_a_year_end(backend_name):
+    """The refusal names a way out, so the way out has to work.
+
+    ``with_dev_grain("Y")`` anchors the annual development buckets to the latest
+    diagonal. A quarterly triangle whose latest valuation is a September
+    therefore aggregates to development lags 9, 21, 33 and 45, which ``validate``
+    flags and ``fit_mack`` refuses, so a caller who followed an unqualified
+    "aggregate first" would meet a second error on the triangle they had just
+    been told to build. Slicing to a year end first is what the message names
+    and what this pins."""
+    n = 15
+    rng = np.random.default_rng(7)
+    square = np.cumsum(rng.uniform(100.0, 200.0, size=(n, n)), axis=1)
+    square[np.arange(n)[:, None] + np.arange(n)[None, :] >= n] = np.nan
+    quarterly = make_cohort_triangle(backend_name, square, dev_grain="Q")
+    assert str(quarterly.to_pandas()["eval_date"].max().date()) == "2013-09-30"
+
+    straight = quarterly.with_origin_grain("Y").with_dev_grain("Y")
+    assert sorted({int(x) for x in straight.to_pandas()["dev_lag"]}) == [9, 21, 33, 45]
+    assert straight.validate(strict=False) != []
+    with pytest.raises(ValueError, match="not multiples of the 12-month dev grain"):
+        fit_mack(straight, loss_field="paid_loss")
+
+    sliced = quarterly.as_of("2012-12-31").with_origin_grain("Y").with_dev_grain("Y")
+    assert sliced.validate(strict=False) == []
+    fit = fit_mack(sliced, loss_field="paid_loss")
+    assert fit.dev_grain_months == 12
+    assert np.isfinite(one_year_cdr(fit).msep_total)
