@@ -15,6 +15,32 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
+## Unreleased
+
+### Stacking weights survive deep log densities, and an unconverged solve is refused
+
+`MleStacking`, the default stacking method, does its arithmetic in linear
+space: it exponentiates the pointwise ELPD and hands SLSQP the Jacobian
+`1 / (Y @ w)`. Once a cell's log densities fall a little below -709.4 that
+reciprocal overflows to infinity, SLSQP stops at its first iteration and hands
+back the uniform starting vector it began with. That vector is finite,
+non-negative and sums to 1, so every check the weights faced accepted it as a
+fitted even split, and only three numpy warnings naming bayesblend's own lines
+reached stderr. One shared cell below the boundary among sixteen
+board-like cells was enough: a 1.0/0.0 fit came back 0.5/0.5, which is worse
+than either corner on the objective it claims to maximize.
+
+`kernels/stacking.py` now passes bayesblend each cell's ELPD relative to that
+cell's best finite member, floored at `LPD_FLOOR`, so every value it sees is
+between -700 and 0 whatever the absolute level of the densities. A common
+per-cell offset cannot move the optimum, so no correct answer changes. One
+ranking does change, in the direction of the milestone 6 rule that zero
+density ranks last: on a cell where one member gave the outcome zero density
+and another gave it a tiny positive density, the old absolute floor put the
+zero-density member above the finite one, and now it does not. `_fit_weights`
+also reads the scipy result bayesblend stores and refuses an unsuccessful
+solve by name, with its status and message.
+
 ## 0.5.8 - 2026-08-24
 
 A one-feature release: `nn_transformer_ml` gains held-out scoring (#105), the
