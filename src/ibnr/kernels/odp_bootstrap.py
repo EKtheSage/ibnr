@@ -46,23 +46,12 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ibnr.kernels.densities import odp_draw
+
 #: process laws for the simulated increment. Both match the over-dispersed
 #: Poisson's first two moments (mean ``mu``, variance ``phi * mu``) and differ
 #: in support and tail, exactly as ``kernels.mack.PROCESS_LAWS`` do for Mack.
 ODP_PROCESS_LAWS = ("od_poisson", "gamma")
-
-#: numpy's ``Generator.poisson`` refuses a rate above this - its internal
-#: ``POISSON_LAM_MAX``, which is not exported. ``od_poisson`` draws
-#: ``phi * Poisson(mu / phi)``, so the rate blows up exactly when the
-#: over-dispersion is negligible against the mean: at the limit the draw's
-#: coefficient of variation ``sqrt(phi/|mu|) = 1/sqrt(rate)`` is under 3.3e-10,
-#: i.e. the distribution is a point mass to any precision that matters. Those
-#: cells therefore come back at their mean exactly, which is the same
-#: convention ``kernels.mack.draw_step`` documents for a zero-variance step.
-#: Reachable in practice: a triangle that develops by exactly constant factors
-#: fits itself to rounding error, giving phi ~ 1e-29 (measured, and pinned by
-#: ``tests/test_odp_bootstrap.py::test_zero_residual_triangle_has_no_cdr``).
-_POISSON_RATE_MAX = 9.223372036854776e18
 
 
 @dataclass(frozen=True)
@@ -298,19 +287,19 @@ def _od_process_noise(
     the asymmetry with the observed data, which is refused outright when
     negative - that refusal is about the family's support, this is about a
     bootstrap artifact of it.
+
+    ``od_poisson`` is the shared :func:`~ibnr.kernels.densities.odp_draw`, so
+    the rate numpy can no longer represent is handled here exactly as it is in
+    the gallery's ODP entries - by returning the mean, and in one place.
     """
     out = np.array(mu, dtype=float, copy=True)
     live = mu != 0
-    if law == "od_poisson":
-        # see _POISSON_RATE_MAX: an unrepresentable rate is a numerical point
-        # mass, and `out` already holds the mean there
-        live = live & (np.abs(mu) <= _POISSON_RATE_MAX * phi)
     if not live.any():
         return out
     magnitude = np.abs(mu[live])
     sign = np.sign(mu[live])
     if law == "od_poisson":
-        out[live] = sign * phi * rng.poisson(magnitude / phi)
+        out[live] = sign * odp_draw(rng, magnitude, phi)
     else:  # gamma, moment-matched: shape * scale = |mu|, shape * scale^2 = phi|mu|
         out[live] = sign * rng.gamma(shape=magnitude / phi, scale=phi)
     return out

@@ -106,7 +106,11 @@ final spread) is kept rather than discarded, so a stalling cohort in a
   levels stay positive.
 - **Process risk**: scaled-Poisson ODP draws `phi * Poisson(mu/phi)` per
   future cell, the same process distribution as the `england_verrall_odp`
-  entry and the bootstrap ODP baselines.
+  entry and the bootstrap ODP baselines. Every one of those draws goes
+  through the shared `kernels.densities.odp_draw`, which returns the mean
+  exactly when the dispersion has collapsed so far that `mu / phi` is past
+  the largest Poisson rate numpy can draw at - reachable here, because a
+  triangle sitting exactly on the fitted curve drives `phi` to about 1e-29.
 
 **Truncation:** increments are projected only to the triangle's final age
 (`n_d`) - no tail beyond the curve's support in the data. The backtest

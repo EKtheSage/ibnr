@@ -13,6 +13,8 @@ published method. The Bayesian twin of this entry is exercised in
 ``test_clark_growth_curve.py`` (slow, cmdstan).
 """
 
+import datetime as dt
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -24,13 +26,17 @@ import pytest
 cl = pytest.importorskip("chainladder")
 
 from ibnr import Triangle  # noqa: E402
+from ibnr.gallery.statistical.clark import scorer  # noqa: E402
 from ibnr.gallery.statistical.clark.model import (  # noqa: E402
     _REJECT_PENALTY,
     _SIMPLEX_XTOL,
     Clark,
     _check_converged,
+    age_interval,
     growth,
 )
+from ibnr.kernels.densities import POISSON_RATE_MAX  # noqa: E402
+from ibnr.kernels.rng import cohort_stream  # noqa: E402
 
 pytestmark = pytest.mark.tieout
 
@@ -293,3 +299,90 @@ def test_predict_contract(genins_tri):
     g_age = growth(age, prm["omega"], prm["theta"], "loglogistic")
     point = (c["paid_to_date"] * g_max / g_age).sum()
     assert est[-1] == pytest.approx(point, rel=0.05)
+
+
+def _exact_loglogistic_triangle(omega: float = 1.5, theta: float = 48.0, n: int = 10) -> Triangle:
+    """A run-off staircase whose increments ARE the model's own mean.
+
+    Every cell is ``U[w] * (G(age_hi) - G(age_lo))`` at Clark's mid-period
+    ages, so the MLE recovers the curve it was built from and the fitted
+    Pearson dispersion is nothing but rounding error.
+    """
+    ults = np.array([1000.0 + 100.0 * i for i in range(n)])
+    rows = []
+    for i in range(n):
+        cum = 0.0
+        for j in range(n):
+            lo, hi = age_interval(j + 1, 12.0)
+            share = growth(hi, omega, theta, "loglogistic") - growth(
+                lo, omega, theta, "loglogistic"
+            )
+            cum += ults[i] * float(share)
+            if i + j >= n:  # keep the run-off staircase
+                continue
+            rows.append(
+                {
+                    "origin_period": dt.date(2000 + i, 1, 1),
+                    "dev_lag": 12 * (j + 1),
+                    "eval_date": dt.date(2000 + i + j, 12, 31),
+                    "field": "paid_loss",
+                    "value": cum,
+                }
+            )
+    return Triangle.from_long(pd.DataFrame(rows), measure="cumulative")
+
+
+def test_exact_loglogistic_triangle_is_a_point_mass():
+    """A triangle sitting exactly on the fitted curve has no dispersion left,
+    and ``predict()`` has to answer with the mean rather than raise.
+
+    The fit recovers omega and theta to rounding error, so the Pearson scale
+    collapses to about 1e-29 and every future cell's Poisson rate ``mu / phi``
+    runs to 1e30 - past what numpy can draw at. Before the shared
+    :func:`~ibnr.kernels.densities.odp_draw`, ``predict()`` raised
+    ``ValueError: lam value too large`` (measured on this fixture) while the
+    ODP bootstrap, which has had the cap since it was written, answered the
+    same degenerate data with a point mass.
+
+    Both preconditions are asserted rather than assumed. This fit is a
+    Nelder-Mead optimization of a likelihood whose magnitude is the data's, so
+    a different BLAS could land somewhere slightly different; if it does, the
+    preconditions fail loudly instead of the test passing on an ordinary fit
+    that never reaches the cap at all.
+    """
+    n_draws = 32
+    entry = Clark().fit(
+        _exact_loglogistic_triangle(),
+        loss_field="paid_loss",
+        premium_field=None,
+        method="ldf",
+        growth_curve="loglogistic",
+    )
+    c, prm = entry.contract_, entry.params_
+    phi = prm["phi"]
+    assert 0.0 < phi < 1e-20  # precondition: the fit really did land on the curve
+
+    pred = entry.predict(n_draws=n_draws, seed=4)
+    assert np.isfinite(pred.samples).all()
+
+    # Rebuild the ultimates the way predict() accumulates them. Every cell is
+    # past the cap, so the generator is consumed by the parameter sample alone
+    # and this reproduction is byte exact.
+    rng = np.random.default_rng(
+        cohort_stream(4, label="predict", cohorts=entry.cohorts(), field="paid_loss")
+    )
+    post = scorer.param_draws(c, prm, n_draws=n_draws, rng=rng)
+    want = np.tile(np.asarray(c["paid_to_date"], dtype=float), (n_draws, 1))
+    worst = 0.0
+    for j in range(c["n_w"]):
+        for dev in range(int(c["latest_d"][j]) + 1, c["n_d"] + 1):
+            lo, hi = age_interval(dev, c["dev_grain_months"])
+            ginc = growth(hi, post["omega"], post["theta"], "loglogistic") - growth(
+                lo, post["omega"], post["theta"], "loglogistic"
+            )
+            mu = np.maximum(post["level"][:, j] * ginc, 1e-12)
+            worst = max(worst, float((mu / phi).max()))
+            assert (mu / phi > POISSON_RATE_MAX).all()  # precondition: every cell capped
+            want[:, j] += mu
+    assert worst > 1e29  # and by orders of magnitude, not by a hair
+    assert np.array_equal(pred.samples[:, :-1].view(np.uint8), want.view(np.uint8))

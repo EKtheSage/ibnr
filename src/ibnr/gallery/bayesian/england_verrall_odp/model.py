@@ -22,6 +22,7 @@ from ibnr.gallery.bayesian.england_verrall_odp import scorer
 from ibnr.gallery.entry import GalleryEntry, PredictsHeldout
 from ibnr.gallery.registry import register
 from ibnr.kernels.contract import odp_stan_data, realized_values
+from ibnr.kernels.densities import odp_draw
 from ibnr.kernels.holdout import CellIndex
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.kernels.rng import cohort_stream
@@ -377,7 +378,7 @@ class EnglandVerrallODP(GalleryEntry, PredictsHeldout):
                 mu = np.exp(logprem_origin[j] + const + alpha[:, j] + beta[:, dev - 1])
                 # Process draw: X ~ phi * Poisson(mu/phi) reproduces mean mu and
                 # variance phi*mu (od-Poisson), the BootChainLadder od.pois twin.
-                ults[:, j] += phi * rng.poisson(mu / phi)
+                ults[:, j] += odp_draw(rng, mu, phi)
 
         targets = pd.DataFrame(
             {

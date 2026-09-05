@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -39,12 +40,19 @@ from ibnr.gallery.entry import PredictsHeldout, ScoresHeldout
 from ibnr.gallery.statistical.clark import scorer as mle_scorer
 from ibnr.gallery.statistical.clark.model import Clark, age_interval, growth
 from ibnr.kernels.contract import odp_stan_data
+from ibnr.kernels.densities import POISSON_RATE_MAX
 from ibnr.kernels.holdout import CellIndex, index_into, next_diagonal, training_index
-from ibnr.kernels.rng import heldout_stream
+from ibnr.kernels.rng import cohort_stream, heldout_stream
 from ibnr.triangle.core import Triangle
 
 N_W = N_D = 6
 PHI = 50.0
+
+#: a dispersion small enough that every cell's Poisson rate ``mu / phi`` is
+#: past the largest rate numpy can draw. Reachable on real fits: a triangle
+#: that develops exactly on the fitted curve fits itself to rounding error and
+#: the Pearson scale collapses to about 1e-29 (``tests/test_clark.py``).
+TINY_PHI = 1e-30
 
 
 def _premium(w: int) -> float:
@@ -142,15 +150,30 @@ def clark_posterior(n_draws: int, seed: int = 0, jitter: float = 1e-3) -> dict:
     }
 
 
+def _fake_idata(post: dict) -> SimpleNamespace:
+    """Just enough of an ``InferenceData`` for ``pooled()``, which reads
+    ``idata.posterior[name].values`` of shape ``(chain, draw, *dims)``. One
+    chain, so pooling is a reshape that changes nothing. This is what lets the
+    stubs below reach ``predict()``, not only ``_draws_native``."""
+    return SimpleNamespace(
+        posterior={
+            name: SimpleNamespace(values=np.asarray(values, dtype=float)[None, ...])
+            for name, values in post.items()
+        }
+    )
+
+
 class _StubODP(EnglandVerrallODP):
     """A fitted-shaped entry without a sampler: real contract, fake posterior.
-    Only ``_posterior`` is overridden, so ``_draws_native`` and the base-class
-    carry are the real code paths under test."""
+    Only ``_posterior`` and the ``idata_`` it reads are overridden, so
+    ``_draws_native``, ``predict`` and the base-class carry are the real code
+    paths under test."""
 
     def __init__(self, contract: dict, post: dict) -> None:
         super().__init__()
         self.contract_ = contract
-        self.idata_ = object()  # non-None: the fit guard passes
+        self.idata_ = _fake_idata(post)  # non-None: the fit guard passes
+        self._loss_field = "paid_loss"
         self._post = post
 
     def _posterior(self) -> dict:
@@ -163,7 +186,8 @@ class _StubClarkGC(ClarkGrowthCurve):
     def __init__(self, contract: dict, post: dict, curve: str = "loglogistic") -> None:
         super().__init__()
         self.contract_ = contract
-        self.idata_ = object()
+        self.idata_ = _fake_idata(post)
+        self._loss_field = "paid_loss"
         self._curve = curve
         self._post = post
 
@@ -251,6 +275,10 @@ def test_odp_draw_cells_is_phi_times_poisson_of_mu_over_phi(contract, heldout):
     """model.stan:59 read forwards: X = phi * Poisson(mu / phi), one draw per
     posterior draw, reproduced exactly by seeding the same generator.
 
+    Compared BYTE for byte against the literal expression, so the shared
+    ``odp_draw`` cannot change an ordinary fit's numbers at all: the rate cap
+    and the point mass at it must be reachable only past what numpy can draw.
+
     Mutation (verified): rng.poisson(mu) without the phi scaling - the mean
     survives it, so only an exact or a variance check can see it."""
     post = odp_posterior(contract, n_draws=50)
@@ -259,7 +287,7 @@ def test_odp_draw_cells_is_phi_times_poisson_of_mu_over_phi(contract, heldout):
     mu = odp_scorer.mu_cells(contract, post, idx)
     want = PHI * np.random.default_rng(3).poisson(mu / PHI)
     assert got.shape == (50, idx.n_cells)
-    np.testing.assert_allclose(got, want)
+    assert np.array_equal(got.view(np.uint8), want.view(np.uint8))
     assert (got >= 0).all()  # non-negative multiples of phi by construction
 
 
@@ -316,7 +344,8 @@ def test_clark_age_interval_first_cell_clamps_to_zero_exactly(contract):
 
 def test_clark_draw_cells_is_phi_times_poisson_of_mu_over_phi(contract, heldout):
     """model.stan:61 read forwards, reproduced exactly by seeding the same
-    generator. Mutation (verified): dropping the phi scaling."""
+    generator, byte for byte for the reason above. Mutation (verified):
+    dropping the phi scaling."""
     post = clark_posterior(n_draws=50)
     idx = index_into(heldout, contract)
     got = clark_scorer.draw_cells(
@@ -325,7 +354,7 @@ def test_clark_draw_cells_is_phi_times_poisson_of_mu_over_phi(contract, heldout)
     mu = clark_scorer.mu_cells(contract, post, idx, curve="loglogistic")
     want = PHI * np.random.default_rng(3).poisson(mu / PHI)
     assert got.shape == (50, idx.n_cells)
-    np.testing.assert_allclose(got, want)
+    assert np.array_equal(got.view(np.uint8), want.view(np.uint8))
 
 
 def test_mle_param_draws_reproduce_the_predict_recipe(clark_cape, clark_ldf):
@@ -373,7 +402,7 @@ def test_mle_draw_cells_reproduces_the_recipe_exactly(clark_cape, heldout):
     mu = np.maximum(level[:, idx.w - 1] * ginc, 1e-12)
     want = prm["phi"] * r.poisson(mu / prm["phi"])
     assert got.shape == (64, idx.n_cells)
-    np.testing.assert_allclose(got, want)
+    assert np.array_equal(got.view(np.uint8), want.view(np.uint8))
 
 
 # -- layer 3: moments (the od-Poisson law) ------------------------------------
@@ -495,6 +524,127 @@ def test_mle_zero_and_clark_zero_emergence_cells_draw_all_zeros(contract, heldou
     }
     mle_mu = mle_scorer.mu_cells(clark_cape.contract_, mle_post, idx, curve="weibull")
     np.testing.assert_array_equal(mle_mu, np.full_like(mle_mu, 1e-12))
+
+
+# -- the other end of the same axis: a dispersion too small to draw -----------
+
+
+@pytest.mark.parametrize("phi", [TINY_PHI, 0.0])
+@pytest.mark.parametrize("which", ["odp", "clark_growth_curve", "clark_mle"])
+def test_negligible_dispersion_draws_the_mean_exactly(contract, heldout, clark_cape, which, phi):
+    """When the over-dispersion collapses, ``phi * Poisson(mu / phi)`` asks
+    numpy for a rate it cannot represent, and the honest answer is the mean:
+    at the limit the draw's coefficient of variation ``sqrt(phi / mu)`` is
+    below 3.3e-10, so the law is a point mass to any precision that matters.
+    Same convention as ``kernels.mack.draw_step``'s zero-variance step.
+
+    All three scorers, because all three write the same draw, and both ends of
+    the collapse: a rate past the cap and ``phi`` exactly 0.
+
+    Pre-fix (verified) all six cases raised ``ValueError: lam value too large``
+    out of numpy: at ``phi = 0`` the rate is not merely huge but infinite."""
+    if which == "clark_mle":
+        c = clark_cape.contract_
+        prm = dict(clark_cape.params_)
+        prm["phi"] = phi
+        idx = index_into(heldout, c)
+        post = mle_scorer.param_draws(c, prm, n_draws=40, rng=np.random.default_rng(5))
+        mu = mle_scorer.mu_cells(c, post, idx, curve=prm["growth_curve"])
+        got = mle_scorer.draw_cells(c, prm, idx, n_draws=40, rng=np.random.default_rng(5))
+    else:
+        c = dict(contract)
+        c["phi"] = phi
+        idx = index_into(heldout, c)
+        if which == "odp":
+            post = odp_posterior(contract, n_draws=40)
+            mu = odp_scorer.mu_cells(c, post, idx)
+            got = odp_scorer.draw_cells(c, post, idx, rng=np.random.default_rng(5))
+        else:
+            post = clark_posterior(n_draws=40)
+            mu = clark_scorer.mu_cells(c, post, idx, curve="loglogistic")
+            got = clark_scorer.draw_cells(
+                c, post, idx, curve="loglogistic", rng=np.random.default_rng(5)
+            )
+
+    # the case has to BE the case: every rate past the cap, or the test is a
+    # test of ordinary Poisson draws that happen to be tight
+    if phi > 0:
+        assert (mu / phi > POISSON_RATE_MAX).all()
+    assert got.shape == mu.shape
+    assert np.array_equal(got.view(np.uint8), mu.view(np.uint8))
+
+
+@pytest.mark.parametrize("which", ["odp", "clark_growth_curve", "clark_mle"])
+def test_predict_routes_through_the_shared_odp_draw(contract, clark_cape, which):
+    """The same collapse through the PUBLIC entry point, for all three
+    ``predict()`` methods. Each one adds a process draw per future cell, so
+    each one has to reach the shared draw; a site left writing
+    ``phi * rng.poisson(mu / phi)`` directly raises here while every scorer
+    test above still passes (the inert-parameter bug class, one layer up).
+
+    The expected ultimates are rebuilt cell by cell in the same order
+    ``predict()`` accumulates them, so the comparison is byte exact - which
+    also pins that a capped cell consumes NO random numbers: the MLE arm
+    rebuilds the whole generator stream from its parameter sample alone.
+
+    Pre-fix (verified): ``ValueError: lam value too large`` from all three."""
+    if which == "clark_mle":
+        entry = copy.deepcopy(clark_cape)
+        entry.params_ = dict(entry.params_)
+        entry.params_["phi"] = TINY_PHI
+        c = entry.contract_
+        pred = entry.predict(n_draws=40, seed=5)
+
+        rng = np.random.default_rng(
+            cohort_stream(5, label="predict", cohorts=entry.cohorts(), field=entry._loss_field)
+        )
+        post = mle_scorer.param_draws(c, entry.params_, n_draws=40, rng=rng)
+        want = np.tile(np.asarray(c["paid_to_date"], dtype=float), (40, 1))
+        for j in range(c["n_w"]):
+            for dev in range(int(c["latest_d"][j]) + 1, c["n_d"] + 1):
+                lo, hi = age_interval(dev, c["dev_grain_months"])
+                ginc = growth(hi, post["omega"], post["theta"], "loglogistic") - growth(
+                    lo, post["omega"], post["theta"], "loglogistic"
+                )
+                mu = np.maximum(post["level"][:, j] * ginc, 1e-12)
+                assert (mu / TINY_PHI > POISSON_RATE_MAX).all()
+                want[:, j] += mu
+    else:
+        c = dict(contract)
+        c["phi"] = TINY_PHI
+        want = np.tile(np.asarray(c["paid_to_date"], dtype=float), (40, 1))
+        if which == "odp":
+            post = odp_posterior(contract, n_draws=40, jitter=0.0)
+            entry = _StubODP(c, post)
+            pred = entry.predict(seed=5)
+            logprem = np.log(np.asarray(c["premium"], dtype=float))
+            for j in range(c["n_w"]):
+                for dev in range(int(c["latest_d"][j]) + 1, c["n_d"] + 1):
+                    mu = np.exp(
+                        logprem[j] + post["c"] + post["alpha"][:, j] + post["beta"][:, dev - 1]
+                    )
+                    assert (mu / TINY_PHI > POISSON_RATE_MAX).all()
+                    want[:, j] += mu
+        else:
+            post = clark_posterior(n_draws=40, jitter=0.0)
+            entry = _StubClarkGC(c, post)
+            pred = entry.predict(seed=5)
+            elr_prem = np.exp(
+                post["logelr"][:, None] + np.log(np.asarray(c["premium"], dtype=float))[None, :]
+            )
+            for j in range(c["n_w"]):
+                for dev in range(int(c["latest_d"][j]) + 1, c["n_d"] + 1):
+                    lo, hi = age_interval(dev, c["dev_grain_months"])
+                    ginc = growth(hi, post["omega"], post["theta"], "loglogistic") - growth(
+                        lo, post["omega"], post["theta"], "loglogistic"
+                    )
+                    mu = np.maximum(elr_prem[:, j] * ginc, 1e-12)
+                    assert (mu / TINY_PHI > POISSON_RATE_MAX).all()
+                    want[:, j] += mu
+
+    got = pred.samples[:, :-1]  # the last column is the total with_total() adds
+    assert got.shape == want.shape
+    assert np.array_equal(got.view(np.uint8), want.view(np.uint8))
 
 
 # -- the index matters (guards on the guards) ---------------------------------
