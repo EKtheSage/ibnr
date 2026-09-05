@@ -191,8 +191,9 @@ def _require_annual_step(fit: MackFit) -> None:
         "the one-year claims development result needs an annual development grain, and "
         f"this fit has a {step}-month development grain. Every route here advances the "
         "triangle by exactly one development step: the Merz-Wuthrich closed form, every "
-        f"DiagonalGenerator and rereserve() all move it on by one step, which is {step} "
-        f"months here and not twelve, so the answer would be a {step}-month development "
+        f"DiagonalGenerator and rereserve() all move it on by one step, and here that is a "
+        f"{step}-month step rather than a twelve-month one, so the answer would be a "
+        f"{step}-month development "
         "result reported under a one-year name. Either aggregate the triangle first with "
         'Triangle.with_origin_grain("Y").with_dev_grain("Y"), which costs development '
         "resolution, or read the run-off uncertainty from MackFit.msep_runoff(), which "
