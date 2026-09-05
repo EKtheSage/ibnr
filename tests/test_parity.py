@@ -14,9 +14,10 @@ same as before:
 
 These tests are fast and use hand-built posteriors, because both behaviours
 need input a correct port never produces. The control is
-``test_equal_point_masses_pass``: CCL, CSR and ODP all pin an identifiability
-anchor (``alpha[1] = 0``, ``beta[n_d] = 0``) as a literal constant in all three
-backends, so two equal point masses must keep passing at z = 0.
+``test_equal_point_masses_pass``: CCL, CSR and ODP each pin an identifiability
+anchor as a literal constant in all three backends (``alpha[1] = 0`` in all
+three, plus ``beta[n_d] = 0`` in CCL and CSR and ``beta[1] = 0`` in ODP), so two
+equal point masses must keep passing at z = 0.
 """
 
 from __future__ import annotations
@@ -83,13 +84,16 @@ def test_element_shape_mismatch_under_a_shared_name_is_refused_by_name():
 
 
 @pytest.mark.parametrize("side", ["stan", "numpyro"])
-def test_non_finite_draws_are_refused_by_name(side):
+@pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
+def test_non_finite_draws_are_refused_by_name(side, value):
     """One NaN draw makes every arviz summary field NaN, which the old code
     read as a zero discrepancy. Either side can carry it, so both are checked -
-    the reference is not exempt from any of these refusals."""
+    the reference is not exempt from any of these refusals. An infinity is just
+    as unusable as a NaN, and neither is confined to the first chain, so the bad
+    draw sits late in the last chain."""
     rng = np.random.default_rng(7)
     bad = _normal(rng, 50.0)
-    bad[0, 0] = np.nan
+    bad[3, 417] = value
     good = _normal(rng)
     ref = _idata(alpha=bad if side == "stan" else good)
     port = _idata(alpha=bad if side == "numpyro" else good)
@@ -122,16 +126,22 @@ def test_empty_var_names_is_refused_by_name():
 
 
 @pytest.mark.parametrize("with_ks", [True, False])
-def test_unequal_point_masses_are_a_parity_failure(with_ks):
+@pytest.mark.parametrize("pins", [(1.0, 100.0), (0.0, 0.5)])
+def test_unequal_point_masses_are_a_parity_failure(with_ks, pins):
     """Two constants that differ disagree completely, so the row fails and the
-    report still comes back for the caller to write down."""
+    report still comes back for the caller to write down. The gaps are one wide
+    and one narrow on purpose: the defect this file was written for is a port
+    that pins an anchor at 0.5 where the reference pins it at 0, and a rule that
+    forgave anything under a point would call that agreement."""
     rng = np.random.default_rng(4)
-    ref = _idata(alpha=np.full((4, 500), 1.0), free=_normal(rng))
-    port = _idata(alpha=np.full((4, 500), 100.0), free=_normal(rng))
+    ref = _idata(alpha=np.full((4, 500), pins[0]), free=_normal(rng))
+    port = _idata(alpha=np.full((4, 500), pins[1]), free=_normal(rng))
     report = _compare(ref, port, ("alpha", "free"), with_ks=with_ks)
     assert not report.passed, report.table
     assert "alpha" in set(report.failures()["param"]), report.table
     assert report.summary().loc["numpyro", "n_params"] == 2, report.table
+    row = report.table.set_index("param").loc["alpha"]
+    assert row["z_mean"] == np.inf and row["z_sd"] == 0.0, report.table
 
 
 @pytest.mark.parametrize("with_ks", [True, False])
@@ -147,6 +157,57 @@ def test_equal_point_masses_pass(with_ks):
     assert report.passed, report.table
     row = report.table.set_index("param").loc["alpha"]
     assert row["z_mean"] == 0.0 and row["z_sd"] == 0.0
+
+
+@pytest.mark.parametrize("n_draws", [1000, 2500])
+def test_equal_point_masses_pass_whatever_the_draw_budget(n_draws):
+    """Equality of two point masses is decided on the pinned value, not on the
+    two summary means. A summary mean is a sum over a count, so for a constant
+    that is not exactly representable in binary it moves with the number of
+    draws: 0.1 over 4x2500 sums to 0.09999999999999999 and over 4x1000 to
+    0.10000000000000002. Judging equality by that would fail two ports pinning
+    the identical number at different draw budgets."""
+    rng = np.random.default_rng(12)
+    ref = _idata(alpha=np.full((4, 2500), 0.1), free=_normal(rng, shape=(4, 2500)))
+    port = _idata(alpha=np.full((4, n_draws), 0.1), free=_normal(rng, shape=(4, n_draws)))
+    report = _compare(ref, port, ("alpha", "free"))
+    row = report.table.set_index("param").loc["alpha"]
+    assert row["z_mean"] == 0.0 and row["z_sd"] == 0.0, report.table
+
+
+def test_a_float32_pin_is_not_the_same_constant_as_a_float64_one():
+    """The comparison is exact and deliberately so: a float32 0.1 is
+    0.10000000149011612, a different number from a float64 0.1, and parity says
+    so rather than picking a tolerance nobody derived. Every anchor in this
+    gallery is an exact zero, which is the same number in both dtypes, so no
+    published run goes near this."""
+    rng = np.random.default_rng(13)
+    ref = _idata(alpha=np.full((4, 500), 0.1, dtype=np.float64), free=_normal(rng))
+    port = _idata(alpha=np.full((4, 500), 0.1, dtype=np.float32), free=_normal(rng))
+    report = _compare(ref, port, ("alpha", "free"))
+    assert not report.passed, report.table
+    assert report.table.set_index("param").loc["alpha", "z_mean"] == np.inf, report.table
+    zeros = _compare(
+        _idata(alpha=np.zeros((4, 500), dtype=np.float64), free=_normal(rng)),
+        _idata(alpha=np.zeros((4, 500), dtype=np.float32), free=_normal(rng)),
+        ("alpha", "free"),
+    )
+    assert zeros.passed, zeros.table
+
+
+def test_a_narrow_marginal_is_not_a_point_mass():
+    """A point mass is exactly constant, not nearly so. Both sides here have a
+    spread of about 3e-7, which is small enough that a rule with any threshold
+    under it would call them constants and then compare their first draws, and
+    two independent draws are never equal: a pair of ordinary marginals would be
+    reported as complete disagreement."""
+    rng = np.random.default_rng(15)
+    ref = _idata(alpha=_normal(rng, 0.0, 5e-8))
+    port = _idata(alpha=_normal(rng, 0.0, 5e-8))
+    report = _compare(ref, port, ("alpha",))
+    row = report.table.set_index("param").loc["alpha"]
+    assert np.isfinite(row["z_mean"]) and np.isfinite(row["z_sd"]), report.table
+    assert report.passed, report.table
 
 
 @pytest.mark.parametrize("with_ks", [True, False])
@@ -173,8 +234,40 @@ def test_undefined_mcse_on_a_varying_marginal_is_refused():
     rng = np.random.default_rng(9)
     ref = _idata(alpha=_normal(rng, shape=(2, 3)))
     port = _idata(alpha=_normal(rng, 50.0, shape=(2, 3)))
-    with pytest.raises(ValueError, match=r"alpha"):
+    with pytest.raises(ValueError, match=r"'alpha'.*not a positive number"):
         _compare(ref, port, ("alpha",))
+
+
+def test_zero_mcse_of_the_sd_on_a_varying_marginal_is_refused():
+    """The other half of the same refusal, and it is not the same input. Two
+    chains that are each constant but differ from one another vary overall, so
+    the point-mass path does not apply, and arviz answers with a Monte Carlo
+    error of the sd of exactly 0.0 (measured, not NaN). Dividing by it gives inf
+    or NaN, not a verdict."""
+    ref = _idata(alpha=np.array([np.zeros(500), np.ones(500)]))
+    port = _idata(alpha=np.array([np.zeros(500), np.full(500, 3.0)]))
+    with pytest.raises(ValueError, match=r"'alpha'.*is 0\.0, not a positive number"):
+        _compare(ref, port, ("alpha",))
+
+
+@pytest.mark.parametrize("labels", [["a", "b", "c"], [10, 20, 30]])
+def test_coordinate_labels_on_both_backends_are_refused_by_name(labels):
+    """When only one side names its dimensions the element labels differ and the
+    comparison refuses on that. When BOTH sides name them the labels agree, so
+    the request reaches the draws, and an element label is not an integer
+    position any more: the string form used to crash inside ``int()`` and the
+    integer form used to read the wrong element or run off the end of the array.
+    Either way the message has to say which posterior is the problem."""
+
+    def labelled(seed):
+        return az.from_dict(
+            posterior={"alpha": _normal(np.random.default_rng(seed), shape=(4, 500, 3))},
+            coords={"lag": labels},
+            dims={"alpha": ["lag"]},
+        )
+
+    with pytest.raises(ValueError, match=r"numpyro.*coordinates|stan.*coordinates"):
+        _compare(labelled(1), labelled(2), ("alpha",))
 
 
 def test_every_requested_element_is_a_row():

@@ -197,11 +197,13 @@ reproducible.** Two corrections, both found in 2026-07-24 while porting CSR:
    genuinely zero or undefined one still scored `z = 0`. Point masses are now
    handled by hand: two equal constants (this model's `alpha[0]` and `beta[-1]`
    anchors, literal zeros in all three backends) score `z = 0` as before, two
-   unequal constants score `z_mean = inf` and fail, and an undefined MCSE on a
-   marginal that is not constant raises. `compare_posteriors` also refuses a
-   requested variable that any posterior lacks instead of comparing the rest.
-   The figures in the table above are unaffected: every non-degenerate row keeps
-   the identical formula.
+   unequal constants score `z_mean = inf` and fail, and an MCSE that is not a
+   positive finite number on a marginal that is not constant raises. Whether two
+   constants are equal is read off the pinned value, not off the two summary
+   means, which for a constant move with the number of draws summed.
+   `compare_posteriors` also refuses a requested variable that any posterior
+   lacks instead of comparing the rest. The figures in the table above are
+   unaffected: every non-degenerate row keeps the identical formula.
 2. **The unbounded `a_ig` was a real defect**, not the harmless deviation
    claimed above - see the Parameterization section. Restoring Stan's bound cut
    max KS from ~0.10 to ~0.03 and dropped the ports' divergences by an order of

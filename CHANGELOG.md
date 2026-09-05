@@ -27,9 +27,16 @@ variable missing from any posterior including the reference, an element shape
 that differs from the reference's, a non-finite draw and an empty request. Point
 masses are handled explicitly: two equal constants agree at `z = 0` (the
 identifiability anchors every CCL, CSR and ODP run carries), two unequal
-constants score `z_mean = inf` and fail, and an undefined Monte Carlo error on a
-marginal that is not constant raises. Every ordinary row keeps the identical
-formula, so no published parity number moves.
+constants score `z_mean = inf` and fail, and a Monte Carlo error that is not a
+positive finite number on a marginal that is not constant raises. Whether two
+point masses are equal is read off the pinned value itself, not off the two
+summary means, which for a constant that is not exactly representable in binary
+depend on how many draws were summed. A posterior that names its dimensions
+(`coords=`/`dims=`) labels its elements with coordinates rather than integer
+positions, and those are now refused by name too, where before the string form
+crashed inside `int()` and an out-of-range integer form read the wrong element.
+Every ordinary row keeps the identical formula, so no published parity number
+moves.
 
 ## 0.5.8 - 2026-08-24
 

@@ -27,21 +27,25 @@ this comparison exists to judge is a port under development, and a missing or
 misnamed variable is exactly how such a port is wrong. So a requested name
 absent from any posterior (the reference included), an element shape that
 differs from the reference's, and a non-finite draw are each refused by name
-with a ``ValueError``.
+with a ``ValueError``. So is an element label that is not an integer position:
+a posterior built with ``coords=``/``dims=`` labels its elements with the
+coordinate values, and reading those as positions would compare the wrong
+element or run off the end of the array.
 
 **Point masses** are handled explicitly rather than by dividing by a Monte
 Carlo error that is zero for the mean and undefined for the sd. CCL, CSR and
-ODP all pin an identifiability anchor (``alpha[1] = 0``, ``beta[n_d] = 0`` in
-``model.stan``, written as literal zeros in both ports), so exact constants are
-ordinary input here. Two equal constants agree perfectly and score z = 0 for
-both mean and sd. Two constants that differ disagree completely and score
-``z_mean = inf``, which fails the comparison and appears in ``failures()`` and
-``summary()`` rather than being refused: the caller asked for a verdict, and
-that is the verdict. A constant on one side only contributes 0 to the combined
-error, so the other side's error carries the comparison and a pin the port left
-free is caught by the sd z-score. When the combined error of a marginal that is
-not constant is not a positive finite number, there is nothing to certify from
-and the comparison refuses.
+ODP each pin an identifiability anchor in ``model.stan``: ``alpha[1] = 0`` in
+all three, plus one pinned ``beta`` element, ``beta[n_d]`` in CCL and CSR and
+``beta[1]`` in ODP. All of them are written as literal zeros in both ports, so
+exact constants are ordinary input here. Two equal constants agree perfectly
+and score z = 0 for both mean and sd. Two constants that differ disagree
+completely and score ``z_mean = inf``, which fails the comparison and appears
+in ``failures()`` and ``summary()`` rather than being refused: the caller asked
+for a verdict, and that is the verdict. A constant on one side only contributes
+0 to the combined error, so the other side's error carries the comparison and a
+pin the port left free is caught by the sd z-score. When the combined error of a
+marginal that is not constant is not a positive finite number, there is nothing
+to certify from and the comparison refuses.
 
 Stan is ground truth; each port is compared against it. ``compare_posteriors``
 works on any dict of ``arviz.InferenceData`` (e.g. numpyro-vs-pymc when cmdstan
@@ -226,6 +230,18 @@ def _z_scores(r, p, ref_draws, port_draws, *, label, backend, reference) -> tupl
     ``np.hypot(nan, x)`` is NaN, which used to send the whole row down a branch
     that scored it 0.0 - the best possible score - whatever the two summaries
     said. Draws are known finite here (see ``_require_posterior_vars``).
+
+    Two point masses are compared on the pinned VALUE, not on the two summary
+    means. A summary mean is a sum divided by a count, so for a constant that is
+    not exactly representable in binary it depends on how many draws were added
+    and in what order: measured here, 0.1 pinned over 4x2500 draws summed to
+    0.09999999999999999 while the same 0.1 over 4x1000 summed to
+    0.10000000000000002, and comparing those would have failed two ports that
+    pin the identical number with different draw budgets. The comparison is
+    exact, so a float32 pin of 0.1 (0.10000000149011612) does NOT equal a
+    float64 pin of 0.1; they are different numbers and parity says so rather
+    than picking a tolerance nobody derived. Every anchor in this gallery is an
+    exact zero, which is the same number in both dtypes at any draw count.
     """
     const_r = float(np.ptp(ref_draws)) == 0.0
     const_p = float(np.ptp(port_draws)) == 0.0
@@ -233,7 +249,8 @@ def _z_scores(r, p, ref_draws, port_draws, *, label, backend, reference) -> tupl
         # Both exact point masses: equal is perfect agreement, unequal is total
         # disagreement. inf needs no special handling downstream, since
         # ``inf <= z_tol`` is False.
-        return (0.0 if r["mean"] == p["mean"] else np.inf), 0.0
+        same = bool(ref_draws.reshape(-1)[0] == port_draws.reshape(-1)[0])
+        return (0.0 if same else np.inf), 0.0
 
     mcse_mean = np.hypot(0.0 if const_r else r["mcse_mean"], 0.0 if const_p else p["mcse_mean"])
     mcse_sd = np.hypot(0.0 if const_r else r["mcse_sd"], 0.0 if const_p else p["mcse_sd"])
@@ -242,27 +259,61 @@ def _z_scores(r, p, ref_draws, port_draws, *, label, backend, reference) -> tupl
             raise ValueError(
                 f"the combined Monte Carlo standard error of the {what} of {label!r} "
                 f"({reference!r} vs {backend!r}) is {combined}, not a positive number; "
-                "parity cannot be certified from it"
+                "parity cannot be certified from it. Run more draws per chain, or check "
+                "that every chain moves: arviz reports a zero error for the sd when the "
+                "draws are constant within each chain, and NaN when there are too few "
+                "draws to estimate an effective sample size"
             )
     return float((r["mean"] - p["mean"]) / mcse_mean), float((r["sd"] - p["sd"]) / mcse_sd)
 
 
-def _pooled_draws(idata, param_label: str) -> np.ndarray:
+def _pooled_draws(idata, param_label: str, *, backend: str) -> np.ndarray:
     """Flat draw vector for one summary-style element label (e.g. ``alpha[2]``).
 
-    Raises when the name cannot be resolved. Every label reaching here comes
+    Raises when the label cannot be resolved. Every label reaching here comes
     from a summary of names ``_require_posterior_vars`` already checked, so a
-    miss is a bug in this module rather than a reason to skip the element.
+    miss is a bug in this module or an input this comparison does not read,
+    never a reason to skip the element.
+
+    An element is found by integer position, because that is what ``az.summary``
+    writes between the brackets for a posterior with no coordinates. A posterior
+    that names its dimensions instead (``coords=``/``dims=``, which is idiomatic
+    PyMC) gets labels like ``alpha[a]`` or ``alpha[10]``, and those are refused
+    by name here. Left to itself the first crashed inside ``int()`` and the
+    second read the wrong element or ran off the end of the array, neither of
+    which says which posterior is the problem.
     """
     if "[" not in param_label:
-        name, idx = param_label, None
+        name, parts = param_label, None
     else:
         name, rest = param_label.split("[", 1)
-        idx = tuple(int(i) for i in rest.rstrip("]").split(","))
+        parts = rest.rstrip("]").split(",")
     if name not in idata.posterior:
-        raise ValueError(f"no posterior variable {name!r} behind summary label {param_label!r}")
+        raise ValueError(
+            f"posterior {backend!r} has no variable {name!r} behind summary label {param_label!r}"
+        )
     arr = np.asarray(idata.posterior[name].values)  # (chain, draw, *dims)
-    flat = arr.reshape((arr.shape[0] * arr.shape[1], *arr.shape[2:]))
+    element_shape = arr.shape[2:]
+    idx = None
+    if parts is not None:
+        try:
+            candidate = tuple(int(i) for i in parts)
+        except ValueError:
+            candidate = None
+        if (
+            candidate is not None
+            and len(candidate) == len(element_shape)
+            and all(0 <= i < n for i, n in zip(candidate, element_shape, strict=True))
+        ):
+            idx = candidate
+        if idx is None:
+            raise ValueError(
+                f"posterior {backend!r} labels the elements of {name!r} with coordinates "
+                f"(summary label {param_label!r}, element shape {element_shape}); parity "
+                "reads an element by its integer position, so compare posteriors that "
+                "carry no coordinates on the requested variables"
+            )
+    flat = arr.reshape((arr.shape[0] * arr.shape[1], *element_shape))
     if idx is None:
         return flat.reshape(flat.shape[0], -1)[:, 0] if flat.ndim > 1 else flat
     return flat[(slice(None), *idx)]
@@ -302,7 +353,9 @@ def compare_posteriors(
             # The names and element shapes already agree, so the only way to
             # get here is one side attaching coordinate labels the other does
             # not. No port does that today; this is the backstop that keeps a
-            # future one from narrowing the comparison silently.
+            # future one from narrowing the comparison silently. Both sides
+            # attaching the same labels passes this check and is refused in
+            # ``_pooled_draws`` instead.
             differing = sorted(set(ref_summ.index) ^ set(port_summ.index))
             raise ValueError(
                 f"posterior {backend!r} summarizes different elements than reference "
@@ -310,7 +363,8 @@ def compare_posteriors(
             )
         for label in ref_summ.index:
             r, p = ref_summ.loc[label], port_summ.loc[label]
-            a, b = _pooled_draws(ref_idata, label), _pooled_draws(idata, label)
+            a = _pooled_draws(ref_idata, label, backend=reference)
+            b = _pooled_draws(idata, label, backend=backend)
             z_mean, z_sd = _z_scores(r, p, a, b, label=label, backend=backend, reference=reference)
             ks = float(stats.ks_2samp(a, b).statistic) if with_ks else np.nan
             rows.append(
