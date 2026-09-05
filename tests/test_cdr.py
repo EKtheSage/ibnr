@@ -24,9 +24,13 @@ expected values from that package's published ``CDR`` reference output.
 
 from __future__ import annotations
 
+import datetime as dt
+
 import numpy as np
+import pandas as pd
 import pytest
 
+from ibnr import Triangle, gallery
 from ibnr.kernels.cdr import (
     CDR_METHODS,
     DiagonalGenerator,
@@ -41,7 +45,7 @@ from ibnr.kernels.cdr import (
 )
 from ibnr.kernels.mack import PROCESS_LAWS, fit_mack
 
-from .conftest import make_cohort_triangle
+from .conftest import assert_triangles_equal, make_cohort_triangle
 
 # -- the MW2014 triangle (17 accident years, cumulative) ----------------------
 # fmt: off
@@ -530,3 +534,90 @@ def test_rereserve_accepts_a_hand_built_diagonal(backend_name):
     expected = np.where(k < fit.n_d - 1, fit.latest * fit.f[np.minimum(k, fit.n_d - 2)], 0.0)
     cdr = rereserve(fit, np.tile(expected, (3, 1)))
     np.testing.assert_allclose(cdr, 0.0, atol=1e-8)
+
+
+# -- the development grain the "one year" in the name refers to ---------------
+
+
+def test_the_annual_cohort_helper_builds_the_rows_it_always_did(backend_name):
+    """``make_cohort_triangle`` gained a ``dev_grain=`` knob so the tests below
+    can build a quarterly and a monthly cohort. Widening a shared fixture is only
+    safe if its default output is unchanged, so this pins the annual rows against
+    the rule the helper used before the knob existed: origin ``i`` = Jan 1 of
+    ``start_year + i``, dev_lag ``12*(j+1)``, eval date Dec 31 of
+    ``start_year + i + j``, on the annual grain."""
+    cum = synthetic_triangle(backend_name)
+    n_w, n_d = cum.shape
+    expected = Triangle.from_long(
+        pd.DataFrame(
+            [
+                {
+                    "origin_period": dt.date(2010 + i, 1, 1),
+                    "dev_lag": 12 * (j + 1),
+                    "eval_date": dt.date(2010 + i + j, 12, 31),
+                    "field": "paid_loss",
+                    "value": float(cum[i, j]),
+                }
+                for i in range(n_w)
+                for j in range(n_d)
+                if not np.isnan(cum[i, j])
+            ]
+        ),
+        measure="cumulative",
+        backend=backend_name,
+    )
+    got = make_cohort_triangle(backend_name, cum)
+    assert got.meta == expected.meta
+    assert_triangles_equal(got, expected)
+
+
+class _ExplodingDiagonal(DiagonalGenerator):
+    """A generator that must never be reached. The grain refusal in
+    ``simulate_one_year_cdr`` has to come before the generator is consulted at
+    all, so a stub whose every method raises is what shows where the refusal
+    sits: if either method runs, the check was placed too late."""
+
+    name = "exploding"
+
+    def check(self, fit):
+        raise AssertionError("check() ran, so the grain refusal came too late")
+
+    def draw(self, fit, *, n_draws, rng):
+        raise AssertionError("draw() ran, so the grain refusal came too late")
+
+
+@pytest.mark.parametrize(("dev_grain", "step"), [("Q", 3), ("M", 1)])
+def test_a_non_annual_dev_grain_is_refused_by_name(backend_name, dev_grain, step):
+    """One development step is one year only on an annual triangle.
+
+    Every route to a one-year CDR advances the triangle by exactly one
+    development step: the Merz-Wuthrich closed form, each ``DiagonalGenerator``
+    and ``rereserve``. On a quarterly or monthly triangle that step is three
+    months or one, so the answer would be a three-month or one-month claims
+    development result reported under a one-year name, with no sign that
+    anything was off. Every entry point therefore refuses, naming the grain it
+    measured and the two ways out."""
+    cum = synthetic_triangle(backend_name)
+    tri = make_cohort_triangle(backend_name, cum, dev_grain=dev_grain)
+    assert tri.validate(strict=False) == []
+    fit = fit_mack(tri, loss_field="paid_loss")
+    assert fit.dev_grain_months == step
+    expected = rf"{step}-month development grain.*one development step.*with_origin_grain"
+
+    with pytest.raises(ValueError, match=expected):
+        one_year_cdr(fit)
+    with pytest.raises(ValueError, match=expected):
+        simulate_one_year_cdr(fit, n_draws=10, seed=0, generator=_ExplodingDiagonal())
+    with pytest.raises(ValueError, match=expected):
+        rereserve(fit, np.zeros((5, fit.n_w)))
+
+    entry = gallery.get("mack")().fit(tri, loss_field="paid_loss")
+    with pytest.raises(ValueError, match=expected):
+        entry.one_year_cdr()
+    with pytest.raises(ValueError, match=expected):
+        entry.cdr_distribution(n_draws=10, seed=0)
+
+    # the control, on the identical numbers: the annual grain still answers, so
+    # the refusal is about the grain and not about this cohort.
+    annual = fit_mack(make_cohort_triangle(backend_name, cum), loss_field="paid_loss")
+    assert np.isfinite(one_year_cdr(annual).msep_total)
