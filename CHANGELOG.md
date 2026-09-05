@@ -22,8 +22,9 @@ corrected decision 8.)
 `PredictiveDistribution.cdf` counted the draws at or below the outcome and
 returned that fraction. Every comparison against NaN is False, so a target whose
 outcome had not emerged yet came back as exactly 0.0: the lowest percentile
-there is, and to the uniformity test the worst possible over-prediction. The
-same held one axis over, for a target carrying a missing draw. `cdf` now returns
+there is, and to the uniformity test the worst possible over-prediction. A
+missing draw compares False in the same way, so it was counted as lying above
+the outcome and that target's percentile came out too low. `cdf` now returns
 NaN at those targets, which is what its own docstring already promised and what
 `mean`, `std` and `kernels.scores.crps` were already answering beside it. The
 mask is per target, so a finite neighbour keeps its percentile, and infinite

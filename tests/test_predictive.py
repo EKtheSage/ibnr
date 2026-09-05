@@ -75,7 +75,7 @@ def test_cdf_propagates_a_missing_outcome():
         targets=pd.DataFrame({"label": ["a", "b"]}),
     )
     pit = pred.cdf([np.nan, 1.5])
-    assert np.isnan(pit[0])  # missing outcome -> no percentile, not the 0th
+    assert np.isnan(pit[0])  # a missing outcome gets no percentile, not the 0th
     assert pit[1] == 0.5  # the finite neighbour is untouched
     # an outcome below every draw is a genuine verdict and stays 0.0; this is
     # what keeps a missing outcome distinguishable from an over-prediction
@@ -88,19 +88,23 @@ def test_cdf_propagates_a_missing_outcome():
 def test_cdf_propagates_a_missing_draw():
     """A target with a missing draw has no percentile either.
 
-    The same reasoning one axis over: a NaN draw compares False against the
-    outcome, so it is silently counted as lying above it. ``mean``, ``std`` and
+    The same reasoning applied to the draws instead of the outcome: a NaN draw
+    compares False against the outcome, so it is silently counted as lying above
+    it and the fraction comes out too low. ``mean``, ``std`` and
     ``kernels.scores.crps`` already answer NaN for such a target, and the
-    percentile now agrees with them.
+    percentile now agrees with them. An infinite draw is a different case and is
+    deliberately not masked, so target b keeps its percentile.
     """
     pred = PredictiveDistribution(
-        samples=np.array([[1.0, 1.0], [2.0, 2.0], [np.nan, 3.0]]),
+        samples=np.array([[1.0, 1.0], [2.0, 2.0], [np.nan, np.inf]]),
         targets=pd.DataFrame({"label": ["a", "b"]}),
     )
     pit = pred.cdf([2.5, 2.5])
     assert np.isnan(pit[0])
+    # the +inf draw compares perfectly well: it lies above 2.5, and two of b's
+    # three draws lie at or below it
     assert pit[1] == pytest.approx(2 / 3)
-    # the siblings on the same object give the same verdict for that target
+    # the sibling methods on the same object give the same verdict for target a
     assert np.isnan(pred.mean()[0])
     assert np.isnan(crps(pred.samples, [2.5, 2.5])[0])
 

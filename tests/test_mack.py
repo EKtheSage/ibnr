@@ -372,7 +372,7 @@ def test_entry_scores_a_partially_unemerged_cohort_as_missing(backend_name):
     scored = entry.evaluate(outcomes)
     pct = np.asarray(scored["percentiles"], dtype=float)
     assert np.isnan(pct[5]) and np.isnan(pct[6])
-    # the five origins that did develop are scored exactly as before
+    # the five origins that did develop still get a percentile in range
     assert ((pct[:5] >= 0) & (pct[:5] <= 100)).all()
     assert np.isnan(scored["summary"]["percentile"].iloc[-1])
     # crps already answered NaN for those two targets; the percentile agrees now

@@ -354,9 +354,12 @@ def main() -> int:
 
     # THE headline test: are the predictive distributions honest? Percentiles
     # are PIT values in 0-100, so divide by 100 before the uniformity test.
-    # Two kinds of row have a null percentile and drop out here: a fit that
-    # raised (`failed`) and a fit that worked but had no outcome to score
-    # against (`missing_outcome`). Both are reported in the JSON alongside `n`.
+    # A row with a null percentile drops out here. The JSON report counts the
+    # two causes this pipeline produces: a fit that raised (`failed`) and a fit
+    # that ran with no outcome to score against (`missing_outcome`). `cdf` also
+    # returns a null percentile when a draw is missing, which no sampler run
+    # here has produced, so these two counts name the causes rather than
+    # partitioning the rows.
     ok = df[df.get("percentile").notna()] if "percentile" in df else pd.DataFrame()
     if len(ok) >= 5:  # KS on a handful of points says nothing; don't print it
         print("\nUniformity of total-outcome percentiles (Meyers p-p test):")
