@@ -15,6 +15,25 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
+## Unreleased
+
+### The compute image installs the data package its own default command needs
+
+The Dockerfile installed `.[bayesian]` and nothing else, so the image's own
+`CMD`, `python scripts/meyers_validation.py --help`, stopped at
+`ModuleNotFoundError: No module named 'cas_schedule_p'` before printing a line
+of help. That script and the three other study scripts read the Meyers company
+selection rule out of `cas_schedule_p.screens`, and the package is deliberately
+absent from the wheel: ibnr itself never imports it, only `scripts/` does. The
+image now installs it, pinned to the version `uv.lock` resolves, because the
+wheel carries the mart and its vintage decides which companies a run selects.
+
+`tests/test_compute_image.py` is what keeps this true. It reads the install
+lines out of the Dockerfile, works out which distributions those lines put in
+the image, then starts each promised script's `--help` in a subprocess that
+refuses any module the image would not have, and separately reads every import
+in those scripts at any nesting depth. Nothing in it can skip.
+
 ## 0.5.8 - 2026-08-24
 
 A one-feature release: `nn_transformer_ml` gains held-out scoring (#105), the
