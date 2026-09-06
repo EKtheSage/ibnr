@@ -60,6 +60,35 @@ dependencies = [
     # around - so a major bump has to be a deliberate change with the
     # dual-backend suite re-run, not something a fresh resolve does silently.
     "ibis-framework[duckdb]>=9.5,<13",
+    # A cap on a TRANSITIVE dependency, and a temporary one. sqlglot 30.18.0
+    # (2026-09-03; tobymao/sqlglot#8229, listed under BREAKING CHANGES in
+    # sqlglot's v30.18.0 changelog) renamed the `Drop` expression's `this`
+    # argument to `tables`, and ibis 12.0.0 still builds
+    # `sge.Drop(kind=..., this=...)`, which that sqlglot renders as `DROP VIEW
+    # IF EXISTS` with no name. duckdb answers `Parser Error: syntax error at
+    # end of input`. ibis's duckdb `create_table` takes that path for every
+    # in-memory frame it is handed (pandas, pyarrow or polars): it registers
+    # the frame as a memtable view, inserts from it, then drops the view. That
+    # is the one call `triangle/io.py::_register` makes, so on a fresh `pip
+    # install ibnr` every `Triangle.from_long` from an in-memory frame on the
+    # duckdb backend died - parquet paths, ibis expressions (so
+    # `load_schedule_p`) and the polars backend were unaffected. Both floating
+    # CI legs went red with hundreds of failures on 2026-09-05 while all seven
+    # locked legs, on sqlglot 30.11.0, stayed green. duckdb 1.5.5 was the
+    # first suspect and is innocent: sqlglot pinned back to 30.17.0 beside
+    # duckdb 1.5.5 / pandas 3.0.5 / numpy 2.5.2 passes the whole fast suite.
+    # Upstream: ibis-project/ibis#12101; a fix is proposed in
+    # ibis-project/ibis#12104, still open (unmerged) when this cap landed.
+    # Lift it only together with raising the ibis floor above to a release
+    # carrying that fix; the rename is deliberate, so a later sqlglot will not
+    # bring `this` back, which is also why `!=30.18.0` is the wrong shape. The
+    # cap lives here rather than in the -latest CI legs' install line because
+    # a CI-only pin would green the leg while leaving `pip install ibnr`
+    # broken - the one thing those legs exist to catch. It reaches consumers
+    # only with the next release; 0.5.8 on PyPI carries no cap.
+    # tests/test_sqlglot_cap.py names the cause through the public ingestion
+    # path if the cap is lifted early.
+    "sqlglot<30.18",
     # Deliberately NOT numpy>=2, even though numpy 2 is what we want and what
     # this repo now locks (see [tool.uv] below). This floor ALREADY resolves to
     # numpy 2.x for a plain `pip install ibnr`; the numpy 1.26.4 that used to
