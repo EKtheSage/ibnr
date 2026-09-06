@@ -944,6 +944,7 @@ dev = [
     { name = "jupyterlab" },
     { name = "nbconvert" },
     { name = "nbformat" },
+    { name = "packaging" },
     { name = "pandas" },
     { name = "pytest" },
     { name = "ruff" },
@@ -953,6 +954,7 @@ docs = [
 ]
 test = [
     { name = "cas-schedule-p" },
+    { name = "packaging" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -987,6 +989,7 @@ dev = [
     { name = "jupyterlab", specifier = ">=4" },
     { name = "nbconvert", specifier = ">=7" },
     { name = "nbformat", specifier = ">=5" },
+    { name = "packaging", specifier = ">=22" },
     { name = "pandas", specifier = ">=2" },
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.16" },
@@ -994,6 +997,7 @@ dev = [
 docs = [{ name = "great-docs", specifier = ">=0.15" }]
 test = [
     { name = "cas-schedule-p", specifier = ">=2026.6.13" },
+    { name = "packaging", specifier = ">=22" },
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.16" },
 ]
