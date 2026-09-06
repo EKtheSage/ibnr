@@ -17,6 +17,68 @@ corrected decision 8.)
 
 ## Unreleased
 
+### A missing outcome or a missing draw gives a missing percentile, not 0
+
+`PredictiveDistribution.cdf` counted the draws at or below the outcome and
+returned that fraction. Every comparison against NaN is False, so a target whose
+outcome had not emerged yet came back as exactly 0.0: the lowest percentile
+there is, and to the uniformity test the worst possible over-prediction. A
+missing draw compares False in the same way, so every one of them was counted as
+lying above the outcome and that target's percentile came out too low. `cdf` now
+returns NaN at those targets, which is what its own docstring already promised
+for a missing outcome. `kernels.scores.crps` was already answering NaN for a
+missing outcome, and `mean`, `std` and `crps` were all already answering NaN for
+a missing draw, so the percentile now agrees with the numbers printed beside it.
+The mask is per target, so a finite neighbour keeps its percentile, and infinite
+outcomes and draws are left alone: an outcome below every draw is a real verdict
+of 0.0 and has to stay distinguishable from a missing one.
+
+One published figure moves, and it is a missing-draw row rather than a
+missing-outcome one. Every scored row in the Schedule P results carries an
+outcome, so that half of the fix changes nothing there; it changes a backtest on
+a triangle whose cutoff leaves an origin short of the fit's final development
+lag, the case the `mack` entry documents by name. But one row of
+`analysis/results/compartmental_validation_lognormal.csv` (other_liability,
+company 16373) came from a fit that never converged (R-hat 1.25, bulk ESS 12)
+and whose draws hold missing values, which is why its estimate, standard error
+and CV are already blank there while its percentile reads 0.0. That 0.0 was the
+old `cdf` counting missing draws, not a real over-prediction. Under the fix the
+row has no percentile and leaves the uniformity test. Recomputed from the stored
+percentiles, other_liability goes from D = 20.2 (rejects, n = 50) to 18.6
+(passes, n = 49) and the combined figure from 16.2 to 15.9 (still rejects,
+n = 199). The compartmental card records both readings.
+
+`scripts/meyers_validation.py` used to define `failed` as a missing percentile,
+which would now also count such a row; it counts fits that raised instead, and
+reports `missing_outcome` and `missing_draws` beside it, so a row that leaves
+the test is never invisible.
+
+### Stacking weights survive deep log densities, and an unconverged solve is refused
+
+`MleStacking`, the default stacking method, does its arithmetic in linear
+space: it exponentiates the pointwise ELPD and hands SLSQP the Jacobian
+`1 / (Y @ w)`. Once the mixture `Y @ w` falls below `1 / DBL_MAX`, about
+5.6e-309, that reciprocal overflows to infinity, SLSQP stops at its first
+iteration and hands back the uniform vector it started from. That vector is
+finite, non-negative and sums to 1, so every check the weights faced accepted
+it as a fitted even split, and only three numpy warnings naming bayesblend's
+own lines reached stderr. One shared cell below the boundary among sixteen
+board-like cells was enough: a 1.0/0.0 fit came back 0.5/0.5, which scores 10.3
+nats below the answer the fit should have given and is not the optimum of
+anything.
+
+`kernels/stacking.py` now passes bayesblend each cell's ELPD relative to that
+cell's best finite member, floored at `LPD_FLOOR`, so every value it sees is
+between -700 and 0 whatever the absolute level of the densities. A common
+per-cell offset cannot move the optimum, so no correct answer changes. One
+ranking does change, in the direction of the milestone 6 rule that zero
+density ranks last: on a cell where one member gave the outcome zero density
+and another gave it a tiny positive density, the old absolute floor put the
+zero-density member above the finite one, and now it does not. `_fit_weights`
+also reads the scipy result bayesblend stores and refuses an unsuccessful
+solve by name, with its status and message, and a `+inf` pointwise ELPD is
+refused where it arrives instead of reaching the solve as a NaN objective.
+
 ### The parity comparison covers every requested parameter, and a point mass is no longer free agreement
 
 `kernels.parity.compare_posteriors` used to drop any requested variable a

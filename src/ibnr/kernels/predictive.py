@@ -64,13 +64,30 @@ class PredictiveDistribution:
         """Empirical predictive CDF at the observed outcomes, in [0, 1].
 
         This is the PIT value / "outcome percentile" of Meyers' validation
-        tables (he reports it x100). One value per target; NaN observations
-        propagate.
+        tables (he reports it x100). One value per target.
+
+        A target whose outcome is missing, or whose draws hold any missing
+        value, gets NaN rather than a number. Every comparison against NaN is
+        False, so the plain fraction of draws at or below the outcome reads a
+        missing outcome as exactly 0.0, the lowest percentile there is, and
+        counts every missing draw as lying above the outcome. NaN is the
+        designed value for an outcome that has not emerged yet
+        (``contract.realized_values``, and the mack entry's total for a
+        partially unemerged cohort).
+
+        The mask is per target, so a neighbouring target whose values are all
+        present keeps its percentile. Infinite outcomes and infinite draws are
+        NOT masked: the empirical CDF is well defined there, and an outcome
+        below every draw is a real verdict of 0.0 that has to stay
+        distinguishable from a missing one. The CHANGELOG entry has the rest of
+        the story, including the one published figure this moved.
         """
         obs = np.asarray(observed, dtype=float)
         if obs.shape != (self.n_targets,):
             raise ValueError(f"observed must have shape ({self.n_targets},), got {obs.shape}")
-        return (self.samples <= obs).mean(axis=0)
+        pit = (self.samples <= obs).mean(axis=0)
+        missing = np.isnan(obs) | np.isnan(self.samples).any(axis=0)
+        return np.where(missing, np.nan, pit)
 
     def summary(self, observed=None) -> pd.DataFrame:
         """Meyers-style output table: one row per target with posterior mean,
