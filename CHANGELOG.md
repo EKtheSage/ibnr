@@ -79,6 +79,27 @@ also reads the scipy result bayesblend stores and refuses an unsuccessful
 solve by name, with its status and message, and a `+inf` pointwise ELPD is
 refused where it arrives instead of reaching the solve as a NaN objective.
 
+### The parity comparison covers every requested parameter, and a point mass is no longer free agreement
+
+`kernels.parity.compare_posteriors` used to drop any requested variable a
+posterior did not carry and then report a pass over the rows that were left, and
+it scored a zero or undefined Monte Carlo error as `z = 0`, the best score there
+is, whatever the two summaries said. It now refuses, by name, a requested
+variable missing from any posterior including the reference, an element shape
+that differs from the reference's, a non-finite draw and an empty request. Point
+masses are handled explicitly: two equal constants agree at `z = 0` (the
+identifiability anchors every CCL, CSR and ODP run carries), two unequal
+constants score `z_mean = inf` and fail, and a Monte Carlo error that is not a
+positive finite number on a marginal that is not constant raises. Whether two
+point masses are equal is read off the pinned value itself, not off the two
+summary means, which for a constant that is not exactly representable in binary
+depend on how many draws were summed. A posterior that names its dimensions
+(`coords=`/`dims=`) labels its elements with coordinates rather than integer
+positions, and those are now refused by name too, where before the string form
+crashed inside `int()` and an out-of-range integer form read the wrong element.
+Every ordinary row keeps the identical formula, so no published parity number
+moves.
+
 ## 0.5.8 - 2026-08-24
 
 A one-feature release: `nn_transformer_ml` gains held-out scoring (#105), the
