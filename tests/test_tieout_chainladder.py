@@ -22,6 +22,7 @@ which is a dev dependency (interop is sacred), not an optional extra.
 """
 
 import numpy as np
+import pandas as pd
 import pytest
 
 # chainladder ships in the [interop] extra; guard it so this file SKIPS without
@@ -82,6 +83,40 @@ def test_raa_round_trip(raa, backend_name):
     np.testing.assert_allclose(back.values, raa.values)
     # and the long forms agree exactly
     assert_triangles_equal(Triangle.from_chainladder(back, backend=backend_name), t)
+
+
+def test_to_chainladder_refuses_misaligned_rows(backend_name):
+    """chainladder derives development from origin and valuation, so the export
+    hands it eval_date and chainladder never sees our stored dev_lag. Two rows
+    sharing an eval_date are then one chainladder cell: the pair below, 95 at dev
+    12 and 150 at dev 24 both carried at 12/31/2021, used to export as a single
+    245.0 at dev 24. The round trips above are the aligned control, where
+    eval_date and dev_lag agree on every row and the export is faithful.
+
+    The message is checked past its first phrase, so the operation's own name, a
+    phrase only this caller's reason carries, and the note about slicing that
+    follows both are covered by a test rather than only by reading the code.
+
+    This fixture is the shape a mart triangle has rather than the smallest one
+    that reproduces the bug: it carries a segment column and a second field, and
+    the misaligned row sits in ``paid_loss`` while ``earned_premium`` (which sorts
+    first) is aligned. A check that looked at one field, or that skipped a
+    triangle with segments, would pass on a two-row single-field fixture and let
+    the mart through.
+    """
+    rows = [
+        ("auto", "2020-01-01", 12, "2020-12-31", "earned_premium", 1000.0),
+        ("auto", "2020-01-01", 12, "2021-12-31", "paid_loss", 95.0),  # eval says dev 24
+        ("auto", "2020-01-01", 24, "2021-12-31", "paid_loss", 150.0),
+    ]
+    cols = ["lob", "origin_period", "dev_lag", "eval_date", "field", "value"]
+    df = pd.DataFrame(rows, columns=cols)
+    df["origin_period"] = pd.to_datetime(df["origin_period"]).dt.date
+    df["eval_date"] = pd.to_datetime(df["eval_date"]).dt.date
+    t = Triangle.from_long(df, measure="cumulative", backend=backend_name)
+    reason = r"does not align.*to_chainladder\(\).*hands chainladder the valuation.*as_of\(\)"
+    with pytest.raises(ValueError, match=reason):
+        t.to_chainladder()
 
 
 def test_raa_latest_diagonal(raa, backend_name):

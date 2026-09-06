@@ -37,6 +37,32 @@ def test_meyers_round_trip(meyers, backend_name):
     assert_triangles_equal(Triangle.from_bermuda(back, backend=backend_name), t)
 
 
+def test_to_bermuda_refuses_misaligned_rows(backend_name):
+    """A bermuda cell is (period, evaluation date) with one value per field, and
+    ``from_bermuda`` derives dev_lag from the evaluation date on the way back. So
+    rows sharing an eval_date are one cell: the pair below, 95 at dev 12 and 150
+    at dev 24 both carried at 12/31/2021, used to become a single cell whose
+    ``paid_loss`` is whichever of the two pandas grouped last. The Meyers round
+    trip above is the aligned control.
+
+    The message is checked past its first phrase, so the operation's own name, a
+    phrase only this caller's reason carries, and the note about slicing that
+    follows both are covered by a test rather than only by reading the code.
+    """
+    rows = [
+        ("2020-01-01", 12, "2021-12-31", 95.0),  # eval_date says dev 24, not 12
+        ("2020-01-01", 24, "2021-12-31", 150.0),
+    ]
+    df = pd.DataFrame(rows, columns=["origin_period", "dev_lag", "eval_date", "value"])
+    df["origin_period"] = pd.to_datetime(df["origin_period"]).dt.date
+    df["eval_date"] = pd.to_datetime(df["eval_date"]).dt.date
+    df["field"] = "paid_loss"
+    t = Triangle.from_long(df, measure="cumulative", backend=backend_name)
+    reason = r"does not align.*to_bermuda\(\).*A bermuda cell is.*as_of\(\)"
+    with pytest.raises(ValueError, match=reason):
+        t.to_bermuda()
+
+
 def test_round_trip_with_segments(small_cumulative):
     back = small_cumulative.to_bermuda()
     cells = list(back)
