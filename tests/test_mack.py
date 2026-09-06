@@ -354,6 +354,31 @@ def test_entry_scores_against_realized_ultimates(backend_name):
     assert ((scored["percentiles"] >= 0) & (scored["percentiles"] <= 100)).all()
 
 
+def test_entry_scores_a_partially_unemerged_cohort_as_missing(backend_name):
+    """The case ``realized_ultimates`` documents by name: the last origin has not
+    reached the fit's final dev lag, so it has no outcome and neither does the
+    cohort total. Both must come back with no percentile at all. Scoring them at
+    the 0th percentile instead would feed the worst possible over-prediction to
+    the uniformity test for a company that simply has not developed yet."""
+    from ibnr import gallery
+
+    square = full_square()
+    square[5, 5] = np.nan  # the last origin's final cell has not emerged
+    tri = make_cohort_triangle(backend_name, square, start_year=2010)
+    entry = gallery.fit("mack", tri, loss_field="paid_loss", as_of="2015-12-31")
+    outcomes = entry.realized_ultimates(tri)
+    assert np.isnan(outcomes[5]) and np.isnan(outcomes[6])  # origin 6, then the total
+
+    scored = entry.evaluate(outcomes)
+    pct = np.asarray(scored["percentiles"], dtype=float)
+    assert np.isnan(pct[5]) and np.isnan(pct[6])
+    # the five origins that did develop still get a percentile in range
+    assert ((pct[:5] >= 0) & (pct[:5] <= 100)).all()
+    assert np.isnan(scored["summary"]["percentile"].iloc[-1])
+    # crps already answered NaN for those two targets; the percentile agrees now
+    assert np.isnan(scored["crps"][5]) and np.isnan(scored["crps"][6])
+
+
 def test_entry_exposes_both_cdr_routes(backend_name):
     """Analytic and simulated one-year CDR are both reachable from the entry and
     answer the same question on the same fit."""
