@@ -122,6 +122,37 @@ in those scripts at any nesting depth. Nothing in it can skip. It stands in for
 building the image, which no machine here can do, and it is exact for the
 failure that mattered.
 
+### `sur` and `copula_glm` refuse designs the data cannot pin down
+
+Both frequentist dependence entries could return a fit whose coefficients the
+usable cells never determined. `sur` with `intercept=True` fits a two-column
+`[1, C_d]` design at every development transition, and a square triangle's last
+transition has exactly one origin pair: one equation for two unknowns. Depending
+on the data that either raised `LinAlgError: Singular matrix`, which names a
+matrix rather than the model, or rounded through and returned a coefficient
+covariance of order 1e15, which parameter risk turned into a predicted grand
+total hundreds of times too large with every draw finite. `copula_glm` checked
+that every origin and every development step had a usable cell, which counts
+cells per column and misses the shape they form: after `nonpositive="drop"`
+exclusions the usable cells can split into groups sharing no origin and no
+development step, and `np.linalg.pinv` then answers with the minimum-norm member
+of an unbounded family. `sur` now refuses a transition with fewer origin pairs
+than design columns before estimation starts, and `copula_glm` checks the built
+design's rank and names the columns a null direction touches. Both refusals
+happen before anything is stamped on the entry, so a rejected fit leaves the
+entry unfitted.
+
+What this reaches on the Schedule P retrospective, measured on the pinned mart
+publish `20260613_041006` across all 60 selected multiline companies with
+`scripts/compare_gallery.py`'s own default of `--copula-nonpositive drop`: on the
+published `paid_loss` field nothing changes, all 60 companies still fit (45 of
+them through the existing fallback to the Hoerl curve). On `reported_loss` the
+new rank check refuses companies 13439 and 16373, which previously fitted at rank
+11 of 12 under the Hoerl curve. The published copula rows are `paid_loss` only,
+so no published result changes. `sur` is unaffected on the mart because the
+retrospective runs its `intercept=False` default, where the design has one column
+and the pre-existing no-origin-pair refusal already covers it.
+
 ## 0.5.8 - 2026-08-24
 
 A one-feature release: `nn_transformer_ml` gains held-out scoring (#105), the

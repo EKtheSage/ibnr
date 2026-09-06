@@ -193,6 +193,119 @@ def test_copula_df_guard_suggests_hoerl(backend_name):
     assert np.isfinite(pred.samples).all()
 
 
+def zeroed_square(rng, *, n_w, n_d, zero_cells, premium=1000.0):
+    """Cumulative square whose named cells carry a ZERO increment in lob_0.
+
+    Zero is non-positive, so ``nonpositive="drop"`` removes those cells in every
+    line (the mask stays aligned across lines). That is how a caller reaches a
+    usable-cell pattern the counting checks accept and the design cannot
+    support: cells are excluded one at a time, with nothing looking at the shape
+    they leave behind.
+    """
+    levels = np.log(np.linspace(0.45, 0.02, n_d))  # decaying incremental loss ratios
+    incr = premium * np.exp(levels + rng.normal(0.0, 0.05, size=(2, n_w, n_d)))
+    for w, d in zero_cells:
+        incr[0, w, d] = 0.0
+    return np.cumsum(incr, axis=2)
+
+
+def test_copula_drop_refuses_disconnected_design(backend_name):
+    """Dropping every cell of one origin except its last splits the usable cells
+    into two groups that share no origin and no dev step, so the level of one
+    group can be traded against the other with every fitted training mean
+    unchanged. The counting checks all pass: 29 usable cells against 15 columns,
+    every origin covered, every dev step covered. Only the rank sees it, at 14
+    of 15.
+
+    Before this check the fit returned, and a whole direction of the parameter
+    space was decided by the pseudo-inverse's minimum-norm tie-break rather than
+    by the data; ``predict()`` then reported one plausible answer out of an
+    unbounded family.
+    """
+    rng = np.random.default_rng(31)
+    n_w = n_d = 8
+    # origin 1 (index 0) keeps only its dev-8 cell, and dev 8 is reached by no
+    # other origin, so that cell is an island.
+    zero_cells = [(0, d) for d in range(n_d - 1)]
+    cum = zeroed_square(rng, n_w=n_w, n_d=n_d, zero_cells=zero_cells)
+    lobs = {f"lob_{k}": cum[k] for k in range(2)}
+    prem = {f"lob_{k}": np.full(n_w, 1000.0) for k in range(2)}
+    t = make_multiline_triangle(backend_name, lobs, premium_by_lob=prem, start_year=START)
+    cutoff = dt.date(START + n_w - 1, 12, 31)
+
+    entry = CopulaGLM()
+    with pytest.raises(ValueError, match="rank 14 of 15") as raised:
+        entry.fit(t, as_of=cutoff, nonpositive="drop")
+    assert entry.contract_ is None  # fit() is atomic
+    message = str(raised.value)
+    # The columns that trade off against each other are named, and ONLY those:
+    # the isolated cell's dev step is in, the dev steps the rest of the triangle
+    # pins down are out. Without the second half the message would pass while
+    # reading a direction the data CAN see (a row-space vector names nearly
+    # every column, dev[8] included).
+    assert "dev[8]" in message
+    assert "dev[2]" not in message
+    # keeps the pointer scripts/compare_gallery.py keys its Hoerl retry on
+    assert "hoerl" in message
+
+
+def test_copula_drop_refuses_collinear_hoerl_design(backend_name):
+    """The Hoerl curve is the documented escape from a saturated factor design,
+    but it has its own failure: ``ln(dev)`` and ``dev`` are two different shapes
+    only when the usable cells span three or more development steps. Drop
+    everything past dev 2 and the two columns fall on one straight line through
+    the intercept, so no data separates them.
+
+    There is no coarser marginal below Hoerl, so the message says that instead
+    of pointing at one, and it must not carry the lowercase word the factor
+    message carries: ``scripts/compare_gallery.py`` reads that substring as
+    "refit with the Hoerl curve", which is the one thing that cannot help here.
+    """
+    rng = np.random.default_rng(32)
+    n_w = n_d = 10
+    # every origin keeps devs 1 and 2 only
+    zero_cells = [(w, d) for w in range(n_w) for d in range(2, n_d - w)]
+    cum = zeroed_square(rng, n_w=n_w, n_d=n_d, zero_cells=zero_cells)
+    lobs = {f"lob_{k}": cum[k] for k in range(2)}
+    prem = {f"lob_{k}": np.full(n_w, 1000.0) for k in range(2)}
+    t = make_multiline_triangle(backend_name, lobs, premium_by_lob=prem, start_year=START)
+
+    entry = CopulaGLM()
+    with pytest.raises(ValueError, match=r"ln\(dev\)") as raised:
+        entry.fit(t, as_of=dt.date(START + n_w - 1, 12, 31), dev_effect="hoerl", nonpositive="drop")
+    assert entry.contract_ is None  # fit() is atomic
+    message = str(raised.value)
+    assert "rank 11 of 12" in message
+    # The origin levels are perfectly well identified here, so naming one would
+    # mean the message is reading a direction the data can see.
+    assert "origin[" not in message
+    # No retry pointer: this message says there is nothing coarser to retry
+    # with, so it must not match compare_gallery.py's lowercase retry key.
+    assert "hoerl" not in message
+
+
+def test_copula_names_the_uncovered_origin_before_the_rank(backend_name):
+    """An origin with no usable cell leaves an all-zero dummy column, so the
+    rank check would catch it too, but with a worse message: a list of columns
+    that trade off instead of the origin that has no data. The coverage checks
+    run first for exactly that reason, and this pins the order card.md states.
+    """
+    rng = np.random.default_rng(33)
+    n_w = n_d = 8
+    # origin 4 (index 3) observes devs 1-5 in the as_of slice; zero all of them.
+    zero_cells = [(3, d) for d in range(n_d - 3)]
+    cum = zeroed_square(rng, n_w=n_w, n_d=n_d, zero_cells=zero_cells)
+    lobs = {f"lob_{k}": cum[k] for k in range(2)}
+    prem = {f"lob_{k}": np.full(n_w, 1000.0) for k in range(2)}
+    t = make_multiline_triangle(backend_name, lobs, premium_by_lob=prem, start_year=START)
+
+    entry = CopulaGLM()
+    with pytest.raises(ValueError, match="have no usable cells") as raised:
+        entry.fit(t, as_of=dt.date(START + n_w - 1, 12, 31), nonpositive="drop")
+    assert entry.contract_ is None  # fit() is atomic
+    assert "origins [4]" in str(raised.value)
+
+
 def test_copula_predict_before_fit_raises():
     """GalleryEntry lifecycle: predict() before fit() raises a clear
     RuntimeError rather than an AttributeError."""
