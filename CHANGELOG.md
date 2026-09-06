@@ -153,6 +153,33 @@ so no published result changes. `sur` is unaffected on the mart because the
 retrospective runs its `intercept=False` default, where the design has one column
 and the pre-existing no-origin-pair refusal already covers it.
 
+### One shared over-dispersed Poisson draw, with numpy's real rate cap
+
+The three ODP gallery entries (`clark`, `clark_growth_curve`,
+`england_verrall_odp`) each wrote `phi * rng.poisson(mu / phi)` in two places,
+six copies in all, and none of them handled the case numpy refuses: a Poisson
+rate larger than about 9.2e18. A triangle that develops exactly on its own
+fitted curve gets there: it fits itself to rounding error, the Pearson
+dispersion collapses to about 1e-29, and the rate runs to 1e30, so `predict()`
+raised `ValueError: lam value too large` on a fit that had nothing wrong with
+it. That is a degenerate fit rather than an everyday one, and the measurements
+say how far: the same triangle with its amounts rounded to whole units sits at
+1e-14 of the limit, and with a relative noise of one part in a million, 1e-8 of
+it. The bootstrap kernel already had a cap for this, but its constant was
+the int64 maximum rather than numpy's own limit, which is 30 billion lower, so
+rates in between passed the check and made numpy raise anyway.
+
+All six sites and the kernel now call one function,
+`ibnr.kernels.densities.odp_draw`. Cells past `POISSON_RATE_MAX` come back at
+their mean, which is what the law says there: the draw's coefficient of
+variation is below 3.3e-10, so it is a point mass. A mean that is not finite, a
+negative mean, and a negative or non-finite dispersion are each refused by name
+and by count instead of being reported by numpy as a rate problem, and they are
+refused separately, because a mean that overflowed upstream and a mean the
+caller forgot to floor or reflect are two different defects. Nothing else moves:
+the generator is consumed only for the cells that are actually drawn, so every
+seeded output of every ordinary fit is byte for byte what it was.
+
 ## 0.5.8 - 2026-08-24
 
 A one-feature release: `nn_transformer_ml` gains held-out scoring (#105), the
