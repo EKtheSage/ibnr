@@ -180,6 +180,24 @@ caller forgot to floor or reflect are two different defects. Nothing else moves:
 the generator is consumed only for the cells that are actually drawn, so every
 seeded output of every ordinary fit is byte for byte what it was.
 
+### The one-year CDR refuses a non-annual development grain (#108)
+
+Every route to a one-year claims development result advances the triangle by
+exactly one development step: the Merz-Wuthrich closed form, each
+`DiagonalGenerator`, and `rereserve`. That step is a year only when the triangle
+develops in twelve-month steps. On a quarterly or a monthly fit the same code
+answered anyway, so a three-month or a one-month development result came back
+labelled as a one-year figure, finite and plausible, with nothing in the output
+saying otherwise. `one_year_cdr`, `simulate_one_year_cdr` and `rereserve` now
+refuse such a fit, naming the grain they measured, saying that one step is that
+many months rather than twelve, and giving the two ways forward: aggregate the
+triangle to an annual grain first, from a year-end valuation, because the annual
+buckets are anchored to the latest diagonal and a mid-year one gives development
+lags the annual grain rejects; or read the run-off uncertainty from
+`MackFit.msep_runoff()`, which does not depend on the grain. The gallery `mack`
+entry's `one_year_cdr()` and `cdr_distribution()` inherit the refusal. Annual
+triangles are untouched, the MW2014 tie-out against R included.
+
 ## 0.5.8 - 2026-08-24
 
 A one-feature release: `nn_transformer_ml` gains held-out scoring (#105), the

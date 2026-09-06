@@ -18,6 +18,19 @@ so a positive CDR is a release and a negative one a strengthening. Under the
 model E[CDR | D_I] = 0, and the risk measure is the conditional MSEP about
 zero, ``msep = E[CDR^2 | D_I]``.
 
+ANNUAL DEVELOPMENT GRAIN ONLY. "One year" here means one development step, and
+the two are the same span only when the triangle develops in twelve-month
+steps. The three functions that name a year, :func:`one_year_cdr`,
+:func:`simulate_one_year_cdr` and :func:`rereserve`, therefore refuse a fit
+whose development grain is quarterly or monthly, naming the grain they
+measured. The two generators do not, because a generator only draws the next
+step and never calls it a year. The arithmetic would be right for one step, but
+on a quarterly or a monthly fit that step is three months or one rather than
+the twelve the name promises, and nothing in the answer would show it. The
+remedy is to aggregate the triangle to an annual grain first, from a year-end
+valuation, or, when the whole run-off is the question rather than one year of
+it, to read ``MackFit.msep_runoff()``, which does not depend on the grain.
+
 TWO INDEPENDENT AXES, because that is what the question has.
 
 Every simulated one-year CDR is the same two-step recipe, and the two steps are
@@ -102,7 +115,14 @@ class CDRResult:
     def summary(self) -> pd.DataFrame:
         """One row per origin plus a ``total`` row: reserve, one-year standard
         error, run-off standard error, and the share of run-off risk that
-        emerges in the first year (``one_year_share`` = cdr_se / runoff_se)."""
+        emerges in the first year (``one_year_share`` = cdr_se / runoff_se).
+
+        ``cdr_se`` is a one-year figure when this result came from
+        :func:`one_year_cdr`, which refuses any development grain other than
+        twelve months, so there the column heading and the span agree. A
+        :class:`CDRResult` decoded from Arrow bytes carries no grain and is not
+        checked, so a payload written by an older version can hold a figure for
+        a shorter span."""
         cdr_se = np.sqrt(self.msep)
         runoff_se = np.sqrt(self.runoff_msep)
         out = pd.DataFrame(
@@ -151,6 +171,48 @@ class CDRResult:
         from ibnr.kernels import codec
 
         return codec.from_arrow(data, expect="CDRResult")
+
+
+def _require_annual_step(fit: MackFit) -> None:
+    """Refuse a fit whose development step is not twelve months.
+
+    Everything in this module advances the triangle by exactly ONE development
+    step and calls the answer a one-year claims development result. The two are
+    the same thing only on an annual triangle. On a quarterly or a monthly fit
+    the step is three months or one, so the number would be a three-month or a
+    one-month development result reported under a one-year name: finite,
+    plausible, and covering a shorter span than the name says, with nothing in
+    the output to show it.
+
+    Called inside :func:`one_year_cdr`, :func:`simulate_one_year_cdr` and
+    :func:`rereserve` rather than on :meth:`DiagonalGenerator.check`, because a
+    third-party diagonal re-reserved through :func:`rereserve` reaches no
+    generator at all, and because the gallery's ``mack`` entry binds these
+    functions by name when it is imported.
+
+    The first remedy the message names is qualified, because the aggregation on
+    its own is not enough: ``with_dev_grain("Y")`` anchors the annual buckets to
+    the latest diagonal, so a triangle whose latest valuation is not a year end
+    aggregates to development lags such as 9, 21 and 33, which ``validate``
+    flags and ``fit_mack`` then refuses. Slicing to a year end with ``as_of``
+    first is what makes the route work.
+    """
+    step = fit.dev_grain_months
+    if step == 12:
+        return
+    raise ValueError(
+        "the one-year claims development result needs an annual development grain, and "
+        f"this fit has a {step}-month development grain. Every route here advances the "
+        "triangle by exactly one development step (the Merz-Wuthrich closed form, every "
+        "DiagonalGenerator and rereserve()), and here that step is not twelve months, so "
+        f"the answer would be a {step}-month development result reported under a one-year "
+        "name. Either aggregate the triangle to an annual grain first, "
+        "which costs development resolution: slice to a year-end valuation with as_of() "
+        'and then call Triangle.with_origin_grain("Y").with_dev_grain("Y"), since the '
+        "annual buckets are anchored to the latest diagonal and a mid-year one gives "
+        "development lags the annual grain rejects. Or read the run-off uncertainty from "
+        "MackFit.msep_runoff(), which does not depend on the development grain"
+    )
 
 
 def _open_years(fit: MackFit) -> np.ndarray:
@@ -218,9 +280,12 @@ def one_year_cdr(fit: MackFit) -> CDRResult:
     uncertainty, where the split here follows the paper - ``Phi`` is the part a
     re-reserving simulation with ``parameter_risk=False`` reproduces.
 
-    Valid only for the volume-weighted (alpha = 1) chain ladder and without a
-    tail factor - the same two restrictions R's ``CDR.MackChainLadder``
-    enforces, and both are structural here: ``fit_mack`` estimates nothing else.
+    Valid only for the volume-weighted (alpha = 1) chain ladder, without a tail
+    factor, and on an annual development grain. The first two are the same
+    restrictions R's ``CDR.MackChainLadder`` enforces, and both are structural
+    here: ``fit_mack`` estimates nothing else. The third is what makes the
+    single development step above a year, and a fit on any other grain is
+    refused by name.
 
     MACK-SPECIFIC BY CONSTRUCTION, and deliberately not offered as a
     ``generator=`` option on :func:`simulate_one_year_cdr`. Every term above is
@@ -229,6 +294,9 @@ def one_year_cdr(fit: MackFit) -> CDRResult:
     bootstrap version of it and no version for any other model. The routes that
     do generalize are the simulated ones - :func:`cdr_methods` lists them.
     """
+    # One development step is one year only on an annual triangle, and every
+    # term below is one step wide.
+    _require_annual_step(fit)
     # Phi_i divides by C_{i,k_i} - the latest diagonal, the one cell class no
     # factor-side guard can see. Checked here as well as inside msep_runoff()
     # below so the failure is named before the loop builds a page of NaN.
@@ -348,6 +416,9 @@ def rereserve(fit: MackFit, next_diagonal: np.ndarray) -> np.ndarray:
             f"next_diagonal must be (n_draws, n_w={fit.n_w}) cumulative values, got "
             f"{x.shape}. One column per origin of the fit, in its origin order"
         )
+    # the shape says how many origins the diagonal covers; the grain says how
+    # far forward it is, and one step forward is one year only on an annual fit.
+    _require_annual_step(fit)
     n_draws = x.shape[0]
     n_w, n_d = fit.n_w, fit.n_d
     k = fit.latest_dev
@@ -617,7 +688,9 @@ CDR_METHODS: dict[str, CDRMethod] = {
         re_estimates="volume-weighted chain ladder (linearized)",
         returns="CDRResult (msep per origin and in total, no quantiles)",
         entry_point="one_year_cdr(fit)",
-        requires="a MackFit with a strictly positive open diagonal",
+        requires=(
+            "a MackFit on an annual development grain, with a strictly positive open diagonal"
+        ),
         validated=(
             "golden tie-out: R ChainLadder CDR(MackChainLadder(MW2014, "
             'est.sigma="Mack")) to 7 decimals, per origin and in total'
@@ -637,7 +710,9 @@ CDR_METHODS: dict[str, CDRMethod] = {
         re_estimates="volume-weighted chain ladder (re-run on the extended triangle)",
         returns="PredictiveDistribution of the CDR (quantiles, VaR/TVaR)",
         entry_point='simulate_one_year_cdr(fit, generator="mack")',
-        requires="a MackFit with a strictly positive open diagonal",
+        requires=(
+            "a MackFit on an annual development grain, with a strictly positive open diagonal"
+        ),
         validated=(
             "agrees with the merz_wuthrich closed form to Monte Carlo error, "
             "which is itself tied out to R to 7 decimals"
@@ -652,7 +727,10 @@ CDR_METHODS: dict[str, CDRMethod] = {
         re_estimates="volume-weighted chain ladder (re-run on the extended triangle)",
         returns="PredictiveDistribution of the CDR (quantiles, VaR/TVaR)",
         entry_point='simulate_one_year_cdr(fit, generator="odp_bootstrap")',
-        requires="a MackFit whose observed increments are all non-negative",
+        requires=(
+            "a MackFit on an annual development grain, whose observed increments "
+            "are all non-negative"
+        ),
         validated=(
             "NO published digits exist - R's CDR.BootChainLadder example prints "
             "no output and a bootstrap is stochastic. Validated instead against "
@@ -680,8 +758,9 @@ CDR_METHODS: dict[str, CDRMethod] = {
             "fit, generator=GalleryDiagonal(entry, cells))"
         ),
         requires=(
-            "a MackFit and a HoldoutCells describing the SAME cohort, field and "
-            "cutoff, with one scorable cell for every open origin of the fit"
+            "a MackFit on an annual development grain, and a HoldoutCells "
+            "describing the SAME cohort, field and cutoff, with one scorable cell "
+            "for every open origin of the fit"
         ),
         validated=(
             "the wiring, not the model: a generator that reproduces Mack's own "
@@ -833,6 +912,9 @@ def simulate_one_year_cdr(
     gen = _resolve_generator(generator, process=process, parameter_risk=parameter_risk)
     if n_draws is not None and n_draws < 1:
         raise ValueError("n_draws must be positive")
+    # before the generator is consulted and before any draw: the grain is a
+    # property of the fit, so no generator can make a non-annual step a year.
+    _require_annual_step(fit)
     gen.check(fit)
     rng = np.random.default_rng(seed)
     cdr = rereserve(fit, gen.draw(fit, n_draws=gen.resolve_n_draws(n_draws), rng=rng))

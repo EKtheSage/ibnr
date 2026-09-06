@@ -4,9 +4,9 @@ The residual bootstrap behind ``ChainLadder::BootChainLadder`` in R and behind
 England & Verrall (2002, section 8): fit the chain ladder, take Pearson
 residuals against its fitted incrementals, resample them into pseudo-triangles,
 refit, and add over-dispersed Poisson process noise to the projection. It is a
-*diagonal generator* in ``kernels/cdr.py``'s vocabulary - it says what next
-year's payments might be - and it knows nothing about what is done with them
-afterwards.
+*diagonal generator* in ``kernels/cdr.py``'s vocabulary - it says what the
+payments over the next development step might be - and it knows nothing about
+what is done with them afterwards.
 
 Free functions over plain arrays, deliberately: nothing here takes a
 ``Triangle`` or a ``MackFit``, so the arithmetic can be read against R's source
@@ -200,7 +200,7 @@ def draw_next_increments(
     process_noise: bool = True,
     resample_residuals: bool = True,
 ) -> np.ndarray:
-    """``(n_draws, n_w)`` simulated payments during the coming year.
+    """``(n_draws, n_w)`` simulated payments over the next development step.
 
     One draw is R's ``getNYCost`` input for one simulation, and the steps are
     its steps:
