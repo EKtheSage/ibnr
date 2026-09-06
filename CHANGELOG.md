@@ -198,6 +198,80 @@ lags the annual grain rejects; or read the run-off uncertainty from
 entry's `one_year_cdr()` and `cdr_distribution()` inherit the refusal. Annual
 triangles are untouched, the MW2014 tie-out against R included.
 
+### An origin axis that is not one dev step apart is refused by name
+
+`nn_data`'s calendar index `cal_idx = w + d + 1` and `stan_data`'s `prev_idx`
+both read the origin index and the dev index as one shared clock, which they are
+only while one origin step equals one dev step. Two geometries break that
+without being malformed data: a gap in the pooled origin axis (accident years
+2010, 2012 and 2013, with 2011 missing) and annual origins on a quarterly dev
+grain. On the first of those, three cells whose real evaluation date was
+2013-12-31 were given calendar indices 4, 3 and 3, so the validation split held
+one of them out and trained on the other two, which is training on the diagonal
+it is scored on. Nothing raised and nothing about the result looked wrong. Both
+geometries are now refused, with a message naming the offending pair of origins,
+the gap in months and what to do about it. The check is on the pooled origin
+axis, so a single cohort that skips an accident year its neighbours carry is
+unaffected: it keeps its row on the shared axis and is masked out as before. What
+is asked for is one origin step per dev step, not an annual grain: a quarterly
+origin axis on a quarterly dev grain is accepted, and so is a monthly one on a
+monthly grain.
+
+One entry pays for sharing a door, and it is named here so the decision is
+visible. `stan_data` serves three gallery entries: `meyers_ccl` and `meyers_csr`
+read the origin index as a clock, and `guszcza_growth_curve` does not, using it
+only to index `ulr[w]` and `premium[w-1]`, exactly as `odp_stan_data` and
+`compartmental_stan_data` use theirs (which is why those two contracts are not
+checked at all). So Guszcza will now refuse a gapped origin axis it could in
+principle fit. That is the cost of putting the check on the shared contract
+rather than in two model files, and it is written down in
+`require_origin_axis_step` so it can be revisited rather than discovered.
+
+The geometry is reachable from an installed sample, in two lines: 50 of
+chainladder's 725 clrd paid-loss cohorts have a gapped origin axis, and fitted
+one at a time all 50 are now refused by name. Before this change none of them
+reached a wrong calendar index either, but none of them said why: 47 died on a
+raw `KeyError` from the premium lookup and 3 on "no usable cohorts". Fitting the
+whole sample at once is unaffected, because the pooled axis is then 1988 to 1997
+with no hole.
+
+### Anchored dev ages validate, and are refused by name at the kernel doors
+
+`with_dev_grain('Y')` on a triangle whose latest valuation is a March 31 gives
+dev ages 3, 15, 27, matching chainladder's `grain('OYDY')` exactly, which is what
+the tie-out test asserts. `validate` then reported all 156 rows of that triangle
+as broken and `validate(strict=True)` raised on it, because the rule asked for a
+multiple of the grain rather than for one shared offset. The rule now asks every
+row to share ONE offset against the declared grain, with the offset at the latest
+evaluation date as the anchor, and reports the offsets it found when they are
+mixed. When the latest evaluation date carries several offsets itself, which
+quarterly origins on an annual dev grain do, the message says so instead of
+presenting the smallest as the triangle's own answer. Only positive ages are
+given an offset, because `%` follows the backend's sign rule and a negative age
+otherwise had a different offset reported on duckdb than on polars for the same
+triangle. That is a strict relaxation: a triangle mixing 9-month and 12-month
+ages, or carrying a dev age of zero, is still reported.
+
+The kernels take the opposite decision and now say so. Ages off the grain
+boundary are a coherent triangle and are not a grid a contract can index, since
+every contract stores a cell at `dev_lag // step`, so one helper,
+`kernels.contract.dev_step_index`, replaces the six copies of that check and
+refuses them by name: it gives the step, the offsets it measured, example ages,
+the cause and the two ways out. `kernels.holdout` keeps its own check, which is
+about a fit rather than a triangle.
+
+`from_bermuda` now reads the dev grain from bermuda's `eval_date_resolution`
+instead of reusing the origin grain, and refuses a resolution it cannot represent
+(six months, say) rather than rounding it. Annual periods observed every quarter
+used to come back declared OYDY with every cell intact under a wrong label, and
+`to_incremental` then kept 2 rows out of 8, looking for each cell's predecessor
+12 months back. The origin grain remains the fallback for a single-diagonal
+triangle, where the data does not say; the attribute is read directly rather than
+through a default, so a bermuda release that renames it raises instead of quietly
+restoring the wrong label. One limit of the round trip is now written down: bermuda
+carries cells, not declarations, so a triangle declared quarterly that holds only
+annual diagonals comes back annual.
+
 ## 0.5.8 - 2026-08-24
 
 A one-feature release: `nn_transformer_ml` gains held-out scoring (#105), the

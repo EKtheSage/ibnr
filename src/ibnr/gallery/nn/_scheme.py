@@ -27,7 +27,15 @@ def splits(
     targets for early stopping and are excluded from every training context
     and every training target - validating by calendar time (eval_date), the
     way the model is actually used at prediction, rather than by a random cell
-    split. ``val_cutoff`` is the newest diagonal training may condition on."""
+    split. ``val_cutoff`` is the newest diagonal training may condition on.
+
+    ``cal_idx`` is calendar time only on the geometry ``kernels.nn_contract``
+    accepts: one origin step equal to one dev step. A gap in the pooled origin
+    axis, or annual origins on a quarterly dev grain, spreads cells that share an
+    evaluation date over several ``cal_idx`` values, and this split would then
+    hold out part of a diagonal and train on the rest of it. ``nn_data`` refuses
+    both geometries by name, which is what makes the calendar claim here true
+    rather than assumed."""
     c_max = int(cal_idx[obs_mask.any(axis=0)].max())
     val_cutoff = c_max - val_diagonals
     if val_cutoff < 2:
