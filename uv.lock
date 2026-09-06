@@ -910,6 +910,7 @@ dependencies = [
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "scipy" },
+    { name = "sqlglot" },
 ]
 
 [package.optional-dependencies]
@@ -973,6 +974,7 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=15" },
     { name = "pymc", marker = "extra == 'bayesian'", specifier = "<6" },
     { name = "scipy", specifier = ">=1.11" },
+    { name = "sqlglot", specifier = "<30.18" },
     { name = "torch", marker = "extra == 'nn'", specifier = ">=2.2" },
 ]
 provides-extras = ["polars", "bayesian", "nn", "viz", "interop"]
