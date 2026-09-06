@@ -638,11 +638,14 @@ def test_the_aggregation_remedy_works_only_from_a_year_end(backend_name):
 
     ``with_dev_grain("Y")`` anchors the annual development buckets to the latest
     diagonal. A quarterly triangle whose latest valuation is a September
-    therefore aggregates to development lags 9, 21, 33 and 45, which ``validate``
-    flags and ``fit_mack`` refuses, so a caller who followed an unqualified
-    "aggregate first" would meet a second error on the triangle they had just
-    been told to build. Slicing to a year end first is what the message names
-    and what this pins."""
+    therefore aggregates to development lags 9, 21, 33 and 45, which the
+    chain-ladder kernels refuse (they index dev steps as ``dev_lag // 12``), so
+    a caller who followed an unqualified "aggregate first" would meet a second
+    error on the triangle they had just been told to build. Slicing to a year
+    end first is what the message names and what this pins. The kernel refusal
+    is matched on the one phrase every wording of it carries, "12-month", because
+    the validator's own verdict on anchored ages and the exact refusal text are
+    the triangle layer's business, not this test's."""
     n = 15
     rng = np.random.default_rng(7)
     square = np.cumsum(rng.uniform(100.0, 200.0, size=(n, n)), axis=1)
@@ -652,8 +655,7 @@ def test_the_aggregation_remedy_works_only_from_a_year_end(backend_name):
 
     straight = quarterly.with_origin_grain("Y").with_dev_grain("Y")
     assert sorted({int(x) for x in straight.to_pandas()["dev_lag"]}) == [9, 21, 33, 45]
-    assert straight.validate(strict=False) != []
-    with pytest.raises(ValueError, match="not multiples of the 12-month dev grain"):
+    with pytest.raises(ValueError, match="12-month"):
         fit_mack(straight, loss_field="paid_loss")
 
     sliced = quarterly.as_of("2012-12-31").with_origin_grain("Y").with_dev_grain("Y")
