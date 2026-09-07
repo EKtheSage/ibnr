@@ -23,6 +23,7 @@ from ibnr.gallery.entry import GalleryEntry, PredictsHeldout
 from ibnr.gallery.registry import register
 from ibnr.gallery.statistical.clark.model import Clark, age_interval, growth
 from ibnr.kernels.contract import odp_stan_data, realized_values
+from ibnr.kernels.densities import odp_draw
 from ibnr.kernels.holdout import CellIndex
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.kernels.rng import cohort_stream
@@ -353,7 +354,7 @@ class ClarkGrowthCurve(GalleryEntry, PredictsHeldout):
                 # Process risk as scaled-Poisson ODP: Var[X] = phi * E[X], drawn
                 # as phi * Poisson(mu/phi) (Clark 2003 ODP; same as the MLE twin,
                 # with the posterior replacing its delta-method MVN).
-                ults[:, j] += phi * rng.poisson(mu / phi)
+                ults[:, j] += odp_draw(rng, mu, phi)
 
         targets = pd.DataFrame(
             {

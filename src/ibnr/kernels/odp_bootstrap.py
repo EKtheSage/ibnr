@@ -4,9 +4,9 @@ The residual bootstrap behind ``ChainLadder::BootChainLadder`` in R and behind
 England & Verrall (2002, section 8): fit the chain ladder, take Pearson
 residuals against its fitted incrementals, resample them into pseudo-triangles,
 refit, and add over-dispersed Poisson process noise to the projection. It is a
-*diagonal generator* in ``kernels/cdr.py``'s vocabulary - it says what next
-year's payments might be - and it knows nothing about what is done with them
-afterwards.
+*diagonal generator* in ``kernels/cdr.py``'s vocabulary - it says what the
+payments over the next development step might be - and it knows nothing about
+what is done with them afterwards.
 
 Free functions over plain arrays, deliberately: nothing here takes a
 ``Triangle`` or a ``MackFit``, so the arithmetic can be read against R's source
@@ -46,23 +46,12 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ibnr.kernels.densities import odp_draw
+
 #: process laws for the simulated increment. Both match the over-dispersed
 #: Poisson's first two moments (mean ``mu``, variance ``phi * mu``) and differ
 #: in support and tail, exactly as ``kernels.mack.PROCESS_LAWS`` do for Mack.
 ODP_PROCESS_LAWS = ("od_poisson", "gamma")
-
-#: numpy's ``Generator.poisson`` refuses a rate above this - its internal
-#: ``POISSON_LAM_MAX``, which is not exported. ``od_poisson`` draws
-#: ``phi * Poisson(mu / phi)``, so the rate blows up exactly when the
-#: over-dispersion is negligible against the mean: at the limit the draw's
-#: coefficient of variation ``sqrt(phi/|mu|) = 1/sqrt(rate)`` is under 3.3e-10,
-#: i.e. the distribution is a point mass to any precision that matters. Those
-#: cells therefore come back at their mean exactly, which is the same
-#: convention ``kernels.mack.draw_step`` documents for a zero-variance step.
-#: Reachable in practice: a triangle that develops by exactly constant factors
-#: fits itself to rounding error, giving phi ~ 1e-29 (measured, and pinned by
-#: ``tests/test_odp_bootstrap.py::test_zero_residual_triangle_has_no_cdr``).
-_POISSON_RATE_MAX = 9.223372036854776e18
 
 
 @dataclass(frozen=True)
@@ -211,7 +200,7 @@ def draw_next_increments(
     process_noise: bool = True,
     resample_residuals: bool = True,
 ) -> np.ndarray:
-    """``(n_draws, n_w)`` simulated payments during the coming year.
+    """``(n_draws, n_w)`` simulated payments over the next development step.
 
     One draw is R's ``getNYCost`` input for one simulation, and the steps are
     its steps:
@@ -298,19 +287,35 @@ def _od_process_noise(
     the asymmetry with the observed data, which is refused outright when
     negative - that refusal is about the family's support, this is about a
     bootstrap artifact of it.
+
+    ``od_poisson`` is the shared :func:`~ibnr.kernels.densities.odp_draw`, so
+    the rate numpy can no longer represent is handled here exactly as it is in
+    the gallery's ODP entries - by returning the mean, and in one place.
+
+    One consequence, worth writing down because the two laws are otherwise
+    meant to differ only in support and tail: ``odp_draw`` refuses a mean that
+    is not finite, so ``od_poisson`` names a NaN mean by count, while ``gamma``
+    still hands it to ``rng.gamma`` and returns NaN without a word, which is
+    what both laws did before. Neither is reachable from
+    :func:`draw_next_increments` on a triangle ``fit_odp_bootstrap`` accepted:
+    every mean there is a finite pseudo-diagonal cell times a finite factor.
+
+    The ``live`` mask below is an optimization and nothing more, so do not
+    write a test that expects it to change an answer. numpy returns 0 for a
+    Poisson rate of 0 and for a gamma shape of 0 *without* taking a random
+    number (measured, numpy 2.4.6), so passing the zero cells through would
+    give the same values off the same generator state. It is kept because
+    ``sign(0) * draw`` reading as 0 is an accident of ``sign``, and because the
+    mask says out loud that a cell with nothing to develop has nothing to draw.
     """
     out = np.array(mu, dtype=float, copy=True)
     live = mu != 0
-    if law == "od_poisson":
-        # see _POISSON_RATE_MAX: an unrepresentable rate is a numerical point
-        # mass, and `out` already holds the mean there
-        live = live & (np.abs(mu) <= _POISSON_RATE_MAX * phi)
     if not live.any():
         return out
     magnitude = np.abs(mu[live])
     sign = np.sign(mu[live])
     if law == "od_poisson":
-        out[live] = sign * phi * rng.poisson(magnitude / phi)
+        out[live] = sign * odp_draw(rng, magnitude, phi)
     else:  # gamma, moment-matched: shape * scale = |mu|, shape * scale^2 = phi|mu|
         out[live] = sign * rng.gamma(shape=magnitude / phi, scale=phi)
     return out

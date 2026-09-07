@@ -41,6 +41,7 @@ import numpy as np
 
 from ibnr.gallery.statistical.clark.model import GROWTH_CURVES, age_interval, growth
 from ibnr.gallery.statistical.clark.scorer import MU_FLOOR
+from ibnr.kernels.densities import odp_draw
 from ibnr.kernels.holdout import CellIndex
 
 __all__ = ["draw_cells", "mu_cells"]
@@ -114,4 +115,4 @@ def draw_cells(
         )
     mu = mu_cells(contract, post, cells, curve=curve)
     phi = float(contract["phi"])
-    return phi * rng.poisson(mu / phi)
+    return odp_draw(rng, mu, phi)

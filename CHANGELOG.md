@@ -17,6 +17,187 @@ corrected decision 8.)
 
 ## Unreleased
 
+### A missing outcome or a missing draw gives a missing percentile, not 0
+
+`PredictiveDistribution.cdf` counted the draws at or below the outcome and
+returned that fraction. Every comparison against NaN is False, so a target whose
+outcome had not emerged yet came back as exactly 0.0: the lowest percentile
+there is, and to the uniformity test the worst possible over-prediction. A
+missing draw compares False in the same way, so every one of them was counted as
+lying above the outcome and that target's percentile came out too low. `cdf` now
+returns NaN at those targets, which is what its own docstring already promised
+for a missing outcome. `kernels.scores.crps` was already answering NaN for a
+missing outcome, and `mean`, `std` and `crps` were all already answering NaN for
+a missing draw, so the percentile now agrees with the numbers printed beside it.
+The mask is per target, so a finite neighbour keeps its percentile, and infinite
+outcomes and draws are left alone: an outcome below every draw is a real verdict
+of 0.0 and has to stay distinguishable from a missing one.
+
+One published figure moves, and it is a missing-draw row rather than a
+missing-outcome one. Every scored row in the Schedule P results carries an
+outcome, so that half of the fix changes nothing there; it changes a backtest on
+a triangle whose cutoff leaves an origin short of the fit's final development
+lag, the case the `mack` entry documents by name. But one row of
+`analysis/results/compartmental_validation_lognormal.csv` (other_liability,
+company 16373) came from a fit that never converged (R-hat 1.25, bulk ESS 12)
+and whose draws hold missing values, which is why its estimate, standard error
+and CV are already blank there while its percentile reads 0.0. That 0.0 was the
+old `cdf` counting missing draws, not a real over-prediction. Under the fix the
+row has no percentile and leaves the uniformity test. Recomputed from the stored
+percentiles, other_liability goes from D = 20.2 (rejects, n = 50) to 18.6
+(passes, n = 49) and the combined figure from 16.2 to 15.9 (still rejects,
+n = 199). The compartmental card records both readings.
+
+`scripts/meyers_validation.py` used to define `failed` as a missing percentile,
+which would now also count such a row; it counts fits that raised instead, and
+reports `missing_outcome` and `missing_draws` beside it, so a row that leaves
+the test is never invisible.
+
+### Stacking weights survive deep log densities, and an unconverged solve is refused
+
+`MleStacking`, the default stacking method, does its arithmetic in linear
+space: it exponentiates the pointwise ELPD and hands SLSQP the Jacobian
+`1 / (Y @ w)`. Once the mixture `Y @ w` falls below `1 / DBL_MAX`, about
+5.6e-309, that reciprocal overflows to infinity, SLSQP stops at its first
+iteration and hands back the uniform vector it started from. That vector is
+finite, non-negative and sums to 1, so every check the weights faced accepted
+it as a fitted even split, and only three numpy warnings naming bayesblend's
+own lines reached stderr. One shared cell below the boundary among sixteen
+board-like cells was enough: a 1.0/0.0 fit came back 0.5/0.5, which scores 10.3
+nats below the answer the fit should have given and is not the optimum of
+anything.
+
+`kernels/stacking.py` now passes bayesblend each cell's ELPD relative to that
+cell's best finite member, floored at `LPD_FLOOR`, so every value it sees is
+between -700 and 0 whatever the absolute level of the densities. A common
+per-cell offset cannot move the optimum, so no correct answer changes. One
+ranking does change, in the direction of the milestone 6 rule that zero
+density ranks last: on a cell where one member gave the outcome zero density
+and another gave it a tiny positive density, the old absolute floor put the
+zero-density member above the finite one, and now it does not. `_fit_weights`
+also reads the scipy result bayesblend stores and refuses an unsuccessful
+solve by name, with its status and message, and a `+inf` pointwise ELPD is
+refused where it arrives instead of reaching the solve as a NaN objective.
+
+### The parity comparison covers every requested parameter, and a point mass is no longer free agreement
+
+`kernels.parity.compare_posteriors` used to drop any requested variable a
+posterior did not carry and then report a pass over the rows that were left, and
+it scored a zero or undefined Monte Carlo error as `z = 0`, the best score there
+is, whatever the two summaries said. It now refuses, by name, a requested
+variable missing from any posterior including the reference, an element shape
+that differs from the reference's, a non-finite draw and an empty request. Point
+masses are handled explicitly: two equal constants agree at `z = 0` (the
+identifiability anchors every CCL, CSR and ODP run carries), two unequal
+constants score `z_mean = inf` and fail, and a Monte Carlo error that is not a
+positive finite number on a marginal that is not constant raises. Whether two
+point masses are equal is read off the pinned value itself, not off the two
+summary means, which for a constant that is not exactly representable in binary
+depend on how many draws were summed. A posterior that names its dimensions
+(`coords=`/`dims=`) labels its elements with coordinates rather than integer
+positions, and those are now refused by name too, where before the string form
+crashed inside `int()` and an out-of-range integer form read the wrong element.
+Every ordinary row keeps the identical formula, so no published parity number
+moves.
+
+### The compute image installs the data package its own default command needs
+
+The Dockerfile installed `.[bayesian]` and nothing else, so the image's own
+`CMD`, `python scripts/meyers_validation.py --help`, would stop at
+`ModuleNotFoundError: No module named 'cas_schedule_p'` before printing a line
+of help. The image was not built to find this: there is no Docker on the
+development machine, so the command was run with `cas_schedule_p` absent from
+the import path, which is the same failure one line earlier. That script and
+the three other study scripts read the Meyers company selection rule out of
+`cas_schedule_p.screens`, and the package is deliberately absent from the wheel:
+ibnr itself never imports it, only `scripts/` does. The image now installs it,
+pinned to the version `uv.lock` resolves, because the wheel carries the mart and
+its vintage decides which companies a run selects.
+
+`tests/test_compute_image.py` is what keeps this true. It reads the install
+lines out of the Dockerfile, works out which distributions those lines put in
+the image, then starts each promised script's `--help` in a subprocess that
+refuses any module the image would not have, and separately reads every import
+in those scripts at any nesting depth. Nothing in it can skip. It stands in for
+building the image, which no machine here can do, and it is exact for the
+failure that mattered.
+
+### `sur` and `copula_glm` refuse designs the data cannot pin down
+
+Both frequentist dependence entries could return a fit whose coefficients the
+usable cells never determined. `sur` with `intercept=True` fits a two-column
+`[1, C_d]` design at every development transition, and a square triangle's last
+transition has exactly one origin pair: one equation for two unknowns. Depending
+on the data that either raised `LinAlgError: Singular matrix`, which names a
+matrix rather than the model, or rounded through and returned a coefficient
+covariance of order 1e15, which parameter risk turned into a predicted grand
+total hundreds of times too large with every draw finite. `copula_glm` checked
+that every origin and every development step had a usable cell, which counts
+cells per column and misses the shape they form: after `nonpositive="drop"`
+exclusions the usable cells can split into groups sharing no origin and no
+development step, and `np.linalg.pinv` then answers with the minimum-norm member
+of an unbounded family. `sur` now refuses a transition with fewer origin pairs
+than design columns before estimation starts, and `copula_glm` checks the built
+design's rank and names the columns a null direction touches. Both refusals
+happen before anything is stamped on the entry, so a rejected fit leaves the
+entry unfitted.
+
+What this reaches on the Schedule P retrospective, measured on the pinned mart
+publish `20260613_041006` across all 60 selected multiline companies with
+`scripts/compare_gallery.py`'s own default of `--copula-nonpositive drop`: on the
+published `paid_loss` field nothing changes, all 60 companies still fit (45 of
+them through the existing fallback to the Hoerl curve). On `reported_loss` the
+new rank check refuses companies 13439 and 16373, which previously fitted at rank
+11 of 12 under the Hoerl curve. The published copula rows are `paid_loss` only,
+so no published result changes. `sur` is unaffected on the mart because the
+retrospective runs its `intercept=False` default, where the design has one column
+and the pre-existing no-origin-pair refusal already covers it.
+
+### One shared over-dispersed Poisson draw, with numpy's real rate cap
+
+The three ODP gallery entries (`clark`, `clark_growth_curve`,
+`england_verrall_odp`) each wrote `phi * rng.poisson(mu / phi)` in two places,
+six copies in all, and none of them handled the case numpy refuses: a Poisson
+rate larger than about 9.2e18. A triangle that develops exactly on its own
+fitted curve gets there: it fits itself to rounding error, the Pearson
+dispersion collapses to about 1e-29, and the rate runs to 1e30, so `predict()`
+raised `ValueError: lam value too large` on a fit that had nothing wrong with
+it. That is a degenerate fit rather than an everyday one, and the measurements
+say how far: the same triangle with its amounts rounded to whole units sits at
+1e-14 of the limit, and with a relative noise of one part in a million, 1e-8 of
+it. The bootstrap kernel already had a cap for this, but its constant was
+the int64 maximum rather than numpy's own limit, which is 30 billion lower, so
+rates in between passed the check and made numpy raise anyway.
+
+All six sites and the kernel now call one function,
+`ibnr.kernels.densities.odp_draw`. Cells past `POISSON_RATE_MAX` come back at
+their mean, which is what the law says there: the draw's coefficient of
+variation is below 3.3e-10, so it is a point mass. A mean that is not finite, a
+negative mean, and a negative or non-finite dispersion are each refused by name
+and by count instead of being reported by numpy as a rate problem, and they are
+refused separately, because a mean that overflowed upstream and a mean the
+caller forgot to floor or reflect are two different defects. Nothing else moves:
+the generator is consumed only for the cells that are actually drawn, so every
+seeded output of every ordinary fit is byte for byte what it was.
+
+### The one-year CDR refuses a non-annual development grain (#108)
+
+Every route to a one-year claims development result advances the triangle by
+exactly one development step: the Merz-Wuthrich closed form, each
+`DiagonalGenerator`, and `rereserve`. That step is a year only when the triangle
+develops in twelve-month steps. On a quarterly or a monthly fit the same code
+answered anyway, so a three-month or a one-month development result came back
+labelled as a one-year figure, finite and plausible, with nothing in the output
+saying otherwise. `one_year_cdr`, `simulate_one_year_cdr` and `rereserve` now
+refuse such a fit, naming the grain they measured, saying that one step is that
+many months rather than twelve, and giving the two ways forward: aggregate the
+triangle to an annual grain first, from a year-end valuation, because the annual
+buckets are anchored to the latest diagonal and a mid-year one gives development
+lags the annual grain rejects; or read the run-off uncertainty from
+`MackFit.msep_runoff()`, which does not depend on the grain. The gallery `mack`
+entry's `one_year_cdr()` and `cdr_distribution()` inherit the refusal. Annual
+triangles are untouched, the MW2014 tie-out against R included.
+
 ### An origin axis that is not one dev step apart is refused by name
 
 `nn_data`'s calendar index `cal_idx = w + d + 1` and `stan_data`'s `prev_idx`
