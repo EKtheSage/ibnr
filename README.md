@@ -105,6 +105,32 @@ both pin numpy below 2 through their own dependencies and so cannot install on
 3.13; the rest of the package is ready for it, and the cap lifts when those
 upstreams move.
 
+**Where a plain `pip install "ibnr[bayesian]"` lands today** (measured
+2026-09-07, pip 26.2 against PyPI). pip resolves under bayesblend 0.0.8's stale
+pins (`arviz<0.19`, hence `numpy<2`, and `matplotlib==3.7.2`), so where it
+succeeds it installs the numpy 1 stack - numpy 1.26.4, arviz 0.18.0, pymc
+5.25.1, jax 0.7 - not the numpy 2 stack this repo locks and tests through its
+`[tool.uv] override-dependencies`:
+
+- **Windows 3.11**: installs from wheels; `ibnr.gallery` and all five Bayesian
+  packages import cleanly (verified).
+- **Windows 3.12**: installs and imports too, but builds matplotlib 3.7.2 from
+  source on the way, which needs a C++ compiler.
+- **Linux 3.11**: resolves wheels-only (same versions; resolution measured
+  cross-platform, not an installed environment).
+- **Linux 3.12**: does **not** install. matplotlib 3.7.2 has no cp312 wheel, and
+  with source builds allowed pip backtracks numpyro into ancient releases whose
+  exact jaxlib pins have no cp312 wheel either, ending in `ResolutionImpossible`
+  (measured in the compute-image build; issue
+  [#132](https://github.com/EKtheSage/ibnr/issues/132)).
+
+On Linux 3.12, use Python 3.11 - or install with uv and copy the
+`[tool.uv] override-dependencies` block from this repo's `pyproject.toml` into
+your own project, which steps over the stale caps and lands on the numpy 2
+stack the test suite actually runs. The bundled `Dockerfile` installs from
+`uv.lock` for the same reason. The real fix is upstream: bayesblend dropping
+`arviz<0.19` and its exact matplotlib pin.
+
 > **`[bayesian]` installs cmdstanpy, not CmdStan itself.** The Stan entries
 > compile their `model.stan` at runtime, so a CmdStan toolchain must be present.
 > Install it once with `python -m cmdstanpy.install_cmdstan` - this needs a C++

@@ -22,6 +22,9 @@ on:
       - "Dockerfile"
       - ".dockerignore"
       - ".github/workflows/docker.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "scripts/**"
 
 jobs:
   build:
@@ -66,7 +69,10 @@ jobs:
       # executable in the image - a container start pays zero toolchain cost.
       - name: Verify precompiled Stan models
         run: |
-          docker run --rm ibnr:ci python - <<'EOF'
+          # -i is what connects the heredoc below to the container's stdin.
+          # Without it `python -` reads end of file and exits cleanly having
+          # executed nothing, so this step would pass without running the check.
+          docker run --rm -i ibnr:ci python - <<'EOF'
           from pathlib import Path
 
           import ibnr
