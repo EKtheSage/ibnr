@@ -237,6 +237,60 @@ def test_sur_intercept_variant_fits(backend_name):
     assert entry.transitions_[0]["beta"].shape == (2, 2)
 
 
+@pytest.mark.parametrize("seed", [1, 9])
+@pytest.mark.parametrize("min_pts_full_cov", [None, 1])
+def test_sur_intercept_refuses_unidentified_final_step(backend_name, seed, min_pts_full_cov):
+    """A square triangle's last development transition has exactly one origin
+    pair, and the ``intercept=True`` design asks two questions of it: a free
+    constant and a slope. That is one equation for two unknowns, so the step is
+    unidentified and the entry must say so.
+
+    Before this check the two seeds took different wrong routes from the same
+    defect. Seed 9 reached ``np.linalg.inv`` on a singular 2x2 and raised
+    ``LinAlgError: Singular matrix``, which names the matrix and not the model.
+    Seed 1 rounded through, returning a coefficient covariance of order 1e15;
+    parameter risk then multiplied the predicted grand total by roughly 900,
+    with every draw finite. ``match=`` is required here rather than optional:
+    ``LinAlgError`` is itself a ``ValueError``, so a bare ``pytest.raises``
+    passes on the unfixed code.
+
+    ``min_pts_full_cov`` is parametrized because it is the knob a user would
+    reach for to change how thin a step may be. It moves the estimation ladder,
+    not identification, so it cannot buy the missing origin pair back.
+    """
+    rng = np.random.default_rng(seed)
+    # 6 origins x 6 devs: the last transition sees a single origin pair.
+    cum = simulate_cl_square(rng, n_w=6, rho=0.0, factors=np.array([1.4, 1.2, 1.1, 1.05, 1.02]))
+    n_lob, n_w, _ = cum.shape
+    lobs = {f"lob_{k}": cum[k] for k in range(n_lob)}
+    full = make_multiline_triangle(backend_name, lobs, start_year=START)
+    entry = SUR()
+    with pytest.raises(ValueError, match="unidentified"):
+        entry.fit(
+            full,
+            as_of=dt.date(START + n_w - 1, 12, 31),
+            intercept=True,
+            min_pts_full_cov=min_pts_full_cov,
+        )
+    # fit() is atomic: a refusal must leave nothing fitted behind.
+    assert entry.contract_ is None
+    assert entry.transitions_ is None
+
+
+def test_sur_intercept_accepts_exactly_identified_final_step(backend_name):
+    """The boundary the refusal above sits next to: two origin pairs for two
+    columns is exactly identified, and must still fit. One more origin than
+    development step is all it takes."""
+    rng = np.random.default_rng(9)
+    # 7 origins x 6 devs: the last transition sees two origin pairs.
+    cum = simulate_cl_square(rng, n_w=7, rho=0.0, factors=np.array([1.4, 1.2, 1.1, 1.05, 1.02]))
+    entry, _ = fit_on_upper(backend_name, cum, intercept=True)
+    assert entry.transitions_[-1]["n"] == 2
+    assert entry.transitions_[0]["beta"].shape == (2, 2)
+    pred = entry.predict(n_draws=500, seed=0)
+    assert np.isfinite(pred.samples).all()
+
+
 def test_sur_rejects_nonpositive_cumulatives(backend_name):
     """Mack's sqrt(C) variance scaling is undefined for non-positive
     cumulatives, so the entry must refuse rather than emit NaNs downstream."""

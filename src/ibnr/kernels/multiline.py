@@ -82,7 +82,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ibnr.kernels.contract import _as_date
+from ibnr.kernels.contract import _as_date, dev_step_index
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.triangle.core import GRAIN_MONTHS, Triangle
 
@@ -135,11 +135,7 @@ def multiline_data(
     # dev_lag is always MONTHS from origin start (CLAUDE.md milestone 1); the
     # grain converts it to the 1-based dev step d used by every contract here
     step = GRAIN_MONTHS[triangle.meta.dev_grain]
-    if (df["dev_lag"] % step != 0).any():
-        raise ValueError(f"dev_lag values are not multiples of the {step}-month dev grain")
-    df["d"] = (df["dev_lag"] // step).astype(int)
-    if (df["d"] < 1).any():
-        raise ValueError("dev_lag must be positive")
+    df["d"] = dev_step_index(df["dev_lag"], step=step)
     # >1 row per cell means several evaluation dates survived: the caller
     # forgot as_of()/latest_diagonal() and the grid write below would keep
     # whichever row happened to come last

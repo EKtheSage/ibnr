@@ -43,6 +43,7 @@ import pandas as pd
 from ibnr.gallery.entry import GalleryEntry, PredictsHeldout
 from ibnr.gallery.registry import register
 from ibnr.kernels.contract import odp_stan_data, realized_values
+from ibnr.kernels.densities import odp_draw
 from ibnr.kernels.holdout import CellIndex
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.kernels.rng import cohort_stream
@@ -518,7 +519,7 @@ class Clark(GalleryEntry, PredictsHeldout):
                 mu = np.maximum(levels[:, j] * ginc, 1e-12)  # (n_draws,)
                 # PROCESS RISK: od-Poisson draw X ~ phi * Poisson(mu/phi),
                 # mean mu, variance phi*mu - same process law as the ODP entries.
-                ults[:, j] += phi * rng.poisson(mu / phi)
+                ults[:, j] += odp_draw(rng, mu, phi)
 
         targets = pd.DataFrame(
             {

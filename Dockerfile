@@ -35,7 +35,19 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip install --no-cache-dir ".[bayesian]"
+# cas-schedule-p is installed HERE and is deliberately not a dependency of the
+# wheel. ibnr itself never imports it; only scripts/ does, to read the Meyers
+# company selection rule out of `cas_schedule_p.screens`, and a reserving
+# library should not pull a 17 MB wheel of one regulator's filings, about 20 MB
+# of parquet once installed, into every install. But the image's own CMD runs
+# one of those scripts, so without this line the default command of the image
+# stops at ModuleNotFoundError.
+# Pinned exactly, not floored, because the wheel carries the mart: the vintage
+# decides which companies a run selects, so a floating version would change
+# published results with no change to any code. tests/test_compute_image.py
+# holds this pin equal to uv.lock's and re-checks that every script the image
+# promises can still start on what this line installs.
+RUN pip install --no-cache-dir ".[bayesian]" "cas-schedule-p==2026.6.13"
 
 # cmdstan pinned to the version the reference results were produced with
 # (CLAUDE.md: 2.39.0 on the dev machine)

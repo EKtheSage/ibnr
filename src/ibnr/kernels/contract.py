@@ -90,6 +90,11 @@ def stan_data(
     The triangle must contain exactly one segment combination (one company x
     line); slice with ``triangle.filter`` first. Slice training data with
     ``triangle.as_of(...)`` before calling - this function uses every row.
+
+    Consecutive origins must also be one dev step apart, because ``prev_idx``
+    reads the step from one origin to the next as one elapsed development period
+    (see :func:`require_origin_axis_step`, which says what that costs the one
+    entry here that does not read ``w`` that way).
     """
     if triangle.meta.measure != "cumulative":
         raise ValueError("stan_data requires a cumulative triangle")
@@ -106,18 +111,17 @@ def stan_data(
     df["origin_period"] = _as_date(df["origin_period"])
     df["eval_date"] = _as_date(df["eval_date"])
     step = GRAIN_MONTHS[triangle.meta.dev_grain]
-    if (df["dev_lag"] % step != 0).any():
-        raise ValueError(f"dev_lag values are not multiples of the {step}-month dev grain")
+    df["d"] = dev_step_index(df["dev_lag"], step=step)
 
     origins = sorted(df["origin_period"].unique())
-    dev_steps = sorted((df["dev_lag"] // step).unique())
-    if dev_steps[0] < 1:
-        raise ValueError("dev_lag must be positive")
-    n_w, n_d = len(origins), int(dev_steps[-1])
+    # w and d are one shared calendar clock here - prev_idx links origin w-1 to
+    # origin w as one elapsed development period - so the origin axis has to step
+    # by exactly one dev step
+    require_origin_axis_step(origins, step=step)
+    n_w, n_d = len(origins), int(df["d"].max())
     w_of = {o: i + 1 for i, o in enumerate(origins)}
 
     df["w"] = df["origin_period"].map(w_of)
-    df["d"] = (df["dev_lag"] // step).astype(int)
     if df.duplicated(["w", "d"]).any():
         raise ValueError(
             "multiple rows per (origin, dev) cell; slice with as_of()/latest_diagonal() first"
@@ -255,18 +259,13 @@ def odp_stan_data(
     df["origin_period"] = _as_date(df["origin_period"])
     df["eval_date"] = _as_date(df["eval_date"])
     step = GRAIN_MONTHS[triangle.meta.dev_grain]
-    if (df["dev_lag"] % step != 0).any():
-        raise ValueError(f"dev_lag values are not multiples of the {step}-month dev grain")
+    df["d"] = dev_step_index(df["dev_lag"], step=step)
 
     origins = sorted(df["origin_period"].unique())
-    dev_steps = sorted((df["dev_lag"] // step).unique())
-    if dev_steps[0] < 1:
-        raise ValueError("dev_lag must be positive")
-    n_w, n_d = len(origins), int(dev_steps[-1])
+    n_w, n_d = len(origins), int(df["d"].max())
     w_of = {o: i + 1 for i, o in enumerate(origins)}
 
     df["w"] = df["origin_period"].map(w_of)
-    df["d"] = (df["dev_lag"] // step).astype(int)
     if df.duplicated(["w", "d"]).any():
         raise ValueError(
             "multiple rows per (origin, dev) cell; slice with as_of()/latest_diagonal() first"
@@ -362,8 +361,11 @@ def compartmental_stan_data(
     df["origin_period"] = _as_date(df["origin_period"])
     df["eval_date"] = _as_date(df["eval_date"])
     step = GRAIN_MONTHS[triangle.meta.dev_grain]
-    if (df["dev_lag"] % step != 0).any():
-        raise ValueError(f"dev_lag values are not multiples of the {step}-month dev grain")
+    # the same check runs on `wide` below, where d is actually computed; this one
+    # only moves the refusal earlier, so a triangle whose ages are off the grain
+    # boundary is named by its geometry rather than by whichever field the pivot
+    # then reports as missing on some cells
+    dev_step_index(df["dev_lag"], step=step)
 
     wide = df.pivot_table(
         index=["origin_period", "dev_lag"], columns="field", values="value", aggfunc="first"
@@ -382,13 +384,10 @@ def compartmental_stan_data(
     wide = wide.reset_index()
 
     origins = sorted(wide["origin_period"].unique())
-    dev_steps = sorted((wide["dev_lag"] // step).unique())
-    if dev_steps[0] < 1:
-        raise ValueError("dev_lag must be positive")
-    n_w, n_d = len(origins), int(dev_steps[-1])
+    wide["d"] = dev_step_index(wide["dev_lag"], step=step)
+    n_w, n_d = len(origins), int(wide["d"].max())
     w_of = {o: i + 1 for i, o in enumerate(origins)}
     wide["w"] = wide["origin_period"].map(w_of)
-    wide["d"] = (wide["dev_lag"] // step).astype(int)
     wide = wide.sort_values(["w", "d"]).reset_index(drop=True)
 
     # the paid anchors (and the lognormal variant's incremental differencing)
@@ -583,12 +582,7 @@ def cohort_grid_frame(
     # loop, so per-row pandas iteration here would put the loop's cost right
     # back after the engine round-trips were removed.
     step = dev_grain_months
-    dev = df["dev_lag"].to_numpy(dtype=np.int64)
-    if (dev % step != 0).any():
-        raise ValueError(f"dev_lag values are not multiples of the {step}-month dev grain")
-    d = dev // step
-    if (d < 1).any():
-        raise ValueError("dev_lag must be positive")
+    d = dev_step_index(df["dev_lag"], step=step)
     w_idx, origin_arr = pd.factorize(_as_date(df["origin_period"]), sort=True)
     origins = list(origin_arr)
     n_w, n_d = len(origins), int(d.max())
@@ -665,3 +659,125 @@ def _as_date(series):
     if str(series.dtype).startswith("datetime64"):
         return series.dt.date
     return series
+
+
+def dev_step_index(dev_lag, *, step: int) -> np.ndarray:
+    """The 1-based dev step index ``d = dev_lag // step``, or a refusal by name.
+
+    Every contract in this package - the three Stan ones, the dense cohort grid,
+    the multi-LOB grid and the neural grids - stores a cell at dev index
+    ``dev_lag // step`` and reads dev step 1 as the first development period.
+    Two things break that division and both used to be checked separately in six
+    places, in six copies of two lines:
+
+    * an age that is not a whole number of dev steps. Floor division does not
+      refuse it, it moves it: on a 12-month grain, ages 3, 15, 27 land on steps 0,
+      1, 2 rather than 1, 2, 3, so every origin reads one development period
+      younger than it is and the first cell falls off the grid entirely. Those
+      exact ages are what chainladder's latest-diagonal anchoring produces, and
+      what our own ``with_dev_grain`` produces to match it, whenever the latest
+      valuation is a March 31 - so this is a shape the triangle layer emits, not
+      one only bad input can reach. It is a coherent triangle (``validate``
+      accepts it: every age shares one offset) and it is not a grid these
+      contracts can index, which is why the refusal is here and not there.
+    * a non-positive age. ``dev_lag`` counts months from the origin period start,
+      so the first cell of a 12-month grain is at 12; a zero or negative age would
+      index step 0 or below.
+
+    The sign is tested first, because ``%`` here follows Python's sign rule: an
+    age of -3 leaves a remainder of 9 against a 12-month grain, so testing the
+    offset first would report a negative age as an anchoring problem and the
+    positivity message could never be reached for it.
+
+    Returns an ``int64`` array aligned with the input, so a caller can assign it
+    straight into its frame.
+    """
+    months = np.asarray(dev_lag, dtype=np.int64)
+    non_positive = months <= 0
+    if non_positive.any():
+        ages = sorted({int(a) for a in np.unique(months[non_positive])})
+        raise ValueError(
+            f"dev_lag must be positive, got {ages[:5]}; dev_lag is months from the origin "
+            f"period start, so the first cell of a {step}-month dev grain is at {step}"
+        )
+    offsets = months % step
+    off_grain = offsets != 0
+    if off_grain.any():
+        ages = sorted({int(a) for a in np.unique(months[off_grain])})
+        found = sorted({int(o) for o in np.unique(offsets)})
+        raise ValueError(
+            f"{int(off_grain.sum())} dev_lag value(s) are not on a {step}-month grain "
+            f"boundary: ages {ages[:5]} leave offsets {found} against the declared dev "
+            f"grain. Every contract indexes a cell by d = dev_lag // {step}, so an age off "
+            "the boundary is floored onto the step below it and the whole triangle reads "
+            "one development period younger. This is what chainladder's latest-diagonal "
+            "anchoring produces: a March 31 valuation regrained to an annual dev grain "
+            "gives ages 3, 15, 27 rather than 12, 24, 36. Slice with as_of() to a "
+            "valuation on a grain boundary before with_dev_grain(), or keep the finer dev "
+            "grain."
+        )
+    return months // step
+
+
+def _months_between(a: dt.date, b: dt.date) -> int:
+    return (b.year - a.year) * 12 + b.month - a.month
+
+
+def require_origin_axis_step(origins: list[dt.date], *, step: int) -> None:
+    """Refuse an origin axis whose consecutive periods are not one dev step apart.
+
+    ``stan_data`` and ``nn_data`` both index a cell by a pair of integers, origin
+    index ``w`` and dev step ``d``, and both then read those two as one shared
+    calendar clock. In ``nn_data`` it is explicit: ``cal_idx = w + d + 1`` is the
+    diagonal number that the validation split, the cutoff augmentation and the
+    held-out cutoff all slice on, standing in for the evaluation date. In
+    ``stan_data`` it is the step from one origin to the next, which ``prev_idx``
+    links as one elapsed development period.
+
+    Both readings hold only while one origin step equals one dev step. Two
+    geometries break it, and neither one is malformed data:
+
+    * an origin axis with a hole in it (accident years 2010, 2012, 2013), where the
+      index advances one step over two calendar years;
+    * annual origins on a quarterly dev grain, where each row of the grid sits four
+      diagonals below the row above it but one ``cal_idx`` apart.
+
+    Measured on the first: three cells whose real evaluation date is 2013-12-31 are
+    given cal_idx 4, 3 and 3, so the validation split holds one of them out and
+    trains on the other two - it trains on the diagonal it is scored on. Nothing
+    raises, and nothing about the result looks wrong.
+
+    What is asked for is one origin step per dev step, not an annual grain: a
+    quarterly origin axis on a quarterly dev grain is accepted, and so is a
+    monthly one on a monthly grain.
+
+    The axis checked here is the POOLED one, the union of origins over every
+    cohort, so one cohort that skips an accident year its neighbours carry is
+    unaffected: it keeps its row on the shared axis and is simply masked out.
+
+    One consumer is caught by sharing a door rather than by its own reading of
+    ``w``. ``stan_data`` is used by three gallery entries: ``meyers_ccl`` and
+    ``meyers_csr`` read ``w`` as a clock, and ``guszcza_growth_curve`` does not,
+    using it only to index ``ulr[w]`` and ``premium[w-1]``, exactly as
+    ``odp_stan_data`` and ``compartmental_stan_data`` use theirs (which is why
+    those two are NOT checked). So Guszcza will refuse a gapped origin axis it
+    could in principle fit. That is a deliberate cost of putting the check on the
+    shared contract rather than in two model files, and it is written down here so
+    it can be revisited rather than discovered.
+    """
+    pairs = list(zip(origins[:-1], origins[1:], strict=True))
+    bad = [(a, b, _months_between(a, b)) for a, b in pairs if _months_between(a, b) != step]
+    if not bad:
+        return
+    a, b, gap = bad[0]
+    raise ValueError(
+        f"the origin axis is not spaced one dev step apart: {a} to {b} is {gap} months "
+        f"against a {step}-month dev grain ({len(bad)} of {len(pairs)} origin steps). The "
+        "origin index w and the dev index d are read as one shared calendar clock: the "
+        "neural contract's cal_idx = w + d + 1 is the evaluation date that the validation "
+        "split, the cutoff augmentation and the held-out cutoff all slice on, and the "
+        "cross-classified models step from one origin to the next as one elapsed "
+        "development period. Neither is calendar time when one origin step is not one dev "
+        "step. Restrict the triangle to a contiguous run of origins, or bring the dev "
+        "grain to the origin step with with_dev_grain()."
+    )

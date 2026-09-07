@@ -324,6 +324,18 @@ the backtest window with `as_of=` before fitting.
 
 - **Volume-weighted only**, and **no tail factor**. Both are restrictions of
   the underlying formulas, not of the implementation.
+- **Annual development grain only, for the one-year claims development result.**
+  `one_year_cdr()` and `cdr_distribution()` advance the triangle by exactly one
+  development step and call the answer a one-year figure, which is true only
+  when a step is twelve months. A quarterly or a monthly fit is refused by name:
+  the arithmetic would be right for one step, but that step is three months or
+  one rather than the twelve the name promises, and nothing in the output would
+  show it. Aggregate the triangle to an annual grain first, from a year-end
+  valuation, because the annual buckets are anchored to the latest diagonal and
+  a mid-year one gives development lags the annual grain rejects. Or read
+  `msep_runoff()`, which does not depend on the grain. The point estimate,
+  `summary()` and `predict()` are unaffected, because a full run-off never asks
+  how long one step is.
 - **Positivity is required unevenly**, and the fit says where. Mack's variance
   is proportional to `C`, so a zero cumulative carries no conditional variance -
   but the volume-weighted *factor* divides only by the column total. So a zero
