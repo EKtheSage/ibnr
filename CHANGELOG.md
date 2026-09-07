@@ -15,9 +15,92 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
-## Unreleased
+## 0.5.9 - 2026-09-06
 
-### A missing outcome or a missing draw gives a missing percentile, not 0
+Every fix from the 2026-09-04 external review of 0.5.8 (ten PRs, #107-#116),
+led by an install repair: a fresh `pip install ibnr` of 0.5.8 resolves sqlglot
+30.18.0, which breaks `Triangle.from_long` from any in-memory frame on the
+default duckdb backend. Upgrading to this release is the fix; a user staying on
+0.5.8 or earlier must pin `sqlglot<30.18` beside ibnr themselves. Details in
+the first entry below.
+
+Most of the other fixes replace a silently wrong answer with a refusal, so
+inputs 0.5.8 accepted now raise:
+
+- a one-year CDR on a quarterly or monthly development grain, at
+  `one_year_cdr`, `simulate_one_year_cdr` and `rereserve` (#108);
+- a pooled origin axis whose step is not one development step - a gapped
+  accident-year axis, or annual origins on a quarterly dev grain - at the data
+  contracts serving `meyers_ccl`, `meyers_csr`, `guszcza_growth_curve` and the
+  NN entries (#115);
+- a row whose `eval_date` and `dev_lag` disagree, restated history included,
+  at `change_origin_grain`, `to_chainladder` and `to_bermuda`, until the
+  triangle is sliced to a single view (#112);
+- a bermuda object whose evaluation-date resolution no dev grain of ours can
+  represent, at `from_bermuda` (#115);
+- an unidentified design: `sur` on a transition with fewer origin pairs than
+  design columns, `copula_glm` on a design that is rank-deficient after
+  exclusions (#110) - on the pinned mart this refuses two `reported_loss`
+  cohorts that previously fitted, and nothing on the published `paid_loss`
+  rows;
+- a parity request naming a variable any posterior lacks, an element shape
+  differing from the reference, a non-finite draw, a dimension-labelled
+  posterior, an empty request, or two unequal point masses (#113);
+- a stacking solve scipy reports unsuccessful, and a `+inf` pointwise ELPD
+  (#111);
+- a non-finite or negative mean, or a negative or non-finite dispersion, at
+  the shared over-dispersed Poisson draw (#114).
+
+Two changes move numbers rather than raise. A missing outcome or a missing
+draw now gives a missing percentile instead of 0.0 (#107) - one published
+compartmental figure is re-read, see that entry. Draws whose Poisson rate
+exceeds numpy's own cap come back as a point mass at the mean (#114) - every
+ordinary seeded fit is byte for byte unchanged. And the validator moves in the
+opposite direction from the kernels: it now accepts consistently anchored dev
+ages it used to reject wholesale, while the kernel doors refuse them by name
+(#115).
+
+Numbered 0.5.9 rather than 0.6.0 because every refusal above replaces an
+answer that was already wrong, which is this changelog's practice for
+corrections (0.5.1's refusals, 0.5.7's draw change).
+
+What this release does not fix is now tracked rather than remembered: the
+follow-up backlog is filed as issues #118-#129. The two that can still put a
+misleading number in front of a user: `to_wide` and the incremental dev
+regrain still silently sum a restated cell into the value it replaced (#118,
+the one silent-summation route left after #112), and the Bayesian entries'
+`convergence()` summaries still drop a requested parameter the fit does not
+carry (#119). Also open: no true twelve-month CDR on sub-annual grains (#125 -
+refused, not answered), no export route that carries restated history (#124),
+and the published leaderboard and compartmental retrospective are not yet
+rerun on the current draw paths (#129).
+
+### `pip install ibnr` works again: sqlglot capped below 30.18 (#116)
+
+sqlglot 30.18.0 (2026-09-03; tobymao/sqlglot#8229, listed under BREAKING
+CHANGES in its changelog) renamed the `Drop` expression's `this` argument to
+`tables`. ibis 12.0.0 still passes `this=`, so the SQL it renders to drop a
+memtable view loses the view's name and duckdb answers `Parser Error: syntax
+error at end of input`. ibis's duckdb `create_table` takes that path for every
+in-memory frame it is handed - register the frame as a view, insert from it,
+drop the view - and that is the one call `Triangle.from_long` makes to ingest
+a pandas, polars or pyarrow frame. So on any fresh install resolving today's
+sqlglot, every `from_long` from an in-memory frame on the default duckdb
+backend died at ingestion. Parquet paths, ibis expressions (`load_schedule_p`
+included) and the polars backend were unaffected.
+
+The core dependencies now carry `sqlglot<30.18`: a cap on a transitive
+dependency, and a temporary one. It lifts only together with an ibis floor
+carrying the upstream fix (proposed in ibis-project/ibis#12104), because the
+rename is deliberate, so a later sqlglot will not restore the old argument -
+which is also why `!=30.18.0` would be the wrong shape. The cap went into the
+package metadata rather than into CI's install lines because a CI-only pin
+would have greened the build while leaving `pip install ibnr` broken - the one
+thing the unpinned CI legs exist to catch. `tests/test_sqlglot_cap.py` names
+the cause through the public ingestion path if the cap is ever lifted before
+that ibis floor exists.
+
+### A missing outcome or a missing draw gives a missing percentile, not 0 (#107)
 
 `PredictiveDistribution.cdf` counted the draws at or below the outcome and
 returned that fraction. Every comparison against NaN is False, so a target whose
@@ -53,7 +136,7 @@ which would now also count such a row; it counts fits that raised instead, and
 reports `missing_outcome` and `missing_draws` beside it, so a row that leaves
 the test is never invisible.
 
-### Stacking weights survive deep log densities, and an unconverged solve is refused
+### Stacking weights survive deep log densities, and an unconverged solve is refused (#111)
 
 `MleStacking`, the default stacking method, does its arithmetic in linear
 space: it exponentiates the pointwise ELPD and hands SLSQP the Jacobian
@@ -79,7 +162,7 @@ also reads the scipy result bayesblend stores and refuses an unsuccessful
 solve by name, with its status and message, and a `+inf` pointwise ELPD is
 refused where it arrives instead of reaching the solve as a NaN objective.
 
-### The parity comparison covers every requested parameter, and a point mass is no longer free agreement
+### The parity comparison covers every requested parameter, and a point mass is no longer free agreement (#113)
 
 `kernels.parity.compare_posteriors` used to drop any requested variable a
 posterior did not carry and then report a pass over the rows that were left, and
@@ -100,7 +183,7 @@ crashed inside `int()` and an out-of-range integer form read the wrong element.
 Every ordinary row keeps the identical formula, so no published parity number
 moves.
 
-### The compute image installs the data package its own default command needs
+### The compute image installs the data package its own default command needs (#109)
 
 The Dockerfile installed `.[bayesian]` and nothing else, so the image's own
 `CMD`, `python scripts/meyers_validation.py --help`, would stop at
@@ -122,7 +205,7 @@ in those scripts at any nesting depth. Nothing in it can skip. It stands in for
 building the image, which no machine here can do, and it is exact for the
 failure that mattered.
 
-### `sur` and `copula_glm` refuse designs the data cannot pin down
+### `sur` and `copula_glm` refuse designs the data cannot pin down (#110)
 
 Both frequentist dependence entries could return a fit whose coefficients the
 usable cells never determined. `sur` with `intercept=True` fits a two-column
@@ -153,7 +236,7 @@ so no published result changes. `sur` is unaffected on the mart because the
 retrospective runs its `intercept=False` default, where the design has one column
 and the pre-existing no-origin-pair refusal already covers it.
 
-### One shared over-dispersed Poisson draw, with numpy's real rate cap
+### One shared over-dispersed Poisson draw, with numpy's real rate cap (#114)
 
 The three ODP gallery entries (`clark`, `clark_growth_curve`,
 `england_verrall_odp`) each wrote `phi * rng.poisson(mu / phi)` in two places,
@@ -198,7 +281,7 @@ lags the annual grain rejects; or read the run-off uncertainty from
 entry's `one_year_cdr()` and `cdr_distribution()` inherit the refusal. Annual
 triangles are untouched, the MW2014 tie-out against R included.
 
-### An origin axis that is not one dev step apart is refused by name
+### An origin axis that is not one dev step apart is refused by name (#115)
 
 `nn_data`'s calendar index `cal_idx = w + d + 1` and `stan_data`'s `prev_idx`
 both read the origin index and the dev index as one shared clock, which they are
@@ -235,7 +318,7 @@ raw `KeyError` from the premium lookup and 3 on "no usable cohorts". Fitting the
 whole sample at once is unaffected, because the pooled axis is then 1988 to 1997
 with no hole.
 
-### Anchored dev ages validate, and are refused by name at the kernel doors
+### Anchored dev ages validate, and are refused by name at the kernel doors (#115)
 
 `with_dev_grain('Y')` on a triangle whose latest valuation is a March 31 gives
 dev ages 3, 15, 27, matching chainladder's `grain('OYDY')` exactly, which is what
@@ -272,7 +355,7 @@ restoring the wrong label. One limit of the round trip is now written down: berm
 carries cells, not declarations, so a triangle declared quarterly that holds only
 annual diagonals comes back annual.
 
-### Origin regrain and the two exports refuse a misaligned eval_date
+### Origin regrain and the two exports refuse a misaligned eval_date (#112)
 
 `change_origin_grain`, `to_chainladder` and `to_bermuda` all work out a row's
 development from its `eval_date` and drop the stored `dev_lag`. A row where the

@@ -1,6 +1,6 @@
 [project]
 name = "ibnr"
-version = "0.5.8"
+version = "0.5.9"
 description = "Gallery-centric probabilistic loss reserving: Bayesian MCMC and neural network methods with mandatory evaluation, over a long-format triangle data layer."
 readme = "README.md"
 license = "MPL-2.0"
@@ -84,8 +84,9 @@ dependencies = [
     # bring `this` back, which is also why `!=30.18.0` is the wrong shape. The
     # cap lives here rather than in the -latest CI legs' install line because
     # a CI-only pin would green the leg while leaving `pip install ibnr`
-    # broken - the one thing those legs exist to catch. It reaches consumers
-    # only with the next release; 0.5.8 on PyPI carries no cap.
+    # broken - the one thing those legs exist to catch. First shipped in 0.5.9;
+    # 0.5.8 and earlier on PyPI carry no cap, so users there must pin
+    # sqlglot<30.18 themselves.
     # tests/test_sqlglot_cap.py names the cause through the public ingestion
     # path if the cap is lifted early.
     "sqlglot<30.18",
