@@ -264,6 +264,14 @@ jobs:
           # the only module that imports it directly - so a codec that quietly
           # grew an optional import would otherwise pass this leg by collapsing
           # to a single collection skip.
+          #
+          # tests/test_compute_image.py is named for the mirror-image reason. It
+          # checks that the packages the Dockerfile installs are enough to start
+          # the scripts the image promises, and it does that by REFUSING every
+          # module outside that set - so it needs no extra installed and belongs
+          # on the lightest leg. It cannot skip, which means the only way it can
+          # go quiet is by being renamed or deleted, and that is exactly what
+          # required_files sees.
           - name: core
             python: "3.12"
             cache: "false"
@@ -273,7 +281,7 @@ jobs:
             forbid_skips: ""
             allow_skips: ""
             strict_skips: "false"
-            required_files: "tests/test_core.py;tests/test_transforms.py;tests/test_gallery.py;tests/test_markdown_snippets.py;tests/test_import_purity.py;tests/test_codec.py"
+            required_files: "tests/test_core.py;tests/test_transforms.py;tests/test_gallery.py;tests/test_markdown_snippets.py;tests/test_import_purity.py;tests/test_codec.py;tests/test_compute_image.py"
             # Re-measured on the codec-hardening branch: 648 passed, 208
             # skipped, on the locked numpy 2.4.6 / pandas 2.3.3, of which
             # tests/test_codec.py is 78 executed and 10 skipped (its polars
