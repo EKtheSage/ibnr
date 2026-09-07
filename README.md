@@ -126,7 +126,7 @@ one `value`:
 |---|---|---|
 | `origin_period` | date | first day of the accident/underwriting period |
 | `dev_lag` | int | **months from the origin period's start**, counting the valuation month itself - so the first annual diagonal is 12, not 0 |
-| `eval_date` | date | last day of the month the cell was valued at; a stored column, not derived, because `as_of()` backtesting slices on it |
+| `eval_date` | date | last day of the month the cell was valued at; a stored column, not derived, because `as_of()` backtesting slices on it. It should still be the month `origin_period + dev_lag` lands in: `validate()` reports a row where the two disagree, and a coarsening `with_origin_grain()`, `to_chainladder()` and `to_bermuda()` refuse one, because each of those derives development from `eval_date` alone (asking for the grain the triangle already has changes nothing and so refuses nothing). A cell restated at a later `eval_date` is such a row: slice it away with `latest_diagonal()`, or an `as_of()` before the restatement, and those three work again |
 | `field` | str | which measure the row carries: `paid_loss`, `reported_loss`, `earned_premium`, ... |
 | `value` | float | the number |
 | anything else | | a **segment**: the cohort key (`lob`, `company`, ...) |

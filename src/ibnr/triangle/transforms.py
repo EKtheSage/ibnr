@@ -10,6 +10,16 @@ assumed to hold at most one row per cell per eval_date; cum<->incr conversions
 additionally assume one row per cell (slice with as_of()/latest_diagonal()
 first if the table holds restated history).
 
+``change_origin_grain`` needs something else again, and checks it rather than
+assuming it: eval_date must sit in the last month of origin_period + dev_lag on
+every row, because the coarsened dev_lag is derived from eval_date and the
+stored one is dropped. A row where the two disagree lands in a different cell
+and is added to whatever is already there, so it is refused (see
+``validate.require_eval_alignment``). Slicing is a partial answer only: as_of()
+and latest_diagonal() pick a stored observation without changing its eval_date,
+so they cannot align such a row, but they do drop a restated one, which is the
+common way a triangle acquires one.
+
 Every join below is a plain equi-join on those keys, which is only safe because
 segment values are guaranteed non-null: SQL join equality is false for
 NULL = NULL, so one null segment value would silently delete a whole cohort
@@ -26,6 +36,7 @@ import ibis
 from ibis import _
 
 from ibnr.triangle.core import GRAIN_MONTHS, Triangle, implied_dev_lag
+from ibnr.triangle.validate import require_eval_alignment
 
 ORIGIN_TRUNC_UNIT = {"Y": "Y", "Q": "Q", "M": "M"}
 
@@ -155,8 +166,30 @@ def change_origin_grain(t: Triangle, grain: str) -> Triangle:
     Cells are aligned on eval_date: origins within the same coarser period are
     summed at each eval_date, and dev_lag is recomputed from the new origin
     start to the eval date. Valid for both cumulative and incremental triangles.
+
+    Asking for the grain the triangle already has returns the same object, as
+    ``change_dev_grain`` does. Nothing is recomputed, so nothing can move.
+
+    A real coarsening reads eval_date as the whole truth about a row's
+    development, because it derives the new dev_lag from it and drops the stored
+    one. A row where the two disagree would be summed into whichever cell its
+    eval_date names, which is a wrong number rather than a missing one, so such
+    rows are refused by name before any of that happens. Restated history is
+    refused too, because a restatement keeps its dev_lag and takes a later
+    eval_date; there the answer is to slice it away with ``latest_diagonal()`` or
+    an ``as_of()`` before the restatement, which the refusal says.
     """
-    _grain_step(t.meta.origin_grain, grain, "origin")
+    if _grain_step(t.meta.origin_grain, grain, "origin") == 1:
+        return t
+    require_eval_alignment(
+        t,
+        operation="with_origin_grain()",
+        reason=(
+            "Coarsening sums the origins inside each new period at each eval_date and "
+            "derives the new dev_lag from that eval_date, so a row whose stored dev_lag "
+            "says something else is added into a different cell."
+        ),
+    )
     e = t.expr
     new_origin = e.origin_period.truncate(ORIGIN_TRUNC_UNIT[grain])
     e = e.mutate(origin_period=new_origin)
