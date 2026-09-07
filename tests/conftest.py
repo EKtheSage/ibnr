@@ -24,6 +24,7 @@ import pandas as pd
 import pytest
 
 from ibnr import Triangle
+from ibnr.triangle.core import GRAIN_MONTHS
 
 
 def _polars_available() -> bool:
@@ -85,6 +86,12 @@ def small_cumulative(backend_name) -> Triangle:
     return Triangle.from_long(df, measure="cumulative", backend=backend_name)
 
 
+def _add_months(day: dt.date, months: int) -> dt.date:
+    """First day of the month ``months`` after the month ``day`` sits in."""
+    total = day.month - 1 + months
+    return dt.date(day.year + total // 12, total % 12 + 1, 1)
+
+
 def make_cohort_triangle(
     backend_name: str | None,
     cum: np.ndarray,
@@ -92,6 +99,7 @@ def make_cohort_triangle(
     start_year: int = 2010,
     loss_field: str = "paid_loss",
     segment: dict[str, str] | None = None,
+    dev_grain: str = "Y",
 ) -> Triangle:
     """Single-cohort cumulative triangle from one ``(n_w, n_d)`` matrix.
 
@@ -102,24 +110,37 @@ def make_cohort_triangle(
     ``start_year + i``, dev index ``j`` = dev_lag ``12*(j+1)`` months, eval date
     = Dec 31 of ``start_year + i + j``. ``segment`` adds constant segment
     columns, which is how the "one cohort only" guards get exercised.
+
+    ``dev_grain`` is ``"Y"``, ``"Q"`` or ``"M"`` and moves BOTH grains together,
+    so the triangle stays a run-off staircase. With a step of ``n`` months,
+    origin ``i`` starts ``n*i`` months after Jan 1 of ``start_year``, dev index
+    ``j`` is dev_lag ``n*(j+1)`` months, and the eval date is the last day of
+    the month that lands in. The default reproduces the annual rows exactly, a
+    row-by-row comparison ``tests/test_cdr.py`` asserts; the other two grains
+    exist so a test can build the triangle the one-year CDR now refuses.
     """
+    step = GRAIN_MONTHS[dev_grain]
     rows = []
     n_w, n_d = cum.shape
     for i in range(n_w):
+        origin = _add_months(dt.date(start_year, 1, 1), step * i)
         for j in range(n_d):
             if np.isnan(cum[i, j]):
                 continue
+            lag = step * (j + 1)
             row = {
-                "origin_period": dt.date(start_year + i, 1, 1),
-                "dev_lag": 12 * (j + 1),
-                "eval_date": dt.date(start_year + i + j, 12, 31),
+                "origin_period": origin,
+                "dev_lag": lag,
+                "eval_date": _add_months(origin, lag) - dt.timedelta(days=1),
                 "field": loss_field,
                 "value": float(cum[i, j]),
             }
             rows.append({**(segment or {}), **row})
     df = pd.DataFrame(rows)
     kwargs = {} if backend_name is None else {"backend": backend_name}
-    return Triangle.from_long(df, measure="cumulative", **kwargs)
+    return Triangle.from_long(
+        df, measure="cumulative", origin_grain=dev_grain, dev_grain=dev_grain, **kwargs
+    )
 
 
 def make_multiline_triangle(
