@@ -303,16 +303,20 @@ def test_the_stan_defaults_are_declared_in_the_program(name, variant):
     A tripwire rather than a proof, and deliberately the weakest test here: it
     reads the program text because compiling one needs cmdstan, which the fast
     suite does not have. It catches the case worth catching - a parameter
-    renamed in the Stan file and not in the mapping - and cannot see a name
-    that only appears in a comment.
+    renamed in the Stan file and not in the mapping.
+
+    The name has to be followed by ``;``, ``=`` or ``[``, i.e. sit where Stan
+    declares something, rather than merely appear somewhere. Bare word matching
+    is close to vacuous for ODP, whose intercept is called ``c`` and would be
+    vouched for by any stray letter in the file; comments are stripped first for
+    the same reason.
     """
     mod = _module(name)
     stan_file = mod.STAN_FILE if variant is None else mod.STAN_FILES[variant]
     source = stan_file.read_text(encoding="utf-8")
-    # strip line comments so a name mentioned only in prose cannot vouch for itself
     code = re.sub(r"//[^\n]*", "", source)
     missing = [
-        n for n in _for(name, variant)["stan"] if not re.search(rf"\b{re.escape(n)}\b", code)
+        n for n in _for(name, variant)["stan"] if not re.search(rf"\b{re.escape(n)}\s*[;=\[]", code)
     ]
     assert not missing, f"{name}/{variant} declares {missing}, absent from {stan_file.name}"
 
