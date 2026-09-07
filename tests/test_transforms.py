@@ -298,6 +298,266 @@ def test_origin_grain_takes_restated_history_once_it_is_sliced(backend_name):
         t.as_of("2021-12-31").with_origin_grain("Y")
 
 
+def _restated_wide_triangle(backend_name) -> Triangle:
+    """The issue's first fixture: one cell booked at 100 and restated to 95 a year
+    later, which ``to_wide`` used to display as a single cell of 195."""
+    rows = [
+        ("2020-01-01", 12, "2020-12-31", 100.0),
+        ("2020-01-01", 12, "2021-12-31", 95.0),  # the same cell, restated
+    ]
+    return Triangle.from_long(_origin_grain_frame(rows), measure="cumulative", backend=backend_name)
+
+
+def test_to_wide_refuses_a_cell_stored_twice(backend_name):
+    """The square has one axis fewer than the triangle, so the pivot adds up
+    everything stored at a cell - including a restatement and the value it
+    replaced. 100 booked and 95 restated came out as one cell of 195 on both
+    backends, a plausible number with nothing raised.
+
+    The refusal is read past its first phrase, for the reason the origin-grain
+    tests give: ``operation`` and ``reason`` are arguments the caller passes in,
+    so a pattern anchored only on the shared count could not tell whether either
+    arrived. This one reaches the operation's own name, a phrase only this
+    caller's reason carries, and the restated route with the slice it names.
+    """
+    t = _restated_wide_triangle(backend_name)
+    pattern = (
+        r"1 cells are stored more than once.*to_wide\(\).*"
+        r"adds every stored observation of a cell into one square.*"
+        r"multiple eval_dates \(restated history\).*latest_diagonal\(\)"
+    )
+    with pytest.raises(ValueError, match=pattern):
+        t.to_wide()
+
+
+def test_to_wide_takes_a_restated_cell_once_it_is_sliced(backend_name):
+    """The way out the refusal names, end to end: each slice leaves one view, and
+    every one of them displays a value the triangle actually stored.
+
+    195 is not one of them, which is the whole point - the three answers here are
+    the two booked values, picked by which date the caller asked about.
+    """
+    t = _restated_wide_triangle(backend_name)
+    with pytest.raises(ValueError, match="stored more than once"):
+        t.to_wide()
+    assert t.as_of("2020-12-31").to_wide().to_numpy().tolist() == [[100.0]]
+    assert t.as_of("2021-12-31").to_wide().to_numpy().tolist() == [[95.0]]
+    assert t.latest_diagonal().to_wide().to_numpy().tolist() == [[95.0]]
+
+
+def test_to_wide_tells_a_duplicated_source_row_from_a_restatement(backend_name):
+    """The second way a cell gets stored twice is the same eval_date twice, and it
+    needs the other half of the message: slicing does not resolve it.
+
+    ``as_of`` and ``latest_diagonal`` choose an eval_date and keep every row
+    carrying it, so both still hand the pivot two rows - measured, 200 where the
+    row says 100. Telling that caller to slice would send them round a loop, so
+    the refusal sends them to the source data instead, and says nothing about
+    restatement.
+    """
+    rows = [
+        ("2020-01-01", 12, "2020-12-31", 100.0),
+        ("2020-01-01", 12, "2020-12-31", 100.0),  # the same row twice, not a restatement
+    ]
+    t = Triangle.from_long(_origin_grain_frame(rows), measure="cumulative", backend=backend_name)
+    pattern = (
+        r"1 cells are stored more than once.*to_wide\(\).*"
+        r"adds every stored observation of a cell into one square.*"
+        r"1 duplicated \(segment, field, origin, dev_lag, eval_date\) cells.*"
+        r"slicing cannot resolve.*source data"
+    )
+    with pytest.raises(ValueError, match=pattern) as excinfo:
+        t.to_wide()
+    assert "restated history" not in str(excinfo.value)
+    # and the claim the message makes about slicing is true, so the caller is not
+    # sent round a loop: both slices still carry the pair.
+    with pytest.raises(ValueError, match="duplicated"):
+        t.as_of("2020-12-31").to_wide()
+    with pytest.raises(ValueError, match="duplicated"):
+        t.latest_diagonal().to_wide()
+
+
+def test_to_wide_names_both_routes_when_both_are_present(backend_name):
+    """A triangle can hold both states at once, and then the message has to carry
+    both ways out with the count each one accounts for - one message that told
+    this caller only about slicing would leave the duplicate behind after they
+    sliced."""
+    rows = [
+        ("2020-01-01", 12, "2020-12-31", 100.0),
+        ("2020-01-01", 12, "2021-12-31", 95.0),  # restated
+        ("2020-01-01", 24, "2021-12-31", 150.0),
+        ("2020-01-01", 24, "2021-12-31", 150.0),  # duplicated
+    ]
+    t = Triangle.from_long(_origin_grain_frame(rows), measure="cumulative", backend=backend_name)
+    pattern = (
+        r"2 cells are stored more than once.*"
+        r"1 cells observed at multiple eval_dates \(restated history\).*latest_diagonal\(\).*"
+        r"1 duplicated \(segment, field, origin, dev_lag, eval_date\) cells.*source data"
+    )
+    with pytest.raises(ValueError, match=pattern):
+        t.to_wide()
+
+
+def test_to_wide_checks_the_field_it_pivots_and_not_the_others(backend_name):
+    """Restated premium is no reason to refuse to display paid loss.
+
+    ``to_wide`` selects one field and then pivots, so the check belongs on the
+    selection: a triangle carrying the mart's several fields would otherwise be
+    undisplayable because one of them is restated on its own schedule.
+    """
+    loss = _origin_grain_frame([("2020-01-01", 12, "2020-12-31", 100.0)])
+    premium = _origin_grain_frame(
+        [
+            ("2020-01-01", 12, "2020-12-31", 700.0),
+            ("2020-01-01", 12, "2021-12-31", 720.0),  # premium restated on its own
+        ]
+    ).assign(field="earned_premium")
+    t = Triangle.from_long(
+        pd.concat([loss, premium], ignore_index=True),
+        measure="cumulative",
+        backend=backend_name,
+    )
+    assert t.to_wide("paid_loss").to_numpy().tolist() == [[100.0]]
+    with pytest.raises(ValueError, match="stored more than once"):
+        t.to_wide("earned_premium")
+
+
+def test_to_wide_still_adds_the_segments_up(backend_name):
+    """The other sum the pivot performs is deliberate and is left alone.
+
+    The square has no segment axis either, so two lines display as their total.
+    The new check keys on the segment columns, exactly as a cell's identity does,
+    so it says nothing about that - which is worth pinning, because a check that
+    dropped the segments from its key would refuse every multi-line triangle and
+    look like the same fix.
+    """
+    df = _origin_grain_frame(
+        [
+            ("2020-01-01", 12, "2020-12-31", 100.0),
+            ("2020-01-01", 12, "2020-12-31", 95.0),
+        ]
+    ).assign(lob=["auto", "home"])
+    t = Triangle.from_long(df, measure="cumulative", segments=["lob"], backend=backend_name)
+    assert t.to_wide().to_numpy().tolist() == [[195.0]]
+
+
+def _restated_bucket_triangle(backend_name, measure: str) -> Triangle:
+    """The issue's second fixture: one annual bucket of quarterly cells whose
+    dev-3 observation was restated three months after it was first booked.
+
+    Incremental, the four cells as they now stand are worth 105 and the bucket
+    sum answered 125, because the superseded 20 was added beside the 30 that
+    replaced it. Cumulative, the same shape one step further out: the dev-3 cell
+    is restated exactly one bucket later, so the original and the restatement
+    both land on a bucket boundary and both survive the filter.
+    """
+    if measure == "incremental":
+        rows = [
+            ("2020-01-01", 3, "2020-03-31", 20.0),
+            ("2020-01-01", 3, "2020-06-30", 30.0),  # the 20 above, restated
+            ("2020-01-01", 6, "2020-06-30", 30.0),
+            ("2020-01-01", 9, "2020-09-30", 25.0),
+            ("2020-01-01", 12, "2020-12-31", 20.0),
+        ]
+    else:
+        rows = [
+            ("2020-01-01", 3, "2020-03-31", 20.0),
+            ("2020-01-01", 6, "2020-06-30", 50.0),
+            ("2020-01-01", 9, "2020-09-30", 75.0),
+            ("2020-01-01", 12, "2020-12-31", 95.0),
+            ("2020-01-01", 15, "2021-03-31", 110.0),
+            ("2020-01-01", 3, "2021-03-31", 25.0),  # the 20 above, restated a year later
+        ]
+    return Triangle.from_long(
+        _origin_grain_frame(rows),
+        measure=measure,
+        origin_grain="Y",
+        dev_grain="Q",
+        backend=backend_name,
+    )
+
+
+def test_dev_grain_refuses_a_restated_increment(backend_name):
+    """Coarsening an incremental triangle sums each bucket, so a restatement is
+    added beside the value it replaced: 125 where the four cells are worth 105,
+    on both backends, with nothing raised.
+
+    The reason in the message is the incremental one, not a sentence covering
+    both measures - the cumulative path does not sum at all, so one shared
+    wording would be wrong about it.
+    """
+    t = _restated_bucket_triangle(backend_name, "incremental")
+    pattern = (
+        r"1 cells are stored more than once.*with_dev_grain\(\).*"
+        r"increments inside a bucket are summed.*worth 105 came out as 125.*"
+        r"multiple eval_dates \(restated history\).*latest_diagonal\(\)"
+    )
+    with pytest.raises(ValueError, match=pattern):
+        t.with_dev_grain("Y")
+
+
+def test_dev_grain_takes_a_restated_increment_once_it_is_sliced(backend_name):
+    """The way out, end to end, and the number it produces: 105, the four cells as
+    they stand once the superseded 20 is dropped.
+
+    ``latest_diagonal`` also works and answers something else entirely - it keeps
+    one cell per origin, so the bucket is the dev-12 increment alone. Both are
+    single views; which one a caller wants is theirs to choose, which is exactly
+    why neither is applied for them inside the operation.
+    """
+    t = _restated_bucket_triangle(backend_name, "incremental")
+    with pytest.raises(ValueError, match="stored more than once"):
+        t.with_dev_grain("Y")
+    sliced = sorted_long(t.as_of("2020-12-31").with_dev_grain("Y"))
+    assert dict(zip(sliced["dev_lag"], sliced["value"], strict=True)) == {12: 105.0}
+    diag = sorted_long(t.latest_diagonal().with_dev_grain("Y"))
+    assert dict(zip(diag["dev_lag"], diag["value"], strict=True)) == {12: 20.0}
+
+
+def test_dev_grain_unchanged_is_a_no_op_on_a_triangle_it_would_refuse(backend_name):
+    """The refusal sits after the step == 1 short-circuit, matching the origin
+    regrain: a no-op recomputes nothing, so nothing can move, so there is nothing
+    to protect the caller from.
+
+    The first assertion is what makes the test's name true - this is a triangle a
+    real coarsening refuses - and without it the rest would pass just as well on a
+    build where the check never fires at all.
+    """
+    t = _restated_bucket_triangle(backend_name, "incremental")
+    with pytest.raises(ValueError, match="stored more than once"):
+        t.with_dev_grain("Y")
+    before = sorted_long(t)
+    out = t.with_dev_grain("Q")
+    assert out is t
+    pd.testing.assert_frame_equal(sorted_long(out), before)
+
+
+def test_dev_grain_refuses_a_restated_cumulative_cell(backend_name):
+    """The cumulative path never sums, and is refused anyway, for the two reasons
+    it has of its own.
+
+    Bucket boundaries are counted back from the triangle's latest eval_date,
+    which a restatement moves, so the row kept for a cell need not be the one
+    that survives it - measured on a neighbouring fixture, the regrain kept a
+    superseded dev-3 value of 20 and dropped the 30 that had replaced it. And
+    when a cell and its restatement sit exactly one bucket apart, as here, both
+    survive: the coarsened triangle carried dev 3 twice, at 20 and 25, which
+    ``to_wide`` then displayed as 45.
+    """
+    t = _restated_bucket_triangle(backend_name, "cumulative")
+    pattern = (
+        r"1 cells are stored more than once.*with_dev_grain\(\).*"
+        r"lands on a bucket boundary.*latest eval_date.*"
+        r"multiple eval_dates \(restated history\).*latest_diagonal\(\)"
+    )
+    with pytest.raises(ValueError, match=pattern) as excinfo:
+        t.with_dev_grain("Y")
+    assert "increments inside a bucket are summed" not in str(excinfo.value)
+    # sliced, it coarsens, and the dev-3 cell shows the 25 that replaced the 20
+    out = sorted_long(t.as_of("2021-03-31").with_dev_grain("Y"))
+    assert dict(zip(out["dev_lag"], out["value"], strict=True)) == {3: 25.0, 15: 110.0}
+
+
 def test_as_of_drops_restatements(backend_name):
     """With restatement history in the table, ``as_of`` must return what was booked
     at that date, not the latest revision - otherwise backtests leak the future.

@@ -15,6 +15,52 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
+## Unreleased
+
+### `to_wide` and the dev-grain coarsening refuse a cell stored twice (#118)
+
+Both operations reduce a cell's rows to one number without being asked which
+observation was meant, so a cell restated at a later `eval_date` - legal stored
+history, and the reason `as_of` can answer what was on the books at a past date
+- was counted beside the value it replaced. Measured on both backends: 100
+booked and 95 restated a year later displayed through `to_wide` as one cell of
+195, and an annual bucket whose four quarterly increments are worth 105 came out
+of `with_dev_grain("Y")` as 125. Both are plausible numbers and neither raised.
+This is the pair #112 deliberately left open.
+
+Following #112's idiom, `validate.require_single_observation` now refuses such a
+triangle by name at both operations, naming the operation, how many cells are
+affected, and the way out for each of the two routes into that state: a cell at
+several eval_dates is restated history, where `latest_diagonal()` or an `as_of()`
+before the restatement each leave a single view, while a cell recorded twice at
+one eval_date is duplicated source data, which no slice resolves - `as_of` picks
+an eval_date and keeps every row carrying it - so that repair belongs in the
+source. Neither operation slices for the caller: which view was wanted is the
+caller's to choose, and that choice changes the answer (on the bucket above,
+`as_of("2020-12-31")` gives 105 and `latest_diagonal()` gives 20).
+
+Inputs 0.5.9 accepted that now raise, and the ones that do not:
+
+- `Triangle.to_wide()` on a triangle storing the pivoted field's cell twice.
+  The check is on the selected field, so restated premium does not stop paid
+  loss being displayed; and it keys on the segment columns, so the pivot's other
+  sum, across segments, is unchanged - a two-line triangle still displays the
+  two lines' total.
+- `Triangle.with_dev_grain()` in both measures, once it actually coarsens. The
+  cumulative path never summed, so it is refused for its own reasons rather than
+  that one: bucket boundaries are counted back from the triangle's latest
+  eval_date, which a restatement moves, so the row kept for a cell need not be
+  the one that survives it (measured: the regrain kept a superseded dev-3 value
+  of 20 and dropped the 30 that had replaced it), and when a cell and its
+  restatement land one bucket apart both survive, leaving two rows at one age.
+- Asking for the dev grain a triangle already has is still a no-op and still
+  returns the same object, refused triangles included: it recomputes nothing, so
+  nothing can move. Same rule as #112 gave the origin regrain.
+- The Schedule P mart is unaffected - it stores one row per cell, so its
+  `to_wide` tie-out is unchanged - and so are `as_of`, `latest_diagonal`,
+  `to_cumulative`, `to_incremental` and the origin regrain, none of which
+  reduces a cell's rows to one number this way.
+
 ## 0.5.9 - 2026-09-06
 
 Every fix from the 2026-09-04 external review of 0.5.8 (ten PRs, #107-#116),

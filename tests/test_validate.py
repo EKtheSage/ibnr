@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 
 from ibnr import Triangle
+from ibnr.triangle.validate import require_single_observation
 
 
 def _null_segment_tri(backend_name) -> Triangle:
@@ -59,6 +60,81 @@ def test_restated_cells_flagged(backend_name):
     assert any("multiple eval_dates" in i for i in issues)
     # eval alignment also fires for the restated row, by design
     assert any("does not align" in i for i in issues)
+
+
+def test_the_refusal_repeats_the_findings_word_for_word(backend_name):
+    """``require_single_observation`` and ``validate`` must describe the same
+    triangle in the same words.
+
+    Each route's count phrase is written once and formatted by both, the way
+    ``_misalignment_count`` is shared by the eval-alignment finding and its
+    refusal. A reader who has run ``validate`` should be able to match the line
+    they saw against the refusal they got, so this checks the finding strings
+    appear in the message verbatim rather than merely saying something similar.
+    """
+    t = _tri(
+        backend_name,
+        [
+            ("2020-01-01", 12, "2020-12-31", 1.0),
+            ("2020-01-01", 12, "2021-12-31", 2.0),  # restated
+            ("2020-01-01", 24, "2021-12-31", 3.0),
+            ("2020-01-01", 24, "2021-12-31", 4.0),  # duplicated
+        ],
+    )
+    issues = t.validate(strict=False)
+    findings = [i for i in issues if "restated history" in i or "duplicated" in i]
+    assert len(findings) == 2, issues
+    with pytest.raises(ValueError) as excinfo:
+        require_single_observation(t, operation="op()", reason="Because.")
+    message = str(excinfo.value)
+    for finding in findings:
+        assert finding in message, f"{finding!r} not repeated in {message!r}"
+
+
+def test_the_two_route_counts_are_counting_two_different_things(backend_name):
+    """One cell duplicated at each of two eval_dates is the case where the two
+    numbers in the message must differ, and the only case that says which is which.
+
+    Duplication is counted over (cell, eval_date) groups and restatement over
+    cells, so this triangle is one cell stored more than once, one restated cell
+    and *two* duplicated groups. Every other fixture in the suite has the two
+    counts equal, so a refusal that reported the cell count for both would pass
+    everywhere else while telling a caller with two bad rows about one.
+    """
+    t = _tri(
+        backend_name,
+        [
+            ("2020-01-01", 12, "2020-12-31", 1.0),
+            ("2020-01-01", 12, "2020-12-31", 1.0),
+            ("2020-01-01", 12, "2021-12-31", 2.0),
+            ("2020-01-01", 12, "2021-12-31", 2.0),
+        ],
+    )
+    with pytest.raises(ValueError) as excinfo:
+        require_single_observation(t, operation="op()", reason="Because.")
+    message = str(excinfo.value)
+    assert "1 cells are stored more than once" in message
+    assert "1 cells observed at multiple eval_dates" in message
+    assert "2 duplicated (segment, field, origin, dev_lag, eval_date) cells" in message
+
+
+def test_a_cell_stored_once_and_an_empty_triangle_both_pass(backend_name):
+    """The clean cases, including the boundary that has bitten this module before.
+
+    A per-column ``sum()`` over zero rows is SQL NULL on duckdb and NaN on
+    polars, so a multiplicity check written as a sum of the extra rows crashes on
+    an empty triangle - which is a legitimate object here, being what a filter
+    matching nothing returns. Counting groups answers 0 on both backends, and
+    this is what says so.
+    """
+    clean = _tri(
+        backend_name,
+        [("2020-01-01", 12, "2020-12-31", 1.0), ("2020-01-01", 24, "2021-12-31", 2.0)],
+    )
+    require_single_observation(clean, operation="op()", reason="r")
+    empty = clean.filter(ibis._.dev_lag == 999)
+    assert empty.count() == 0
+    require_single_observation(empty, operation="op()", reason="r")
 
 
 def test_eval_misalignment(backend_name):

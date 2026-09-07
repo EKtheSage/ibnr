@@ -10,6 +10,14 @@ assumed to hold at most one row per cell per eval_date; cum<->incr conversions
 additionally assume one row per cell (slice with as_of()/latest_diagonal()
 first if the table holds restated history).
 
+``to_wide`` and ``change_dev_grain`` need that second assumption too, and check
+it rather than assuming it: each reduces a cell's rows to one number without
+being asked which observation was meant, so a restatement is counted beside the
+value it replaced rather than in place of it. Both refuse a triangle storing any
+cell twice (see ``validate.require_single_observation``), and there slicing IS
+the answer for restated history, while duplicated source rows are a source
+repair.
+
 ``change_origin_grain`` needs something else again, and checks it rather than
 assuming it: eval_date must sit in the last month of origin_period + dev_lag on
 every row, because the coarsened dev_lag is derived from eval_date and the
@@ -36,9 +44,25 @@ import ibis
 from ibis import _
 
 from ibnr.triangle.core import GRAIN_MONTHS, Triangle, implied_dev_lag
-from ibnr.triangle.validate import require_eval_alignment
+from ibnr.triangle.validate import require_eval_alignment, require_single_observation
 
 ORIGIN_TRUNC_UNIT = {"Y": "Y", "Q": "Q", "M": "M"}
+
+#: what a dev-grain coarsening would do with a cell stored twice, per measure.
+#: Both were measured on the same fixture (see ``change_dev_grain``); they differ
+#: enough that one shared sentence would be wrong about one of them.
+_DEV_GRAIN_REASON = {
+    "incremental": (
+        "The increments inside a bucket are summed, so a restated increment is added "
+        "beside the value it replaced: a bucket whose cells are worth 105 came out as 125."
+    ),
+    "cumulative": (
+        "A cumulative cell is kept when it lands on a bucket boundary, and the boundaries "
+        "are counted back from the triangle's latest eval_date - which a restatement moves "
+        "- so the row kept for a cell need not be the one that survives it, and both are "
+        "kept when both land on a boundary."
+    ),
+}
 
 
 def _cell_keys(t: Triangle) -> list[str]:
@@ -131,10 +155,30 @@ def change_dev_grain(t: Triangle, grain: str) -> Triangle:
     year-ends. Cumulative triangles keep the cell at each bucket boundary
     (non-conforming cells are dropped); incremental triangles sum increments
     within each bucket and take the bucket's latest dev_lag/eval_date.
+
+    Asking for the grain the triangle already has returns the same object.
+    Nothing is recomputed, so nothing can move, and the check below is skipped
+    for the same reason ``change_origin_grain`` skips its own on that path.
+
+    A real coarsening needs one stored observation per cell and refuses a
+    triangle carrying more, because both measures answer wrongly rather than
+    failing. Measured on one quarterly bucket, both backends: incremental, the
+    bucket sum counted a restated increment beside the 20 it replaced and
+    answered 125 where the four cells are worth 105. Cumulative, the sum never
+    happens - the boundary filter keeps rows rather than adding them - but the
+    boundaries are counted back from the triangle's latest eval_date, which the
+    restatement moves, so the regrain kept a superseded dev-3 value of 20 and
+    dropped the 30 that had replaced it; and when a cell and its restatement are
+    exactly one bucket apart both survive, leaving two rows at one age (20 and
+    25) for ``to_wide`` to add up to 45. So both are refused, with the reason
+    each measure actually has.
     """
     step = _grain_step(t.meta.dev_grain, grain, "dev")
     if step == 1:
         return t
+    require_single_observation(
+        t, operation="with_dev_grain()", reason=_DEV_GRAIN_REASON[t.meta.measure]
+    )
     target = GRAIN_MONTHS[grain]
     e = t.expr
     anchor = e.aggregate(_anchor=_.eval_date.max())
@@ -213,7 +257,23 @@ def _grain_step(current: str, target: str, axis: str) -> int:
 
 
 def to_wide(t: Triangle, field: str | None = None):
-    """Materialize one field as an origin x dev_lag pandas matrix (display/export)."""
+    """Materialize one field as an origin x dev_lag pandas matrix (display/export).
+
+    The square has one axis fewer than the triangle, so the pivot adds up
+    everything the triangle stores at a cell. That is refused for a cell stored
+    more than once - 100 booked and 95 restated a year later displayed as one
+    cell of 195, measured on both backends - and the refusal names the slice
+    that leaves one view.
+
+    The other thing the pivot adds up is deliberate and stays: the square has no
+    segment axis either, so a two-line triangle displays the two lines' total.
+    The check keys on the segment columns, exactly as a cell's identity does, and
+    so says nothing about that sum; select or aggregate the segments you want
+    before pivoting.
+
+    The check runs on the selected field, not on the whole triangle: restated
+    premium is no reason to refuse to display paid loss.
+    """
     fields = t.fields
     if field is None:
         if len(fields) != 1:
@@ -221,7 +281,17 @@ def to_wide(t: Triangle, field: str | None = None):
         field = fields[0]
     elif field not in fields:
         raise ValueError(f"field {field!r} not in {fields}")
-    df = t.select_fields(field).expr.execute()
+    one_field = t.select_fields(field)
+    require_single_observation(
+        one_field,
+        operation="to_wide()",
+        reason=(
+            "The pivot adds every stored observation of a cell into one square, so a "
+            "restated value is displayed on top of the value it replaced rather than in "
+            "place of it."
+        ),
+    )
+    df = one_field.expr.execute()
     if str(df["origin_period"].dtype).startswith("datetime64"):
         df["origin_period"] = df["origin_period"].dt.date
     df["dev_lag"] = df["dev_lag"].astype("int64")
