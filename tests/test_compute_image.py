@@ -22,9 +22,10 @@ it there.
 The checks reconstruct the image's install set from the Dockerfile itself rather
 than from a hand-written list:
 
-* every requirement on every ``pip install`` line is collected, and the
-  distribution names those requirements reach are computed from the metadata
-  installed here, with markers evaluated once per requested extra;
+* the project and the extras it is installed with are read off the ``uv sync``
+  lines, and every requirement on every ``pip install`` line is collected
+  beside them. The distribution names all of those reach are computed from the
+  metadata installed here, with markers evaluated once per requested extra;
 * each script the image promises is then started as ``<script> --help`` in a
   subprocess whose ``sys.meta_path`` refuses any module whose distribution is
   installed on this machine but outside that set. The guarantee runs in one
@@ -111,27 +112,54 @@ def _dockerfile() -> str:
     return DOCKERFILE.read_text(encoding="utf-8")
 
 
-def _install_specs() -> list[str]:
-    """Every requirement on every ``pip install`` line.
+#: Where one command on a ``RUN`` line ends and the next begins. A parser that
+#: walked past these would read the second command's arguments as the first's.
+_SEPARATORS = {"&&", "||", "|", ";"}
 
-    Reading ALL of them is the point. A parser that stops at the first quoted
-    string on a line reads ``pip install ".[bayesian]" "cas-schedule-p==..."``
-    as installing only the first, which makes a present fix look absent.
+#: Options that would make a ``uv sync`` install more than the extras this file
+#: reads off it. Any of them means the parser below has stopped describing the
+#: image, so it refuses rather than quietly under-reporting.
+_WIDENING_SYNC_OPTIONS = (
+    "--all-extras",
+    "--all-groups",
+    "--group",
+    "--only-group",
+    "--dev",
+    "--all-packages",
+)
 
-    The line is tokenized the way a shell would, so a requirement counts whether
-    it is written in double quotes, single quotes or bare, and continuation
-    lines are joined first so a requirement on the second line of a wrapped
-    ``RUN`` is still read. Comment lines are dropped so that prose in the header
-    cannot be mistaken for an install, and tokens starting with ``-`` are
-    dropped as pip's own flags.
+
+def _command_lines() -> list[str]:
+    """The Dockerfile's commands, one per line, ready to be tokenized.
+
+    Continuation lines are joined first, so a command wrapped across several
+    lines of a ``RUN`` is read whole, and comment lines are dropped so that
+    prose in the header cannot be mistaken for an install.
     """
     text = "\n".join(
         line
         for line in _dockerfile().replace("\r\n", "\n").splitlines()
         if not line.lstrip().startswith("#")
     ).replace("\\\n", " ")
+    return text.splitlines()
+
+
+def _install_specs() -> list[str]:
+    """Every requirement on every ``pip install`` line.
+
+    Reading ALL of them is the point. A parser that stops at the first quoted
+    string on a line reads ``uv pip install --no-deps "cas-schedule-p==..."``
+    as installing the flag, or stops before a second requirement written beside
+    it, either of which makes a present fix look absent.
+
+    The line is tokenized the way a shell would, so a requirement counts whether
+    it is written in double quotes, single quotes or bare, and tokens starting
+    with ``-`` are dropped as pip's own flags. ``uv pip install`` is read by the
+    same parser as a plain ``pip install``, because the tokens ``pip install``
+    appear in both.
+    """
     specs: list[str] = []
-    for line in text.splitlines():
+    for line in _command_lines():
         if "pip install" not in line:
             continue
         tokens = shlex.split(line)
@@ -141,11 +169,84 @@ def _install_specs() -> list[str]:
                 i += 1
                 continue
             i += 2
-            while i < len(tokens) and tokens[i] not in {"&&", "||", "|", ";"}:
+            while i < len(tokens) and tokens[i] not in _SEPARATORS:
                 if not tokens[i].startswith("-"):
                     specs.append(tokens[i])
                 i += 1
     return specs
+
+
+def _sync_extras() -> tuple[str, ...]:
+    """The extras the Dockerfile's ``uv sync`` lines install the project with.
+
+    The image is built from the lockfile rather than resolved by pip (issue
+    #132), so the project and its dependencies arrive through ``uv sync`` and
+    the extras named there are what decide the install set. Each sync line is
+    checked as it is read, because every one of these options changes what the
+    image holds while leaving the extras looking the same.
+
+    ``uv sync`` is declarative: it makes the environment match what the line
+    asks for, so a later line naming fewer extras REMOVES what an earlier one
+    installed. Two lines that disagree are therefore an image bug rather than a
+    parser nuisance, and the identical set is required of all of them.
+    """
+    requested: list[tuple[str, ...]] = []
+    for line in _command_lines():
+        tokens = shlex.split(line)
+        i = 0
+        while i < len(tokens) - 1:
+            if tokens[i] != "uv" or tokens[i + 1] != "sync":
+                i += 1
+                continue
+            i += 2
+            extras: list[str] = []
+            options: list[str] = []
+            while i < len(tokens) and tokens[i] not in _SEPARATORS:
+                option, _, attached = tokens[i].partition("=")
+                options.append(option)
+                if option == "--extra":
+                    if attached:
+                        extras.append(attached)
+                    else:
+                        i += 1
+                        assert i < len(tokens), f"--extra names no extra on {line!r}"
+                        extras.append(tokens[i])
+                i += 1
+            assert "--frozen" in options, (
+                f"the uv sync on {line!r} is not --frozen, so it re-resolves the "
+                "dependencies instead of installing the locked resolution. That "
+                "lock is the only faithful install of this project (issue #132): "
+                "it carries the [tool.uv] override-dependencies that step over "
+                "arviz's and bermuda's stale numpy caps, and it is exactly what "
+                "every CI leg tests."
+            )
+            assert "--no-default-groups" in options, (
+                f"the uv sync on {line!r} does not pass --no-default-groups, so "
+                "it installs the default dev group too. The image does not carry "
+                "that tooling, so the install set computed here would be smaller "
+                "than the image and the refusal below would let packages through "
+                "that the image really lacks."
+            )
+            widening = [option for option in _WIDENING_SYNC_OPTIONS if option in options]
+            assert not widening, (
+                f"the uv sync on {line!r} passes {widening}, which install more "
+                "than the --extra values this parser reads. Extend the parser to "
+                "understand them before widening the image, or the install set "
+                "here silently stops matching what the Dockerfile builds."
+            )
+            requested.append(tuple(sorted(extras)))
+    assert requested, (
+        "the Dockerfile has no uv sync line at all. The image installs the "
+        "project and its locked dependencies through uv sync, so if that "
+        "changed, rewrite this parser to read whatever replaced it."
+    )
+    assert len(set(requested)) == 1, (
+        "the Dockerfile's uv sync lines ask for different extras: "
+        f"{sorted(set(requested))}. uv sync makes the environment match the line "
+        "it is given, so the last one wins and every extra the earlier lines "
+        "installed and it omits is REMOVED again."
+    )
+    return requested[0]
 
 
 def _cmd_argv() -> list[str]:
@@ -190,19 +291,11 @@ def _reachable_distributions(name: str, extras: tuple[str, ...]) -> set[str]:
 
 
 def _image_distributions() -> frozenset[str]:
-    """Everything the Dockerfile's pip install lines put in the image."""
-    specs = _install_specs()
-    assert specs, "the Dockerfile has no pip install line at all"
-    names: set[str] = set()
-    for spec in specs:
-        if spec.startswith("."):
-            # the project itself, built from the copied source tree
-            extras = re.findall(r"\[([^\]]*)\]", spec)
-            requested = tuple(e.strip() for e in extras[0].split(",")) if extras else ()
-            names |= _reachable_distributions("ibnr", requested)
-        else:
-            req = Requirement(spec)
-            names |= _reachable_distributions(req.name, tuple(req.extras))
+    """Everything the Dockerfile's uv sync and pip install lines put in the image."""
+    names = _reachable_distributions("ibnr", _sync_extras())
+    for spec in _install_specs():
+        req = Requirement(spec)
+        names |= _reachable_distributions(req.name, tuple(req.extras))
     return frozenset(names)
 
 
@@ -307,7 +400,7 @@ def test_the_refusal_can_actually_refuse_something():
     assert "cmdstanpy" in image, (
         "cmdstanpy is a requirement of ibnr[bayesian] and the Dockerfile asks "
         "for that extra, so it has to be in the install set. It is not, which "
-        "means the extras on the pip install line are not being read and the "
+        "means the extras on the uv sync lines are not being read and the "
         "set is smaller than the image"
     )
     for extra, distribution in (("nn", "torch"), ("interop", "chainladder")):
@@ -353,7 +446,7 @@ class _NotInTheImage:
         if dists and not any(d in image for d in dists):
             raise ModuleNotFoundError(
                 f"{top!r} is not in the compute image: its distribution "
-                f"{dists[0]!r} is outside what the Dockerfile's pip install "
+                f"{dists[0]!r} is outside what the Dockerfile's install "
                 f"lines put there",
                 name=name,
             )
@@ -427,7 +520,7 @@ def test_a_failed_run_says_which_of_the_two_failures_it_is():
     image = _image_distributions()
     refused = (
         "ModuleNotFoundError: 'pytest' is not in the compute image: its "
-        "distribution 'pytest' is outside what the Dockerfile's pip install "
+        "distribution 'pytest' is outside what the Dockerfile's install "
         "lines put there"
     )
     assert _why_it_failed(refused, image) == "", (

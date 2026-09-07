@@ -1,0 +1,88 @@
+# Builds the compute image and smoke-tests it - the check no development
+# machine can run, because none of them has Docker (issue #126; the gap that
+# let PR #109's defect ship: the image's own CMD failed on a missing module,
+# and nobody had ever built the image to see it).
+#
+# tests/test_compute_image.py remains the fast, always-on stand-in: it reads
+# the Dockerfile's install lines and starts every promised script under a
+# blocker that refuses anything those lines do not install. This workflow is
+# the real thing, run sparingly: the build compiles CmdStan 2.39.0 and every
+# gallery Stan model, so a cold build takes tens of minutes.
+#
+# Triggers: manual (workflow_dispatch), and pull requests that touch the
+# image's own inputs. Deliberately NOT on every push - the fast stand-in
+# covers those.
+
+name: Compute image
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - ".github/workflows/docker.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "scripts/**"
+
+jobs:
+  build:
+    name: Build + smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v3
+
+      # type=gha caching keeps reruns cheap when the Dockerfile's early layers
+      # (apt, pip, cmdstan) are unchanged; a Dockerfile edit above a layer
+      # invalidates from there down, which is the point of running this on
+      # Dockerfile PRs.
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          tags: ibnr:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The image's own default command. Before #109 this exact invocation
+      # died at ModuleNotFoundError before printing a line of help.
+      - name: Run the image CMD
+        run: docker run --rm ibnr:ci
+
+      # Every script the image promises (the same set
+      # tests/test_compute_image.py derives: the CMD's script plus
+      # ALSO_PROMISED). --help exercises each script's full import chain
+      # against what the image actually installed.
+      - name: Start every promised script
+        run: |
+          for s in meyers_validation.py compare_gallery.py heldout_leaderboard.py parity_gallery.py; do
+            echo "--- scripts/$s --help"
+            docker run --rm ibnr:ci python "scripts/$s" --help
+          done
+
+      # The precompile layer must have left every gallery Stan model's
+      # executable in the image - a container start pays zero toolchain cost.
+      - name: Verify precompiled Stan models
+        run: |
+          # -i is what connects the heredoc below to the container's stdin.
+          # Without it `python -` reads end of file and exits cleanly having
+          # executed nothing, so this step would pass without running the check.
+          docker run --rm -i ibnr:ci python - <<'EOF'
+          from pathlib import Path
+
+          import ibnr
+
+          gallery = Path(ibnr.__file__).parent / "gallery"
+          stans = sorted(gallery.glob("**/model.stan"))
+          missing = [s for s in stans if not (s.parent / "model").exists()]
+          print(f"{len(stans)} Stan models, {len(stans) - len(missing)} precompiled")
+          if missing:
+              raise SystemExit(f"not precompiled: {[str(m) for m in missing]}")
+          if not stans:
+              raise SystemExit("no model.stan found in the image at all")
+          EOF

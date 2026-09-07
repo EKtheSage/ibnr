@@ -33,8 +33,43 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY pyproject.toml README.md ./
+# The environment is installed by uv FROM uv.lock, never resolved by pip.
+# `pip install ".[bayesian]"` no longer resolves at all (issue #132):
+# bayesblend 0.0.8 pins arviz<0.19, arviz 0.18 caps numpy<2, and pip
+# backtracks numpyro into ancient releases pinning jaxlib wheels that do not
+# exist for cp312, then gives up. This repo steps over those stale caps with
+# [tool.uv] override-dependencies - a uv concept pip cannot see - so the only
+# faithful install is the locked resolution every CI leg already tests.
+# --frozen installs exactly what uv.lock says and refuses a lockfile that has
+# drifted from pyproject; --no-default-groups keeps dev/test tooling out of a
+# compute image. The uv binary is copied from its release image, pinned like
+# every other version here.
+COPY --from=ghcr.io/astral-sh/uv:0.11.7 /uv /uvx /usr/local/bin/
+
+# Never a uv-managed interpreter download, and no uv cache in any layer.
+ENV UV_PYTHON_DOWNLOADS=never \
+    UV_NO_CACHE=1 \
+    UV_LINK_MODE=copy
+
+# UV_PYTHON pins the sync to the image's own interpreter, and it is scoped to
+# these two RUNs rather than set with ENV: a global UV_PYTHON outranks
+# VIRTUAL_ENV for `uv pip install`, which then targets the system interpreter
+# instead of /app/.venv - measured in CI run 34097833296, where cas-schedule-p
+# landed outside the venv and the image's own CMD died at ModuleNotFoundError.
+#
+# Dependency layer first: a src/ edit must not re-download the stack.
+COPY pyproject.toml uv.lock ./
+RUN UV_PYTHON=/usr/local/bin/python3 \
+    uv sync --frozen --no-default-groups --extra bayesian --no-install-project
+
+COPY README.md ./
 COPY src ./src
+RUN UV_PYTHON=/usr/local/bin/python3 \
+    uv sync --frozen --no-default-groups --extra bayesian --no-editable
+
+ENV VIRTUAL_ENV=/app/.venv \
+    PATH="/app/.venv/bin:$PATH"
+
 # cas-schedule-p is installed HERE and is deliberately not a dependency of the
 # wheel. ibnr itself never imports it; only scripts/ does, to read the Meyers
 # company selection rule out of `cas_schedule_p.screens`, and a reserving
@@ -46,8 +81,11 @@ COPY src ./src
 # decides which companies a run selects, so a floating version would change
 # published results with no change to any code. tests/test_compute_image.py
 # holds this pin equal to uv.lock's and re-checks that every script the image
-# promises can still start on what this line installs.
-RUN pip install --no-cache-dir ".[bayesian]" "cas-schedule-p==2026.6.13"
+# promises can still start on what these install lines put there.
+# --no-deps so this one line cannot re-resolve anything the lock decided; the
+# wheel is pure data with zero runtime dependencies, so there is nothing to
+# resolve anyway.
+RUN uv pip install --no-deps "cas-schedule-p==2026.6.13"
 
 # cmdstan pinned to the version the reference results were produced with
 # (CLAUDE.md: 2.39.0 on the dev machine)
