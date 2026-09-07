@@ -24,6 +24,7 @@ from ibnr.gallery.registry import register
 from ibnr.gallery.statistical.clark.model import Clark, age_interval, growth
 from ibnr.kernels.contract import odp_stan_data, realized_values
 from ibnr.kernels.densities import odp_draw
+from ibnr.kernels.diagnostics import convergence_report
 from ibnr.kernels.holdout import CellIndex
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.kernels.rng import cohort_stream
@@ -40,6 +41,26 @@ CURVE_CODES = {"loglogistic": 1, "weibull": 2}
 #: posterior backends this entry can dispatch to; all three target the same
 #: posterior, which ``kernels.parity`` gates before any convergence claim
 BACKENDS = ("stan", "numpyro", "pymc")
+
+#: The three sampled parameters, which is the whole model: logelr (the Cape Cod
+#: level), omega (growth-curve shape) and theta (growth-curve scale). ``phi`` is
+#: plug-in data, not sampled, and ``mu`` is a deterministic function of these.
+#: The list does not vary with ``growth_curve``: the curve is passed as an
+#: integer data code, so both curves are fitted over the same parameters.
+_SAMPLED = ("logelr", "omega", "theta")
+
+#: Default convergence parameters per backend, written down rather than
+#: discovered from whatever a fit happens to carry: ``convergence()`` refuses a
+#: name the posterior lacks, so this mapping is a claim about each backend that
+#: goes red instead of quietly shrinking the summary. Both ports mirror
+#: ``model.stan`` site for site (verified against real posteriors from all
+#: three), so the three lists are the same names - stated three times, because
+#: a port that renamed one must fail here rather than be inferred around.
+CONVERGENCE_VARS: dict[str, tuple[str, ...]] = {
+    "stan": _SAMPLED,
+    "numpyro": _SAMPLED,
+    "pymc": _SAMPLED,
+}
 
 
 def pooled(idata, name: str) -> np.ndarray:
@@ -407,29 +428,18 @@ class ClarkGrowthCurve(GalleryEntry, PredictsHeldout):
         return {name: pooled(self.idata_, name) for name in scorer.REQUIRED_DRAWS}
 
     def convergence(self, var_names: list[str] | None = None) -> dict:
-        """Convergence diagnostics from the fitted posterior."""
-        import arviz as az
+        """Convergence diagnostics from the fitted posterior.
 
+        ``var_names`` defaults to ``CONVERGENCE_VARS`` for the backend this
+        entry was fitted with; a name the posterior does not carry is refused
+        rather than dropped, so the numbers always describe the set that was
+        asked for.
+        """
         if self.idata_ is None:
             raise RuntimeError("call fit() first")
-        if var_names is None:
-            # The three sampled parameters: logelr (log ELR), omega (growth-curve
-            # shape), theta (growth-curve scale). phi is plug-in data, not sampled.
-            var_names = ["logelr", "omega", "theta"]
-        var_names = [v for v in var_names if v in self.idata_.posterior]
-        summ = az.summary(self.idata_, var_names=var_names)
-        post = self.idata_.posterior
-        n_draws = int(post.sizes["chain"] * post.sizes["draw"])
-        diverging = None
-        if "sample_stats" in self.idata_ and "diverging" in self.idata_.sample_stats:
-            diverging = int(np.asarray(self.idata_.sample_stats["diverging"].values).sum())
-        return {
-            "backend": self.backend_,
-            "runtime_s": float(self.idata_.attrs.get("runtime_s", np.nan)),
-            "n_draws": n_draws,
-            "max_rhat": float(summ["r_hat"].max()),
-            "min_ess_bulk": float(summ["ess_bulk"].min()),
-            "min_ess_tail": float(summ["ess_tail"].min()),
-            "divergences": diverging,
-            "divergence_frac": (None if diverging is None else diverging / n_draws),
-        }
+        return convergence_report(
+            self.idata_,
+            backend=self.backend_,
+            defaults=CONVERGENCE_VARS,
+            var_names=var_names,
+        )

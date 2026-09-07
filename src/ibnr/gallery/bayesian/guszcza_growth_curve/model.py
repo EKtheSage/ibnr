@@ -60,6 +60,7 @@ from ibnr.gallery.entry import GalleryEntry, PredictsHeldout, ScoresHeldout
 from ibnr.gallery.registry import register
 from ibnr.gallery.statistical.clark.model import growth
 from ibnr.kernels.contract import realized_values, stan_data
+from ibnr.kernels.diagnostics import convergence_report
 from ibnr.kernels.holdout import CellIndex
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.kernels.rng import cohort_stream
@@ -74,6 +75,29 @@ CURVE_CODES = {"loglogistic": 1, "weibull": 2}
 #: posterior backends this entry can dispatch to. Stan is ground truth (design
 #: decision 7); the two ports are gated against it by ``kernels.parity``.
 BACKENDS = ("stan", "numpyro", "pymc")
+
+#: The sampled SCALAR parameters. The non-centered ``z_ulr`` and the
+#: transformed ``ulr`` it drives are deliberately out: they carry one effect per
+#: accident year, and the latest origin - which has a cell or two behind it - is
+#: weakly identified in every backend, so including them would let one AY effect
+#: decide max_rhat for the whole fit. ``kernels.parity`` DOES compare ``ulr``,
+#: because there the MCSE denominator tolerates that noise automatically.
+_SAMPLED = ("ulr_pop", "omega", "theta", "sd_ulr", "sigma")
+
+#: Default convergence parameters per backend, written down rather than
+#: discovered from whatever a fit happens to carry: ``convergence()`` refuses a
+#: name the posterior lacks, so this mapping is a claim about each backend that
+#: goes red instead of quietly shrinking the summary. Both ports mirror
+#: ``model.stan`` site for site (verified against real posteriors from all
+#: three), so the three lists are the same names - stated three times, because
+#: a port that renamed one must fail here rather than be inferred around. The
+#: key is the BACKEND ARGUMENT, which is why it stays "pymc" for a PyMC graph
+#: run through a foreign NUTS even though the row is labelled "pymc:numpyro".
+CONVERGENCE_VARS: dict[str, tuple[str, ...]] = {
+    "stan": _SAMPLED,
+    "numpyro": _SAMPLED,
+    "pymc": _SAMPLED,
+}
 
 
 def pooled(idata, name: str) -> np.ndarray:
@@ -480,34 +504,24 @@ class GuszczaGrowthCurve(GalleryEntry, ScoresHeldout, PredictsHeldout):
     def convergence(self, var_names: list[str] | None = None) -> dict:
         """Convergence diagnostics from the fitted posterior: max R-hat, min
         bulk/tail ESS, divergence count/fraction, and wall-clock sampling
-        runtime. ``var_names`` defaults to the sampled scalar parameters (the
-        non-centered ``z_ulr`` and the transformed ``ulr`` are excluded so one
-        weakly identified AY effect does not dominate max_rhat)."""
-        import arviz as az
-
+        runtime. ``var_names`` defaults to ``CONVERGENCE_VARS`` for the backend
+        this entry was fitted with (the sampled scalars; see that mapping for
+        why ``z_ulr``/``ulr`` are out), and a name the posterior does not carry
+        is refused rather than dropped, so the numbers always describe the set
+        that was asked for."""
         if self.idata_ is None:
             raise RuntimeError("call fit() first")
-        if var_names is None:
-            var_names = ["ulr_pop", "omega", "theta", "sd_ulr", "sigma"]
-        var_names = [v for v in var_names if v in self.idata_.posterior]
-        summ = az.summary(self.idata_, var_names=var_names)
-        post = self.idata_.posterior
-        n_draws = int(post.sizes["chain"] * post.sizes["draw"])
-        diverging = None
-        if "sample_stats" in self.idata_ and "diverging" in self.idata_.sample_stats:
-            diverging = int(np.asarray(self.idata_.sample_stats["diverging"].values).sum())
-        return {
-            # the SAMPLER's own label, not the backend argument: a pymc fit run
-            # through a foreign NUTS reports "pymc:numpyro", and this entry is
-            # one that has to be run that way (model_pymc's docstring measures
-            # the ~130x). Recording only "pymc" would publish a convergence row
-            # that does not say what produced it.
-            "backend": self.idata_.attrs.get("backend", self.backend_),
-            "runtime_s": float(self.idata_.attrs.get("runtime_s", np.nan)),
-            "n_draws": n_draws,
-            "max_rhat": float(summ["r_hat"].max()),
-            "min_ess_bulk": float(summ["ess_bulk"].min()),
-            "min_ess_tail": float(summ["ess_tail"].min()),
-            "divergences": diverging,
-            "divergence_frac": (None if diverging is None else diverging / n_draws),
-        }
+        return convergence_report(
+            self.idata_,
+            backend=self.backend_,
+            defaults=CONVERGENCE_VARS,
+            # The row carries the SAMPLER's own label, not the backend
+            # argument: a pymc fit run through a foreign NUTS reports
+            # "pymc:numpyro", and this entry is one that has to be run that way
+            # (model_pymc's docstring measures the ~130x). Recording only
+            # "pymc" would publish a convergence row that does not say what
+            # produced it. The DEFAULTS are still keyed on the backend
+            # argument, since "pymc:numpyro" is a label and not a graph.
+            reported_backend=self.idata_.attrs.get("backend", self.backend_),
+            var_names=var_names,
+        )

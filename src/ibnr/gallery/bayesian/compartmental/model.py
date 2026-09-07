@@ -57,6 +57,7 @@ from ibnr.gallery.bayesian._toolchain import ensure_stan_toolchain
 from ibnr.gallery.entry import GalleryEntry, PredictsHeldout, ScoresHeldout
 from ibnr.gallery.registry import register
 from ibnr.kernels.contract import compartmental_stan_data, realized_values
+from ibnr.kernels.diagnostics import convergence_report
 from ibnr.kernels.holdout import CellIndex
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.kernels.rng import cohort_stream
@@ -83,6 +84,74 @@ BACKENDS = ("stan", "numpyro", "pymc")
 HELDOUT_DECLARATIONS = {
     "gaussian": {"heldout_measure": "amount", "heldout_draw_scale": "cumulative"},
     "lognormal": {"heldout_measure": "loss_ratio", "heldout_draw_scale": "incremental"},
+}
+
+#: Default convergence parameters per VARIANT and then per backend - the only
+#: entry in the gallery that needs both axes, and the reason ``convergence()``
+#: could not simply be made strict in place (issue #119).
+#:
+#: The variant axis is the model: Model 1 gives ker and kp no varying effects at
+#: all, so ``sd_dev``/``sd_ker``/``sd_kp`` exist only under ``lognormal``. The
+#: old shared list carried all of them and let the presence filter sort it out,
+#: which is exactly how a genuinely missing parameter also went unnoticed.
+#:
+#: The backend axis is naming, and only PyMC differs. Stan declares the
+#: correlated accident-year block as a ``vector<lower=0>[2] sd_ay`` beside a
+#: ``cholesky_factor_corr[2] L_ay``, and the NumPyro port mirrors that pair site
+#: for site. PyMC has one construct for both - ``pm.LKJCholeskyCov("ay_chol",
+#: ...)``, whose ``compute_corr=True`` outputs are registered as ``ay_chol`` /
+#: ``ay_chol_corr`` / ``ay_chol_stds`` - so there is no ``sd_ay`` in a PyMC
+#: posterior and ``ay_chol_stds`` IS that vector of scales, checked against the
+#: analytic half-Student-t medians in ``model_pymc``'s docstring. ``L_ay`` is in
+#: no list because its correlation content is read off ``rho_ay`` instead (the
+#: same reason ``kernels.parity`` compares ``rho_ay`` and not the raw factor).
+#:
+#: Only the SAMPLED parameters appear: the non-centered ``z_*`` and the
+#: transformed per-origin RLR/RRF are deterministic functions of these, so a
+#: single badly identified varying effect cannot dominate max_rhat.
+_GAUSSIAN = ("b_oRLR", "b_oRRF", "b_oker", "b_okp", "sd_ay", "log_sigma_os", "log_sigma_paid")
+_LOGNORMAL = (
+    "b_oRLR",
+    "b_oRRF",
+    "b_oker",
+    "b_okp",
+    "sd_ay",
+    "sd_dev",
+    "sd_ker",
+    "sd_kp",
+    "log_sigma_os",
+    "log_sigma_paid",
+)
+CONVERGENCE_VARS: dict[str, dict[str, tuple[str, ...]]] = {
+    "gaussian": {
+        "stan": _GAUSSIAN,
+        "numpyro": _GAUSSIAN,
+        "pymc": (
+            "b_oRLR",
+            "b_oRRF",
+            "b_oker",
+            "b_okp",
+            "ay_chol_stds",  # PyMC's name for Stan's sd_ay
+            "log_sigma_os",
+            "log_sigma_paid",
+        ),
+    },
+    "lognormal": {
+        "stan": _LOGNORMAL,
+        "numpyro": _LOGNORMAL,
+        "pymc": (
+            "b_oRLR",
+            "b_oRRF",
+            "b_oker",
+            "b_okp",
+            "ay_chol_stds",  # PyMC's name for Stan's sd_ay
+            "sd_dev",
+            "sd_ker",
+            "sd_kp",
+            "log_sigma_os",
+            "log_sigma_paid",
+        ),
+    },
 }
 
 
@@ -677,44 +746,19 @@ class Compartmental(GalleryEntry, ScoresHeldout, PredictsHeldout):
     def convergence(self, var_names: list[str] | None = None) -> dict:
         """Convergence diagnostics from the fitted posterior.
 
-        Summarized over the SAMPLED parameters only - the non-centered ``z_*``
-        and the transformed per-origin RLR/RRF are excluded so a single badly
-        identified varying effect does not dominate max_rhat. The retro harness
-        writes this dict per company; see card.md for the R-hat > 1.05 counts.
+        ``var_names`` defaults to ``CONVERGENCE_VARS`` for the fitted VARIANT
+        and backend - the sampled parameters only, so a single badly identified
+        varying effect does not dominate max_rhat - and a name the posterior
+        does not carry is refused rather than dropped. The retro harness writes
+        this dict per company; see card.md for the R-hat > 1.05 counts.
         """
-        import arviz as az
-
         if self.idata_ is None:
             raise RuntimeError("call fit() first")
-        if var_names is None:
-            # sampled core parameters shared by both variants; the extra
-            # lognormal scales are filtered in when present
-            var_names = [
-                "b_oRLR",
-                "b_oRRF",
-                "b_oker",
-                "b_okp",
-                "sd_ay",
-                "sd_dev",
-                "sd_ker",
-                "sd_kp",
-                "log_sigma_os",
-                "log_sigma_paid",
-            ]
-        var_names = [v for v in var_names if v in self.idata_.posterior]
-        summ = az.summary(self.idata_, var_names=var_names)
-        post = self.idata_.posterior
-        n_draws = int(post.sizes["chain"] * post.sizes["draw"])
-        diverging = None
-        if "sample_stats" in self.idata_ and "diverging" in self.idata_.sample_stats:
-            diverging = int(np.asarray(self.idata_.sample_stats["diverging"].values).sum())
-        return {
-            "backend": self.backend_,
-            "runtime_s": float(self.idata_.attrs.get("runtime_s", np.nan)),
-            "n_draws": n_draws,
-            "max_rhat": float(summ["r_hat"].max()),
-            "min_ess_bulk": float(summ["ess_bulk"].min()),
-            "min_ess_tail": float(summ["ess_tail"].min()),
-            "divergences": diverging,
-            "divergence_frac": (None if diverging is None else diverging / n_draws),
-        }
+        return convergence_report(
+            self.idata_,
+            backend=self.backend_,
+            # The variant is resolved here rather than inside the shared
+            # kernel: it is this entry's own axis, and no other entry has one.
+            defaults=CONVERGENCE_VARS[self.variant_],
+            var_names=var_names,
+        )

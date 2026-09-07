@@ -61,6 +61,39 @@ Inputs 0.5.9 accepted that now raise, and the ones that do not:
   `to_cumulative`, `to_incremental` and the origin regrain, none of which
   reduces a cell's rows to one number this way.
 
+### `convergence()` refuses a parameter the posterior does not carry (#119)
+
+Each of the six Bayesian entries filtered its default parameter list down to the
+names the fitted posterior happened to carry, then reported max R-hat and min ESS
+over whatever survived. Nothing said the set had shrunk, and
+`kernels.harness.ConvergenceGates` decides sampler escalation from those two
+numbers, so a fit missing a parameter read as converged over a strictly smaller
+set than was asked for and was never re-run. Measured on a CCL-shaped posterior
+whose `a_ig` sits at a different level in every chain: with `a_ig` present max
+R-hat is 2.84 and min bulk ESS 5, and the fit is escalated; drop `a_ig` and the
+same call answers 1.00 and 1833, and the fit is accepted. Same family as the
+parity leniency #113 fixed in 0.5.9, but not the same fix - these filters acted
+on each entry's DEFAULT list, so the per-backend lists had to be designed first.
+
+- Every Bayesian entry now declares `CONVERGENCE_VARS` at module level, keyed by
+  the backend argument its `fit()` took. For five entries the three lists are the
+  same names written out three times, so a port that renames a site fails rather
+  than being inferred around.
+- `compartmental` is why the mapping is per backend at all: Stan and NumPyro
+  declare the correlated accident-year block as a `sd_ay` / `L_ay` pair, while
+  PyMC's `LKJCholeskyCov` is both at once and reports the scales as
+  `ay_chol_stds`. Its lists are per variant as well - Model 1 gives `ker` and
+  `kp` no varying effects, so `sd_dev` / `sd_ker` / `sd_kp` exist only under
+  `lognormal`.
+- The summary itself moves to the new `kernels.diagnostics.convergence_report`,
+  which the six entries call instead of each computing the identical dict. It
+  also refuses a name that reaches arviz and leaves no summary row, and an
+  unknown backend rather than falling back to a neighbour's list.
+- An explicit `var_names` naming a parameter the fit lacks is refused too. It
+  used to come back as an ordinary diagnostics dict over the names that did
+  exist; a request naming only absent parameters died inside xarray on
+  `Dimension(s) 'chain', 'draw' do not exist`.
+
 ## 0.5.9 - 2026-09-06
 
 Every fix from the 2026-09-04 external review of 0.5.8 (ten PRs, #107-#116),
