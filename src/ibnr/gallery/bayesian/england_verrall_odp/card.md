@@ -62,9 +62,11 @@ increments `X ~ phi * Poisson(m/phi)` for each unobserved dev through
 future cells as missing values (7.11.6), and the same process distribution
 as `BootChainLadder(process.distr = "od.pois")`. Parameter uncertainty comes
 from the posterior draws of `(c, alpha, beta)`; process variance from the
-scaled-Poisson draw. The first origin is fully developed at the cutoff, so
-its ultimate is constant (zero SE), aligning the summary table with the
-rest of the family.
+scaled-Poisson draw, taken through the shared `kernels.densities.odp_draw`,
+which returns the mean exactly when the dispersion has collapsed so far that
+`mu / phi` is past the largest Poisson rate numpy can draw at. The first
+origin is fully developed at the cutoff, so its ultimate is constant (zero
+SE), aligning the summary table with the rest of the family.
 
 ## Held-out evaluation: CRPS only, never ELPD
 

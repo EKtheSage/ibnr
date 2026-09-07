@@ -104,14 +104,31 @@ from scipy.special import gammaln
 
 __all__ = [
     "MEASURES",
+    "POISSON_RATE_MAX",
     "check_normalization",
     "lognormal_lpdf",
     "normal_lpdf",
+    "odp_draw",
     "odp_lpdf",
     "to_amount_scale",
 ]
 
 _LOG_2PI = float(np.log(2.0 * np.pi))
+
+_INT64_MAX = float(np.iinfo(np.int64).max)
+
+#: the largest rate ``numpy.random.Generator.poisson`` will draw at. It is
+#: numpy's own ``POISSON_LAM_MAX``, which numpy does not export, so it is
+#: rebuilt from its definition rather than copied as a digit string:
+#: ``int64max - 10 * sqrt(int64max)``, about 9.2233720064847708e18.
+#:
+#: Writing it out by hand is how this went wrong once already. An earlier copy
+#: in ``kernels/odp_bootstrap.py`` said ``9.223372036854776e18``, the int64
+#: maximum itself, which is about 30 billion too high: every rate in between
+#: passed the check and then made numpy raise anyway.
+#: ``tests/test_odp_bootstrap.py::test_poisson_rate_cap_is_numpys`` finds the
+#: real boundary by bisection and refuses anything else.
+POISSON_RATE_MAX: float = _INT64_MAX - 10.0 * float(np.sqrt(_INT64_MAX))
 
 #: every measure a gallery density may declare, and the covariate its carry to
 #: the amount scale needs. ``None`` means the density is already there.
@@ -188,6 +205,83 @@ def odp_lpdf(y, mu, phi) -> np.ndarray:
         raise ValueError("odp_lpdf needs non-negative y")
     scaled = y / phi
     return scaled * np.log(mu / phi) - mu / phi - gammaln(scaled + 1.0)
+
+
+def odp_draw(rng: np.random.Generator, mu, phi) -> np.ndarray:
+    """The over-dispersed Poisson draw ``X = phi * Poisson(mu / phi)``.
+
+    Mean ``mu``, variance ``phi * mu`` - England & Verrall's process law, and
+    the one every ODP entry in the gallery simulates with. One implementation,
+    shared, because the three gallery entries and the bootstrap kernel wrote
+    the same expression seven times - twice in each entry and once in the
+    kernel - and only the kernel handled its one hard edge.
+
+    Returns an array shaped like ``mu``. ``rng`` is consumed only for the cells
+    that are actually drawn, so a fit with nothing at the limit reads exactly
+    the random numbers it always did.
+
+    **The limit.** numpy refuses a Poisson rate above :data:`POISSON_RATE_MAX`,
+    and ``mu / phi`` runs past it exactly when the over-dispersion collapses
+    against the mean. There the draw's coefficient of variation
+    ``sqrt(phi / mu) = 1 / sqrt(rate)`` is below 3.3e-10: the law is a point
+    mass to any precision that matters, so those cells come back at ``mu``
+    exactly. ``phi == 0`` is the same statement with no dispersion left at all
+    and returns a copy of ``mu``. Both follow the convention
+    ``kernels.mack.draw_step`` already documents for a zero-variance step.
+
+    How far the collapse has to go, measured rather than asserted: a triangle
+    that develops exactly on its own fitted curve fits itself to rounding
+    error, and the Pearson scale falls to about 1e-29 while the means stay in
+    the thousands, which puts the rate 4e11 times past the limit
+    (``tests/test_clark.py`` and ``tests/test_odp_bootstrap.py`` both build one
+    and pin the answer). Any noise at all keeps a fit well clear: the same
+    triangle with its amounts rounded to whole units sits at 1e-14 of the
+    limit, and with a relative noise of one part in a million, at 1e-8 of it.
+    So this is the answer for a degenerate fit, not a branch an ordinary one
+    takes.
+
+    **The refusals.** A mean that is not finite never came from the model: it
+    is a parameter sample that overflowed before any draw was asked for, and it
+    is named as such rather than left for numpy to report as a rate problem. A
+    negative mean is a different defect - a sign the caller was supposed to
+    handle, by flooring the mean (the gallery entries use
+    ``clark.scorer.MU_FLOOR``) or by reflecting it (the bootstrap kernel) - so
+    it is refused separately and its message says which. Same for a negative or
+    non-finite ``phi``. All the checks run before the ``phi == 0`` shortcut, so
+    a broken mean is refused whatever the dispersion is.
+
+    A mean of exactly 0 is none of those things: it is a legal Poisson rate,
+    drawn like any other and answering 0.
+    """
+    mu = np.asarray(mu, dtype=float)
+    phi = float(phi)
+
+    not_finite = ~np.isfinite(mu)
+    if not_finite.any():
+        raise ValueError(
+            f"odp_draw needs a finite mean at every cell: {int(not_finite.sum())} of "
+            f"{mu.size} are not finite. A mean like that is a parameter sample that "
+            "overflowed upstream, before any draw was asked for"
+        )
+    negative = mu < 0.0
+    if negative.any():
+        raise ValueError(
+            f"odp_draw needs a non-negative mean at every cell: {int(negative.sum())} of "
+            f"{mu.size} are negative, the smallest {float(mu.min())!r}. An over-dispersed "
+            "Poisson draw has no negative mean: floor it (the gallery entries use "
+            "clark.scorer.MU_FLOOR) or reflect its sign (the bootstrap kernel does) "
+            "before asking for the draw"
+        )
+    if not np.isfinite(phi) or phi < 0.0:
+        raise ValueError(f"odp_draw needs a finite, non-negative dispersion phi, got {phi!r}")
+
+    out = mu.astype(float, copy=True)
+    if phi == 0.0:
+        return out  # no dispersion left: the mean, and no random numbers taken
+    live = mu / phi <= POISSON_RATE_MAX
+    if live.any():
+        out[live] = phi * rng.poisson(mu[live] / phi)
+    return out
 
 
 def to_amount_scale(

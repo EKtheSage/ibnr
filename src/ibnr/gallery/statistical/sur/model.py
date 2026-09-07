@@ -15,7 +15,9 @@ At the no-intercept default the per-line slope ``b_{k,d}`` is exactly the
 volume-weighted chain-ladder development factor, so this is "chain ladder + a
 contemporaneous cross-line error correlation", estimated jointly rather than
 line by line. ``intercept=True`` switches the design to Zhang's general form
-``[1, C_d]`` at one extra parameter per line per transition.
+``[1, C_d]`` at one extra parameter per line per transition, and needs at least
+two origin pairs at every development step to be identified: a square triangle's
+last step has exactly one, so ``fit`` refuses it by name (see card.md).
 
 Cross-refs: card.md (model card, small-sample ladder, limitations);
 ``kernels.multiline`` (the shared one-company/many-LOB data contract, target
@@ -88,6 +90,11 @@ class SUR(GalleryEntry):
         (default ``K + 2``) is the origin-pair count below which a transition
         falls back from full FGLS to the pooled-correlation / Mack-tail rules;
         ``max_iter``/``tol`` govern the FGLS fixed-point iteration.
+
+        The ladder degrades a thin transition; it does not rescue an
+        unidentified one. A transition with fewer origin pairs than design
+        columns is refused before estimation starts, which under
+        ``intercept=True`` means every square triangle's last step.
         """
         train = triangle.as_of(as_of) if as_of is not None else triangle
         # Single canonical data prep (one company, K aligned LOBs, cumulative).
@@ -128,6 +135,25 @@ class SUR(GalleryEntry):
                 raise ValueError(
                     f"no origin observes both dev steps {d + 1} and {d + 2}; "
                     "cannot estimate this development transition"
+                )
+            # Fewer origin pairs than columns is not a thin fit, it is an
+            # unanswerable question: n points cannot pin down p > n
+            # coefficients. Only intercept=True reaches this (p = 2), and every
+            # square triangle reaches it, because the last development step has
+            # exactly one origin pair. Refuse HERE, before any estimation and
+            # before anything is stamped on the entry: downstream the inverse
+            # either raises LinAlgError, which names a matrix rather than the
+            # model, or rounds through and returns a coefficient covariance of
+            # order 1e15 that parameter risk turns into a predicted total
+            # hundreds of times too large, every draw finite.
+            if n < p:
+                raise ValueError(
+                    f"the development transition between dev steps {d + 1} and {d + 2} "
+                    f"has {n} origin pair(s) for the {p}-column [1, C_d] design, so its "
+                    "intercept and slope are unidentified. "
+                    "Every square triangle has one pair at its last "
+                    "step. Use intercept=False, or fit a triangle whose every "
+                    "development step has at least 2 origin pairs."
                 )
             x0 = cum[:, w_idx, d]  # (K, n) cumulative at dev d (regressor)
             y0 = cum[:, w_idx, d + 1]  # (K, n) cumulative at dev d+1 (response)

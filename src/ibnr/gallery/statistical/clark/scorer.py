@@ -24,6 +24,7 @@ from __future__ import annotations
 import numpy as np
 
 from ibnr.gallery.statistical.clark.model import GROWTH_CURVES, METHODS, age_interval, growth
+from ibnr.kernels.densities import odp_draw
 from ibnr.kernels.holdout import CellIndex
 
 __all__ = ["draw_cells", "mu_cells", "param_draws"]
@@ -140,4 +141,4 @@ def draw_cells(
     post = param_draws(contract, params, n_draws=n_draws, rng=rng)
     mu = mu_cells(contract, post, cells, curve=params["growth_curve"])
     phi = float(params["phi"])
-    return phi * rng.poisson(mu / phi)
+    return odp_draw(rng, mu, phi)
