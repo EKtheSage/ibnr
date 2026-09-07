@@ -46,20 +46,26 @@ WORKDIR /app
 # every other version here.
 COPY --from=ghcr.io/astral-sh/uv:0.11.7 /uv /uvx /usr/local/bin/
 
-# Use the image's own interpreter (never a uv-managed download), and keep
-# uv's cache out of the layer.
-ENV UV_PYTHON=/usr/local/bin/python3 \
-    UV_PYTHON_DOWNLOADS=never \
+# Never a uv-managed interpreter download, and no uv cache in any layer.
+ENV UV_PYTHON_DOWNLOADS=never \
     UV_NO_CACHE=1 \
     UV_LINK_MODE=copy
 
+# UV_PYTHON pins the sync to the image's own interpreter, and it is scoped to
+# these two RUNs rather than set with ENV: a global UV_PYTHON outranks
+# VIRTUAL_ENV for `uv pip install`, which then targets the system interpreter
+# instead of /app/.venv - measured in CI run 34097833296, where cas-schedule-p
+# landed outside the venv and the image's own CMD died at ModuleNotFoundError.
+#
 # Dependency layer first: a src/ edit must not re-download the stack.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-default-groups --extra bayesian --no-install-project
+RUN UV_PYTHON=/usr/local/bin/python3 \
+    uv sync --frozen --no-default-groups --extra bayesian --no-install-project
 
 COPY README.md ./
 COPY src ./src
-RUN uv sync --frozen --no-default-groups --extra bayesian --no-editable
+RUN UV_PYTHON=/usr/local/bin/python3 \
+    uv sync --frozen --no-default-groups --extra bayesian --no-editable
 
 ENV VIRTUAL_ENV=/app/.venv \
     PATH="/app/.venv/bin:$PATH"
