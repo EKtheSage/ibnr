@@ -50,7 +50,9 @@ Posterior draws of `(logelr, omega, theta)` × scaled-Poisson process draws
 `phi * Poisson(mu/phi)` per future cell, truncated at the triangle's final
 age (no tail), paid-to-date anchored - identical mechanics to the MLE twin
 with the posterior replacing the delta-method MVN. Fully-developed origins
-are constant.
+are constant. The process draw is the shared `kernels.densities.odp_draw`,
+which returns the mean exactly when the dispersion has collapsed so far
+that `mu / phi` is past the largest Poisson rate numpy can draw at.
 
 ## Held-out evaluation: CRPS only, never ELPD
 

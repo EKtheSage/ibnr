@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ibnr.kernels.densities import odp_draw
 from ibnr.kernels.holdout import CellIndex
 
 __all__ = ["draw_cells", "mu_cells"]
@@ -109,4 +110,4 @@ def draw_cells(
         )
     mu = mu_cells(contract, post, cells)
     phi = float(contract["phi"])
-    return phi * rng.poisson(mu / phi)
+    return odp_draw(rng, mu, phi)
