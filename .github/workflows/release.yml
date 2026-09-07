@@ -14,6 +14,19 @@ name: Release
 # never release. Requires a matching "pending publisher" on PyPI (see
 # docs/publishing.md); those values must match THIS file's name (release.yml)
 # and the environment name below, or PyPI will refuse the upload.
+#
+# Publishing ALSO requires the tagged commit to already carry green test and
+# lint runs. Until this was added, a `v*` tag published whatever it pointed at:
+# the twine step checks that the metadata and the README parse, and nothing
+# anywhere checked that a single test had ever run on that commit. Releases were
+# cut from a green main by habit, which is not the same thing as a rule.
+#
+# Neither test.yml nor lint.yml runs on a tag - both run on pushes to main and
+# on pull requests - so this workflow does not start them. It reads the check
+# runs GitHub already recorded against the tagged commit, and refuses to publish
+# unless a full green set is there. The dry run is deliberately exempt: it
+# publishes nothing, so it has nothing to prove, and rehearsing a release from a
+# branch that has not been through a pull request yet has to stay possible.
 
 on:
   push:
@@ -22,6 +35,204 @@ on:
   workflow_dispatch: # dry run: build + validate only, never publishes
 
 jobs:
+  tests-green:
+    name: Tests green on this commit
+    # Tag pushes only, which is the same condition the publish job carries. A
+    # manual "Run workflow" skips this job and publishes nothing either way.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    # Reads check runs and writes nothing. There is no checkout step below on
+    # purpose: the evidence this job wants lives in the API, not in the tree.
+    permissions:
+      checks: read
+      contents: read
+
+    # A hang budget, not a runtime budget. The wait below gives up on its own
+    # after 30 minutes and prints a message explaining what to do; this is only
+    # here so a wedged runner cannot sit for GitHub's 360 minute default.
+    timeout-minutes: 40
+
+    steps:
+      # The commit and the repository arrive as environment variables rather
+      # than as ${{ }} substituted into the script text. Two reasons: a workflow
+      # expression pasted into a shell script is the shape of an injection bug,
+      # and keeping the body free of them means this exact script can be run by
+      # hand against a real commit - which is how every outcome below was
+      # checked before it ever ran here, since a tag push cannot be rehearsed
+      # without publishing to PyPI.
+      - name: Require green pytest and ruff runs on the tagged commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_REPO: ${{ github.repository }}
+          GATE_SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+
+          # Both are overridable so the script can be exercised by hand without
+          # waiting half an hour to watch it give up.
+          interval="${GATE_INTERVAL_SECONDS:-60}"
+          budget="${GATE_TIMEOUT_SECONDS:-1800}"
+          api_errors="$(mktemp)"
+
+          # Check runs that belong to THIS release run. On a tag push they sit
+          # on the very same commit - "Build distributions" is running alongside
+          # this job and "Publish to PyPI" is queued behind it - so a rule that
+          # counted them would be waiting for a job that is waiting for it.
+          #
+          # Two conditions, and only the second cannot go stale. The names are
+          # the `name:` fields in this file, copied by hand, and none of them
+          # matches `ruff` or `pytest (` today - so on its own that list is
+          # insurance against a future rename, and useless if the rename forgets
+          # to update it. The URL of every check run of this run carries this
+          # run's id whatever its job is called, which is the condition that
+          # actually holds. GITHUB_RUN_ID is absent when this script is run by
+          # hand, which leaves that condition inert rather than wrong.
+          own_job() {
+            case "$1" in
+              "Tests green on this commit"|"Build distributions"|"Publish to PyPI") return 0 ;;
+            esac
+            case "$2" in
+              *"/actions/runs/${GITHUB_RUN_ID:-none}/"*) return 0 ;;
+            esac
+            return 1
+          }
+
+          echo "commit: ${GATE_SHA}"
+          echo "asking every ${interval}s, for up to ${budget}s"
+
+          deadline=$(( $(date +%s) + budget ))
+          attempt=0
+          roster=""
+          waiting=""
+          have_ruff=0
+          have_pytest=0
+          last_api_error=""
+
+          while : ; do
+            attempt=$(( attempt + 1 ))
+
+            # `filter=latest` is this endpoint's default, so a leg that failed
+            # and was re-run green is read as green - the same thing a person
+            # reading the commit's checks would conclude.
+            #
+            # The "pending" and "-" fillers matter: a tab is whitespace, so bash
+            # collapses two of them into one, and an empty field in the middle
+            # of a line would slide the URL into the conclusion. No field is
+            # ever allowed to be empty.
+            if rows="$(gh api "repos/${GATE_REPO}/commits/${GATE_SHA}/check-runs?per_page=100" \
+                --paginate \
+                --jq '.check_runs[] | [.name, .status, (.conclusion // "pending"), (.details_url // "-")] | @tsv' \
+                2>"${api_errors}")"; then
+              last_api_error=""
+            else
+              rows=""
+              last_api_error="$(tr '\n' ' ' < "${api_errors}" | sed 's/ *$//')"
+              echo "attempt ${attempt}: could not read the check runs: ${last_api_error}"
+            fi
+
+            have_ruff=0
+            have_pytest=0
+            roster=""
+            waiting=""
+            failed=""
+
+            # What counts as evidence: lint.yml has one job named `ruff`, and
+            # test.yml's matrix jobs are named `pytest (core)`, `pytest (all)`
+            # and so on. At least one of each has to exist, and every run
+            # carrying either name has to have finished successfully. Every
+            # other check run on the commit - the docs build, anything added
+            # later - is read and ignored, so a new workflow cannot start
+            # blocking releases by accident.
+            while IFS=$'\t' read -r name status conclusion details; do
+              [ -n "${name}" ] || continue
+              if own_job "${name}" "${details}"; then continue; fi
+              case "${name}" in
+                ruff) have_ruff=1 ;;
+                "pytest ("*) have_pytest=1 ;;
+                *) continue ;;
+              esac
+              roster="${roster}  ${name}: ${status} / ${conclusion}"$'\n'
+              if [ "${status}" != "completed" ]; then
+                waiting="${waiting}${name} (${status}), "
+              elif [ "${conclusion}" != "success" ]; then
+                failed="${failed}${name} (${conclusion}), "
+              fi
+            done <<< "${rows}"
+
+            # A finished run that is not a success is a decision, not a delay,
+            # so this does not wait for the rest of the matrix. The list is
+            # deliberately wider than failure/cancelled/timed_out: a `skipped`
+            # or `neutral` pytest leg is also evidence that did not happen, and
+            # treating it as "not yet" would burn the whole budget and then
+            # print a message about missing runs when the runs are right there.
+            if [ -n "${failed}" ]; then
+              {
+                echo
+                echo "FAIL: nothing was published."
+                echo
+                echo "The tagged commit ${GATE_SHA} carries a check run that did not pass:"
+                echo "  ${failed%, }"
+                echo
+                echo "Fix the commit, let Tests and Lint go green on the fixed commit, and tag that one."
+              } >&2
+              exit 1
+            fi
+
+            if [ "${have_ruff}" = 1 ] && [ "${have_pytest}" = 1 ] && [ -z "${waiting}" ]; then
+              echo
+              echo "OK: the tagged commit already carries green test and lint runs:"
+              printf '%s' "${roster}"
+              exit 0
+            fi
+
+            # Waiting is the common case, not an error: a tag is usually pushed
+            # seconds after the merge that produced the commit, while the
+            # matrix that merge started is still running.
+            missing=""
+            [ "${have_ruff}" = 1 ] || missing="${missing}ruff, "
+            [ "${have_pytest}" = 1 ] || missing="${missing}pytest (...), "
+            missing="${missing%, }"
+            still="${waiting%, }"
+            echo "attempt ${attempt}: not there yet - missing: ${missing:-none}; still running: ${still:-none}"
+
+            now="$(date +%s)"
+            left=$(( deadline - now ))
+            if [ "${left}" -le 0 ]; then break; fi
+            if [ "${left}" -lt "${interval}" ]; then sleep "${left}"; else sleep "${interval}"; fi
+          done
+
+          {
+            echo
+            echo "FAIL: nothing was published."
+            echo
+            echo "This tag points at commit ${GATE_SHA}, and after ${budget}s that commit still"
+            echo "does not carry the runs a release has to rest on:"
+            echo "  * every 'pytest (...)' job from Tests (.github/workflows/test.yml), green"
+            echo "  * the 'ruff' job from Lint (.github/workflows/lint.yml), green"
+            echo
+            echo "what is on the commit right now:"
+            if [ -n "${roster}" ]; then
+              printf '%s' "${roster}"
+            else
+              echo "  nothing - no pytest or ruff check run exists on this commit at all"
+            fi
+            echo
+            echo "Tests and Lint run on pushes to main and on pull requests, never on a tag, so"
+            echo "a tag on a commit that went through neither has no runs to wait for, and"
+            echo "re-running this workflow will not create any."
+            echo
+            echo "What to do: get that exact commit onto main (or into a pull request), let"
+            echo "Tests and Lint finish green on it, then delete the tag and push it again."
+            if [ -n "${last_api_error}" ]; then
+              echo
+              echo "Note: the last read of the check runs itself failed, so this may be an API"
+              echo "problem rather than a missing test run. The error was: ${last_api_error}"
+            fi
+          } >&2
+          exit 1
+
   build:
     name: Build distributions
     runs-on: ubuntu-latest
@@ -54,7 +265,11 @@ jobs:
 
   pypi:
     name: Publish to PyPI
-    needs: build
+    # `build` produces the files; `tests-green` is the evidence that they are
+    # worth publishing. Note that `tests-green` is skipped on a dry run, which
+    # would normally skip everything downstream of it - harmless here, because
+    # the `if:` below skips this job on exactly the same event.
+    needs: [build, tests-green]
     # Tag pushes only - a manual "Run workflow" is always a dry run.
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
