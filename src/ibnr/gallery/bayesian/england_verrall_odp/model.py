@@ -23,6 +23,7 @@ from ibnr.gallery.entry import GalleryEntry, PredictsHeldout
 from ibnr.gallery.registry import register
 from ibnr.kernels.contract import odp_stan_data, realized_values
 from ibnr.kernels.densities import odp_draw
+from ibnr.kernels.diagnostics import convergence_report
 from ibnr.kernels.holdout import CellIndex
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.kernels.rng import cohort_stream
@@ -36,6 +37,25 @@ STAN_DATA_KEYS = ("len_data", "n_w", "n_d", "w", "d", "inc_loss", "logprem", "ph
 #: posterior backends this entry can dispatch to; all three target the same
 #: posterior, which ``kernels.parity`` gates before any convergence claim
 BACKENDS = ("stan", "numpyro", "pymc")
+
+#: The whole sampled space: the log-link intercept and the two free effect
+#: vectors. ``alpha``/``beta`` (which restore the zero-pinned first element) and
+#: ``log_mu`` are deterministic functions of these three, and the dispersion
+#: ``phi`` is plug-in data rather than a parameter, so this list is the model.
+_SAMPLED = ("c", "r_alpha", "r_beta")
+
+#: Default convergence parameters per backend, written down rather than
+#: discovered from whatever a fit happens to carry: ``convergence()`` refuses a
+#: name the posterior lacks, so this mapping is a claim about each backend that
+#: goes red instead of quietly shrinking the summary. Both ports mirror
+#: ``model.stan`` site for site (verified against real posteriors from all
+#: three), so the three lists are the same names - stated three times, because
+#: a port that renamed one must fail here rather than be inferred around.
+CONVERGENCE_VARS: dict[str, tuple[str, ...]] = {
+    "stan": _SAMPLED,
+    "numpyro": _SAMPLED,
+    "pymc": _SAMPLED,
+}
 
 
 def pooled(idata, name: str) -> np.ndarray:
@@ -433,27 +453,15 @@ class EnglandVerrallODP(GalleryEntry, PredictsHeldout):
     def convergence(self, var_names: list[str] | None = None) -> dict:
         """Convergence diagnostics from the fitted posterior: max R-hat, min
         bulk/tail ESS, divergence count/fraction, and wall-clock sampling
-        runtime."""
-        import arviz as az
-
+        runtime. ``var_names`` defaults to ``CONVERGENCE_VARS`` for the backend
+        this entry was fitted with; a name the posterior does not carry is
+        refused rather than dropped, so the numbers always describe the set
+        that was asked for."""
         if self.idata_ is None:
             raise RuntimeError("call fit() first")
-        if var_names is None:
-            var_names = ["c", "r_alpha", "r_beta"]
-        var_names = [v for v in var_names if v in self.idata_.posterior]
-        summ = az.summary(self.idata_, var_names=var_names)
-        post = self.idata_.posterior
-        n_draws = int(post.sizes["chain"] * post.sizes["draw"])
-        diverging = None
-        if "sample_stats" in self.idata_ and "diverging" in self.idata_.sample_stats:
-            diverging = int(np.asarray(self.idata_.sample_stats["diverging"].values).sum())
-        return {
-            "backend": self.backend_,
-            "runtime_s": float(self.idata_.attrs.get("runtime_s", np.nan)),
-            "n_draws": n_draws,
-            "max_rhat": float(summ["r_hat"].max()),
-            "min_ess_bulk": float(summ["ess_bulk"].min()),
-            "min_ess_tail": float(summ["ess_tail"].min()),
-            "divergences": diverging,
-            "divergence_frac": (None if diverging is None else diverging / n_draws),
-        }
+        return convergence_report(
+            self.idata_,
+            backend=self.backend_,
+            defaults=CONVERGENCE_VARS,
+            var_names=var_names,
+        )

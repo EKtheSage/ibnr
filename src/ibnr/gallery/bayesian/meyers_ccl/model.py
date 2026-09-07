@@ -35,6 +35,7 @@ from ibnr.gallery.bayesian.meyers_ccl import scorer
 from ibnr.gallery.entry import GalleryEntry, PredictsHeldout, ScoresHeldout
 from ibnr.gallery.registry import register
 from ibnr.kernels.contract import realized_values, stan_data
+from ibnr.kernels.diagnostics import convergence_report
 from ibnr.kernels.holdout import CellIndex
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.kernels.rng import cohort_stream
@@ -47,6 +48,26 @@ STAN_DATA_KEYS = ("len_data", "n_w", "n_d", "w", "d", "prev_idx", "logprem", "lo
 
 #: posterior backends this entry can dispatch to
 BACKENDS = ("stan", "numpyro", "pymc")
+
+#: The sampled (non-deterministic) core parameters, which is what R-hat and ESS
+#: are worth reading on: their transforms (alpha/beta/rho/sig) are deterministic
+#: functions of exactly these draws, so summarizing them too would double-count,
+#: and the pinned entries alpha[1]/beta[n_d] are constants arviz cannot
+#: summarize at all.
+_SAMPLED = ("logelr", "r_alpha", "r_beta", "a_ig", "r_rho")
+
+#: Default convergence parameters per backend, written down rather than
+#: discovered from whatever a fit happens to carry: ``convergence()`` refuses a
+#: name the posterior lacks, so this mapping is a claim about each backend that
+#: goes red instead of quietly shrinking the summary. Both ports mirror
+#: ``model.stan`` site for site (verified against real posteriors from all
+#: three), so the three lists are the same names - stated three times, because
+#: a port that renamed one must fail here rather than be inferred around.
+CONVERGENCE_VARS: dict[str, tuple[str, ...]] = {
+    "stan": _SAMPLED,
+    "numpyro": _SAMPLED,
+    "pymc": _SAMPLED,
+}
 
 
 def pooled(idata, name: str) -> np.ndarray:
@@ -480,35 +501,15 @@ class MeyersCCL(GalleryEntry, ScoresHeldout, PredictsHeldout):
         """Cross-backend convergence diagnostics from the fitted posterior:
         max R-hat, min bulk/tail ESS, divergence count/fraction, and wall-clock
         sampling runtime. Computed once via arviz so every backend reports the
-        same numbers. ``var_names`` defaults to the sampled (non-deterministic)
-        core parameters."""
-        import arviz as az
-
+        same numbers. ``var_names`` defaults to ``CONVERGENCE_VARS`` for the
+        backend this entry was fitted with; a name the posterior does not carry
+        is refused rather than dropped, so the numbers always describe the set
+        that was asked for."""
         if self.idata_ is None:
             raise RuntimeError("call fit() first")
-        if var_names is None:
-            # The sampled parameters, not their transforms (alpha/beta/rho/sig):
-            # R-hat and ESS on a deterministic function of the sampled space
-            # would double-count, and the pinned entries alpha[1]/beta[n_d] are
-            # constants that arviz cannot summarize.
-            var_names = ["logelr", "r_alpha", "r_beta", "a_ig", "r_rho"]
-        # ports may name things slightly differently; keep only what exists
-        var_names = [v for v in var_names if v in self.idata_.posterior]
-        summ = az.summary(self.idata_, var_names=var_names)
-        post = self.idata_.posterior
-        n_draws = int(post.sizes["chain"] * post.sizes["draw"])
-        # Divergences are the diagnostic that matters for this centered
-        # parameterization; not every backend/idata carries sample_stats.
-        diverging = None
-        if "sample_stats" in self.idata_ and "diverging" in self.idata_.sample_stats:
-            diverging = int(np.asarray(self.idata_.sample_stats["diverging"].values).sum())
-        return {
-            "backend": self.backend_,
-            "runtime_s": float(self.idata_.attrs.get("runtime_s", np.nan)),
-            "n_draws": n_draws,
-            "max_rhat": float(summ["r_hat"].max()),
-            "min_ess_bulk": float(summ["ess_bulk"].min()),
-            "min_ess_tail": float(summ["ess_tail"].min()),
-            "divergences": diverging,
-            "divergence_frac": (None if diverging is None else diverging / n_draws),
-        }
+        return convergence_report(
+            self.idata_,
+            backend=self.backend_,
+            defaults=CONVERGENCE_VARS,
+            var_names=var_names,
+        )
