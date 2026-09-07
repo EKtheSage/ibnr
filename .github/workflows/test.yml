@@ -70,6 +70,23 @@ name: Tests
 #     actually produces. They are allowed to break when upstream ships, and
 #     that break is the point.
 #
+#     The first such break came on 2026-09-05, and the fix went into
+#     pyproject, not into this file. sqlglot 30.18.0 renamed the `Drop`
+#     expression's `this` argument to `tables`; ibis 12.0.0 still passes
+#     `this`, so ibis rendered `DROP VIEW IF EXISTS` with no name and every
+#     duckdb-backend `Triangle.from_long` from an in-memory frame died in
+#     duckdb's parser on both floating legs - hundreds of failures each;
+#     parquet paths, ibis expressions and the polars backend were unaffected,
+#     and polars-latest went red on its duckdb half - while the seven locked
+#     legs, on sqlglot 30.11.0, stayed green. duckdb 1.5.5 was the first
+#     suspect and was cleared by pinning sqlglot alone. The answer was a
+#     `sqlglot<30.18` cap in pyproject's core dependencies - NOT an extra
+#     requirement on these legs' sync_args, which would have greened the leg
+#     while leaving `pip install ibnr` exactly as broken, the one thing the
+#     leg exists to catch. Read the cap's comment in pyproject for the
+#     upstream issue and the condition for lifting it;
+#     tests/test_sqlglot_cap.py names the cause if it is lifted early.
+#
 # On what the core leg does and does not prove about torch, because it is easy
 # to read backwards: tests/test_gallery.py's subprocess check asserts `'torch'
 # not in sys.modules` after importing ibnr.gallery. With torch ABSENT that
@@ -88,13 +105,12 @@ name: Tests
 # tests), so read them as the right order of magnitude rather than current to
 # the second.
 #
-# The two `-latest` legs are the one exception to that, and it is flagged rather
-# than blurred: they were added AFTER the run above and have never executed on a
-# runner at all. "Roughly a minute each" is an ESTIMATE, extrapolated from the
-# locked core and polars legs (50s and 56s) plus an unlocked resolve, and it is
-# the only number in this file that was not measured. Replace it with billed
-# time from the first run that includes them. What is not a guess: neither leg
-# installs torch or cmdstanpy, so they do belong at the cheap end.
+# The two `-latest` legs were added AFTER the run above, so "roughly a minute
+# each" was an estimate when first written, extrapolated from the locked core
+# and polars legs (50s and 56s) plus an unlocked resolve. Measured since, on
+# main's green run of 2026-08-26 (32952677125): core-latest 1m23s and
+# polars-latest 1m44s wall, in line with the estimate. What was never a guess:
+# neither leg installs torch or cmdstanpy, so they do belong at the cheap end.
 #
 # Worth knowing if these numbers are ever re-derived on a laptop: the runners
 # are FASTER than the dev box for this workload, not slower. The `all` leg's
@@ -511,8 +527,9 @@ jobs:
           #
           # They are ALLOWED to break when a new numpy or pandas ships. That
           # break IS the signal, and it arrives here rather than in a user's
-          # traceback. Do not "fix" one by pinning it; fix the code, or add a
-          # cap to the extra that genuinely needs one.
+          # traceback. Do not "fix" one by pinning it here; fix the code, or add
+          # a cap to the dependency set that genuinely needs one, core included
+          # (the sqlglot paragraph in the header is the first case).
           #
           # `unlocked` is a separate matrix field rather than a sentinel value
           # in sync_args, because the two install paths take different uv
@@ -528,7 +545,7 @@ jobs:
             forbid_skips: ""
             allow_skips: ""
             strict_skips: "false"
-            required_files: "tests/test_core.py;tests/test_transforms.py;tests/test_gallery.py;tests/test_markdown_snippets.py;tests/test_import_purity.py;tests/test_codec.py"
+            required_files: "tests/test_core.py;tests/test_transforms.py;tests/test_gallery.py;tests/test_markdown_snippets.py;tests/test_import_purity.py;tests/test_codec.py;tests/test_sqlglot_cap.py"
             # measured one base earlier: 557 passed, 204 skipped on numpy 2.5.1 /
             # pandas 3.0.5 - test for test identical to the locked core leg on
             # numpy 2.4.6 / pandas 2.3.3, which is the useful part of the
@@ -551,7 +568,7 @@ jobs:
             forbid_skips: "polars backend not installed"
             allow_skips: ""
             strict_skips: "false"
-            required_files: "tests/test_transforms.py;tests/test_mack.py;tests/test_holdout.py;tests/test_polars_extra.py"
+            required_files: "tests/test_transforms.py;tests/test_mack.py;tests/test_holdout.py;tests/test_polars_extra.py;tests/test_sqlglot_cap.py"
             # measured on this tree: 685 passed, 76 skipped on numpy 2.5.1 /
             # pandas 3.0.5. The locked polars leg above reads 681 only because
             # it was measured one base earlier; the +4 is the same four tests
