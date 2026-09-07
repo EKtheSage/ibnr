@@ -67,8 +67,121 @@ def test_eval_misalignment(backend_name):
 
 
 def test_dev_lag_off_grain(backend_name):
-    t = _tri(backend_name, [("2020-01-01", 9, "2020-09-30", 1.0)])
-    assert any("multiple of 12 months" in i for i in t.validate(strict=False))
+    """Two diagonals on DIFFERENT offsets against the declared annual grain, plus a
+    non-positive age.
+
+    Mixing a 9-month age with a 12-month one means the two are not a whole number
+    of dev steps apart, so ``dev_lag // 12`` floors them onto the same step. And
+    dev_lag 0 is not a development age at all: dev_lag counts months from the
+    origin period start, so the first annual cell is 12.
+
+    The message is pinned whole, because every part of it is what tells a reader
+    which rows to look at: the count, the anchor offset, the offsets found, and
+    the evaluation date the anchor came from, written as the date the triangle
+    stores rather than as a timestamp.
+    """
+    mixed = _tri(
+        backend_name,
+        [("2020-01-01", 9, "2020-09-30", 1.0), ("2020-01-01", 12, "2020-12-31", 2.0)],
+    )
+    assert mixed.validate(strict=False) == [
+        "1 rows whose dev_lag offset against the 12-month dev grain is not 0: "
+        "offsets found [0, 9], anchor taken from the latest eval_date 2020-12-31"
+    ]
+
+    zero = _tri(
+        backend_name,
+        [("2020-01-01", 0, "2019-12-31", 1.0), ("2020-01-01", 12, "2020-12-31", 2.0)],
+    )
+    assert any("not positive" in i for i in zero.validate(strict=False))
+
+
+def test_the_dev_grain_anchor_comes_from_the_latest_diagonal(backend_name):
+    """Which offset is the right one is decided by the LATEST evaluation date.
+
+    The bucketing was anchored there, so that is the offset the triangle means.
+    Here the latest diagonal is a March 31 with offset 3 and the two older rows
+    sit at offset 0, so both of those are the rows to look at. Reading the anchor
+    off the smallest offset, or off the offset most rows carry, would name the
+    single newest row instead and send a reader to the wrong end of the triangle.
+    """
+    t = _tri(
+        backend_name,
+        [
+            ("2019-01-01", 12, "2019-12-31", 1.0),
+            ("2019-01-01", 24, "2020-12-31", 2.0),
+            ("2019-01-01", 39, "2022-03-31", 3.0),
+        ],
+    )
+    assert t.validate(strict=False) == [
+        "2 rows whose dev_lag offset against the 12-month dev grain is not 3: "
+        "offsets found [0, 3], anchor taken from the latest eval_date 2022-03-31"
+    ]
+
+
+def test_a_latest_diagonal_carrying_several_offsets_says_so(backend_name):
+    """When the anchor diagonal is itself mixed, the message must not pretend it is not.
+
+    Quarterly origins on an annual dev grain put four origins on the same
+    evaluation date at four different ages, so the latest diagonal carries several
+    offsets and no single one anchors the triangle. The smallest is taken so a
+    count can be reported at all, and the message says the diagonal was mixed
+    rather than presenting that choice as something the data decided.
+    """
+    t = _tri(
+        backend_name,
+        [
+            ("2020-01-01", 3, "2020-03-31", 1.0),
+            ("2020-01-01", 15, "2021-03-31", 2.0),
+            ("2020-04-01", 12, "2021-03-31", 3.0),
+        ],
+    )
+    assert t.validate(strict=False) == [
+        "2 rows whose dev_lag offset against the 12-month dev grain is not 0: "
+        "offsets found [0, 3], the latest eval_date 2021-03-31 carries offsets [0, 3] "
+        "itself, so no single offset anchors the triangle and the smallest of them is taken"
+    ]
+
+
+def test_a_negative_dev_lag_is_reported_once_and_the_same_way_on_both_backends(backend_name):
+    """A negative age is a sign problem, and only that.
+
+    ``%`` follows the backend's own sign rule, so an age of -3 against an annual
+    grain leaves a remainder of -3 on one backend and 9 on the other. Feeding
+    negative ages to the offset rule therefore made the offsets reported for the
+    SAME triangle differ by backend, and dressed a negative age up as an anchoring
+    problem on top of the positivity finding it already has. Only positive ages get
+    an offset now, so this triangle has exactly one finding on both backends.
+    """
+    t = _tri(
+        backend_name,
+        [("2020-01-01", -3, "2019-09-30", 1.0), ("2020-01-01", 12, "2020-12-31", 2.0)],
+    )
+    issues = t.validate(strict=False)
+    assert "1 rows where dev_lag is not positive" in issues
+    assert not any("offset" in i for i in issues)
+
+
+def test_anchored_dev_ages_are_on_grain(backend_name):
+    """Ages 3, 15, 27 on an ANNUAL dev grain are a clean triangle, not a finding.
+
+    This is what chainladder's ``grain('OYDY')`` and our ``with_dev_grain('Y')``
+    both produce when the latest valuation is a March 31: dev buckets are anchored
+    to the latest diagonal, so the ages step by 12 months from an offset of 3
+    rather than from 0. The rule is that every row shares ONE offset, not that the
+    offset is zero - the old rule called chainladder's own output invalid, on all
+    156 rows of its quarterly sample.
+    """
+    rows = [
+        ("2019-01-01", 3, "2019-03-31", 1.0),
+        ("2019-01-01", 15, "2020-03-31", 2.0),
+        ("2019-01-01", 27, "2021-03-31", 3.0),
+        ("2020-01-01", 3, "2020-03-31", 4.0),
+        ("2020-01-01", 15, "2021-03-31", 5.0),
+    ]
+    t = _tri(backend_name, rows)
+    assert t.dev_lags == [3, 15, 27]
+    assert t.validate(strict=False) == []
 
 
 def test_validate_handles_an_empty_triangle(backend_name):

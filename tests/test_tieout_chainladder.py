@@ -205,3 +205,7 @@ def test_quarterly_dev_grain(backend_name):
     ours = Triangle.from_chainladder(q, backend=backend_name).with_dev_grain("Y")
     theirs = Triangle.from_chainladder(q.grain("OYDY"), backend=backend_name)
     assert_triangles_equal(ours, theirs)
+    # and the result of our own regrain is a triangle we call valid: the ages step
+    # by 12 months from an offset of 3, which is on the annual grain even though no
+    # age is a multiple of 12. The older rule reported all 156 rows as a finding.
+    assert ours.validate(strict=False) == []

@@ -317,8 +317,10 @@ def to_chainladder(t: Triangle):
 def from_bermuda(tri, backend: str | BaseBackend | None = None) -> Triangle:
     """Convert a bermuda Triangle (cell-based) to a long Triangle.
 
-    Origin grain is inferred from period lengths; bermuda's incremental cells
-    are detected via cell type.
+    Origin grain is inferred from period lengths and DEV grain from bermuda's
+    ``eval_date_resolution`` (see :func:`_bermuda_dev_grain`, which also says what
+    happens when there is only one diagonal to read it from); bermuda's
+    incremental cells are detected via cell type.
 
     **Never copy bermuda's ``Cell.dev_lag``.** bermuda measures dev lag from the
     period *end*, so its first diagonal is 0; ours measures months from the
@@ -362,9 +364,47 @@ def from_bermuda(tri, backend: str | BaseBackend | None = None) -> Triangle:
         df,
         measure="incremental" if incremental else "cumulative",
         origin_grain=grain,
-        dev_grain=grain,
+        dev_grain=_bermuda_dev_grain(tri, months_to_grain, origin_grain=grain),
         backend=backend,
     )
+
+
+def _bermuda_dev_grain(tri, months_to_grain: dict[int, str], *, origin_grain: str) -> str:
+    """The dev grain of a bermuda triangle: the spacing of its evaluation dates.
+
+    bermuda stores no dev grain, and the ORIGIN grain is the wrong answer for it.
+    Annual periods observed every quarter are an ordinary bermuda triangle, and
+    calling that OYDY leaves every cell intact under a label that is wrong: the
+    step declared here is what ``to_incremental`` looks back by, so a 12-month
+    step on quarterly cells finds no predecessor and keeps 2 rows out of 8.
+
+    ``eval_date_resolution`` is bermuda's own answer, the months between
+    evaluation dates, and it is ``None`` when the triangle carries a single
+    diagonal - where the data genuinely does not say how far apart the next one
+    would be. The origin grain is the fallback there, and only there: the
+    attribute is read directly, so a bermuda release that renames it raises
+    ``AttributeError`` here instead of quietly restoring the wrong label this
+    function exists to stop.
+
+    The one limit worth knowing before trusting the round trip: bermuda carries
+    cells, not declarations, so the grain that comes back is the spacing bermuda
+    could observe. A triangle declared quarterly that holds only annual diagonals
+    (ages 3 and 15, say) comes back annual, because nothing in the cells says
+    otherwise.
+    """
+    resolution = tri.eval_date_resolution
+    if resolution is None:
+        return origin_grain
+    resolution = int(resolution)
+    if resolution not in months_to_grain:
+        supported = ", ".join(f"{m} ({g})" for m, g in sorted(months_to_grain.items()))
+        raise ValueError(
+            f"bermuda triangle has a {resolution}-month evaluation-date resolution, which "
+            f"is not a dev grain this package can represent (supported: {supported} months). "
+            "Rounding it to a supported grain would mislabel every dev lag downstream, so "
+            "the conversion stops here rather than guessing."
+        )
+    return months_to_grain[resolution]
 
 
 def to_bermuda(t: Triangle):
