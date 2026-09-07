@@ -29,6 +29,7 @@ import sys
 
 import numpy as np
 import pytest
+from scipy.optimize import OptimizeResult
 from scipy.special import logsumexp
 
 from ibnr.kernels.forecast import Absence, CohortForecast, align_panel, leaderboard, logmeanexp
@@ -79,8 +80,16 @@ def _forecast(
     return CohortForecast(model=model, task=task, cells=cells, field="paid_loss", **kw)
 
 
-def _weights_panel(rng, *, shift_b=0.0, neg_inf_col_b=False, as_of=WEIGHTS_AS_OF, equal=False):
-    """Two models on two cohorts at the earlier cutoff, aligned."""
+def _weights_panel(
+    rng, *, shift_b=0.0, neg_inf_col_b=False, as_of=WEIGHTS_AS_OF, equal=False, edit=None
+):
+    """Two models on two cohorts at the earlier cutoff, aligned.
+
+    ``edit(company, ld_a, ld_b)`` may change the two log-density arrays in
+    place before the forecasts are built. That is how the numerical-range tests
+    below move a whole fit into the region where ``exp(lpd)`` stops being a
+    normal float.
+    """
     forecasts = []
     for company in ("CO_A", "CO_B"):
         cells = _cells(company, as_of=as_of)
@@ -88,6 +97,8 @@ def _weights_panel(rng, *, shift_b=0.0, neg_inf_col_b=False, as_of=WEIGHTS_AS_OF
         ld_b = ld_a.copy() if equal else _density(cells, rng=rng, shift=shift_b)
         if neg_inf_col_b and company == "CO_A":
             ld_b[:, 0] = -np.inf
+        if edit is not None:
+            edit(company, ld_a, ld_b)
         forecasts.append(_forecast("model_a", cells, rng=rng, log_density=ld_a))
         forecasts.append(_forecast("model_b", cells, rng=rng, log_density=ld_b))
     return align_panel(forecasts)
@@ -106,6 +117,61 @@ def _evaluation(rng, *, shift_b=0.0, as_of=EVAL_AS_OF, models=("model_a", "model
 @pytest.fixture
 def rng() -> np.random.Generator:
     return np.random.default_rng(20260726)
+
+
+STACK_SEED = 20260726
+
+
+def _stack_inputs(*, shift_b=-3.0, edit=None):
+    """The two arguments ``stack`` takes, both built from one fixed seed.
+
+    Two calls that differ only in ``edit`` differ only by that edit, which is
+    what makes a weights-against-weights comparison a statement about the edit.
+    """
+    fitted_on = _weights_panel(np.random.default_rng(STACK_SEED), shift_b=shift_b, edit=edit)
+    evaluation = _evaluation(np.random.default_rng(STACK_SEED + 1), shift_b=shift_b)
+    return fitted_on, evaluation
+
+
+def _same_offset(per_cell):
+    """An edit adding the SAME per-cell offset to both members' log densities.
+
+    A common offset multiplies every member's density at that cell by the same
+    factor, so it divides the mixture density by that factor for every weight
+    vector and cannot move the optimum.
+    """
+
+    def edit(company, ld_a, ld_b):
+        offset = per_cell(ld_a.shape[1], company)
+        ld_a += offset
+        ld_b += offset
+
+    return edit
+
+
+#: Common offsets that leave the true optimum where it was. The first three are
+#: deep enough that ``exp(lpd)`` reaches the subnormals; the +50 control is not,
+#: so it pins the deep three as statements about the numerical range rather than
+#: about the subtraction itself.
+OFFSETS = {
+    "scalar_deep": lambda n, company: np.full(n, -1000.0),
+    "per_cell_deep": lambda n, company: np.linspace(-1000.0, -700.0, n),
+    "one_shared_deep_cell": lambda n, company: (
+        np.where(np.arange(n) == 0, -1000.0, 0.0) if company == "CO_A" else np.zeros(n)
+    ),
+    "control_shallow": lambda n, company: np.full(n, 50.0),
+}
+
+
+def _first_cell(value_a, value_b):
+    """An edit putting chosen log densities on CO_A's first cell, per member."""
+
+    def edit(company, ld_a, ld_b):
+        if company == "CO_A":
+            ld_a[:, 0] = value_a
+            ld_b[:, 0] = value_b
+
+    return edit
 
 
 # =============================================================================
@@ -202,9 +268,152 @@ def test_a_neg_inf_pointwise_elpd_is_floored_not_nan(rng):
     # the floored member gave a weight-panel outcome zero density; the floor is
     # low enough that MLE reads that cell as (effectively) zero support
     assert result.weights["model_b"] < 0.5
-    assert LPD_FLOOR == -700.0 and np.exp(LPD_FLOOR) > 0.0, (
-        "the floor must stay a normal float: exp(-700) ~ 1e-304, not exactly 0"
+    log_smallest_normal = float(np.log(np.finfo(float).tiny))
+    assert log_smallest_normal < LPD_FLOOR, (
+        "the floor must stay above the log of the smallest normal double, -708.40, so "
+        "that exp(LPD_FLOOR) is a normal float and MleStacking's Jacobian 1 / (Y @ w) "
+        "stays finite. exp reaching exactly zero, at about -746, is the wrong boundary "
+        "and 37 nats too late"
     )
+    assert LPD_FLOOR == -700.0, "the floor is part of what the result publishes"
+
+
+@pytest.mark.parametrize("offset", sorted(OFFSETS))
+def test_mle_weights_are_invariant_to_a_common_per_cell_offset(offset):
+    """Adding the same number to every member at a cell cannot move the
+    optimum, so the weights must not move either.
+
+    MleStacking does its arithmetic in linear space. Once the mixture
+    ``Y @ w`` falls below 1 / DBL_MAX, about 5.6e-309, the Jacobian's
+    ``1 / (Y @ w)`` overflows to infinity, SLSQP stops at iteration 1 and hands
+    back the uniform vector it started from - a valid simplex and no fit at
+    all. Feeding bayesblend each cell's ELPD relative to that cell's best
+    finite member keeps every value it sees in [LPD_FLOOR, 0], whatever the
+    absolute level.
+
+    Before the fix all three deep offsets came back 0.5/0.5 against the
+    unshifted fit's 1.0/0.0. Mutation: drop the per-cell subtraction in
+    ``_relative_lpd`` but keep the floor. The two whole-matrix offsets still
+    fail; ``one_shared_deep_cell`` survives that one, because a floor applied
+    to finite values clips its single deep cell to -700 for both members, which
+    is inside the safe range.
+    """
+    pytest.importorskip("bayesblend")
+    raw = stack(*_stack_inputs())
+    shifted = stack(*_stack_inputs(edit=_same_offset(OFFSETS[offset])))
+    moved = max(abs(raw.weights[m] - shifted.weights[m]) for m in raw.weights)
+    assert moved < 1e-6, f"{offset} moved the weights from {raw.weights} to {shifted.weights}"
+    assert shifted.weights["model_a"] > 0.9
+
+
+def test_an_unconverged_mle_solve_is_refused_not_returned(monkeypatch):
+    """SLSQP failing leaves ``res.x`` wherever it stopped, which at the first
+    iteration is the uniform starting point. That passes every check a weight
+    vector faces: finite, non-negative, sums to 1. So a failed solve is
+    indistinguishable from a fitted answer unless the optimizer's own verdict
+    is read.
+
+    The patched result is the one measured before the fix on two members at
+    -1000 and -1003 on every cell: status 4, 'Inequality constraints
+    incompatible', after one iteration, with an infinite objective because
+    every density had underflowed to exactly zero.
+
+    Mutation: drop the ``res.success`` check in ``_fit_weights``; the call then
+    returns {'model_a': 0.5, 'model_b': 0.5} and nothing raises.
+    """
+    pytest.importorskip("bayesblend")
+    import bayesblend.models
+
+    def failed_solve(**kwargs):
+        x0 = kwargs["x0"]
+        return OptimizeResult(
+            x=x0,
+            success=False,
+            status=4,
+            message="Inequality constraints incompatible",
+            fun=np.inf,
+            jac=np.full_like(x0, np.nan),
+            nit=1,
+            nfev=1,
+            njev=1,
+        )
+
+    monkeypatch.setattr(bayesblend.models, "minimize", failed_solve)
+    with pytest.raises(RuntimeError, match="did not converge"):
+        stack(*_stack_inputs())
+
+
+def test_a_zero_density_member_never_outranks_a_finite_one_on_its_cell():
+    """A member that gave the outcome zero density must rank below one that
+    gave it a tiny positive density, on that cell.
+
+    The old absolute floor put it above: ``-inf`` became -700 while the finite
+    member stayed at -800. Relative to the cell's best finite member the two
+    constructions below are the same matrix, so they must fit the same weights,
+    and the loser must keep a positive weight - the exact optimum for these
+    cells, brute-forced in log space, is 0.825 on model_a.
+
+    Mutation: floor ``-inf`` before taking the per-cell maximum. The two
+    fixtures then disagree, because -700 is the cell maximum in the first and
+    -800 is in the second.
+    """
+    pytest.importorskip("bayesblend")
+    missed = stack(*_stack_inputs(edit=_first_cell(-np.inf, -800.0)))
+    deep = stack(*_stack_inputs(edit=_first_cell(-5000.0, -800.0)))
+
+    assert missed.n_floored_neg_inf == 1
+    assert deep.n_floored_neg_inf == 0
+    assert missed.weights == pytest.approx(deep.weights, abs=1e-6), (
+        "zero density and a density 4,200 nats behind the cell's best are the same "
+        "verdict at double precision; they must not fit different weights"
+    )
+    assert missed.weights["model_b"] > 0.05, (
+        "model_b is the only member with any support on that cell, so it cannot be "
+        "weighted out of the stack"
+    )
+
+
+def test_a_cell_every_member_missed_is_uninformative_not_nan():
+    """A cell no member covered says nothing about which member to prefer, and
+    it must not turn the weights into NaN either.
+
+    Both constructions below give every member the same log density on that
+    cell, so the mixture density there is that number whatever the weights are:
+    the cell adds a constant to the objective and the optimum is the one the
+    other cells choose. This is also the trap the relative transform has to
+    avoid: a plain ``m - m.max(axis=0)`` is ``-inf - -inf`` on this cell, which
+    is NaN, and NaN weights are what the whole floor exists to prevent.
+
+    Mutation: take the per-cell maximum over every entry instead of the finite
+    ones. The all-missed cell becomes NaN and ``_check_weights`` raises.
+    """
+    pytest.importorskip("bayesblend")
+    both_missed = stack(*_stack_inputs(edit=_first_cell(-np.inf, -np.inf)))
+    shared_finite = stack(*_stack_inputs(edit=_first_cell(-20.0, -20.0)))
+
+    assert both_missed.n_floored_neg_inf == 2
+    assert all(np.isfinite(w) for w in both_missed.weights.values())
+    assert np.isclose(sum(both_missed.weights.values()), 1.0)
+    assert both_missed.weights == pytest.approx(shared_finite.weights, abs=1e-6), (
+        "a cell every member missed is as uninformative as a cell they all scored "
+        "identically; both leave the weights to the other cells"
+    )
+
+
+def test_a_pointwise_elpd_of_plus_inf_is_refused_by_name():
+    """``-inf`` is a verdict here and ``+inf`` is a bug: an infinite density.
+
+    It has to be refused where it arrives, not left to the solve. Passed on, it
+    survives the relative transform as ``+inf``, makes the SLSQP objective NaN
+    and comes back as a convergence complaint, which points the reader at the
+    optimizer instead of at the density that is wrong.
+
+    Mutation: check only for NaN, as the code did before. The call then raises
+    RuntimeError about a solve that did not converge.
+    """
+    pytest.importorskip("bayesblend")
+    with pytest.raises(ValueError, match="NaN or \\+inf"):
+        stack(*_stack_inputs(edit=_first_cell(np.inf, -12.0)))
 
 
 # =============================================================================

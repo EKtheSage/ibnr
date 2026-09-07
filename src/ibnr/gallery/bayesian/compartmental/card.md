@@ -126,6 +126,22 @@ natively; the lognormal arm drops its own non-positive cells). Both arms:
 | workers_compensation | 28.9* | 28.2* |
 | **combined (n=200)** | **39.9*** | **16.1*** |
 
+**One lognormal cell is restated (2026-09-04).** Company 16373 on other
+liability never converged (R-hat 1.25, bulk ESS 12) and its draws hold missing
+values, which is why its estimate, standard error and CV are blank in
+`_lognormal.csv` while its percentile reads 0.0. That 0.0 was
+`PredictiveDistribution.cdf` counting missing draws as lying above the outcome,
+not a company whose outcome fell below every draw; `cdf` now returns no
+percentile there and the row leaves the uniformity test. Recomputing from the
+stored percentiles, other liability goes from D = 20.2 (rejects, n = 50) to
+**18.6 (passes, n = 49)** and the combined figure from 16.2 to **15.9** (still
+rejects, n = 199), so the lognormal arm's standing against the rest of the paid
+board is unchanged and only the marginal other-liability verdict flips. Read the
+table above as the figures the original run printed: recomputing the KS from the
+stored CSVs today lands within 0.5 of every cell in both arms and in both
+directions, a difference that predates this note, so trust the direction and the
+reject-or-pass verdict rather than the second digit.
+
 The two failure modes separate cleanly:
 
 - **gaussian fails on bias + sharpness** - the monograph's own critique of

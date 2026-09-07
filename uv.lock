@@ -910,6 +910,7 @@ dependencies = [
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "scipy" },
+    { name = "sqlglot" },
 ]
 
 [package.optional-dependencies]
@@ -944,6 +945,7 @@ dev = [
     { name = "jupyterlab" },
     { name = "nbconvert" },
     { name = "nbformat" },
+    { name = "packaging" },
     { name = "pandas" },
     { name = "pytest" },
     { name = "ruff" },
@@ -953,6 +955,7 @@ docs = [
 ]
 test = [
     { name = "cas-schedule-p" },
+    { name = "packaging" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -973,6 +976,7 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=15" },
     { name = "pymc", marker = "extra == 'bayesian'", specifier = "<6" },
     { name = "scipy", specifier = ">=1.11" },
+    { name = "sqlglot", specifier = "<30.18" },
     { name = "torch", marker = "extra == 'nn'", specifier = ">=2.2" },
 ]
 provides-extras = ["polars", "bayesian", "nn", "viz", "interop"]
@@ -987,6 +991,7 @@ dev = [
     { name = "jupyterlab", specifier = ">=4" },
     { name = "nbconvert", specifier = ">=7" },
     { name = "nbformat", specifier = ">=5" },
+    { name = "packaging", specifier = ">=22" },
     { name = "pandas", specifier = ">=2" },
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.16" },
@@ -994,6 +999,7 @@ dev = [
 docs = [{ name = "great-docs", specifier = ">=0.15" }]
 test = [
     { name = "cas-schedule-p", specifier = ">=2026.6.13" },
+    { name = "packaging", specifier = ">=22" },
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.16" },
 ]

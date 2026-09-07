@@ -354,8 +354,12 @@ def main() -> int:
 
     # THE headline test: are the predictive distributions honest? Percentiles
     # are PIT values in 0-100, so divide by 100 before the uniformity test.
-    # Failure rows have a null percentile and drop out here - read `failed`
-    # in the JSON report alongside `n`.
+    # A row with a null percentile drops out here, so the JSON report names
+    # each reason that can happen: a fit that raised (`failed`), a fit that ran
+    # with no outcome to score against (`missing_outcome`), and a fit whose
+    # draws held a missing value, which `cdf` scores as no percentile at all
+    # (`missing_draws` - the published compartmental lognormal run has one such
+    # company, so this is not a hypothetical column).
     ok = df[df.get("percentile").notna()] if "percentile" in df else pd.DataFrame()
     if len(ok) >= 5:  # KS on a handful of points says nothing; don't print it
         print("\nUniformity of total-outcome percentiles (Meyers p-p test):")
@@ -364,11 +368,21 @@ def main() -> int:
         for line, grp in ok.groupby("line"):
             print(f"  {line:<24} n={len(grp):>3}  {ks_uniformity(grp['percentile'] / 100)}")
         print(f"  {'ALL':<24} n={len(ok):>3}  {ks_uniformity(ok['percentile'] / 100)}")
+        # `error` is written by the harness for a fit that raised or a worker
+        # that died, so counting it separates a failure from a fit that ran
+        errored = df["error"].notna() if "error" in df else pd.Series(False, index=df.index)
+        ran = ~errored
         # machine-readable one-liner for the calling harness/notebook
         report = {
             "n": len(ok),
             "ks_all": ks_uniformity(ok["percentile"] / 100).statistic,
-            "failed": int(df["percentile"].isna().sum()) if "percentile" in df else 0,
+            "failed": int(errored.sum()),
+            "missing_outcome": int((ran & df["outcome"].isna()).sum()) if "outcome" in df else 0,
+            "missing_draws": (
+                int((ran & df["outcome"].notna() & df["percentile"].isna()).sum())
+                if "outcome" in df
+                else 0
+            ),
         }
         print(json.dumps(report))
     return 0

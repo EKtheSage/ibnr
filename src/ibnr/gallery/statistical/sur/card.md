@@ -22,7 +22,9 @@ Whitening each equation by `1/sqrt(C_d)` makes the system homoskedastic; the
 whitened residual covariance `Sigma_d` (diag `sigma^2_{k,d}`) carries the
 cross-line dependence. With `intercept=True` the design becomes `[1, C_d]`
 (Zhang's general form) at the cost of one extra parameter per line per
-transition.
+transition. Two columns need at least two origin pairs at every development
+step, and a square triangle's last step has exactly one, so `intercept=True`
+there is refused by name rather than fitted.
 
 ## Estimation
 
@@ -33,7 +35,13 @@ linearmodels. `coef_cov` is the FGLS asymptotic covariance `(X' Omega^-1 X)^-1`.
 
 ### Small-sample ladder (explicit df guards)
 
-A transition with `n` usable origin pairs is estimated by:
+The ladder is entered only by a transition that is identified at all: `n >= p`
+usable origin pairs for `p` design columns. Below that the ladder has nothing
+to degrade, so `fit()` refuses the transition by name. It bites only under
+`intercept=True` (`p = 2`), where the single origin pair at a square triangle's
+last step is one equation for two unknowns.
+
+A transition with `n >= p` usable origin pairs is then estimated by:
 
 | condition | slopes | Sigma_d | method tag |
 |---|---|---|---|
@@ -80,5 +88,9 @@ cumulatives (the 1/C weighting requires it). Default `loss_field="paid_loss"`.
   on few residuals.
 - No tail development beyond the last observed dev step (as with the chain
   ladder it generalizes).
+- `intercept=True` needs a wider triangle than the default does: a square
+  triangle's last development step has one origin pair against two columns, so
+  the fit is refused rather than answered. One extra origin period is enough
+  (7 origins x 6 development steps leaves two pairs at the last step).
 - The eigenvalue floor repairs near-singular covariances at the price of
   attenuating extreme correlations.

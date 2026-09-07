@@ -18,6 +18,7 @@ import pytest
 
 from ibnr.kernels.calibration import ks_uniformity, pp_points
 from ibnr.kernels.predictive import PredictiveDistribution
+from ibnr.kernels.scores import crps
 
 
 @pytest.fixture
@@ -56,6 +57,63 @@ def test_cdf_is_pit(pred):
     # that would otherwise misalign every percentile in a retrospective
     with pytest.raises(ValueError, match="shape"):
         pred.cdf([1.0])
+
+
+def test_cdf_propagates_a_missing_outcome():
+    """A target whose outcome is missing has no percentile at all.
+
+    ``NaN`` is the designed value for an outcome that has not emerged yet
+    (``contract.realized_values``, and the mack entry's total for a partially
+    unemerged cohort), and every comparison against NaN is False, so the raw
+    fraction-of-draws-below is exactly 0.0: the most extreme percentile there
+    is, and the worst possible over-prediction as far as the uniformity test is
+    concerned. The mask is per target, so a finite neighbour keeps its value,
+    and an outcome of ``-inf`` is a real verdict rather than a missing one.
+    """
+    pred = PredictiveDistribution(
+        samples=np.array([[1.0, 1.0], [2.0, 2.0]]),
+        targets=pd.DataFrame({"label": ["a", "b"]}),
+    )
+    pit = pred.cdf([np.nan, 1.5])
+    assert np.isnan(pit[0])  # a missing outcome gets no percentile, not the 0th
+    assert pit[1] == 0.5  # the finite neighbour is untouched
+    # an outcome below every draw is a genuine verdict and stays 0.0; this is
+    # what keeps a missing outcome distinguishable from an over-prediction
+    assert pred.cdf([-np.inf, 1.5])[0] == 0.0
+    # a draw tied with the outcome counts as at or below it: the PIT is the
+    # fraction of draws <= the outcome, not < it
+    assert pred.cdf([np.nan, 2.0])[1] == 1.0
+    table = pred.summary(observed=[np.nan, 1.5])
+    assert np.isnan(table["outcome"].iloc[0]) and np.isnan(table["percentile"].iloc[0])
+    assert table["percentile"].iloc[1] == 50.0
+
+
+def test_cdf_propagates_a_missing_draw():
+    """A target with a missing draw has no percentile either.
+
+    The same reasoning applied to the draws instead of the outcome: a NaN draw
+    compares False against the outcome, so it is silently counted as lying above
+    it and the fraction comes out too low. ``mean``, ``std`` and
+    ``kernels.scores.crps`` already answer NaN for such a target, and the
+    percentile now agrees with them. Infinite draws are a different case and are
+    deliberately not masked, so target b keeps its percentile even though it
+    carries draws of both signs, which makes its own mean NaN. That is the whole
+    difference between masking on a missing draw and masking on a NaN column
+    mean, so target b pins it.
+    """
+    pred = PredictiveDistribution(
+        samples=np.array([[1.0, 1.0], [2.0, 2.0], [np.nan, np.inf], [1.0, -np.inf]]),
+        targets=pd.DataFrame({"label": ["a", "b"]}),
+    )
+    pit = pred.cdf([2.5, 2.5])
+    assert np.isnan(pit[0])
+    # infinite draws compare perfectly well: 1, 2 and -inf lie at or below 2.5
+    # and +inf lies above it, so three of b's four draws count
+    assert pit[1] == pytest.approx(3 / 4)
+    assert np.isnan(pred.mean()[1])  # b's mean is NaN and its percentile is not
+    # the sibling methods on the same object give the same verdict for target a
+    assert np.isnan(pred.mean()[0])
+    assert np.isnan(crps(pred.samples, [2.5, 2.5])[0])
 
 
 def test_summary_table(pred):
