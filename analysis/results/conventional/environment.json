@@ -1,0 +1,33 @@
+{
+  "record_kind": "report_environment_snapshot_after_execution",
+  "python": "3.12.13 (main, Apr 14 2026, 14:31:26) [MSC v.1944 64 bit (AMD64)]",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "git_head": "ec953f3c27f32adae69b91ded8fd75f319883c22",
+  "working_tree_dirty": true,
+  "source_project_version": "0.5.9",
+  "installed_distribution_versions": {
+    "ibnr": "0.5.8",
+    "numpy": "2.4.6",
+    "pandas": "2.3.3",
+    "scipy": "1.17.1",
+    "ibis-framework": "12.0.0",
+    "duckdb": "1.5.3",
+    "polars": "1.41.2",
+    "pyarrow": "24.0.0"
+  },
+  "hashes": {
+    "uv.lock": "dcd9202faeb06c0a987d78c06e3c8eca0da127b4a7158578abb713fb6eb08c74",
+    "pyproject.toml": "45ca282d56b47c999e44c760e8df8eea2440c2a312221383dfcfb8f983db3f5e",
+    "docs/conventional-benchmark.md": "d9d9166f43e99bf937eee1849a9a490948d71abaf885f5b5969a9790564f4f54"
+  },
+  "notes": [
+    "Implementation imported from the editable local source tree; installed ibnr distribution metadata may lag pyproject.toml.",
+    "The benchmark manifest records a source snapshot captured after execution, not a captured launch-time environment.",
+    "During the runs, the driver gained the missing-selection-fit reason suffix for a wholly failed candidate batch. Successful fit, scoring, ranking and evaluation calculations were unchanged. Batch-equivalence regression tests passed."
+  ],
+  "captured_at_utc": "2026-09-15T08:44:17.307417+00:00",
+  "completed_runs": [
+    "published",
+    "synthetic"
+  ]
+}

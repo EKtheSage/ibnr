@@ -17,6 +17,70 @@ corrected decision 8.)
 
 ## Unreleased
 
+### Reserving review reference application
+
+`python -m apps.reserving_review --demo` runs a local browser application with
+real historical analysis, source and engine hashes, candidate and factor
+evidence, reasoned origin-level overrides, submission, independent approval or
+rejection, linked revisions, and approved JSON exports. SQLite persists
+immutable snapshots and hash-linked decisions; revision checks reject stale
+edits. Named analyst/reviewer accounts enforce ownership and separation of
+review. See [the application guide](apps/reserving_review/README.md) for setup
+and the local reference deployment's limits.
+
+### Published and independent conventional benchmarks
+
+`scripts/benchmark_conventional.py` runs the full literal published grids and
+prespecified stable/noisy/drift/shock synthetic portfolios. The appendix loader
+checks a pinned source hash; data remain a runtime download. Outputs retain
+every candidate ranking, selected settings, terminal-coverage counts, paper
+differences and implementation hashes. Candidate batching is tested against
+whole-grid selection. The protocol documents source grid/count ambiguities,
+ultimate-derived Swiss premiums and declared information-date conventions.
+
+### Historical selection and later evaluation
+
+`ibnr.kernels.selection` scores each replay diagonal using the paper's absolute
+actual-weighted RMSE, then selects on mean diagonal RMSE available by an
+explicit cutoff. Incomplete or undefined histories are ineligible, with
+coverage and reasons retained. Later evaluation freezes the selected forecast
+and compares only unknown-at-selection terminal-age targets; missing targets
+suppress the aggregate score. Outcome dates, units, grains and cohort identity
+are checked. See [the scoring rules](docs/conventional.md#select-then-evaluate-later).
+
+### Observed AvE/CDR replay
+
+`ibnr.kernels.replay.replay_conventional` refits fixed conventional candidates
+at successive information dates, using the same explicit development horizon.
+Origin-level results expose adverse-positive AvE, CDR and the revision to
+remaining reserves. New origins enter the refit but are excluded from that
+interval's score. Historical restatements use the correct information cutoff;
+incomplete or unfittable candidate intervals raise or retain explicit failures.
+
+### Conventional CL, BF and generalized Cape Cod point candidates
+
+`ibnr.kernels.conventional` adds frozen candidate settings, historical fitting,
+volume/simple/median factors, per-age history windows, explicit and high/low
+link exclusions, and an explicit candidate grid. Fits retain selected-pair
+diagnostics and any requested sparse-factor fallback. BF uses a supplied loss
+ratio; GCC estimates origin-specific loss ratios, with decay 0 matching CL and
+decay 1 matching ordinary Cape Cod. These point forecasts are separate from
+the distributional gallery and Mack's uncertainty formulas. See
+[the conventions and API](docs/conventional.md).
+
+### Stacking requires weight-fitting outcomes to be available at evaluation
+
+`gallery.stack()` now refuses an earlier forecast panel whose weight-fitting
+outcomes were observed after the evaluation cutoff. Previously, January and
+February forecasts could both target December outcomes: the cutoff-order check
+passed while the stack learned its weights from the same future outcomes it
+was evaluated on.
+
+The check uses the dates of the ELPD cells actually used to fit weights, matched
+by cell key. Outcomes dated exactly on the evaluation cutoff remain valid;
+later CRPS-only outcomes do not affect weight fitting. Missing or ambiguous
+availability metadata is refused, including on panels restored from Arrow.
+
 ### `to_wide` and the dev-grain coarsening refuse a cell stored twice (#118)
 
 Both operations reduce a cell's rows to one number without being asked which

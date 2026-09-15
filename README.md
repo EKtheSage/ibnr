@@ -78,6 +78,23 @@ The analytic msep ties out to R ChainLadder's published `CDR()` output on the
 simulation agree to Monte Carlo error. chainladder-python has no CDR at all,
 so nothing here is delegated to it.
 
+**Conventional point candidates**: CL, BF and generalized Cape Cod support
+history windows, volume/simple/median factors, link exclusions and explicit
+sparse-data policies. Observed AvE/CDR replay refits their frozen settings at
+successive dates, selects using completed historical scores, and evaluates the
+frozen forecast on later terminal-age observations. See [the API and conventions](docs/conventional.md)
+and [the published/synthetic benchmark protocol](docs/conventional-benchmark.md).
+Completed results are available for the [published examples](analysis/results/conventional/published/summary.md)
+and [30 seeds across four synthetic scenarios](analysis/results/conventional/synthetic/summary.md).
+The Swiss fixed baselines match the paper's displayed precision; selected
+winners differ. Historical selection also fails to improve every scenario.
+
+**Reserving reference application**: run `python -m apps.reserving_review --demo`
+from this repository to open a local review workspace. It computes historical
+selection evidence, records reasoned reserve overrides, requires an independent
+reviewer, and exports approved records with an immutable snapshot and audit
+history. See [the application guide](apps/reserving_review/README.md).
+
 ## Installation
 
 ```sh
@@ -450,8 +467,11 @@ board.sort_values("crps", ascending=gallery.SCORE_DIRECTION["crps"] == "lower_is
 
 `align_panel` intersects the cells the models actually share, per score, and
 `leaderboard` has no default sort - `SCORE_DIRECTION` is there because the two
-score columns run in opposite directions. `gallery.stack(...)` combines several
-fitted entries over the same panel.
+score columns run in opposite directions. `gallery.stack(weights_panel, evaluation)`
+learns weights on an earlier aligned panel and applies them to later
+`CohortForecast` objects. Every outcome used to learn weights must have been
+observed on or before the evaluation cutoff; distinct forecast cutoffs alone
+do not prevent future information from entering selection.
 
 ## Data: the CAS Schedule P gold mart
 

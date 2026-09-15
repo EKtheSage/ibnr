@@ -804,7 +804,10 @@ class ForecastPanel:
     one of the two cutoffs, and the cutoffs' panels are not even the same shape
     (9 cells per cohort at 1997, 8 at 1996 - see the module docstring). Two
     cutoffs is two panels, which is also what lets a later ``stack()`` assert
-    ``weights.as_of < evaluation.as_of`` instead of trusting its caller.
+    ``weights.as_of < evaluation.as_of`` instead of trusting its caller. Stacking
+    also checks that every outcome used to fit weights was observed on or before
+    the evaluation cutoff, using the cell table's ``eval_date``; distinct fit
+    cutoffs alone do not establish that the outcomes were available.
     """
 
     task: str

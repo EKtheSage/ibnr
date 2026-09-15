@@ -12,6 +12,9 @@ build/
 .ipynb_checkpoints/
 .coverage
 
+# local reserving reference application records
+/.ibnr-review/
+
 # great-docs generated site (source of truth is great-docs.yml + docstrings)
 great-docs/
 

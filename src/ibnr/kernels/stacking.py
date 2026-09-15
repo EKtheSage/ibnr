@@ -4,9 +4,12 @@ The two-cutoff design (``forecast.py``'s module docstring states it; this module
 implements it): weights are FITTED on the pointwise ELPD of an earlier panel and
 APPLIED to forecasts at a later cutoff. A panel pins one ``as_of``, so
 :func:`stack` reads two - the weights panel and the evaluation forecasts - and
-refuses ``weights_panel.as_of >= evaluation.as_of``, the guard the
-``ForecastPanel`` docstring promises. Fitting and scoring the same cutoff would
-grade the weights on the cells that chose them.
+refuses ``weights_panel.as_of >= evaluation.as_of``. It also requires every
+outcome used to fit weights to have been observed by ``evaluation.as_of``:
+different forecast cutoffs can still target the same unseen diagonal. Dates
+are checked by cell key on the ELPD fitting population; later CRPS-only outcomes
+do not influence weights. Outcomes observed exactly on the evaluation cutoff
+are available, consistent with ``Triangle.as_of``.
 
 What bayesblend gets, and what it never sees
 --------------------------------------------
@@ -267,6 +270,10 @@ def stack(
 
     * ``weights_panel.as_of >= evaluation as_of`` - weights graded on the cells
       that chose them measure selection, not skill;
+    * any weight-fitting outcome observed after the evaluation cutoff, or
+      missing/ambiguous availability metadata for a used cell. Outcome dates
+      equal to the evaluation cutoff are allowed. CRPS-only cells are not used
+      to fit weights and do not enter this check;
     * mixed ``as_of``/``task``/segment schema/measure among the evaluation
       forecasts, and any disagreement of those with the weights panel. What is
       checked WHERE: those four panel-identity checks happen here;
@@ -360,7 +367,7 @@ def stack(
             "over the set you mean to stack"
         )
 
-    lpd, dev_lag, n_floored = _lpd_matrix(weights_panel)
+    lpd, dev_lag, n_floored = _lpd_matrix(weights_panel, evaluation_as_of=eval_as_of)
     weights = _fit_weights(lpd, method=method, seed=seed, dev_lag=dev_lag)
     _check_weights(weights)
     # Renormalize the float residue so the applied vector is exactly a simplex;
@@ -395,7 +402,9 @@ def _one(name: str, values: set):
     return next(iter(values))
 
 
-def _lpd_matrix(panel: ForecastPanel) -> tuple[dict[str, np.ndarray], np.ndarray, int]:
+def _lpd_matrix(
+    panel: ForecastPanel, *, evaluation_as_of: dt.date
+) -> tuple[dict[str, np.ndarray], np.ndarray, int]:
     """Per member, the pointwise ELPD over the ELPD cells, relative and floored.
 
     Every model's vector is sorted by the SAME canonical key order (the panel's
@@ -407,6 +416,29 @@ def _lpd_matrix(panel: ForecastPanel) -> tuple[dict[str, np.ndarray], np.ndarray
     """
     pointwise = panel.pointwise
     live = pointwise[pointwise["on_elpd_panel"] & pointwise["model"].isin(panel.elpd_members)]
+    # Match availability to the exact rows about to enter the optimizer. The
+    # cell table also carries CRPS-only outcomes, which need not be available.
+    # Check keys and missing dates explicitly: max() would skip unknown dates,
+    # and a stored panel's mutable frames may have lost some of their metadata.
+    used_keys = live["key"].drop_duplicates()
+    metadata = panel.cells.loc[panel.cells["key"].isin(used_keys), ["key", "eval_date"]]
+    if metadata["key"].duplicated().any():
+        raise ValueError(
+            "weight-fitting outcomes have ambiguous eval_date metadata: duplicate keys"
+        )
+    dates = metadata.set_index("key")["eval_date"].reindex(used_keys)
+    if dates.isna().any():
+        raise ValueError(
+            "weight-fitting outcomes have missing eval_date metadata; every used cell "
+            "must have a known observation date before weights can be fitted"
+        )
+    later = dates[dates > evaluation_as_of]
+    if not later.empty:
+        raise ValueError(
+            f"{len(later)} weight-fitting outcomes were observed as late as {later.max()}, "
+            f"after the evaluation as_of ({evaluation_as_of}). Fit weights only on "
+            "outcomes available on or before the evaluation cutoff"
+        )
     out: dict[str, np.ndarray] = {}
     reference_keys: list | None = None
     dev_lag = np.empty(0)
