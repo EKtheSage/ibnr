@@ -4,6 +4,7 @@
   "platform": "Windows-11-10.0.26200-SP0",
   "git_head": "ec953f3c27f32adae69b91ded8fd75f319883c22",
   "working_tree_dirty": true,
+  "note": "git_head is the base commit because these runs predate the first commit of the branch that carries them, and the ibnr distribution version below is 0.5.8 because the editable install's metadata was stale at run time. The six source_hashes in each manifest are the authoritative pin on the code that ran. The docs/conventional-benchmark.md hash below is that file as it stood during the runs; later edits to the documentation change it without changing any result.",
   "source_project_version": "0.5.9",
   "installed_distribution_versions": {
     "ibnr": "0.5.8",

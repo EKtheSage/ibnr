@@ -6,7 +6,7 @@
   const state = { auth: null, me: null, demo: false, runs: [], run: null, csv: "", busy: false, exportRunId: null };
   const amountFormat = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const numberFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 6 });
-  const statusNames = { DRAFT: "Draft", SUBMITTED: "In review", APPROVED: "Approved", REJECTED: "Rejected" };
+  const statusNames = { DRAFT: "Draft", SUBMITTED: "In review", APPROVED: "Approved", REJECTED: "Rejected", UNVERIFIABLE: "Cannot verify" };
   const actionNames = { create: "Analysis created", analyze: "Analysis created", override: "Reserve adjusted", submit: "Submitted for review", approve: "Approved", reject: "Rejected", revise: "Revision created", export: "Record exported" };
   const labels = {
     candidate: "Candidate", eligible: "Eligible", mean_rmse: "Mean RMSE", n_scored: "Scored intervals", n_required: "Required intervals",
@@ -153,12 +153,15 @@
     if (!state.runs.length) $("run-list").append(node("p", "No analyses in this workspace yet.", "empty-message"));
     for (const run of state.runs) {
       const active = state.run?.id === run.id;
+      const damaged = run.status === "UNVERIFIABLE";
       const button = node("button", null, `run-item${active ? " active" : ""}`);
       button.type = "button";
       if (active) button.setAttribute("aria-current", "true");
-      button.append(node("span", run.title || run.snapshot?.title || "Untitled analysis", "run-item-title"));
+      button.append(node("span", damaged ? "Record that failed verification" : run.title || run.snapshot?.title || "Untitled analysis", "run-item-title"));
       const meta = node("span", null, "run-item-meta");
-      meta.append(node("span", run.as_of || run.snapshot?.as_of || "—"), statusBadge(run.status));
+      meta.append(node("span", damaged ? run.id : run.as_of || run.snapshot?.as_of || "—"), statusBadge(run.status));
+      // An approved run that already has a revision is not the current position.
+      if (run.superseded_by) meta.append(node("span", "Superseded", "status superseded"));
       button.append(meta);
       button.addEventListener("click", () => operate("Loading analysis…", () => openRun(run.id)));
       $("run-list").append(button);
@@ -327,21 +330,24 @@
     renderTable("history-table", snapshot.history_scores, { caption: "Historical scores by candidate and outcome date" });
     renderTable("factor-table", snapshot.factor_summary, { caption: "Fitted development factors and support" });
     renderTable("factor-selection-table", snapshot.factor_selection, { caption: "Observations included or excluded from each factor" });
-    definitionList("provenance-list", [["Run ID", run.id], ["Parent run ID", run.parent_id], ["Source SHA-256", snapshot.source_hash], ["Snapshot SHA-256", run.snapshot_hash], ["Engine", snapshot.engine], ["Loss field", snapshot.loss_field], ["Premium field", snapshot.premium_field], ["Units", snapshot.units], ["Segment", snapshot.segment], ["Saved source rows", snapshot.source_rows], ["History starts", snapshot.history_start], ["Information cutoff", snapshot.as_of], ["Created at", run.created_at], ["Created by", run.created_by], ["Revision", run.revision]]);
+    definitionList("provenance-list", [["Run ID", run.id], ["Parent run ID", run.parent_id], ["Superseded by", run.superseded_by],["Source SHA-256", snapshot.source_hash], ["Snapshot SHA-256", run.snapshot_hash], ["Engine", snapshot.engine], ["Loss field", snapshot.loss_field], ["Premium field", snapshot.premium_field], ["Units", snapshot.units], ["Segment", snapshot.segment], ["Saved source rows", snapshot.source_rows], ["History starts", snapshot.history_start], ["Information cutoff", snapshot.as_of], ["Created at", run.created_at], ["Created by", run.created_by], ["Revision", run.revision]]);
     $("saved-source-csv").textContent = typeof snapshot.source_csv === "string" ? snapshot.source_csv : "No source history recorded.";
     $("submit-form").hidden = !editable;
     $("decision-form").hidden = !reviewable;
     $("submit-form").reset();
     $("decision-form").reset();
     $("export-run").hidden = status !== "APPROVED";
-    $("revise-run").hidden = !hasRole("analyst") || !ownRun() || !["APPROVED", "REJECTED"].includes(status);
+    // A decided run allows one revision; the server refuses a second one.
+    $("revise-run").hidden = !hasRole("analyst") || !ownRun() || Boolean(run.superseded_by) || !["APPROVED", "REJECTED"].includes(status);
     const descriptions = {
       DRAFT: editable ? "Review the evidence and adjustments, then submit this reserve position to a separate reviewer." : "The analyst is preparing this reserve position. It is not yet submitted for review.",
       SUBMITTED: reviewable ? "Review the evidence and recorded adjustments. Your decision and rationale will be preserved with this run." : ownRun() ? "This run is awaiting a separate reviewer's decision. The submitted reserve position is locked for review." : "This run is awaiting a reviewer's decision.",
       APPROVED: hasRole("analyst") && ownRun() ? "This reserve position is approved and read-only. Export the record, or create a linked draft revision to propose a new decision." : "This reserve position is approved and read-only. You can export the complete approved record. Further changes require a linked analyst revision.",
       REJECTED: "This reserve position was rejected and is read-only. The analyst can create a linked draft revision to address the review.",
     };
-    $("review-description").textContent = descriptions[status] || "This run is read-only.";
+    $("review-description").textContent = run.superseded_by
+      ? `This run was revised as ${run.superseded_by}, which now carries the current reserve position. This record stays read-only, and no further revision can be created from it.`
+      : descriptions[status] || "This run is read-only.";
     renderActivity(run.events || []);
   }
 

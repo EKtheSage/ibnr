@@ -7,7 +7,13 @@ observed. See [the protocol](../../../../docs/conventional-benchmark.md),
 [individual results](results.csv) and [source manifest](manifest.json).
 The same 30 seeds are paired across scenarios; these are 120 scenario/seed
 cases, not 120 independent replications. See the shared
-[environment record](../environment.json) for runtime provenance.
+[environment record](../environment.json) for runtime provenance. Two recorded
+values are to be read literally: `manifest.json` says `ibnr_version` 0.5.8
+because the editable install's metadata was stale when the run executed, not
+because the code came from that release, and `environment.json` says `git_head`
+is the base commit because these runs predate this branch's first commit. The
+six `source_hashes` in the manifest are the authoritative pin on what ran; they
+matched the committed source files when this was checked.
 
 ## Mean terminal RMSE
 
@@ -24,16 +30,16 @@ calibration scores or confidence intervals.
 
 ## Paired comparison with basic CL
 
-Percentage change is `(mean selected RMSE / mean basic CL RMSE − 1) × 100`.
+Percentage change is `(mean selected RMSE / mean basic CL RMSE - 1) × 100`.
 Negative is an improvement. Win counts compare the two forecasts on the same
 portfolio seed and exclude ties.
 
 | Scenario | AvE mean change | AvE wins / 30 | CDR mean change | CDR wins / 30 |
 |---|---:|---:|---:|---:|
-| Stable | −29.0% | 23 | −24.4% | 20 |
-| Noisy | −34.6% | 22 | −41.7% | 23 |
-| Drift | −18.0% | 19 | +28.3% | 14 |
-| Unseen shock | −2.3% | 20 | +8.2% | 16 |
+| Stable | -29.0% | 23 | -24.3% | 20 |
+| Noisy | -34.6% | 22 | -41.7% | 23 |
+| Drift | -18.0% | 19 | +28.3% | 14 |
+| Unseen shock | -2.3% | 20 | +8.2% | 16 |
 
 ## Interpretation
 

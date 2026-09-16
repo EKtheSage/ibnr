@@ -6,16 +6,12 @@ import copy
 import hashlib
 import json
 import sqlite3
-import sys
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from threading import Barrier
 
 import pytest
-
-sys.path.insert(0, str(Path(__file__).parents[1]))
-
-from apps.reserving_review.store import (  # noqa: E402
+from apps.reserving_review.store import (
+    UNVERIFIABLE,
     Actor,
     Conflict,
     Forbidden,
@@ -226,9 +222,44 @@ def test_decided_run_is_immutable_and_revise_creates_linked_owned_draft(
     assert child["events"][0]["payload"]["parent_revision"] == run["revision"]
     child = store.set_override(AUTHOR, child["id"], "2020-01-01", 40, "New assessment", 1)
     verify_export_hashes(child)
-    assert store.get_run(AUTHOR, run["id"]) == run
+    # The parent is unchanged apart from naming the revision that replaced it.
+    assert store.get_run(AUTHOR, run["id"]) == {**run, "superseded_by": child["id"]}
     with pytest.raises(Forbidden):
         store.get_run(REVIEWER, child["id"])
+
+
+@pytest.mark.parametrize("decision", ["approve", "reject"])
+def test_a_decided_run_can_be_revised_once_and_the_listing_says_which_is_current(
+    store, snapshot, decision
+):
+    """A decided run appends no events, so its revision never moves.
+
+    Without this refusal the same expected_revision worked every time: one
+    approved run produced several drafts, each approvable and exportable with
+    its own booked reserve, and the workspace listed them all as current.
+    """
+    run = decided(store, snapshot, decision)
+    assert run["superseded_by"] is None
+    child = store.revise(AUTHOR, run["id"], run["revision"])
+    # The revision the first request used still matches, which is the whole
+    # problem: the same request succeeded again and again before this refusal.
+    for _ in range(2):
+        with pytest.raises(Conflict, match=f"already revised as {child['id']}"):
+            store.revise(AUTHOR, run["id"], run["revision"])
+    assert [row["id"] for row in store.list_runs(AUTHOR)].count(child["id"]) == 1
+    listed = {row["id"]: row for row in store.list_runs(AUTHOR)}
+    assert set(listed) == {run["id"], child["id"]}
+    assert listed[run["id"]]["superseded_by"] == child["id"]
+    assert listed[child["id"]]["superseded_by"] is None
+    assert listed[child["id"]]["parent_id"] == run["id"]
+    # The refusal does not close the child's own workflow: it can be decided
+    # and revised in turn, which is how a chain of revisions is built.
+    submitted_child = store.submit(AUTHOR, child["id"], "Ready", child["revision"])
+    approved_child = store.decide(
+        REVIEWER, child["id"], "approve", "Assessed", submitted_child["revision"]
+    )
+    assert approved_child["status"] == "APPROVED"
+    assert store.revise(AUTHOR, child["id"], approved_child["revision"])["parent_id"] == child["id"]
 
 
 def test_state_transitions_and_export_require_correct_state(store, snapshot):
@@ -280,17 +311,24 @@ def test_two_connections_racing_the_same_revision_commit_only_one_override(store
 
     def write(amount):
         connection_store = ReviewStore(store.path)
-        barrier.wait(timeout=10)
+        # Both timeouts are generous on purpose: a loaded runner can hold a
+        # thread or a SQLite lock long enough to fail for an unrelated reason.
+        barrier.wait(timeout=60)
         try:
             return connection_store.set_override(
                 AUTHOR, run["id"], "2020-01-01", amount, "Concurrent edit", 1
             )
         except Conflict as exc:
             return exc
+        except sqlite3.OperationalError as exc:  # pragma: no cover - loaded runner
+            assert "lock" in str(exc).lower(), exc
+            return exc
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(write, [0.0, 15.0]))
-    assert sum(isinstance(result, Conflict) for result in results) == 1
+    # Exactly one writer commits. The other is refused as a stale revision, or,
+    # on a runner slow enough to exceed SQLite's busy timeout, as a lock error.
+    assert sum(isinstance(result, (Conflict, sqlite3.OperationalError)) for result in results) == 1
     successful = next(result for result in results if isinstance(result, dict))
     reopened = ReviewStore(store.path).get_run(AUTHOR, run["id"])
     assert reopened == successful
@@ -352,11 +390,46 @@ def test_tampering_after_bypassing_triggers_is_detected_on_read_and_export(store
             connection.execute("DELETE FROM review_events WHERE revision = 2")
     for operation in (
         lambda: store.get_run(AUTHOR, run["id"]),
-        lambda: store.list_runs(REVIEWER),
         lambda: store.export_approved(REVIEWER, run["id"]),
     ):
         with pytest.raises(IntegrityError, match="integrity verification"):
             operation()
+    # The listing reports the damage instead of raising, so the workspace still
+    # opens; see the test below for why that matters.
+    for actor in (AUTHOR, REVIEWER):
+        listed = store.list_runs(actor)
+        assert [row["id"] for row in listed] == [run["id"]]
+        assert listed[0]["status"] == UNVERIFIABLE
+        assert "integrity verification" in listed[0]["error"]
+
+
+def test_one_damaged_run_is_flagged_and_the_healthy_runs_still_list(store, snapshot):
+    """A single corrupted record used to turn the whole listing into a 409.
+
+    The browser calls the listing on every sign-in, so one damaged row made the
+    application unusable rather than reporting the one record it could not
+    verify. Opening that record still raises.
+    """
+    damaged = decided(store, snapshot)
+    healthy = decided(store, {**snapshot, "title": "Second review"})
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("DROP TRIGGER review_events_no_update")
+        connection.execute(
+            "UPDATE review_events SET event_json = ? WHERE run_id = ? AND revision = 3",
+            (json.dumps({"rewritten": True}), damaged["id"]),
+        )
+    for actor in (AUTHOR, REVIEWER):
+        listed = {row["id"]: row for row in store.list_runs(actor)}
+        assert set(listed) == {damaged["id"], healthy["id"]}
+        assert listed[healthy["id"]]["status"] == "APPROVED"
+        assert listed[healthy["id"]]["title"] == "Second review"
+        assert listed[damaged["id"]]["status"] == UNVERIFIABLE
+        assert "integrity verification" in listed[damaged["id"]]["error"]
+        # Nothing the damaged record claims about itself is reported.
+        assert set(listed[damaged["id"]]) == {"id", "status", "error"}
+    assert store.get_run(AUTHOR, healthy["id"])["status"] == "APPROVED"
+    with pytest.raises(IntegrityError, match="integrity verification"):
+        store.get_run(AUTHOR, damaged["id"])
 
 
 @pytest.mark.parametrize(

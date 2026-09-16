@@ -15,6 +15,8 @@ import hmac
 import json
 import os
 import re
+import sys
+import traceback
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -25,6 +27,9 @@ from . import analysis
 from .store import Actor, ReviewError, ReviewStore
 
 MAX_BODY_BYTES = 2 * 1024 * 1024
+# A library error can name one clause per candidate per date, which has reached
+# 45 KB on one small CSV. The browser writes an error straight into the page.
+MAX_ERROR_CHARS = 2000
 STATIC_DIR = Path(__file__).with_name("static")
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -55,12 +60,26 @@ class _HTTPError(Exception):
         super().__init__(message)
 
 
+def _short_error(text: str) -> str:
+    """Bound one error message so a long library error stays readable."""
+    if len(text) <= MAX_ERROR_CHARS:
+        return text
+    omitted = len(text) - MAX_ERROR_CHARS
+    return f"{text[:MAX_ERROR_CHARS]}... ({omitted} more characters of this message)"
+
+
 def _users(config: dict | None, *, demo: bool) -> dict[str, _User]:
     if config is None:
+        raw = os.environ.get("IBNR_REVIEW_USERS")
         if demo:
+            if raw:
+                raise ValueError(
+                    "IBNR_REVIEW_USERS is set and --demo would replace those accounts "
+                    "with analyst/analyst and reviewer/reviewer. Unset IBNR_REVIEW_USERS "
+                    "or start without --demo."
+                )
             config = DEMO_USERS
         else:
-            raw = os.environ.get("IBNR_REVIEW_USERS")
             if not raw:
                 raise ValueError("Set IBNR_REVIEW_USERS or explicitly use --demo.")
             try:
@@ -136,13 +155,23 @@ class ReviewHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
-    def _json(self, status, value, *, attachment=False):
-        content = json.dumps(value, allow_nan=False, ensure_ascii=False).encode("utf-8")
+    def _json(self, status, value, *, attachment=False, canonical=False):
+        # The export is written in the same canonical form the store hashes, so
+        # a reader can recompute snapshot_hash from the bytes they received.
+        separators = (",", ":") if canonical else None
+        content = json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=False,
+            sort_keys=canonical,
+            separators=separators,
+        ).encode("utf-8")
         self._send(status, content, "application/json; charset=utf-8", attachment=attachment)
 
     def _discard_body(self):
         # Closing a Windows socket with unread POST bytes can discard the error
-        # response. Drain only bounded bodies and never wait on a slow sender.
+        # response. Read and discard only bounded bodies, and never wait on a
+        # slow sender.
         if self.command != "POST" or getattr(self, "_body_consumed", False):
             return
         lengths = self.headers.get_all("Content-Length", [])
@@ -274,7 +303,7 @@ class ReviewHandler(BaseHTTPRequestHandler):
             run_id, export = match.groups()
             if export:
                 result = self.server.store.export_approved(actor, run_id)
-                self._json(200, result, attachment=True)
+                self._json(200, result, attachment=True, canonical=True)
             else:
                 self._json(200, self.server.store.get_run(actor, run_id))
 
@@ -324,16 +353,20 @@ class ReviewHandler(BaseHTTPRequestHandler):
             self._dispatch()
         except (ReviewError, _HTTPError) as exc:
             self._discard_body()
-            self._json(exc.status_code, {"error": str(exc)})
+            self._json(exc.status_code, {"error": _short_error(str(exc))})
         except KeyError as exc:
             self._discard_body()
-            self._json(400, {"error": f"Missing required field: {exc.args[0]}"})
+            self._json(400, {"error": _short_error(f"Missing required field: {exc.args[0]}")})
         except ValueError as exc:
             self._discard_body()
-            self._json(400, {"error": str(exc)})
+            self._json(400, {"error": _short_error(str(exc))})
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError):
             self.close_connection = True
         except Exception:
+            # The response stays generic, but an unexpected failure must leave a
+            # trace somewhere. Request paths and headers are still not logged.
+            print("Unhandled error in the reserving review server:", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
             self._discard_body()
             self._json(500, {"error": "The request could not be completed."})
 
@@ -364,7 +397,7 @@ def create_server(
         raise ValueError("port must be an integer between 0 and 65535.")
     accounts = _users(users, demo=demo)
     return ReviewHTTPServer(
-        ("127.0.0.1", port),
+        (host, port),
         store=store if store is not None else ReviewStore(Path(".ibnr-review/review.sqlite3")),
         users=accounts,
         demo=demo,

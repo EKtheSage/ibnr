@@ -1,10 +1,18 @@
 # Conventional reserving candidates
 
 `ibnr.kernels.conventional` implements point forecasts for chain ladder (CL),
-Bornhuetter–Ferguson (BF), and Gluck's generalized Cape Cod (GCC). The formulas
-follow §§2.3.1–2.3.3 of [Balona and Richman (2021)](https://ibnr.co/research/balona-richman-2021.pdf).
+Bornhuetter-Ferguson (BF), and Gluck's generalized Cape Cod (GCC). The formulas
+follow sections 2.3.1-2.3.3 of [The Actuary and IBNR Techniques: A Machine
+Learning Approach](https://ibnr.co/research/balona-richman-2021.pdf), the
+23 April 2021 manuscript by Caesar Balona and Ronald Richman. The paper and its
+appendix are published on https://ibnr.co, an educational site by Ron Richman,
+one of the paper's authors and the founder of insureAI. That site is unrelated
+to this package, which shares the name by coincidence.
+
 These candidates support research into forecasting procedures. They do not
-implement ReserveAI's proprietary techniques.
+implement the methods of ReserveAI, insureAI's commercial reserving platform,
+which is built on the paper's ideas: those methods are proprietary and are not
+implemented or compared anywhere in this repository.
 
 ```python
 from ibnr.kernels.conventional import ConventionalCandidate, fit_conventional
@@ -45,11 +53,16 @@ factors, ending at `beta_horizon = 1`.
 - **GCC:** `A_i = P_i × LR_i`, where
   `LR_i = sum_n(C_n × decay^distance(i,n)) / sum_n(P_n × beta_n × decay^distance(i,n))`.
 
-All three have ultimate `C_i + A_i × (1 − beta_i)` and forecast cumulative
-loss at a later age `j` of `C_i + A_i × (beta_j − beta_i)`. GCC distances are
+All three have ultimate `C_i + A_i × (1 - beta_i)` and forecast cumulative
+loss at a later age `j` of `C_i + A_i × (beta_j - beta_i)`. GCC distances are
 calendar distances in origin periods; its loss-ratio estimate uses all origins
 available at the cutoff, independently of the factor history window. Decay 0
 uses only the same origin (and equals CL); decay 1 gives ordinary Cape Cod.
+
+This generalized Cape Cod carries **no trend parameter**: origins are combined
+by decay alone, and no loss-ratio trend is applied across origin periods.
+chainladder-python's `CapeCod` defaults to `trend=0.05`, so a comparison with it
+has to pass `trend=0` or the two answers differ for that reason alone.
 
 Factors below 1, proportions above 1, negative increments and negative reserves
 are permitted. Cumulative losses must be finite and non-negative. Premiums must
@@ -86,14 +99,24 @@ By default an unavailable/non-positive/non-finite factor raises an error.
 raises an error. `exhausted_exclusions="keep"` skips both extreme removals and
 records that fact; it never reverses explicit exclusions.
 
+On any complete run-off triangle the deepest link has exactly **one** origin
+pair, so removing an extreme ratio there would leave nothing to average: under
+the default `exhausted_exclusions="raise"` a candidate carrying `drop_high` or
+`drop_low` always raises on such a triangle. That is why the benchmark scripts
+set `exhausted_exclusions="keep"`, which is the setting that reproduces the
+published chainladder-derived numbers rather than stopping at the deepest link.
+
 The final age is either the explicitly supplied `horizon` or the deepest age
-observed in a standalone fit. An explicit horizon cannot omit observed ages.
-An age beyond the available data requires the explicit unity policy. There is
-no fitted tail beyond the horizon.
+observed in a standalone fit. An explicit horizon cannot omit observed ages, so
+a replay has to stop before the data develops past the declared horizon: a fit
+refuses a horizon shorter than the development it can see. An age beyond the
+available data requires the explicit unity policy. There is no fitted tail
+beyond the horizon.
 
 The paper does not prescribe all these boundary conventions. Pair/window/tie
-rules follow the educational website; its unity/skipped-trimming fallbacks
-must be requested explicitly here. Mack's existing untrimmed volume estimator
+rules follow the worked examples published on https://ibnr.co; the unity and
+skipped-trimming fallbacks used there must be requested explicitly here. Mack's
+existing untrimmed volume estimator
 can include zero-current pairs; this candidate family consistently requires
 defined individual link ratios, so the two can differ on zero-valued data.
 
@@ -122,11 +145,11 @@ first date; newly appearing origins enter the second fit but are listed in
 
 For each existing origin:
 
-- `actual_increment = new latest cumulative − old latest cumulative`.
-- `expected_increment = old forecast of the next cumulative − old latest cumulative`.
-- `ave = actual_increment − expected_increment` (adverse positive).
-- `cdr = new fitted ultimate − old fitted ultimate` (adverse positive).
-- `remaining_revision = new reserve − old expected reserve remaining after the next diagonal`.
+- `actual_increment = new latest cumulative - old latest cumulative`.
+- `expected_increment = old forecast of the next cumulative - old latest cumulative`.
+- `ave = actual_increment - expected_increment` (adverse positive).
+- `cdr = new fitted ultimate - old fitted ultimate` (adverse positive).
+- `remaining_revision = new reserve - old expected reserve remaining after the next diagonal`.
 
 The signed identity is `cdr = ave + remaining_revision`. Add components before
 squaring any CDR error. This sign agrees with the paper and is the opposite of
@@ -202,5 +225,4 @@ selection raises a history-mismatch error.
 
 This measures historical point-forecast performance. It does not establish
 probability calibration, universal superiority of AvE/CDR selection, or
-equivalence to ReserveAI. ReserveAI's unpublished improvements cannot be
-inferred from a successful reproduction of the paper.
+equivalence to ReserveAI, whose methods are not published.

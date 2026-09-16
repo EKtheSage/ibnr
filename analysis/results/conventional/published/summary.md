@@ -7,7 +7,13 @@ every final forecast has complete terminal coverage (19 Swiss or 20 quarterly
 origins). See [protocol](../../../../docs/conventional-benchmark.md),
 [results](results.csv), [all rankings](published_rankings.csv) and [manifest](manifest.json).
 The shared [environment record](../environment.json) documents the runtime,
-editable-package version difference, and when provenance was captured.
+editable-package version difference, and when provenance was captured. Two
+recorded values are to be read literally: `manifest.json` says `ibnr_version`
+0.5.8 because the editable install's metadata was stale when the run executed,
+not because the code came from that release, and `environment.json` says
+`git_head` is the base commit because these runs predate this branch's first
+commit. The six `source_hashes` in the manifest are the authoritative pin on
+what ran; they matched the committed source files when this was checked.
 
 **The Swiss fixed baselines reproduce the published precision. The selected
 winners do not reproduce the paper's reported results.** This is a measured
@@ -44,15 +50,15 @@ usable pairs at each age. High/low flags identify one extreme ratio removed.
 
 | Case / family | Rule | Method | History | Drop high | Drop low | BF ratio / GCC decay |
 |---|---|---|---:|---|---|---:|
-| Swiss CL | AvE | CL | 11 | Yes | No | — |
-| Swiss CL | CDR | CL | 12 | Yes | No | — |
+| Swiss CL | AvE | CL | 11 | Yes | No | n/a |
+| Swiss CL | CDR | CL | 12 | Yes | No | n/a |
 | Swiss BF | AvE | BF | 15 | Yes | No | 0.58 |
 | Swiss BF | CDR | BF | 14 | Yes | No | 0.58 |
 | Swiss GCC | AvE | GCC | 15 | Yes | Yes | 0.90 |
 | Swiss GCC | CDR | GCC | 12 | Yes | No | 0.85 |
 | Quarterly liability | AvE | BF | 5 | No | No | 0.50 |
 | Quarterly liability | CDR | GCC | 5 | Yes | No | 1.00 |
-| Quarterly property | AvE | CL | 5 | No | Yes | — |
+| Quarterly property | AvE | CL | 5 | No | Yes | n/a |
 | Quarterly property | CDR | GCC | 7 | No | Yes | 0.05 |
 
 ## What the discrepancies mean

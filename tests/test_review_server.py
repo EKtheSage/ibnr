@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import json
 import threading
 from http.client import HTTPConnection
@@ -334,7 +335,9 @@ def test_dual_role_author_cannot_approve_their_own_run_and_rejection_can_be_revi
     )
 
 
-def test_unknown_routes_missing_fields_and_unexpected_errors_are_json(http_app, monkeypatch):
+def test_unknown_routes_missing_fields_and_unexpected_errors_are_json(
+    http_app, monkeypatch, capsys
+):
     _, request, _ = http_app
     assert request("GET", "/api/runs/missing")[0] == 404
     assert request("POST", "/api/unknown", payload={})[0] == 404
@@ -350,6 +353,90 @@ def test_unknown_routes_missing_fields_and_unexpected_errors_are_json(http_app, 
     status, _, error = request("POST", "/api/analyze", payload={})
     assert status == 500
     assert error == {"error": "The request could not be completed."}
+    # The reply stays generic, but the failure has to leave a trace: the
+    # handler logs nothing and this branch used to discard the exception.
+    logged = capsys.readouterr().err
+    assert "RuntimeError: secret internal details" in logged
+    assert "Traceback" in logged
+    assert "broken_analysis" in logged
+
+
+def test_a_very_long_error_is_bounded_before_it_reaches_the_browser(http_app, monkeypatch):
+    """One clause per candidate per date has reached 45 KB on a small CSV.
+
+    The interface writes the server's message straight into the page, so the
+    text is cut to a readable length and says how much was left out.
+    """
+    _, request, _ = http_app
+
+    def long_refusal(payload):
+        raise ValueError("no candidate can be scored: " + "; ".join(["bad interval"] * 5000))
+
+    monkeypatch.setattr(review_server.analysis, "analyze_request", long_refusal)
+    status, _, error = request("POST", "/api/analyze", payload={})
+    assert status == 400
+    assert error["error"].startswith("no candidate can be scored: bad interval")
+    assert len(error["error"]) < review_server.MAX_ERROR_CHARS + 100
+    assert "more characters of this message" in error["error"]
+
+
+def test_the_approved_export_is_written_in_the_canonical_hashed_form(http_app):
+    """The store hashes canonical JSON, so the export is sent in that form.
+
+    Written any other way, the snapshot the reader receives cannot be hashed
+    as received; they have to guess the separators and key order first.
+    """
+    server, request, _ = http_app
+    run = _create(request)
+    route = f"/api/runs/{run['id']}"
+    assert (
+        request("POST", route + "/submit", payload={"reason": "Ready", "expected_revision": 1})[0]
+        == 200
+    )
+    decision = {"decision": "approve", "reason": "Reviewed", "expected_revision": 2}
+    assert request("POST", route + "/decision", user="reviewer", payload=decision)[0] == 200
+    connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+    try:
+        connection.request(
+            "GET",
+            route + "/export",
+            headers={"Authorization": _auth("reviewer", USERS["reviewer"]["password"])},
+        )
+        response = connection.getresponse()
+        body = response.read()
+    finally:
+        connection.close()
+    assert response.status == 200
+    exported = json.loads(body)
+
+    def canonical(value):
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+            "utf-8"
+        )
+
+    assert body == canonical(exported)
+    assert canonical(exported["snapshot"]) in body
+    assert hashlib.sha256(canonical(exported["snapshot"])).hexdigest() == exported["snapshot_hash"]
+
+
+def test_an_approved_run_can_be_revised_once_over_http(http_app):
+    _, request, _ = http_app
+    run = _create(request)
+    route = f"/api/runs/{run['id']}"
+    request("POST", route + "/submit", payload={"reason": "Ready", "expected_revision": 1})
+    decision = {"decision": "approve", "reason": "Reviewed", "expected_revision": 2}
+    request("POST", route + "/decision", user="reviewer", payload=decision)
+    status, _, child = request("POST", route + "/revise", payload={"expected_revision": 3})
+    assert status == 200
+    # The same request repeated used to create a second approvable position.
+    for _ in range(2):
+        status, _, error = request("POST", route + "/revise", payload={"expected_revision": 3})
+        assert status == 409
+        assert child["id"] in error["error"]
+    listed = {row["id"]: row for row in request("GET", "/api/runs")[2]}
+    assert set(listed) == {run["id"], child["id"]}
+    assert listed[run["id"]]["superseded_by"] == child["id"]
+    assert listed[child["id"]]["superseded_by"] is None
 
 
 def test_normal_startup_requires_configuration_and_rejects_remote_binding(tmp_path, monkeypatch):
@@ -361,6 +448,59 @@ def test_normal_startup_requires_configuration_and_rejects_remote_binding(tmp_pa
         review_server.create_server(host="0.0.0.0", store=store, users=USERS)
     with pytest.raises(ValueError, match="port"):
         review_server.create_server(port=-1, store=store, users=USERS)
+
+
+def test_the_server_binds_the_host_it_was_given(tmp_path, monkeypatch):
+    """``host`` was checked and then thrown away; the bind was hardcoded.
+
+    Both accepted names resolve to the same loopback address here, so no
+    property of the running server can tell the two apart. The address handed
+    to the socket is what this watches, through the public entry point.
+    """
+    addresses = []
+    constructed = review_server.ReviewHTTPServer
+
+    class Recording(constructed):
+        def __init__(self, address, **kwargs):
+            addresses.append(address)
+            super().__init__(address, **kwargs)
+
+    monkeypatch.setattr(review_server, "ReviewHTTPServer", Recording)
+    store = ReviewStore(tmp_path / "review.sqlite3")
+    server = review_server.create_server(host="localhost", store=store, users=USERS)
+    try:
+        assert addresses == [("localhost", 0)]
+        assert server.server_address[0] == "127.0.0.1"
+        assert server.server_address[1] != 0
+    finally:
+        server.server_close()
+
+
+def test_demo_accounts_and_configured_accounts_cannot_be_combined(tmp_path, monkeypatch, capsys):
+    """``--demo`` used to ignore IBNR_REVIEW_USERS and replace the accounts.
+
+    Nothing said so: the configured passwords stopped working and the two demo
+    accounts took their place, on the same data directory.
+    """
+    monkeypatch.setenv("IBNR_REVIEW_USERS", json.dumps(USERS))
+    data_dir = tmp_path / "data"
+
+    class _Stub:
+        def __init__(self, address, **kwargs):
+            self.server_port = address[1]
+
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+        def server_close(self):
+            pass
+
+    monkeypatch.setattr(review_server, "ReviewHTTPServer", _Stub)
+    with pytest.raises(SystemExit):
+        review_server.main(["--demo", "--data-dir", str(data_dir)])
+    message = capsys.readouterr().err
+    assert "IBNR_REVIEW_USERS" in message and "--demo" in message
+    assert not data_dir.exists()
 
 
 @pytest.mark.parametrize(
@@ -388,6 +528,9 @@ def test_environment_and_explicit_demo_configuration(tmp_path, monkeypatch):
         assert set(server.users) == set(USERS)
     finally:
         server.server_close()
+    with pytest.raises(ValueError, match="IBNR_REVIEW_USERS is set"):
+        review_server.create_server(store=store, demo=True)
+    monkeypatch.delenv("IBNR_REVIEW_USERS")
     server = review_server.create_server(store=store, demo=True)
     try:
         assert server.demo
