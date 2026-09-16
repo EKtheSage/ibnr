@@ -15,9 +15,41 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
-## Unreleased
+## 0.6.0 - 2026-09-15
 
-### Review fixes to the conventional work and the reference application
+A new family of estimators and the application that sits on it (#136), plus
+the two review fixes that landed on main after 0.5.9 (#134, #135).
+
+New: `kernels/conventional.py` fits chain ladder, Bornhuetter-Ferguson and
+Gluck's generalized Cape Cod as frozen point candidates; `kernels/replay.py`
+refits them at successive information dates and reports the observed AvE and
+CDR of each interval; `kernels/selection.py` selects on the completed history
+and evaluates the frozen forecast on later terminal-age outcomes. All three
+are re-exported from `ibnr.kernels`. These are point forecasts and stay out of
+the gallery. `apps/reserving_review/` is a local reference application over
+them and is not in the wheel. The benchmark against Balona and Richman (2021)
+and a 30-seed synthetic study are under `analysis/results/conventional/`; the
+Swiss fixed baselines match the paper and the selected winners do not, which
+the summaries record as an open gap.
+
+Inputs 0.5.9 accepted that now raise:
+
+- `gallery.stack()` on a weights table whose weight-fitting outcomes were
+  observed after the evaluation cutoff, or whose used cells lack an
+  unambiguous `eval_date` (#136);
+- `to_wide` and the dev-grain coarsening on a cell stored twice (#134);
+- `convergence()` asked for a parameter the posterior does not carry (#135).
+
+Numbered 0.6.0 rather than 0.5.10 because the public surface grew: three
+kernel modules with eleven new names on `ibnr.kernels`, and a new refusal on
+`gallery.stack()`, which is part of the surface CLAUDE.md decision 8 treats as
+stable.
+
+Still open: reconciling the paper's selected winners (recorded in
+`analysis/results/conventional/published/summary.md`), and the 0.5.9 backlog
+in issues #120-#129.
+
+### Review fixes to the conventional work and the reference application (#136)
 
 From a review of the entries below, before any of them is released. In the
 application: a decided run can be revised once, and a second request names the
@@ -38,7 +70,7 @@ candidate carrying no explicit horizon, `score_replay` is linear in the number
 of candidates rather than quadratic, and `premium_by_origin` and `as_date` are
 public names.
 
-### Reserving review reference application
+### Reserving review reference application (#136)
 
 `python -m apps.reserving_review --demo` runs a local browser application with
 real historical analysis, source and engine hashes, candidate and factor
@@ -49,7 +81,7 @@ edits. Named analyst/reviewer accounts enforce ownership and separation of
 review. See [the application guide](apps/reserving_review/README.md) for setup
 and the local reference deployment's limits.
 
-### Published and independent conventional benchmarks
+### Published and independent conventional benchmarks (#136)
 
 `scripts/benchmark_conventional.py` runs the full literal published grids and
 prespecified stable/noisy/drift/shock synthetic portfolios. The appendix loader
@@ -59,7 +91,7 @@ differences and implementation hashes. Candidate batching is tested against
 whole-grid selection. The protocol documents source grid/count ambiguities,
 ultimate-derived Swiss premiums and declared information-date conventions.
 
-### Historical selection and later evaluation
+### Historical selection and later evaluation (#136)
 
 `ibnr.kernels.selection` scores each replay diagonal using the paper's absolute
 actual-weighted RMSE, then selects on mean diagonal RMSE available by an
@@ -69,7 +101,7 @@ and compares only unknown-at-selection terminal-age targets; missing targets
 suppress the aggregate score. Outcome dates, units, grains and cohort identity
 are checked. See [the scoring rules](docs/conventional.md#select-then-evaluate-later).
 
-### Observed AvE/CDR replay
+### Observed AvE/CDR replay (#136)
 
 `ibnr.kernels.replay.replay_conventional` refits fixed conventional candidates
 at successive information dates, using the same explicit development horizon.
@@ -78,7 +110,7 @@ remaining reserves. New origins enter the refit but are excluded from that
 interval's score. Historical restatements use the correct information cutoff;
 incomplete or unfittable candidate intervals raise or retain explicit failures.
 
-### Conventional CL, BF and generalized Cape Cod point candidates
+### Conventional CL, BF and generalized Cape Cod point candidates (#136)
 
 `ibnr.kernels.conventional` adds frozen candidate settings, historical fitting,
 volume/simple/median factors, per-age history windows, explicit and high/low
@@ -89,7 +121,7 @@ decay 1 matching ordinary Cape Cod. These point forecasts are separate from
 the distributional gallery and Mack's uncertainty formulas. See
 [the conventions and API](docs/conventional.md).
 
-### Stacking requires weight-fitting outcomes to be available at evaluation
+### Stacking requires weight-fitting outcomes to be available at evaluation (#136)
 
 **This refuses an input 0.5.9 accepted.** `gallery.stack()` now refuses an
 earlier `ForecastPanel` whose weight-fitting outcomes were observed after the
