@@ -23,6 +23,9 @@ from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+UNVERIFIABLE = "UNVERIFIABLE"
+"""Listing status of a run whose hash chain no longer verifies."""
+
 
 class ReviewError(Exception):
     """A review request that the HTTP layer can report without a traceback."""
@@ -194,7 +197,8 @@ class ReviewStore:
 
     Revision 1 creates a DRAFT. Editing/submitting belongs to its author with
     the analyst role. An independent reviewer can approve/reject a SUBMITTED
-    run. Decided runs stay immutable; their analyst may create a linked DRAFT.
+    run. Decided runs stay immutable; their analyst may create at most one
+    linked DRAFT, and every read reports that child as ``superseded_by``.
     """
 
     def __init__(self, path):
@@ -402,9 +406,17 @@ class ReviewStore:
             previous_hash = row["event_hash"]
             events.append({**event, "hash": previous_hash})
         model, booked = _totals(snapshot, overrides)
+        # A revision is a separate run whose ledger cannot append to this one,
+        # so the link is read from the child's parent_id. ``revise`` refuses a
+        # second child, and the ordering keeps older databases deterministic.
+        child = connection.execute(
+            "SELECT id FROM review_runs WHERE parent_id = ? ORDER BY created_at, id",
+            (record["id"],),
+        ).fetchone()
         return {
             **record,
             "status": status,
+            "superseded_by": child["id"] if child else None,
             "revision": len(events),
             "snapshot": snapshot,
             "overrides": overrides,
@@ -429,7 +441,15 @@ class ReviewStore:
                 "SELECT id FROM review_runs ORDER BY created_at DESC, id"
             ).fetchall()
             for row in ids:
-                run = self._read(connection, row["id"])
+                try:
+                    run = self._read(connection, row["id"])
+                except IntegrityError as exc:
+                    # One damaged record must not hide the whole workspace.
+                    # Nothing it records can be trusted, its author included,
+                    # so it is listed to every reader with only its own id and
+                    # the failure. Opening it still raises that failure.
+                    summaries.append({"id": row["id"], "status": UNVERIFIABLE, "error": str(exc)})
+                    continue
                 if self._visible(actor, run):
                     summaries.append(
                         {
@@ -438,6 +458,7 @@ class ReviewStore:
                                 for key in (
                                     "id",
                                     "parent_id",
+                                    "superseded_by",
                                     "created_by",
                                     "created_at",
                                     "status",
@@ -517,6 +538,13 @@ class ReviewStore:
             return self._read(connection, run_id)
 
     def revise(self, actor, run_id, expected_revision):
+        """Create the one linked draft a decided run is allowed.
+
+        A decided run appends no further events, so its revision never moves
+        and a repeated request would otherwise pass the revision check again
+        and again, leaving several independently approvable positions for one
+        cutoff. The existing child is named instead.
+        """
         self._reader(actor)
         with self._transaction(write=True) as connection:
             run = self._read(connection, run_id)
@@ -524,6 +552,11 @@ class ReviewStore:
             self._revision(run, expected_revision)
             if run["status"] not in {"APPROVED", "REJECTED"}:
                 raise Conflict("Only an approved or rejected review can be revised")
+            if run["superseded_by"]:
+                raise Conflict(
+                    f"This review was already revised as {run['superseded_by']}; "
+                    "open that revision instead of creating a second one"
+                )
             return self._new(connection, actor, _canonical(run["snapshot"]), parent=run)
 
     def export_approved(self, actor, run_id):

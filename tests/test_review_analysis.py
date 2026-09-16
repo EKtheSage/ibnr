@@ -160,6 +160,35 @@ def test_invalid_source_is_not_silently_repaired(demo_payload, damage):
         analyze_request({**demo_payload, "csv": csv_text})
 
 
+def _two_lob_csv(lobs):
+    rows = ["origin_period,dev_lag,eval_date,field,value,lob"]
+    for lob in lobs:
+        rows += [
+            f"2019-01-01,12,2019-12-31,paid_loss,100,{lob}",
+            f"2019-01-01,12,2020-12-31,paid_loss,110,{lob}",
+            f"2019-01-01,12,2019-12-31,earned_premium,200,{lob}",
+            f"2020-01-01,12,2020-12-31,paid_loss,50,{lob}",
+            f"2020-01-01,12,2020-12-31,earned_premium,100,{lob}",
+        ]
+    return "\n".join(rows) + "\n"
+
+
+def test_a_csv_holding_several_cohorts_is_refused_by_name():
+    """Two cohorts used to fail once per candidate per date.
+
+    The reasons were concatenated into one message, which reached 45 KB on a
+    small file, and the browser writes the server's message into the page.
+    """
+    request = {"as_of": "2020-12-31", "history_start": "2019-12-31", "horizon": 12}
+    with pytest.raises(ValueError, match="one cohort; found 2 combinations of lob") as caught:
+        analyze_request({**request, "csv": _two_lob_csv(["auto", "home"])})
+    assert len(str(caught.value)) < 400
+    # The segment column itself is fine; only several cohorts in one file are not.
+    result = analyze_request({**request, "csv": _two_lob_csv(["auto"])})
+    assert result["segment"] == {"lob": "auto"}
+    assert len(result["origins"]) == 2
+
+
 def test_one_age_horizon_retains_mature_origin_restatement():
     result = analyze_request(
         {

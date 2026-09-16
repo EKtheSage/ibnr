@@ -49,7 +49,7 @@ def _cutoffs(start, end, step):
         dates.append(new.date())
     if len(dates) < 2 or dates[-1] != end:
         raise ValueError(
-            f"history dates must end exactly at the cutoff with 2–{MAX_CUTOFFS} "
+            f"history dates must end exactly at the cutoff with 2-{MAX_CUTOFFS} "
             "consecutive grain-aligned dates"
         )
     return dates
@@ -71,13 +71,13 @@ def analyze_request(payload: dict) -> dict:
         raise ValueError("CSV is too large for this local reference application")
     title = payload.get("title", "Reserving review")
     if not isinstance(title, str) or not title.strip() or len(title) > 160:
-        raise ValueError("title must contain 1–160 characters")
+        raise ValueError("title must contain 1-160 characters")
     grain = payload.get("grain", "Y")
     if not isinstance(grain, str) or grain not in GRAIN_MONTHS:
         raise ValueError("grain must be Y, Q or M")
     horizon = payload.get("horizon")
     if type(horizon) is not int or not 1 <= horizon <= 720 or horizon % GRAIN_MONTHS[grain]:
-        raise ValueError("horizon must be a grain multiple of 1–720 months")
+        raise ValueError("horizon must be a grain multiple of 1-720 months")
     allow_unity = payload.get("allow_unity", False)
     if type(allow_unity) is not bool:
         raise ValueError("allow_unity must be a boolean")
@@ -111,7 +111,7 @@ def analyze_request(payload: dict) -> dict:
     if not set(CORE_COLUMNS).issubset(frame.columns):
         raise ValueError(f"CSV must contain {', '.join(CORE_COLUMNS)}")
     if frame.empty or len(frame) > MAX_ROWS:
-        raise ValueError(f"CSV must contain 1–{MAX_ROWS} rows")
+        raise ValueError(f"CSV must contain 1-{MAX_ROWS} rows")
     if frame.isna().any().any():
         raise ValueError("CSV has missing values; no rows may be silently dropped")
     for name in ("origin_period", "eval_date"):
@@ -133,6 +133,17 @@ def analyze_request(payload: dict) -> dict:
     )
     if available.empty:
         raise ValueError("no observations are available at the chosen cutoff")
+    # Refuse a several-cohort CSV here by name. Further down, every candidate at
+    # every date fails on it, and the combined reasons become an error too long
+    # to read and too long to show in the browser.
+    if triangle.segments:
+        combinations = available[triangle.segments].drop_duplicates()
+        if len(combinations) != 1:
+            raise ValueError(
+                f"the CSV must contain one cohort; found {len(combinations)} combinations "
+                f"of {', '.join(triangle.segments)}. Filter the CSV to one cohort, or drop "
+                "the columns that separate them."
+            )
     # Use the same frozen small grid throughout the application's review run.
     candidates = {}
     for c in conventional_grid(
@@ -243,7 +254,7 @@ def demo_request() -> dict:
 
     frame = synthetic_portfolio(0, "stable").as_of("2020-12-31").execute()
     return {
-        "title": "Synthetic liability — 2020 review",
+        "title": "Synthetic liability - 2020 review",
         "csv": frame.to_csv(index=False),
         "as_of": "2020-12-31",
         "history_start": "2011-12-31",

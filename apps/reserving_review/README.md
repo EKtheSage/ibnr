@@ -49,9 +49,13 @@ python -m apps.reserving_review --data-dir .ibnr-review --port 8765
 
 The browser attaches HTTP Basic authentication to each API request. Application
 credentials are stored only in this tab's `sessionStorage` and removed on sign
-out; the application does not store them in `localStorage` or URLs. If browser
-storage is unavailable, sign-in works in memory for the current page and a
-reload requires signing in again. Use a
+out; the application does not store them in `localStorage` or URLs. That stored
+value is the Basic credential, and Basic is base64 encoding rather than
+encryption, so any script running in the page can read it back and recover the
+password: the content security policy, which allows scripts only from this
+server and refuses inline script entirely, is what keeps other script out of
+the page. If browser storage is unavailable, sign-in works in memory for the
+current page and a reload requires signing in again. Use a
 separate reviewer account: the run's author cannot approve their own submission.
 Authorization and revision checks are enforced by the server, in addition to
 the interface's role-dependent controls.
@@ -98,6 +102,9 @@ grid. See [the calculation and scoring rules](../../docs/conventional.md).
 Saved source history retains earlier versions of restated observations through
 the cutoff. Later observations are excluded from both analysis and saved
 evidence. Malformed records, missing values, and nonfinite amounts are refused.
+A file carrying more than one cohort (more than one combination of any extra
+columns beyond the five above) is refused by name before fitting starts; filter
+it to one cohort first.
 
 The unity-factor fallback is off by default. Enabling it explicitly allows a
 factor of 1 where development cannot be estimated. Inspect warnings and factor
@@ -109,14 +116,31 @@ units, including negative reserves where applicable.
 Each run retains its source hash, model snapshot and hash, selected settings,
 candidate rankings, historical scores, factor evidence, modeled reserves,
 booked-reserve overrides, and activity. Changes carry an actor, reason, and
-revision. Submitted and decided runs are read-only; a revision creates a linked
-draft and preserves the prior run. Only approved runs can be exported.
+revision. Submitted and decided runs are read-only. An approved or rejected run
+can be revised **once**: that creates a linked draft, preserves the prior run,
+and marks the prior run superseded both in the workspace list and in its own
+record, so one cutoff never shows two current approved positions. A second
+revision request is refused and names the draft that already exists. Only
+approved runs can be exported.
+
+The hashes cover exactly these bytes. `snapshot_hash` is the SHA-256 of the
+snapshot serialized as JSON with sorted keys, no spaces between items and
+non-ASCII characters left as they are (Python's `json.dumps(snapshot,
+sort_keys=True, separators=(",", ":"), ensure_ascii=False)`). Each event hash
+covers its event object serialized the same way, and every event carries the
+previous hash, so the chain starts from `snapshot_hash`. The approved export is
+written in that same form, so the `snapshot` member of the file you receive can
+be hashed exactly as it arrived.
 
 SQLite provides persistence across restarts. The event record supports review
 and inspection; host administrators with direct database access remain inside
-the trust boundary. This is a working reference application, not a claim of
-independent audit certification, enterprise governance, or reproduction of
-ReserveAI's proprietary methodology.
+the trust boundary. If one record's chain no longer verifies, opening or
+exporting it fails with the verification error, while the workspace list shows
+that record as `UNVERIFIABLE` with only its own id and keeps every other record
+usable. This is a working reference application, not a claim of independent
+audit certification, enterprise governance, or reproduction of the proprietary
+methods of ReserveAI (insureAI's commercial reserving platform, which this
+package neither implements nor compares against).
 
 ## Interface
 

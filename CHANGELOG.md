@@ -17,6 +17,27 @@ corrected decision 8.)
 
 ## Unreleased
 
+### Review fixes to the conventional work and the reference application
+
+From a review of the entries below, before any of them is released. In the
+application: a decided run can be revised once, and a second request names the
+revision that already exists instead of creating another approvable position
+for the same cutoff, which the listing now marks as superseded; one record
+whose hash chain no longer verifies is listed as `UNVERIFIABLE` rather than
+turning the whole listing into an error and locking everyone out of the
+workspace; a CSV holding more than one cohort is refused by name instead of
+failing once per candidate per date, and the text of any error is bounded
+before it reaches the browser; `--demo` beside `IBNR_REVIEW_USERS` is refused
+rather than quietly replacing the configured accounts; the server binds the
+host it was given, logs an unexpected failure to stderr, and writes the
+approved export in the canonical form the stored hash covers. In the library:
+the unity fallback is reachable together with the high/low exclusion flags,
+`evaluate_conventional` refuses an evaluation triangle whose history as of the
+selection date differs from the one the selected candidate was fitted on and a
+candidate carrying no explicit horizon, `score_replay` is linear in the number
+of candidates rather than quadratic, and `premium_by_origin` and `as_date` are
+public names.
+
 ### Reserving review reference application
 
 `python -m apps.reserving_review --demo` runs a local browser application with
@@ -70,16 +91,17 @@ the distributional gallery and Mack's uncertainty formulas. See
 
 ### Stacking requires weight-fitting outcomes to be available at evaluation
 
-`gallery.stack()` now refuses an earlier forecast panel whose weight-fitting
-outcomes were observed after the evaluation cutoff. Previously, January and
-February forecasts could both target December outcomes: the cutoff-order check
-passed while the stack learned its weights from the same future outcomes it
-was evaluated on.
+**This refuses an input 0.5.9 accepted.** `gallery.stack()` now refuses an
+earlier `ForecastPanel` whose weight-fitting outcomes were observed after the
+evaluation cutoff. Previously, January and February forecasts could both target
+December outcomes: the cutoff-order check passed while the stack learned its
+weights from the same future outcomes it was evaluated on, and nothing raised.
 
 The check uses the dates of the ELPD cells actually used to fit weights, matched
 by cell key. Outcomes dated exactly on the evaluation cutoff remain valid;
 later CRPS-only outcomes do not affect weight fitting. Missing or ambiguous
-availability metadata is refused, including on panels restored from Arrow.
+availability metadata is refused, including on a `ForecastPanel` restored from
+Arrow.
 
 ### `to_wide` and the dev-grain coarsening refuse a cell stored twice (#118)
 
