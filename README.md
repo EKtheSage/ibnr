@@ -86,6 +86,10 @@ frozen forecast on later terminal-age observations. See [the API and conventions
 and [the published/synthetic benchmark protocol](docs/conventional-benchmark.md).
 Completed results are available for the [published examples](analysis/results/conventional/published/summary.md)
 and [30 seeds across four synthetic scenarios](analysis/results/conventional/synthetic/summary.md).
+Those published examples come from [The Actuary and IBNR Techniques: A Machine
+Learning Approach](https://ssrn.com/abstract=3697256) by Caesar Balona and
+Ronald Richman, the 14 August 2020 manuscript; its appendix tables are
+transcribed into this repository, so the benchmark needs no network access.
 The Swiss fixed baselines match the paper's displayed precision, but the
 candidates our selection rules pick do not reproduce the results the paper
 reports. Selection does not improve every scenario either: selecting on CDR is

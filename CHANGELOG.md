@@ -15,6 +15,16 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
+## Unreleased
+
+The appendix data behind the published conventional examples is now carried in
+the repository at `analysis/data/balona_richman_2020_appendix.json`, transcribed
+from the freely distributed 14 August 2020 manuscript, so the benchmark fetches
+nothing at runtime and needs no network access. The documentation cites that
+paper directly - Caesar Balona and Ronald Richman, "The Actuary and IBNR
+Techniques: A Machine Learning Approach", https://ssrn.com/abstract=3697256 -
+rather than a copy hosted elsewhere.
+
 ## 0.6.0 - 2026-09-15
 
 A new family of estimators and the application that sits on it (#136), plus

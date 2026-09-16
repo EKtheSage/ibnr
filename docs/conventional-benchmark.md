@@ -4,13 +4,8 @@ This benchmark evaluates the implemented procedure: fixed candidate settings,
 successive historical refits, selection on observed AvE/CDR, and evaluation of
 the frozen selected forecast against later terminal-development observations.
 The paper behind it is [The Actuary and IBNR Techniques: A Machine Learning
-Approach](https://ibnr.co/research/balona-richman-2021.pdf), the 23 April 2021
-manuscript by Caesar Balona and Ronald Richman, published on https://ibnr.co,
-an educational site by Ron Richman, one of the paper's authors and the founder
-of insureAI. That site is unrelated to this package, which shares the name by
-coincidence. The benchmark does not compare against ReserveAI, insureAI's
-commercial reserving platform built on the paper's ideas: its methods are
-proprietary, so they are neither implemented nor compared here.
+Approach](https://ssrn.com/abstract=3697256) by Caesar Balona and Ronald
+Richman, the 14 August 2020 manuscript.
 
 ## Reproduce
 
@@ -35,13 +30,18 @@ once. Batching does not change the candidate population or scoring window.
 
 ## Published examples
 
-Source: [Balona and Richman (2021)](https://ibnr.co/research/balona-richman-2021.pdf),
-Appendix C, via the [structured appendix](https://ibnr.co/research/appendix-data.json)
-published on https://ibnr.co.
-The loader downloads the bytes at runtime, caches outside the repository and
-checks SHA256 `7333caea41fecc907dc0c98e46f38c64559cec2158cdacdb4bfc22f604dad455`.
-The original dataset is not redistributed in the repository. The adapter's
-constants record tables, pages, fields, grains and source notes.
+Source: the appendix of [Balona and Richman (2020)](https://ssrn.com/abstract=3697256),
+Tables 23 to 28 on pages 48 to 53 of the 14 August 2020 manuscript as
+distributed by the Institute and Faculty of Actuaries. Those tables are
+transcribed from the manuscript and carried in this repository at
+`analysis/data/balona_richman_2020_appendix.json`, so the benchmark needs no
+network access. The adapter's constants record each example's table numbers,
+pages, fields, grains and notes.
+
+Upstream provenance, as the paper describes it: the Swiss triangle was taken
+from Gisler (2015) with its figures adjusted for privacy, and its premium was
+simulated by the authors assuming a 60% target loss ratio. The two quarterly
+triangles were supplied to the authors by a medium-size insurer.
 
 | Case | Historical fit dates | Scored intervals | Selection and final fit | Terminal age | Evaluation date |
 |---|---|---:|---|---:|---|
@@ -69,9 +69,10 @@ support this interpretation; it does not assign Q4 information to a Q3 decision.
 - Sparse factors explicitly use unity; extreme trimming is skipped if it would
   exhaust observations. On a complete run-off triangle the deepest link has one
   origin pair, so a candidate with a drop flag needs
-  `exhausted_exclusions="keep"` to reach the end at all. These are the
-  conventions disclosed on https://ibnr.co, not undocumented claims about the
-  original chainladder package version.
+  `exhausted_exclusions="keep"` to reach the end at all. The paper does not
+  prescribe either behaviour, so this package declares its own conventions and
+  documents them in [the conventions guide](conventional.md); they are not
+  claims about what the original chainladder package version did.
 
 ### Source limitations
 
