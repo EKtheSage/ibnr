@@ -137,10 +137,8 @@ and inspection; host administrators with direct database access remain inside
 the trust boundary. If one record's chain no longer verifies, opening or
 exporting it fails with the verification error, while the workspace list shows
 that record as `UNVERIFIABLE` with only its own id and keeps every other record
-usable. This is a working reference application, not a claim of independent
-audit certification, enterprise governance, or reproduction of the proprietary
-methods of ReserveAI (insureAI's commercial reserving platform, which this
-package neither implements nor compares against).
+usable. This is a working reference application. It is not a claim of
+independent audit certification or of enterprise governance.
 
 ## Interface
 
