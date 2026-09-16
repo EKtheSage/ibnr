@@ -24,10 +24,13 @@ live behind ``-m slow`` like every other cmdstan test.
 
 from __future__ import annotations
 
+import datetime as dt
 import subprocess
 import sys
+from dataclasses import replace
 
 import numpy as np
+import pandas as pd
 import pytest
 from scipy.optimize import OptimizeResult
 from scipy.special import logsumexp
@@ -545,6 +548,89 @@ def test_weights_must_be_fitted_strictly_before_the_evaluation(rng):
         stack(late_panel, _evaluation(rng, as_of=WEIGHTS_AS_OF))
     with pytest.raises(ValueError, match="must precede"):
         stack(late_panel, _evaluation(rng, as_of=EVAL_AS_OF))
+
+
+@pytest.mark.parametrize("roundtrip", [False, True])
+def test_weight_fit_outcomes_must_be_available_at_evaluation(rng, roundtrip):
+    """Different forecast cutoffs can still predict the same unseen diagonal."""
+    panel = _weights_panel(rng, as_of="2013-01-01")
+    if roundtrip:
+        panel = type(panel).from_arrow(panel.to_arrow())
+    evaluation = _evaluation(rng, as_of="2013-02-01")
+    assert set(panel.cells["eval_date"]) == {f.eval_date for f in evaluation}
+    with pytest.raises(ValueError, match="outcomes.*2013-12-31.*2013-02-01"):
+        stack(panel, evaluation)
+
+
+def _mixed_availability_panel(rng, *, late_density=True, late=None):
+    """Two reporting calendars; only CO_B's next observation is delayed."""
+    forecasts = []
+    for company in ("CO_A", "CO_B"):
+        cells = _cells(company, as_of=WEIGHTS_AS_OF)
+        if company == "CO_B":
+            late = pd.Timestamp("2015-12-31").date() if late is None else late
+            cells = replace(cells, eval_date=late, frame=cells.frame.assign(eval_date=late))
+        for model in ("model_a", "model_b"):
+            forecasts.append(
+                _forecast(model, cells, rng=rng, density=company == "CO_A" or late_density)
+            )
+    return align_panel(forecasts)
+
+
+def test_one_late_weight_fit_cohort_is_enough_to_refuse(rng):
+    panel = _mixed_availability_panel(rng)
+    assert panel.cells["eval_date"].nunique() == 2
+    with pytest.raises(ValueError, match="outcomes.*2015-12-31.*2014-12-31"):
+        stack(panel, _evaluation(rng))
+
+
+@pytest.mark.parametrize("roundtrip", [False, True])
+def test_available_weights_ignore_later_crps_only_outcomes(rng, roundtrip):
+    """ELPD outcomes on the evaluation cutoff are available; unused ones do not matter."""
+    pytest.importorskip("bayesblend")
+    panel = _mixed_availability_panel(rng, late_density=False)
+    if roundtrip:
+        panel = type(panel).from_arrow(panel.to_arrow())
+    assert set(panel.cells.loc[panel.cells.on_elpd_panel, "eval_date"]) == {
+        pd.Timestamp(EVAL_AS_OF).date()
+    }
+    assert panel.n_cells_for("crps") > panel.n_cells_for("elpd")
+    result = stack(panel, _evaluation(rng))
+    assert result.n_cells_weight_fit == panel.n_cells_for("elpd")
+    assert np.isclose(sum(result.weights.values()), 1.0)
+    assert all(f.has_density and f.has_draws for f in result.forecasts)
+
+
+def test_a_weight_fit_outcome_one_day_past_the_cutoff_is_refused(rng):
+    """The boundary itself, beside the equal case above.
+
+    The test above pins that an outcome observed exactly ON the evaluation
+    cutoff is available. This one pins the first date that is not: a comparison
+    written one day too loose passes every other test in this file.
+    """
+    one_day_late = pd.Timestamp(EVAL_AS_OF).date() + dt.timedelta(days=1)
+    panel = _mixed_availability_panel(rng, late=one_day_late)
+    assert set(panel.cells.loc[panel.cells.on_elpd_panel, "eval_date"]) == {
+        pd.Timestamp(EVAL_AS_OF).date(),
+        one_day_late,
+    }
+    with pytest.raises(ValueError, match="after the evaluation as_of"):
+        stack(panel, _evaluation(rng))
+
+
+@pytest.mark.parametrize("damage", ["missing_date", "missing_key", "duplicate_key"])
+def test_weight_fit_outcomes_require_unambiguous_availability(rng, damage):
+    panel = _weights_panel(rng)
+    cells = panel.cells.copy()
+    if damage == "missing_date":
+        cells.loc[0, "eval_date"] = pd.NaT
+    elif damage == "missing_key":
+        cells = cells.iloc[1:]
+    else:
+        cells = pd.concat([cells, cells.iloc[:1]], ignore_index=True)
+    panel = replace(panel, cells=cells)
+    with pytest.raises(ValueError, match="weight-fitting outcomes.*(missing|ambiguous)"):
+        stack(panel, _evaluation(rng))
 
 
 def test_a_task_mismatch_is_refused(rng):

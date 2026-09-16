@@ -68,10 +68,18 @@ SCRIPTS = REPO / "scripts"
 DATA_PACKAGE = "cas-schedule-p"
 
 #: Scripts besides the CMD's own that the image is expected to be able to run.
-#: These are the three other scripts CLAUDE.md's 2026-08-04 paragraph names as
+#: The first three are the scripts CLAUDE.md's 2026-08-04 paragraph names as
 #: importing ``meyers_validation``, and each of them picks its companies with
-#: the rule that module re-exports, so each of them needs the data package.
-ALSO_PROMISED = ("compare_gallery.py", "heldout_leaderboard.py", "parity_gallery.py")
+#: the rule that module re-exports, so each of them needs the data package. A
+#: fourth script joined that needs neither: ``benchmark_conventional.py`` has an
+#: argparse command line and imports only numpy, pandas and ibnr, so the image
+#: can start it although it never reads the Schedule P mart.
+ALSO_PROMISED = (
+    "compare_gallery.py",
+    "heldout_leaderboard.py",
+    "parity_gallery.py",
+    "benchmark_conventional.py",
+)
 
 #: Scripts the image is NOT expected to run, each with the reason. Named rather
 #: than inferred, so a new script cannot join scripts/ without someone deciding
@@ -91,6 +99,15 @@ NOT_PROMISED = {
         "a lint tool for this repository's own markdown, run by the lint CI "
         "job. It needs a ruff binary, which the image does not copy, and it "
         "computes nothing."
+    ),
+    "conventional_examples.py": (
+        "a loader with no command line, imported by the conventional benchmark "
+        "driver rather than run on its own. Its only runtime input is a network "
+        "download of the published appendix, which the image cannot make."
+    ),
+    "conventional_synthetic.py": (
+        "a portfolio generator with no command line, imported by the "
+        "conventional benchmark driver rather than run on its own."
     ),
 }
 

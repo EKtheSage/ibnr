@@ -324,12 +324,12 @@ def nn_data(
     n_f = len(fields)
 
     # premium is an origin-level exposure measure: take its latest evaluation
-    # (the booked value), same convention as contract._premium_by_origin
+    # (the booked value), same convention as contract.premium_by_origin
     premium_df = triangle.select_fields(premium_field).latest_diagonal().execute()
     # select_fields is a filter, so a field the triangle does not carry yields
     # an empty frame rather than an error - and every cohort would then fail the
     # premium screen below one at a time, leaving "no usable cohorts" as the
-    # only message. Refuse by name, wording matched to contract._premium_by_origin
+    # only message. Refuse by name, wording matched to contract.premium_by_origin
     # and multiline._premium_by_lob_origin so all three contracts answer alike.
     if premium_df.empty:
         raise ValueError(f"no rows for premium field {premium_field!r}")

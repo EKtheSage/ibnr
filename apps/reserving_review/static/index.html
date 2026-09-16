@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Reserve Review</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="app-header">
+    <a class="brand" href="/" aria-label="Reserve Review home"><span class="brand-mark" aria-hidden="true">R</span><span>Reserve Review<small>Powered by ibnr</small></span></a>
+    <div class="header-actions"><span id="demo-badge" class="header-badge" hidden>Demo workspace</span><span id="identity" hidden></span><button id="logout" class="button header-button" type="button" hidden>Sign out</button></div>
+  </header>
+  <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+  <div id="busy-message" class="busy-message" role="status" aria-live="polite" hidden></div>
+  <main id="main" tabindex="-1">
+    <section id="login-view" class="login-layout" aria-labelledby="login-title">
+      <div class="login-story">
+        <p class="eyebrow">From evidence to decision</p>
+        <h1>A clear record of your reserve decision.</h1>
+        <p>Inspect the forecast. Record your judgment. Bring the complete evidence to review.</p>
+        <ol class="story-steps"><li><span>01</span>Compare historical forecasting results</li><li><span>02</span>Document reserve adjustments</li><li><span>03</span>Review and preserve the decision</li></ol>
+        <p class="story-footnote">A local reference application for conventional reserving.</p>
+      </div>
+      <div class="login-card">
+        <p class="eyebrow">Your review workspace</p>
+        <h2 id="login-title">Sign in</h2>
+        <p class="muted">Use your analyst or reviewer account.</p>
+        <form id="login-form" method="post" action="/api/me" autocomplete="off">
+          <label for="username">Username</label><input id="username" name="username" required autocapitalize="none" spellcheck="false" autocomplete="off">
+          <label for="password">Password</label><input id="password" name="password" type="password" required autocomplete="off">
+          <button class="button primary full-width" type="submit">Open workspace <span aria-hidden="true">→</span></button>
+        </form>
+        <div id="demo-hint" class="help-panel" hidden><strong>Try the review workflow</strong><p>Analyst: <code>analyst / analyst</code><br>Reviewer: <code>reviewer / reviewer</code></p><p>Create and submit as the analyst, then sign in as the reviewer to decide.</p></div>
+        <p class="small muted">Your application session is kept in this browser tab. Sign out when you finish.</p>
+      </div>
+    </section>
+    <section id="workspace" class="workspace" hidden>
+      <aside class="sidebar" aria-label="Analysis runs">
+        <div class="sidebar-heading"><div><p class="eyebrow">Workspace</p><h2>Analyses <span id="run-count" class="count">0</span></h2></div><button id="refresh" class="button quiet compact" type="button">Refresh</button></div>
+        <button id="new-analysis" class="button primary full-width" type="button" hidden><span aria-hidden="true">＋</span> New analysis</button>
+        <div id="run-list" class="run-list"></div>
+        <p class="sidebar-note">Each run keeps its model evidence, reserve decisions, and activity record together.</p>
+      </aside>
+      <div class="workspace-content">
+        <section id="empty-view" class="empty-state" hidden><p class="eyebrow">Ready for review</p><h1>No analyses yet</h1><p class="muted">Analyst-created runs will appear here with their evidence and review status.</p></section>
+        <section id="create-view" hidden aria-labelledby="create-title">
+          <div class="page-heading"><div><p class="eyebrow">New analysis</p><h1 id="create-title" tabindex="-1">Start with the information available then.</h1><p class="muted">Replay conventional candidates through history and select using observed forecasting results.</p></div><button id="load-demo" class="button secondary" type="button" hidden>Load example data</button></div>
+          <form id="analysis-form" method="post" action="/api/analyze" class="card analysis-form">
+            <div class="section-heading"><span class="step-number">01</span><div><h2>Source data</h2><p class="muted">One cohort, in cumulative long format.</p></div></div>
+            <div class="field"><label for="analysis-title">Analysis title</label><input id="analysis-title" name="title" required maxlength="160" placeholder="e.g. Annual liability review"></div>
+            <div class="file-area"><label for="csv-file">Triangle CSV</label><input id="csv-file" type="file" accept=".csv,text/csv" aria-describedby="csv-help csv-status"><p id="csv-help" class="small muted">Required columns: origin_period, dev_lag, eval_date, field, value. Development age is in months. Include the loss and premium fields below. Up to 5,000 rows and 1.5 MB.</p><p id="csv-status" class="file-status" aria-live="polite">No data loaded.</p></div>
+            <div class="form-grid three"><div class="field"><label for="loss-field">Loss field</label><input id="loss-field" name="loss_field" value="paid_loss" required></div><div class="field"><label for="premium-field">Premium field</label><input id="premium-field" name="premium_field" value="earned_premium" required></div><div class="field"><label for="units">Units</label><input id="units" name="units" value="USD" required placeholder="e.g. USD thousands"></div></div>
+            <div class="section-heading divided"><span class="step-number">02</span><div><h2>Information and development</h2><p class="muted">The cutoff limits the information available to the analysis.</p></div></div>
+            <div class="form-grid"><div class="field"><label for="as-of">Selection cutoff</label><input id="as-of" name="as_of" type="date" value="2020-12-31" required></div><div class="field"><label for="history-start">Replay history starts</label><input id="history-start" name="history_start" type="date" value="2011-12-31" required></div><div class="field"><label for="grain">Origin and development grain</label><select id="grain" name="grain"><option value="Y">Annual</option><option value="Q">Quarterly</option><option value="M">Monthly</option></select></div><div class="field"><label for="horizon">Terminal development age · months</label><input id="horizon" name="horizon" type="number" min="1" step="1" value="96" required></div></div>
+            <div class="section-heading divided"><span class="step-number">03</span><div><h2>Selection rule</h2><p class="muted">The lowest mean historical diagonal score determines the selected candidate.</p></div></div>
+            <div class="field"><label for="metric">Historical scoring metric</label><select id="metric" name="metric"><option value="ave">AvE · actual versus expected</option><option value="cdr">CDR · claims development result</option></select></div>
+            <label class="checkbox-label" for="allow-unity"><input id="allow-unity" name="allow_unity" type="checkbox"><span>Allow a factor of 1 where development cannot be estimated<small>Use this explicit fallback only when appropriate. Its use remains visible in the evidence.</small></span></label>
+            <div class="form-footer"><p class="small muted">A completed analysis starts as a draft for your review.</p><button class="button primary" type="submit">Run historical analysis <span aria-hidden="true">→</span></button></div>
+          </form>
+        </section>
+        <article id="run-view" hidden aria-labelledby="run-title">
+          <div class="page-heading"><div><div class="heading-meta"><p class="eyebrow">Reserve analysis</p><span id="run-status" class="status"></span></div><h1 id="run-title" tabindex="-1"></h1><p id="run-subtitle" class="muted"></p></div><div class="heading-buttons"><button id="export-run" class="button secondary" type="button" hidden>Export approved record</button><button id="revise-run" class="button primary" type="button" hidden>Create revision</button></div></div>
+          <details id="export-preview" class="export-preview card" hidden><summary>Approved JSON export</summary><p class="small muted">Exact exported JSON from the server. Select and copy this text if your browser did not save the download.</p><pre id="export-json" class="source-csv" tabindex="0" role="region" aria-label="Approved JSON export"></pre></details><ol id="workflow" class="workflow" aria-label="Review progress"></ol>
+          <div class="metrics"><section class="metric-card"><p>Modeled reserve</p><strong id="model-reserve"></strong><span class="reserve-units"></span></section><section class="metric-card booked"><p>Booked reserve</p><strong id="booked-reserve"></strong><span class="reserve-units"></span></section><section class="metric-card"><p>Adjustment to model</p><strong id="reserve-adjustment"></strong><span id="override-count"></span></section></div>
+          <div class="model-strip"><div><span>Selected candidate</span><strong id="selected-name"></strong></div><div><span>Information cutoff</span><strong id="cutoff-value"></strong></div><div><span>Terminal age</span><strong id="horizon-value"></strong></div><div><span>Historical score</span><strong id="score-value"></strong></div></div>
+          <section id="warnings-section" class="warning-panel" hidden><h2>Model notes</h2><ul id="warnings-list"></ul></section>
+          <nav class="section-nav" aria-label="Analysis sections"><a href="#origin-section">Origin reserves</a><a href="#evidence-section">Model evidence</a><a href="#review-section">Review decision</a><a href="#activity-section">Activity</a></nav>
+          <section id="origin-section" class="card"><div class="section-heading"><div><p class="eyebrow">Reserve position</p><h2>Origin reserves</h2><p class="muted">The latest observed cumulative loss, modeled ultimate, and booked reserve for each origin.</p></div></div><div id="origin-table"></div>
+            <form id="override-form" class="inset-form" hidden><h3>Record an adjustment</h3><p class="small muted">Enter the full booked reserve for the selected origin. Each change requires a reason.</p><div class="form-grid"><div class="field"><label for="override-origin">Origin period</label><select id="override-origin" required></select></div><div class="field"><label for="override-reserve">Booked reserve</label><input id="override-reserve" type="number" step="any" required></div></div><div class="field"><label for="override-reason">Reason for the adjustment</label><textarea id="override-reason" rows="3" required placeholder="Explain the evidence and judgment behind this amount."></textarea></div><button class="button secondary" type="submit">Save adjustment</button></form>
+          </section>
+          <section id="evidence-section" class="card"><div class="section-heading"><div><p class="eyebrow">Forecasting through time</p><h2>Model evidence</h2><p id="evidence-description" class="muted"></p></div></div><h3>Selected settings</h3><dl id="settings-list" class="settings-list"></dl><details class="evidence-detail" open><summary id="ranking-summary">Candidate ranking</summary><p class="small muted">Eligible candidates are ranked by mean historical diagonal RMSE. Lower scores indicate smaller historical errors.</p><div id="ranking-table"></div></details><details class="evidence-detail"><summary>Historical diagonal scores</summary><p class="small muted">Each score uses absolute actual movement as its weight. Failed or incomplete intervals remain visible.</p><div id="history-table"></div></details><details class="evidence-detail"><summary>Development factors</summary><div id="factor-table"></div></details><details class="evidence-detail"><summary>Factor observation selection</summary><div id="factor-selection-table"></div></details><details class="evidence-detail"><summary>Source and record provenance</summary><dl id="provenance-list" class="provenance-list"></dl><details class="source-history"><summary>Saved source history</summary><p class="small muted">Saved CSV observations available by the selection cutoff.</p><pre id="saved-source-csv" class="source-csv" tabindex="0" role="region" aria-label="Saved source history CSV"></pre></details></details></section>
+          <section id="review-section" class="card"><div class="section-heading"><div><p class="eyebrow">Documented judgment</p><h2>Review decision</h2><p id="review-description" class="muted"></p></div></div><form id="submit-form" hidden><div class="field"><label for="submit-reason">Submission note</label><textarea id="submit-reason" rows="3" required placeholder="Summarize why this reserve position is ready for review."></textarea></div><button class="button primary" type="submit">Submit for review</button></form><form id="decision-form" hidden><div class="field"><label for="decision-reason">Decision rationale</label><textarea id="decision-reason" rows="3" required placeholder="Record your assessment of the model evidence and booked reserve."></textarea></div><div class="button-row"><button class="button primary" type="submit" name="decision" value="approve">Approve and lock</button><button class="button secondary" type="submit" name="decision" value="reject">Reject with rationale</button></div></form></section>
+          <section id="activity-section" class="card"><div class="section-heading"><div><p class="eyebrow">Decision history</p><h2>Activity</h2><p class="muted">Recorded actions, reasons, and authors for this run.</p></div></div><ol id="activity-list" class="activity-list"></ol></section>
+        </article>
+        <footer class="workspace-footer"><span>Reserve Review</span><span>Local reference application · Conventional reserving</span></footer>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

@@ -156,7 +156,7 @@ def stan_data(
     }
 
     if premium_field is not None:
-        premium = _premium_by_origin(
+        premium = premium_by_origin(
             triangle, premium_field, origins, segment=_cohort_identity(triangle, df, ())["segment"]
         )
         data["premium"] = premium
@@ -164,7 +164,7 @@ def stan_data(
     return data
 
 
-def _premium_by_origin(
+def premium_by_origin(
     triangle: Triangle,
     premium_field: str,
     origins: list,
@@ -172,6 +172,10 @@ def _premium_by_origin(
     segment: dict | None = None,
 ) -> np.ndarray:
     """One exposure per origin, from THIS cohort.
+
+    Public, and called from outside this module: ``kernels.replay`` grids one
+    historical slice per replay date and attaches that slice's own premium to
+    it, so it needs the same exposure rule the Stan contracts here read by.
 
     The single-cohort guards above are applied to the LOSS rows, because that is
     the frame they build from. Premium is a different field, so it needs its own
@@ -306,7 +310,7 @@ def odp_stan_data(
     }
 
     if premium_field is not None:
-        premium = _premium_by_origin(
+        premium = premium_by_origin(
             triangle, premium_field, origins, segment=_cohort_identity(triangle, df, ())["segment"]
         )
         data["premium"] = premium
@@ -433,7 +437,7 @@ def compartmental_stan_data(
         "paid_to_date": latest[paid_field].to_numpy(dtype=float),
         "latest_d": latest["d"].to_numpy(dtype=int),
     }
-    data["premium"] = _premium_by_origin(
+    data["premium"] = premium_by_origin(
         triangle,
         premium_field,
         origins,
@@ -541,7 +545,7 @@ def cohort_grid(
     # what "identity" means (fields/models are (loss_field,) either way today)
     data.update(identity)
     if premium_field is not None:
-        data["premium"] = _premium_by_origin(
+        data["premium"] = premium_by_origin(
             triangle,
             premium_field,
             data["origin_periods"],
