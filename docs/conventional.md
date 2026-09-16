@@ -3,16 +3,9 @@
 `ibnr.kernels.conventional` implements point forecasts for chain ladder (CL),
 Bornhuetter-Ferguson (BF), and Gluck's generalized Cape Cod (GCC). The formulas
 follow sections 2.3.1-2.3.3 of [The Actuary and IBNR Techniques: A Machine
-Learning Approach](https://ibnr.co/research/balona-richman-2021.pdf), the
-23 April 2021 manuscript by Caesar Balona and Ronald Richman. The paper and its
-appendix are published on https://ibnr.co, an educational site by Ron Richman,
-one of the paper's authors and the founder of insureAI. That site is unrelated
-to this package, which shares the name by coincidence.
-
-These candidates support research into forecasting procedures. They do not
-implement the methods of ReserveAI, insureAI's commercial reserving platform,
-which is built on the paper's ideas: those methods are proprietary and are not
-implemented or compared anywhere in this repository.
+Learning Approach](https://ssrn.com/abstract=3697256) by Caesar Balona and
+Ronald Richman, the 14 August 2020 manuscript. These candidates support
+research into forecasting procedures.
 
 ```python
 from ibnr.kernels.conventional import ConventionalCandidate, fit_conventional
@@ -113,10 +106,10 @@ refuses a horizon shorter than the development it can see. An age beyond the
 available data requires the explicit unity policy. There is no fitted tail
 beyond the horizon.
 
-The paper does not prescribe all these boundary conventions. Pair/window/tie
-rules follow the worked examples published on https://ibnr.co; the unity and
-skipped-trimming fallbacks used there must be requested explicitly here. Mack's
-existing untrimmed volume estimator
+The paper does not prescribe all of these boundary conventions, so this package
+declares its own and documents them here: the pair, window and tie rules above,
+and the unity and skipped-trimming fallbacks, which are never automatic and
+have to be requested explicitly. Mack's existing untrimmed volume estimator
 can include zero-current pairs; this candidate family consistently requires
 defined individual link ratios, so the two can differ on zero-valued data.
 
@@ -224,5 +217,5 @@ harder targets. A supposedly unknown target with an observation dated before
 selection raises a history-mismatch error.
 
 This measures historical point-forecast performance. It does not establish
-probability calibration, universal superiority of AvE/CDR selection, or
-equivalence to ReserveAI, whose methods are not published.
+probability calibration, nor that selecting on AvE or on CDR is superior in
+general.
