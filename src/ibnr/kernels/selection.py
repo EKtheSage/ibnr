@@ -1,4 +1,13 @@
-"""Historical conventional selection followed by untouched later evaluation."""
+"""Historical conventional selection followed by untouched later evaluation.
+
+``metric="cdr"`` here is the quantity ``kernels.replay`` records: the observed
+change in a candidate's fitted ultimate over one development period, which is
+one year only on an annual grain, written so that a positive number is adverse.
+It is not the Merz-Wuthrich one-year claims development result in
+``kernels.cdr``, which is a distribution rather than a single observed number,
+runs the other way round (favorable-positive) and is defined on annual data
+only. Both are called a CDR and they are different measurements.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +18,7 @@ from itertools import pairwise
 import numpy as np
 import pandas as pd
 
-from ibnr.kernels.conventional import ConventionalCandidate, ConventionalFit, _date
+from ibnr.kernels.conventional import ConventionalCandidate, ConventionalFit, as_date
 from ibnr.kernels.replay import ConventionalReplay
 from ibnr.triangle import Triangle
 from ibnr.triangle.core import GRAIN_MONTHS
@@ -60,6 +69,16 @@ def _weighted_rmse(error: np.ndarray, weight: np.ndarray) -> float:
     return float(scale * np.sqrt(np.sum(normalized * (error / scale) ** 2)))
 
 
+def _by_interval(frame: pd.DataFrame) -> dict[tuple, pd.DataFrame]:
+    """One frame per (candidate, information date, evaluation date).
+
+    Rows keep their original order inside each group, so the scores below are
+    computed on exactly the rows, in exactly the order, a filter would give.
+    """
+    keys = ["candidate", "as_of", "eval_date"]
+    return dict(iter(frame.groupby(keys, sort=False)))
+
+
 def score_replay(
     replay: ConventionalReplay,
     *,
@@ -74,22 +93,24 @@ def score_replay(
     """
     if metric not in ("ave", "cdr"):
         raise ValueError("metric must be 'ave' or 'cdr'")
-    cutoff = replay.dates[-1] if through is None else _date(through)
+    cutoff = replay.dates[-1] if through is None else as_date(through)
+    # Group both frames once and look each interval up, rather than running two
+    # comparisons over every row of both frames for every (candidate, interval)
+    # pair. That form costs the candidate count times the row count, and the row
+    # count grows with the candidate count too, so it was quadratic. Measured on
+    # a synthetic portfolio, 200 candidates over ten dates (28,800 cell rows):
+    # 8.2 s before, 0.71 s after, with every score row identical. The published
+    # quarterly grid in the benchmark is 2,924 candidates.
+    cells_by_interval = _by_interval(replay.cells)
+    errors_by_interval = _by_interval(replay.errors)
+    no_cells, no_errors = replay.cells.iloc[:0], replay.errors.iloc[:0]
     rows = []
     for before, after in pairwise(replay.dates):
         if after > cutoff:
             continue
         for name in replay.candidates:
-            cells = replay.cells.loc[
-                (replay.cells["candidate"] == name)
-                & (replay.cells["as_of"] == before)
-                & (replay.cells["eval_date"] == after)
-            ]
-            failures = replay.errors.loc[
-                (replay.errors["candidate"] == name)
-                & (replay.errors["as_of"] == before)
-                & (replay.errors["eval_date"] == after)
-            ]
+            cells = cells_by_interval.get((name, before, after), no_cells)
+            failures = errors_by_interval.get((name, before, after), no_errors)
             status, reason, rmse = "ok", "", np.nan
             fit = replay.fits.get((name, before))
             expected_origins = set() if fit is None else set(fit.origins["origin_period"])
@@ -155,7 +176,7 @@ def select_conventional(
     undefined interval disqualifies that candidate; ties use lexical names.
     No eligible candidate is an error, with no fallback to incomplete scores.
     """
-    cutoff = _date(selection_as_of)
+    cutoff = as_date(selection_as_of)
     if cutoff not in replay.dates:
         raise ValueError("selection_as_of must be a replay information date")
     scores = score_replay(replay, metric=metric, through=cutoff)
@@ -211,6 +232,76 @@ def select_conventional(
     )
 
 
+def _require_same_training_history(selection: ConventionalSelection, snapshot: pd.DataFrame) -> int:
+    """The evaluation triangle must carry the history the selection was fitted on.
+
+    Returns how many cells were compared. Every other check in
+    :func:`evaluate_conventional` reads the evaluation triangle's SHAPE - its
+    units, measure, grains, segment columns, cohort values and terminal age -
+    and none of them reads a loss amount. So a triangle of the right shape
+    carrying another book's numbers was evaluated without complaint: with every
+    loss doubled, the frozen forecast was scored against those outcomes and the
+    summary came back with an empty reason, full coverage and a finite RMSE.
+    This follows the same reasoning, and the same structure, as
+    ``gallery.cdr.GalleryDiagonal._require_same_training_history``.
+
+    Compares ``snapshot`` - the evaluation triangle as of the selection date -
+    against the fit's own training values, at every cell the snapshot indexes
+    UNAMBIGUOUSLY, meaning exactly one row for that origin and development lag.
+    Several rows for one cell are several readings of it and there is no way to
+    say which one the fit saw, so those cells are left out of the comparison;
+    ``as_of`` already collapses restatements, so this only happens when the
+    source data record one cell twice at one evaluation date. Where nothing at
+    all is comparable the evaluation is refused rather than passing for free.
+
+    A later restatement is never reached: it carries an evaluation date after
+    the selection date, so it is not in this snapshot at all.
+    """
+    grid = selection.fit.grid
+    step = grid["dev_grain_months"]
+    values: dict[tuple, float] = {}
+    repeated: set[tuple] = set()
+    for origin, lag, value in zip(
+        snapshot["origin_period"], snapshot["dev_lag"], snapshot["value"], strict=True
+    ):
+        key = (origin, int(lag))
+        if key in values:
+            repeated.add(key)
+        values[key] = float(value)
+    compared = 0
+    for i, origin in enumerate(grid["origin_periods"]):
+        for j in np.flatnonzero(grid["obs_mask"][i]):
+            key = (origin, int((j + 1) * step))
+            if key in repeated:
+                continue
+            fitted = float(grid["cum"][i, j])
+            if key not in values:
+                raise ValueError(
+                    f"the selected fit was estimated from {selection.loss_field!r} at origin "
+                    f"{origin}, dev lag {key[1]} (value {fitted:.10g}), and the evaluation "
+                    f"triangle has no such observation as of {selection.as_of}. The frozen "
+                    "forecast and these outcomes come from different loss histories"
+                )
+            if not np.isclose(values[key], fitted, rtol=1e-9, atol=0.0):
+                raise ValueError(
+                    f"the selected fit was estimated on a different loss history from this "
+                    f"evaluation triangle: {selection.loss_field!r} at origin {origin}, dev "
+                    f"lag {key[1]} is {values[key]:.10g} as of {selection.as_of} here and "
+                    f"{fitted:.10g} in the fit. A frozen forecast is only comparable with "
+                    "outcomes from the book it was made on, and nothing else checked here "
+                    "reads an amount"
+                )
+            compared += 1
+    if not compared:
+        raise ValueError(
+            f"the evaluation triangle shares no {selection.loss_field!r} cell with the "
+            f"selected fit's training data as of {selection.as_of}, so there is no way to "
+            f"confirm the forecast was made on this book. {len(values)} rows were available "
+            f"to compare against {int(grid['obs_mask'].sum())} training cells"
+        )
+    return compared
+
+
 def evaluate_conventional(
     selection: ConventionalSelection,
     triangle: Triangle,
@@ -223,7 +314,15 @@ def evaluate_conventional(
     origins and terminal values already known at selection are not test targets.
     Missing targets remain visible and suppress the overall RMSE.
     """
-    cutoff = _date(as_of)
+    horizon = selection.candidate.horizon
+    if horizon is None:
+        raise ValueError(
+            "evaluation needs an explicitly declared horizon; the terminal age cannot be "
+            "inferred after the fit. A candidate without one is scored at whatever its own "
+            "deepest observed age happened to be, which is not a fixed target through time. "
+            "replay_conventional refuses such a candidate for the same reason"
+        )
+    cutoff = as_date(as_of)
     if cutoff <= selection.as_of:
         raise ValueError("evaluation as_of must be later than the selection date")
     if triangle.meta.units != selection.units or triangle.meta.measure != "cumulative":
@@ -243,13 +342,13 @@ def evaluate_conventional(
             raise ValueError("evaluation data must contain exactly the selected cohort")
     data["origin_period"] = pd.to_datetime(data["origin_period"]).dt.date
     data["eval_date"] = pd.to_datetime(data["eval_date"]).dt.date
-    horizon = selection.candidate.horizon
-    # Check the earlier snapshot too: a later restatement cannot turn an
-    # already available terminal outcome into a new test observation.
-    earlier = triangle.as_of(selection.as_of).select_fields(selection.loss_field).execute()
-    earlier_terminal = set(
-        pd.to_datetime(earlier.loc[earlier["dev_lag"] == horizon, "origin_period"]).dt.date
-    )
+    # The snapshot as the selection saw it, used twice: to confirm this is the
+    # book the forecast was made on, and because a later restatement cannot turn
+    # an already available terminal outcome into a new test observation.
+    earlier = triangle.as_of(selection.as_of).select_fields(selection.loss_field).execute().copy()
+    earlier["origin_period"] = pd.to_datetime(earlier["origin_period"]).dt.date
+    _require_same_training_history(selection, earlier)
+    earlier_terminal = set(earlier.loc[earlier["dev_lag"] == horizon, "origin_period"])
     terminal = data.loc[data["dev_lag"] == horizon]
     if terminal["origin_period"].duplicated().any():
         raise ValueError("duplicate terminal-age outcomes")

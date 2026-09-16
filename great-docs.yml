@@ -171,6 +171,29 @@ reference:
       - kernels.ODPBootstrapDiagonal
       - gallery.GalleryDiagonal
 
+  - title: Conventional point candidates
+    desc: >
+      Chain ladder, Bornhuetter-Ferguson and Gluck's generalized Cape Cod as
+      fixed settings that can be refitted at successive information dates. A
+      replay measures each candidate's realized actual-versus-expected and the
+      observed change in its fitted ultimate over one development period;
+      selection picks a candidate on those historical outcomes alone, and the
+      evaluation scores the frozen forecast against later terminal observations.
+    contents:
+      - kernels.fit_conventional
+      - kernels.conventional_grid
+      - name: kernels.ConventionalCandidate
+        members: true
+      - name: kernels.ConventionalFit
+        members: true
+      - kernels.replay_conventional
+      - kernels.ConventionalReplay
+      - kernels.score_replay
+      - kernels.select_conventional
+      - kernels.ConventionalSelection
+      - kernels.evaluate_conventional
+      - kernels.ConventionalEvaluation
+
   - title: Evaluation kernels
     desc: >
       The unifying predictive-distribution output type and the cross-backend

@@ -24,6 +24,7 @@ live behind ``-m slow`` like every other cmdstan test.
 
 from __future__ import annotations
 
+import datetime as dt
 import subprocess
 import sys
 from dataclasses import replace
@@ -561,13 +562,13 @@ def test_weight_fit_outcomes_must_be_available_at_evaluation(rng, roundtrip):
         stack(panel, evaluation)
 
 
-def _mixed_availability_panel(rng, *, late_density=True):
+def _mixed_availability_panel(rng, *, late_density=True, late=None):
     """Two reporting calendars; only CO_B's next observation is delayed."""
     forecasts = []
     for company in ("CO_A", "CO_B"):
         cells = _cells(company, as_of=WEIGHTS_AS_OF)
         if company == "CO_B":
-            late = pd.Timestamp("2015-12-31").date()
+            late = pd.Timestamp("2015-12-31").date() if late is None else late
             cells = replace(cells, eval_date=late, frame=cells.frame.assign(eval_date=late))
         for model in ("model_a", "model_b"):
             forecasts.append(
@@ -598,6 +599,23 @@ def test_available_weights_ignore_later_crps_only_outcomes(rng, roundtrip):
     assert result.n_cells_weight_fit == panel.n_cells_for("elpd")
     assert np.isclose(sum(result.weights.values()), 1.0)
     assert all(f.has_density and f.has_draws for f in result.forecasts)
+
+
+def test_a_weight_fit_outcome_one_day_past_the_cutoff_is_refused(rng):
+    """The boundary itself, beside the equal case above.
+
+    The test above pins that an outcome observed exactly ON the evaluation
+    cutoff is available. This one pins the first date that is not: a comparison
+    written one day too loose passes every other test in this file.
+    """
+    one_day_late = pd.Timestamp(EVAL_AS_OF).date() + dt.timedelta(days=1)
+    panel = _mixed_availability_panel(rng, late=one_day_late)
+    assert set(panel.cells.loc[panel.cells.on_elpd_panel, "eval_date"]) == {
+        pd.Timestamp(EVAL_AS_OF).date(),
+        one_day_late,
+    }
+    with pytest.raises(ValueError, match="after the evaluation as_of"):
+        stack(panel, _evaluation(rng))
 
 
 @pytest.mark.parametrize("damage", ["missing_date", "missing_key", "duplicate_key"])

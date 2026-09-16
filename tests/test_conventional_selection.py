@@ -341,6 +341,71 @@ def test_outer_evaluation_date_must_follow_selection(history):
         evaluate_conventional(selected, tri, as_of=selected.as_of)
 
 
+def test_outer_evaluation_refuses_another_books_losses_under_the_same_shape(history, backend_name):
+    # Same origins, same grains, same field, no segment columns, every loss
+    # doubled. Nothing else checked here reads an amount, so this used to report
+    # full coverage, an empty reason and a finite RMSE against another book.
+    tri, replay = history
+    selected = choose(replay, date=DATES[1])
+    frame = tri.execute()
+    frame.loc[frame["field"] == "paid_loss", "value"] *= 2.0
+    doubled = from_frame(frame, backend_name)
+    with pytest.raises(ValueError, match="(?i)(history|estimated on)"):
+        evaluate_conventional(selected, doubled, as_of="2017-12-31")
+
+
+def test_outer_evaluation_refuses_one_changed_interior_cell_and_names_it(history, backend_name):
+    tri, replay = history
+    selected = choose(replay, date=DATES[1])
+    frame = tri.execute()
+    interior = (
+        (pd.to_datetime(frame["origin_period"]).dt.date == ORIGINS[1])
+        & (frame["dev_lag"] == 24)
+        & (frame["field"] == "paid_loss")
+    )
+    assert interior.sum() == 1
+    frame.loc[interior, "value"] = 410.0  # the fit was estimated from 400
+    changed = from_frame(frame, backend_name)
+    with pytest.raises(ValueError, match="(?i)(history|estimated on)") as raised:
+        evaluate_conventional(selected, changed, as_of="2017-12-31")
+    message = str(raised.value)
+    assert str(ORIGINS[1]) in message
+    assert "410" in message and "400" in message
+
+
+def test_outer_evaluation_refuses_a_triangle_that_carries_no_history_at_selection(
+    history, backend_name
+):
+    tri, replay = history
+    selected = choose(replay, date=DATES[1])
+    frame = tri.execute()
+    later_only = frame.loc[pd.to_datetime(frame["eval_date"]).dt.date > selected.as_of]
+    assert not later_only.empty
+    with pytest.raises(ValueError, match="(?i)(no such observation|different loss histories)"):
+        evaluate_conventional(selected, from_frame(later_only, backend_name), as_of="2017-12-31")
+
+
+def test_outer_evaluation_refuses_a_history_it_cannot_read_a_single_cell_of(history, backend_name):
+    # Every loss row recorded twice at one evaluation date. A restatement would
+    # be collapsed by as_of, but two readings at one date are not a restatement
+    # and there is no way to say which one the fit saw, so no cell is
+    # comparable - which must be a refusal rather than a pass for free.
+    tri, replay = history
+    selected = choose(replay, date=DATES[1])
+    frame = tri.execute()
+    twice = pd.concat([frame, frame.loc[frame["field"] == "paid_loss"]], ignore_index=True)
+    with pytest.raises(ValueError, match="(?i)(shares no|no way to confirm)"):
+        evaluate_conventional(selected, from_frame(twice, backend_name), as_of="2017-12-31")
+
+
+def test_outer_evaluation_needs_an_explicitly_declared_horizon(history):
+    tri, replay = history
+    selected = choose(replay, date=DATES[1])
+    implicit = replace(selected, candidate=replace(selected.candidate, horizon=None))
+    with pytest.raises(ValueError, match="(?i)horizon"):
+        evaluate_conventional(implicit, tri, as_of="2017-12-31")
+
+
 @pytest.mark.parametrize("later_restatement", [False, True])
 def test_outer_history_cannot_reclassify_an_already_available_terminal_as_unseen(
     history, backend_name, later_restatement

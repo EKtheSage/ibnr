@@ -19,6 +19,11 @@ arrives through ``kernels.densities`` regardless. So this file stays plain.
 ``tests/test_import_purity.py::test_the_wire_format_is_not_what_a_public_import_pays_for``
 is the tripwire on the premise rather than on the fix: it goes red if pandas
 ever stops importing pyarrow, which is when the deferral would start to pay.
+
+The conventional point candidates (``conventional``, ``replay``, ``selection``)
+are re-exported here for the same reason the mack and CDR names are, and they
+add nothing to the cost above: between them they import numpy, pandas and
+``kernels.contract``, every one of which this file already loads.
 """
 
 from ibnr.kernels.cdr import (
@@ -42,6 +47,12 @@ from ibnr.kernels.codec import (
     to_arrow,
     to_summary,
 )
+from ibnr.kernels.conventional import (
+    ConventionalCandidate,
+    ConventionalFit,
+    conventional_grid,
+    fit_conventional,
+)
 from ibnr.kernels.densities import to_amount_scale
 from ibnr.kernels.forecast import (
     SCORE_DIRECTION,
@@ -55,6 +66,14 @@ from ibnr.kernels.holdout import HoldoutCells, next_diagonal
 from ibnr.kernels.mack import MackFit, fit_mack, simulate_ultimates
 from ibnr.kernels.parity import ParityReport, compare_posteriors
 from ibnr.kernels.predictive import PredictiveDistribution
+from ibnr.kernels.replay import ConventionalReplay, replay_conventional
+from ibnr.kernels.selection import (
+    ConventionalEvaluation,
+    ConventionalSelection,
+    evaluate_conventional,
+    score_replay,
+    select_conventional,
+)
 
 __all__ = [
     "CDRResult",
@@ -65,6 +84,11 @@ __all__ = [
     "SCORE_DIRECTION",
     "Absence",
     "CohortForecast",
+    "ConventionalCandidate",
+    "ConventionalEvaluation",
+    "ConventionalFit",
+    "ConventionalReplay",
+    "ConventionalSelection",
     "ForecastPanel",
     "HoldoutCells",
     "MackDiagonal",
@@ -76,6 +100,9 @@ __all__ = [
     "cdr_methods",
     "cdr_risk_measures",
     "compare_posteriors",
+    "conventional_grid",
+    "evaluate_conventional",
+    "fit_conventional",
     "fit_mack",
     "from_arrow",
     "get_cdr_method",
@@ -83,7 +110,10 @@ __all__ = [
     "next_diagonal",
     "one_year_cdr",
     "peek_kind",
+    "replay_conventional",
     "rereserve",
+    "score_replay",
+    "select_conventional",
     "simulate_one_year_cdr",
     "simulate_ultimates",
     "to_amount_scale",

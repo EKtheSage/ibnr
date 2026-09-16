@@ -19,6 +19,26 @@ import pandas as pd
 from ibnr.kernels.contract import cohort_grid
 from ibnr.triangle import Triangle
 
+#: One row per observed link ratio, whether or not it was used.
+SELECTION_COLUMNS = [
+    "from_dev_lag",
+    "origin_period",
+    "previous",
+    "following",
+    "ratio",
+    "included",
+    "reason",
+]
+
+#: One row per estimated development factor.
+SUMMARY_COLUMNS = [
+    "from_dev_lag",
+    "factor",
+    "n_selected",
+    "unity_fallback",
+    "extreme_trimming_skipped",
+]
+
 
 @dataclass(frozen=True)
 class ConventionalCandidate:
@@ -48,12 +68,23 @@ class ConventionalCandidate:
             raise ValueError("method must be 'cl', 'bf', or 'gcc'")
         if self.average not in ("volume", "simple", "median"):
             raise ValueError("average must be 'volume', 'simple', or 'median'")
+        # numpy scalars are accepted and converted to the builtin type, the same
+        # way the float settings below already accept a numpy float: a grid
+        # built from numpy ranges hands these in, and two candidates that differ
+        # only in how a count was spelled must stay equal and hash alike.
         for name in ("history_periods", "horizon"):
             value = getattr(self, name)
-            if value is not None and (type(value) is not int or value < 1):
+            if value is None:
+                continue
+            counts = isinstance(value, int | np.integer) and not isinstance(value, bool | np.bool_)
+            if not counts or value < 1:
                 raise ValueError(f"{name} must be a positive integer or None")
-        if type(self.drop_high) is not bool or type(self.drop_low) is not bool:
-            raise ValueError("drop_high and drop_low must be booleans")
+            object.__setattr__(self, name, int(value))
+        for name in ("drop_high", "drop_low"):
+            flag = getattr(self, name)
+            if not isinstance(flag, bool | np.bool_):
+                raise ValueError("drop_high and drop_low must be booleans")
+            object.__setattr__(self, name, bool(flag))
         if self.unsupported_factor not in ("raise", "unity"):
             raise ValueError("unsupported_factor must be 'raise' or 'unity'")
         if self.exhausted_exclusions not in ("raise", "keep"):
@@ -70,7 +101,7 @@ class ConventionalCandidate:
                 raise ValueError("GCC needs decay between 0 and 1")
         elif self.decay is not None:
             raise ValueError("decay is a GCC setting only")
-        exclusions = tuple((_date(origin), lag) for origin, lag in self.exclude)
+        exclusions = tuple((as_date(origin), lag) for origin, lag in self.exclude)
         if any(type(lag) is not int or lag < 1 for _, lag in exclusions):
             raise ValueError("excluded development lags must be positive integer months")
         if len(set(exclusions)) != len(exclusions):
@@ -100,7 +131,7 @@ class ConventionalFit:
 
     def predict_cumulative(self, origin_period: dt.date | str, dev_lag: int) -> float:
         """Forecast an existing origin at an age after its last observation."""
-        origin = _date(origin_period)
+        origin = as_date(origin_period)
         step = self.grid["dev_grain_months"]
         if (
             type(dev_lag) is not int
@@ -133,7 +164,7 @@ def fit_conventional(
     is supplied by the caller: it must have been available then too. Negative
     increments are permitted; cumulative amounts must be finite/non-negative.
     """
-    cutoff = _date(as_of)
+    cutoff = as_date(as_of)
     train = triangle.as_of(cutoff)
     if triangle.meta.origin_grain != triangle.meta.dev_grain:
         raise ValueError("conventional candidates require matching origin and development grains")
@@ -236,17 +267,25 @@ def _factors(grid, candidate, n_dev):
         ordered = sorted(kept, key=lambda r: (r["ratio"], r["origin_period"]))
         drop = int(candidate.drop_low) + int(candidate.drop_high)
         skipped = False
-        if drop and len(ordered) <= drop:
-            if candidate.exhausted_exclusions == "raise":
-                raise ValueError(
-                    f"extreme exclusions exhaust paired origins at dev lag {(j + 1) * step}"
-                )
-            skipped = True
-        else:
-            if candidate.drop_low:
-                ordered.pop(0).update(included=False, reason="drop_low")
-            if candidate.drop_high:
-                ordered.pop().update(included=False, reason="drop_high")
+        # An age with no usable pair at all is not an exhausted trim. It is an
+        # age the data never supported, which is what ``unsupported_factor``
+        # below decides. Trimming first answered that question with a refusal
+        # about exclusions, and only when a trim happened to be requested: an
+        # age beyond the observed development answered under 'unity' on its own
+        # and refused as soon as drop_high was added, although there was nothing
+        # for drop_high to remove either way.
+        if drop and ordered:
+            if len(ordered) <= drop:
+                if candidate.exhausted_exclusions == "raise":
+                    raise ValueError(
+                        f"extreme exclusions exhaust paired origins at dev lag {(j + 1) * step}"
+                    )
+                skipped = True
+            else:
+                if candidate.drop_low:
+                    ordered.pop(0).update(included=False, reason="drop_low")
+                if candidate.drop_high:
+                    ordered.pop().update(included=False, reason="drop_high")
         kept = [r for r in rows if r["included"]]
         fallback = not kept
         if kept:
@@ -273,7 +312,15 @@ def _factors(grid, candidate, n_dev):
                 "extreme_trimming_skipped": skipped,
             }
         )
-    return factors, pd.DataFrame(selection), pd.DataFrame(summary)
+    # Explicit columns: an age range with no observed pair at all leaves these
+    # lists empty, and a frame built from an empty list has no columns, so a
+    # caller reading factor_selection['ratio'] met a KeyError rather than an
+    # empty column.
+    return (
+        factors,
+        pd.DataFrame(selection, columns=SELECTION_COLUMNS),
+        pd.DataFrame(summary, columns=SUMMARY_COLUMNS),
+    )
 
 
 def conventional_grid(
@@ -302,7 +349,13 @@ def conventional_grid(
     return tuple(dict.fromkeys(candidates))
 
 
-def _date(value: dt.date | str) -> dt.date:
+def as_date(value: dt.date | str) -> dt.date:
+    """An ISO string, date or timestamp as a plain date, or a refusal.
+
+    Public: ``kernels.replay`` and ``kernels.selection`` read the same kind of
+    caller-supplied information date, and one shared reading is what keeps two
+    dates that were typed differently comparable.
+    """
     if isinstance(value, str):
         return dt.date.fromisoformat(value)
     if isinstance(value, dt.datetime) and not pd.isna(value):

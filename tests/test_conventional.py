@@ -15,7 +15,12 @@ import pandas as pd
 import pytest
 
 from ibnr import Triangle
-from ibnr.kernels.conventional import ConventionalCandidate, fit_conventional
+from ibnr.kernels.conventional import (
+    SELECTION_COLUMNS,
+    SUMMARY_COLUMNS,
+    ConventionalCandidate,
+    fit_conventional,
+)
 from ibnr.kernels.mack import fit_mack
 
 from .conftest import make_cohort_triangle
@@ -281,6 +286,96 @@ def test_raise_policy_names_an_exhausted_factor_selection(backend_name):
             varied_triangle(backend_name),
             candidate(drop_high=True, drop_low=True, exhausted_exclusions="raise"),
         )
+
+
+RECTANGLE_AS_OF = "2017-12-31"
+RECTANGLE = np.array(
+    [
+        [100.0, 200.0, 300.0],
+        [100.0, 300.0, 450.0],
+        [100.0, 400.0, 500.0],
+        [100.0, 500.0, 750.0],
+        [100.0, 600.0, 900.0],
+    ]
+)
+
+
+def developed_rectangle(backend_name):
+    """Five origins, all run off by 36 months, so every observed age has pairs."""
+    return make_cohort_triangle(backend_name, RECTANGLE)
+
+
+def rectangle_fit(backend_name, spec):
+    return fit_conventional(
+        developed_rectangle(backend_name), spec, as_of=RECTANGLE_AS_OF, loss_field="paid_loss"
+    )
+
+
+def test_an_age_beyond_the_data_takes_the_unity_policy_even_when_trimming(backend_name):
+    # Every origin is run off at 36 months, so a 48-month horizon asks for a
+    # factor at an age with no pair at all. That is the unsupported_factor
+    # question, which this candidate answers with unity; a requested trim has
+    # nothing to remove there and must not turn the answer into a refusal.
+    spec = ConventionalCandidate(horizon=48, unsupported_factor="unity")
+    plain = rectangle_fit(backend_name, spec)
+    trimmed = rectangle_fit(backend_name, replace(spec, drop_high=True))
+    np.testing.assert_allclose(plain.factors[2], 1.0)
+    np.testing.assert_allclose(trimmed.factors[2], 1.0)
+    assert trimmed.factors[0] != plain.factors[0]  # the trim did run where it could
+    row = trimmed.factor_summary.set_index("from_dev_lag").loc[36]
+    assert row["n_selected"] == 0
+    assert row["unity_fallback"]
+    assert not row["extreme_trimming_skipped"]
+
+
+def test_a_skipped_trim_is_recorded_only_where_there_was_something_to_trim(backend_name):
+    spec = ConventionalCandidate(
+        horizon=48, drop_high=True, exhausted_exclusions="keep", unsupported_factor="unity"
+    )
+    one_pair = fit(triangle(backend_name), spec).factor_summary.set_index("from_dev_lag")
+    # 36 months has exactly one pair here: the trim is refused and recorded.
+    assert one_pair.loc[36, "n_selected"] == 1
+    assert one_pair.loc[36, "extreme_trimming_skipped"]
+    assert not one_pair.loc[36, "unity_fallback"]
+    no_pair = rectangle_fit(backend_name, spec).factor_summary.set_index("from_dev_lag")
+    assert not no_pair.loc[36, "extreme_trimming_skipped"]
+    assert no_pair.loc[36, "unity_fallback"]
+
+
+def test_a_fit_with_no_observed_pair_still_names_its_selection_columns(backend_name):
+    tri = triangle(backend_name, values=np.array([[100.0], [200.0], [300.0]]))
+    fitted = fit_conventional(
+        tri,
+        ConventionalCandidate(horizon=36, unsupported_factor="unity"),
+        as_of="2012-12-31",
+        loss_field="paid_loss",
+    )
+    np.testing.assert_allclose(fitted.factors, [1.0, 1.0])
+    assert fitted.factor_selection.empty
+    assert fitted.factor_selection.columns.tolist() == SELECTION_COLUMNS
+    assert fitted.factor_selection["ratio"].empty  # reading a column, not a KeyError
+    assert fitted.factor_summary.columns.tolist() == SUMMARY_COLUMNS
+
+
+@pytest.mark.parametrize("name", ["history_periods", "horizon"])
+def test_a_numpy_count_makes_the_same_candidate_as_a_builtin_one(name):
+    from_numpy = ConventionalCandidate(**{name: np.int64(3)})
+    builtin = ConventionalCandidate(**{name: 3})
+    assert from_numpy == builtin
+    assert hash(from_numpy) == hash(builtin)
+    assert type(getattr(from_numpy, name)) is int
+
+
+def test_numpy_booleans_are_accepted_as_trimming_flags():
+    spec = ConventionalCandidate(drop_high=np.bool_(True), drop_low=np.bool_(False))
+    assert spec == ConventionalCandidate(drop_high=True)
+    assert spec.drop_high is True and spec.drop_low is False
+
+
+@pytest.mark.parametrize("bad", [0, -1, np.int64(0), 3.0, np.float64(3.0), True, np.bool_(True)])
+def test_a_count_setting_still_refuses_anything_but_a_positive_whole_number(bad):
+    with pytest.raises(ValueError, match="positive integer"):
+        ConventionalCandidate(history_periods=bad)
 
 
 def test_explicit_exclusion_names_a_pair_without_removing_its_observed_losses(backend_name):

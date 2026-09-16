@@ -325,7 +325,7 @@ def _observed_ratios(contract: dict, cells: CellIndex) -> np.ndarray:
             f"{int(mismatched.sum())} cell(s) carry a premium that disagrees with the "
             "fitted contract's per-origin premium (the cells' comes from the holdout "
             "frame, attached by next_diagonal from the training slice; the contract's "
-            "is _premium_by_origin's booked value). The observed ratio divides by the "
+            "is premium_by_origin's booked value). The observed ratio divides by the "
             "contract's number while the measure carry divides by the cells', so a "
             "mismatch would produce a density that silently no longer integrates to 1"
         )

@@ -114,6 +114,67 @@ def test_cl_first_interval_hand_calculation_and_adverse_sign(backend_name):
     assert continuing["cdr"] == pytest.approx(990 * 58 / 47 - 1240.8)
 
 
+def test_bf_and_gcc_first_interval_hand_calculations(backend_name):
+    """One BF and one GCC cell against numbers worked out away from the code.
+
+    The comparison below against independent refits cannot see an error the fit
+    and the replay share, and the CL hand calculation above does not touch the
+    two exposure-based priors at all.
+    """
+    result = replay(full_triangle(backend_name), dates=DATES[:2])
+
+    # BF(0.60), origin 2012, 2013 -> 2014.
+    # At 12/2013 the paid triangle is 2010: 100 200 300 360, 2011: 200 400 640,
+    # 2012: 300 660, 2013: 400, so the volume-weighted factors are
+    #   f12 = 1260/600 = 21/10, f24 = 940/600 = 47/30, f36 = 360/300 = 6/5
+    # and the developed fractions, read back from the 48-month end, are
+    #   beta = (250/987, 25/47, 5/6, 1).
+    # Origin 2012 is two periods old, so it is 25/47 developed on a fixed prior
+    # of 0.60 * 1800 = 1080:
+    #   ultimate      = 660 + 1080 * 22/47              = 54780/47 = 1165.53...
+    #   36-month forecast = 660 + 1080 * (5/6 - 25/47)  = 46320/47 =  985.53...
+    #   expected increment = 1080 * 85/282              = 15300/47 =  325.53...
+    # The cell actually developed 990 - 660 = 330, so AvE = 330 - 15300/47.
+    # At 12/2014, f36 becomes 1160/940 = 58/47, the prior is still 1080 and
+    # 2012 is 47/58 developed:
+    #   ultimate = 990 + 1080 * 11/58 = 34650/29 = 1194.83...
+    #   CDR = 34650/29 - 54780/47 = 39930/1363, and the remaining revision is
+    #   1080 * 11/58 - (54780/47 - 46320/47) = 720/29.
+    bf = cell(result, origin=ORIGINS[2], name="bf")
+    assert bf["actual_increment"] == pytest.approx(330.0)
+    assert bf["expected_increment"] == pytest.approx(15300 / 47)
+    assert bf["ave"] == pytest.approx(210 / 47)
+    assert bf["old_ultimate"] == pytest.approx(54780 / 47)
+    assert bf["new_ultimate"] == pytest.approx(34650 / 29)
+    assert bf["cdr"] == pytest.approx(39930 / 1363)
+    assert bf["remaining_revision"] == pytest.approx(720 / 29)
+
+    # GCC(decay 0.5), origin 2012, the same interval. Same factors and beta;
+    # what changes is the prior, which GCC estimates from a distance-weighted
+    # loss ratio. The weights halve per origin of distance, so for 2012 they are
+    # (1/4, 1/2, 1, 1/2) over the four origins known at 12/2013:
+    #   losses   = .25*360 + .5*640 + 660 + .5*400                  = 1270
+    #   exposure = .25*1000 + .5*1200*(5/6) + 1800*(25/47)
+    #              + .5*2200*(250/987)                  = 750 + 1220000/987
+    #   loss ratio = 1270 / (750 + 1220000/987) = 1253490/1960250 = 0.63945...
+    #   prior      = 1800 * that                                   = 1151.017...
+    # so the ultimate is 660 + prior*22/47 = 1198.774..., the 36-month forecast
+    # is 660 + prior*85/282 = 1006.938... and AvE is 330 - 346.938...
+    # At 12/2014 the same arithmetic over five origins, with weights
+    # (1/4, 1/2, 1, 1/2, 1/4) and losses .25*360 + .5*800 + 990 + .5*840
+    # + .25*500 = 2025, gives a prior of 1183.634..., and 2012 is 47/58
+    # developed, so the ultimate is 990 + prior*11/58 = 1214.482...
+    gcc = cell(result, origin=ORIGINS[2], name="gcc")
+    assert gcc["actual_increment"] == pytest.approx(330.0)
+    assert gcc["expected_increment"] == pytest.approx(346.9378905751817)
+    assert gcc["ave"] == pytest.approx(-16.937890575181736)
+    assert gcc["old_ultimate"] == pytest.approx(1198.774135952047)
+    assert gcc["new_ultimate"] == pytest.approx(1214.48240450918)
+    assert gcc["cdr"] == pytest.approx(15.708268557133009)
+    assert gcc["remaining_revision"] == pytest.approx(32.64615913231474)
+    assert gcc["ave"] + gcc["remaining_revision"] == pytest.approx(gcc["cdr"])
+
+
 def test_each_method_matches_independent_fits_and_exact_calendar_outcomes(backend_name):
     tri = full_triangle(backend_name)
     candidates = specs()

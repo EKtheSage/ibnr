@@ -1,5 +1,12 @@
 """Load the published Balona--Richman appendix for conventional-method research.
 
+The paper is Caesar Balona and Ronald Richman, "The Actuary and IBNR Techniques:
+A Machine Learning Approach". There is no journal volume to cite: it is a 23
+April 2021 manuscript, and the PDF ``PAPER_URL`` points at is hosted on
+ibnr.co, a site unrelated to this package. Title, authors and date are quoted
+from the appendix data's own ``source`` field, so they describe the file this
+module actually reads.
+
 Usage: ``load_published_examples()`` returns complete published rectangles, NOT
 valuation-ready upper triangles. Always choose an explicit ``as_of`` before
 fitting. Development endpoints are 240 months for Swiss liability and 63 months

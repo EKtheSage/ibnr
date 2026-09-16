@@ -18,6 +18,12 @@ so a positive CDR is a release and a negative one a strengthening. Under the
 model E[CDR | D_I] = 0, and the risk measure is the conditional MSEP about
 zero, ``msep = E[CDR^2 | D_I]``.
 
+One other quantity in this package is also called a CDR and is not this one:
+``kernels.replay``'s ``cdr`` column is the OBSERVED change in one conventional
+candidate's fitted ultimate over one development period, one number per origin,
+written the opposite way round so that positive is adverse, and carrying no
+distribution at all.
+
 ANNUAL DEVELOPMENT GRAIN ONLY. "One year" here means one development step, and
 the two are the same span only when the triangle develops in twelve-month
 steps. The three functions that name a year, :func:`one_year_cdr`,

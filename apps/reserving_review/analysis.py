@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 
 from ibnr import Triangle
-from ibnr.kernels.conventional import _date, conventional_grid
+from ibnr.kernels.conventional import as_date, conventional_grid
 from ibnr.kernels.replay import replay_conventional
 from ibnr.kernels.selection import select_conventional
 from ibnr.triangle.core import CORE_COLUMNS, GRAIN_MONTHS
@@ -81,7 +81,7 @@ def analyze_request(payload: dict) -> dict:
     allow_unity = payload.get("allow_unity", False)
     if type(allow_unity) is not bool:
         raise ValueError("allow_unity must be a boolean")
-    cutoff, first = _date(payload.get("as_of")), _date(payload.get("history_start"))
+    cutoff, first = as_date(payload.get("as_of")), as_date(payload.get("history_start"))
     dates = _cutoffs(first, cutoff, GRAIN_MONTHS[grain])
     metric = payload.get("metric", "ave")
     if metric not in ("ave", "cdr"):

@@ -206,7 +206,7 @@ def _premium_by_lob_origin(
 
     Premium is an origin-level exposure measure, not a triangle cell, so the
     LATEST evaluation of each (lob, origin) is the booked value - the same
-    convention as ``contract._premium_by_origin``. Completeness and strict
+    convention as ``contract.premium_by_origin``. Completeness and strict
     positivity are contract guarantees (models divide losses by premium to
     get loss ratios), so gaps raise instead of becoming NaN downstream.
     """

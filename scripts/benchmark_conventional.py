@@ -299,8 +299,10 @@ def main():
         rows.extend(synthetic_benchmark(args.synthetic_seeds))
     frame = pd.DataFrame(rows)
     frame.to_csv(args.output / "results.csv", index=False)
+    # Forward slashes, so a manifest written on Windows names the same paths as
+    # one written anywhere else and two runs can be compared key by key.
     hashes = {
-        str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest()
+        p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
         for p in [
             *sorted((ROOT / "src/ibnr/kernels").glob("conventional.py")),
             ROOT / "src/ibnr/kernels/replay.py",

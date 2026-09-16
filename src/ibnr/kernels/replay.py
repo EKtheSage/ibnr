@@ -1,8 +1,12 @@
 """Observed AvE/CDR replay of conventional candidates at successive dates.
 
 This measures realized forecast revisions, not a simulated one-year risk
-distribution. CDR uses the paper's adverse-positive convention (new ultimate
-minus old ultimate), opposite the favorable-positive convention in ``cdr.py``.
+distribution. The ``cdr`` column is the change in a candidate's fitted ultimate
+over ONE DEVELOPMENT PERIOD, which is one year only on an annual grain, and it
+uses the paper's adverse-positive convention (new ultimate minus old ultimate),
+opposite the favorable-positive convention in ``kernels.cdr``. That module's
+one-year CDR is a different measurement: a distribution of where next year's
+re-estimate could land, rather than one observed number per origin.
 """
 
 from __future__ import annotations
@@ -15,12 +19,12 @@ from itertools import pairwise
 import numpy as np
 import pandas as pd
 
-from ibnr.kernels.contract import _premium_by_origin, cohort_grid
+from ibnr.kernels.contract import cohort_grid, premium_by_origin
 from ibnr.kernels.conventional import (
     ConventionalCandidate,
     ConventionalFit,
-    _date,
     _fit_grid,
+    as_date,
 )
 from ibnr.triangle import Triangle
 from ibnr.triangle.core import GRAIN_MONTHS
@@ -81,7 +85,7 @@ def replay_conventional(
     to disqualify; it never silently scores a surviving subset of origins.
     """
     specs = dict(candidates)
-    cutoffs = tuple(_date(d) for d in dates)
+    cutoffs = tuple(as_date(d) for d in dates)
     if not specs or any(not isinstance(n, str) or not n for n in specs):
         raise ValueError("candidates must have nonempty string names")
     if any(not isinstance(c, ConventionalCandidate) for c in specs.values()):
@@ -122,7 +126,7 @@ def replay_conventional(
         premium_error = None
         if need_premium:
             try:
-                premium = _premium_by_origin(
+                premium = premium_by_origin(
                     train, premium_field, grid["origin_periods"], segment=segment
                 )
             except ValueError as exc:
