@@ -102,8 +102,8 @@ NOT_PROMISED = {
     ),
     "conventional_examples.py": (
         "a loader with no command line, imported by the conventional benchmark "
-        "driver rather than run on its own. Its only runtime input is a network "
-        "download of the published appendix, which the image cannot make."
+        "driver rather than run on its own. Running it by itself computes "
+        "nothing and prints nothing."
     ),
     "conventional_synthetic.py": (
         "a portfolio generator with no command line, imported by the "

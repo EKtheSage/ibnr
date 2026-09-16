@@ -2,12 +2,12 @@
   "record_kind": "report_environment_snapshot_after_execution",
   "python": "3.12.13 (main, Apr 14 2026, 14:31:26) [MSC v.1944 64 bit (AMD64)]",
   "platform": "Windows-11-10.0.26200-SP0",
-  "git_head": "ec953f3c27f32adae69b91ded8fd75f319883c22",
+  "git_head": "38e474929a2a61acf5ebb81d54980d774556cf81",
   "working_tree_dirty": true,
-  "note": "git_head is the base commit because these runs predate the first commit of the branch that carries them, and the ibnr distribution version below is 0.5.8 because the editable install's metadata was stale at run time. The six source_hashes in each manifest are the authoritative pin on the code that ran. The docs/conventional-benchmark.md hash below is that file as it stood during the runs; later edits to the documentation change it without changing any result.",
-  "source_project_version": "0.5.9",
+  "note": "These values describe the published rerun of 2026-09-16, which is the most recent run. git_head is the base commit because the run predates the commit of the branch that carries it. The six source_hashes in each manifest are the authoritative pin on the code that ran. The docs/conventional-benchmark.md hash below is that file as it stood during that run; later edits to the documentation change it without changing any result.",
+  "source_project_version": "0.6.0",
   "installed_distribution_versions": {
-    "ibnr": "0.5.8",
+    "ibnr": "0.6.0",
     "numpy": "2.4.6",
     "pandas": "2.3.3",
     "scipy": "1.17.1",
@@ -17,16 +17,30 @@
     "pyarrow": "24.0.0"
   },
   "hashes": {
-    "uv.lock": "dcd9202faeb06c0a987d78c06e3c8eca0da127b4a7158578abb713fb6eb08c74",
-    "pyproject.toml": "45ca282d56b47c999e44c760e8df8eea2440c2a312221383dfcfb8f983db3f5e",
-    "docs/conventional-benchmark.md": "d9d9166f43e99bf937eee1849a9a490948d71abaf885f5b5969a9790564f4f54"
+    "uv.lock": "0a7c6e4864507494d848e5fb896966f7b78f7d648a644498e0736f947b08ced6",
+    "pyproject.toml": "94916f7341b1ce3452a48b064283685f750bb0b3c09fee733c391b8f46eb647f",
+    "docs/conventional-benchmark.md": "933498ddde19349233f9695f29c34d4f00526e63d1f9d02e79e9246592ed70bb"
+  },
+  "earlier_run": {
+    "captured_at_utc": "2026-09-15T08:44:17.307417+00:00",
+    "git_head": "ec953f3c27f32adae69b91ded8fd75f319883c22",
+    "source_project_version": "0.5.9",
+    "ibnr_distribution_version": "0.5.8",
+    "hashes": {
+      "uv.lock": "dcd9202faeb06c0a987d78c06e3c8eca0da127b4a7158578abb713fb6eb08c74",
+      "pyproject.toml": "45ca282d56b47c999e44c760e8df8eea2440c2a312221383dfcfb8f983db3f5e",
+      "docs/conventional-benchmark.md": "d9d9166f43e99bf937eee1849a9a490948d71abaf885f5b5969a9790564f4f54"
+    },
+    "note": "Both studies were first run here, and the ibnr distribution version read 0.5.8 because the editable install's metadata was stale at the time. synthetic/results.csv and synthetic/manifest.json still come from this run and were not regenerated, because the change that prompted the rerun reaches only the published study. Every other installed package version was the one listed above. The synthetic manifest also records a hash for scripts/conventional_examples.py, which that study never imports; it is the loader as it stood then, when it downloaded the appendix instead of reading it from this repository."
   },
   "notes": [
-    "Implementation imported from the editable local source tree; installed ibnr distribution metadata may lag pyproject.toml.",
+    "Implementation imported from the local source tree; installed ibnr distribution metadata may lag pyproject.toml.",
     "The benchmark manifest records a source snapshot captured after execution, not a captured launch-time environment.",
-    "During the runs, the driver gained the missing-selection-fit reason suffix for a wholly failed candidate batch. Successful fit, scoring, ranking and evaluation calculations were unchanged. Batch-equivalence regression tests passed."
+    "During the 2026-09-15 runs, the driver gained the missing-selection-fit reason suffix for a wholly failed candidate batch. Successful fit, scoring, ranking and evaluation calculations were unchanged. Batch-equivalence regression tests passed.",
+    "The published study was rerun on 2026-09-16, after the appendix tables were transcribed from the paper into analysis/data/balona_richman_2020_appendix.json and the loader stopped downloading them. published/results.csv and published/published_rankings.csv came back identical to the committed files, value for value and row for row, because the transcribed tables match the downloaded ones row for row.",
+    "The published manifest's hashes for src/ibnr/kernels/conventional.py, replay.py and selection.py differ from the ones the 2026-09-15 run recorded, because those three files changed between that run and the commit that carries its results. The rerun therefore pins the merged code, and that code reproduces the earlier numbers exactly."
   ],
-  "captured_at_utc": "2026-09-15T08:44:17.307417+00:00",
+  "captured_at_utc": "2026-09-16T15:36:26.622509+00:00",
   "completed_runs": [
     "published",
     "synthetic"

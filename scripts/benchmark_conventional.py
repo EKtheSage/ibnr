@@ -318,9 +318,14 @@ def main():
         "protocol": "docs/conventional-benchmark.md",
     }
     if args.published:
-        from conventional_examples import SOURCE_SHA256, SOURCE_URL
+        from conventional_examples import DATA_PATH
 
-        manifest.update(published_source=SOURCE_URL, published_sha256=SOURCE_SHA256)
+        # The appendix tables are transcribed into this repository, so the run is
+        # pinned to a file and its hash rather than to whatever a server returns.
+        manifest.update(
+            published_source=DATA_PATH.relative_to(ROOT).as_posix(),
+            published_sha256=hashlib.sha256(DATA_PATH.read_bytes()).hexdigest(),
+        )
     (args.output / "manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )

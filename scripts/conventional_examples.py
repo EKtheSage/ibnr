@@ -1,11 +1,20 @@
-"""Load the published Balona--Richman appendix for conventional-method research.
+"""Load the Balona-Richman appendix triangles for conventional-method research.
 
 The paper is Caesar Balona and Ronald Richman, "The Actuary and IBNR Techniques:
-A Machine Learning Approach". There is no journal volume to cite: it is a 23
-April 2021 manuscript, and the PDF ``PAPER_URL`` points at is hosted on
-ibnr.co, a site unrelated to this package. Title, authors and date are quoted
-from the appendix data's own ``source`` field, so they describe the file this
-module actually reads.
+A Machine Learning Approach", 14 August 2020, SSRN abstract 3697256
+(https://ssrn.com/abstract=3697256). There is no journal volume to cite. The
+three appendix triangles and their earned premium tables were transcribed from
+the copy the Institute and Faculty of Actuaries distributes and are stored in
+this repository at ``DATA_PATH``, so loading them reads a file and never reaches
+the network. That file's ``source`` record carries the table and page each
+transcription came from, and ``EXAMPLE_METADATA`` declares the same numbers, so
+a file describing a different edition of the paper is refused rather than read.
+
+The Swiss triangle is not the authors' own data: the paper takes it from Gisler
+(2015) and notes that the figures there have been adjusted for privacy reasons.
+The two quarterly triangles were supplied to the authors by an insurer, with the
+figures divided by a random number to preserve confidentiality and the earned
+premium normalised to a 50% average loss ratio.
 
 Usage: ``load_published_examples()`` returns complete published rectangles, NOT
 valuation-ready upper triangles. Always choose an explicit ``as_of`` before
@@ -13,43 +22,40 @@ fitting. Development endpoints are 240 months for Swiss liability and 63 months
 for the two quarterly examples; they mean final published development, not a
 verified fully settled ultimate or an estimated tail beyond the appendix.
 
-The inspected source does not state a redistribution license. The data therefore
-remain a runtime download, cached outside this repository and checked against a
-fixed SHA256 before parsing. No third-party data fixture is redistributed.
-
 The appendix gives origin periods and development months, not observation dates.
 This adapter assigns each cell the end of its corresponding calendar period.
 Premium is stored once, at the origin period's end, as an explicit retrospective
-availability convention. In particular, Swiss premiums were simulated using
+availability convention. In particular, Swiss premiums were simulated from
 ultimate losses: dating them earlier does NOT make them an independently observed
 historical input. The printed initial/training/future shading is not used to
-decide availability. See ``SOURCE_NOTES_URL`` and ``EXAMPLE_METADATA``.
+decide availability. See ``EXAMPLE_METADATA`` and the transcribed file's own
+``source`` notes.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 import json
 import math
-import os
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.error import URLError
-from urllib.request import Request, urlopen
 
 import pandas as pd
 
 from ibnr import Triangle
 
-SOURCE_URL = "https://ibnr.co/research/appendix-data.json"
-SOURCE_SHA256 = "7333caea41fecc907dc0c98e46f38c64559cec2158cdacdb4bfc22f604dad455"
-SOURCE_DATE = dt.date(2026, 9, 15)
-SOURCE_NOTES_URL = "https://ibnr.co/origins#source-notes"
-PAPER_URL = "https://ibnr.co/research/balona-richman-2021.pdf"
+DATA_PATH = Path(__file__).resolve().parents[1] / "analysis/data/balona_richman_2020_appendix.json"
 UNITS = "Source triangle units; currency and magnitude scale unspecified"
 PREMIUM_FIELD = "earned_premium"
+REQUIRED_KEYS = (
+    "id",
+    "basis",
+    "valueType",
+    "originPeriods",
+    "developmentMonths",
+    "values",
+    "earnedPremium",
+)
 
 
 @dataclass(frozen=True)
@@ -77,6 +83,16 @@ class ExampleMetadata:
     def horizon_months(self) -> int:
         return self.development_periods * self.step_months
 
+    @property
+    def declared_tables(self) -> dict[str, int]:
+        """Where in the paper this example was transcribed from."""
+        return {
+            "claimsTable": self.claims_table,
+            "claimsPage": self.claims_page,
+            "premiumTable": self.premium_table,
+            "premiumPage": self.premium_page,
+        }
+
 
 EXAMPLE_METADATA = {
     "swiss": ExampleMetadata(
@@ -87,10 +103,10 @@ EXAMPLE_METADATA = {
         dt.date(1979, 1, 1),
         19,
         20,
-        28,
-        52,
-        27,
-        51,
+        24,
+        49,
+        23,
+        48,
         "Premiums simulated from ultimate experience and a 60% target loss ratio; "
         "the paper reports a realised weighted-average loss ratio of 59.4%. "
         "These are not independent historical premium observations.",
@@ -103,10 +119,10 @@ EXAMPLE_METADATA = {
         dt.date(2010, 1, 1),
         20,
         21,
-        30,
-        54,
-        29,
-        53,
+        26,
+        51,
+        25,
+        50,
         "Claims scaled for confidentiality; premiums normalised around a 50% "
         "average loss ratio. Late-cell observation versus extrapolation is unspecified.",
     ),
@@ -118,10 +134,10 @@ EXAMPLE_METADATA = {
         dt.date(2010, 1, 1),
         20,
         21,
-        32,
-        56,
-        31,
-        55,
+        28,
+        53,
+        27,
+        52,
         "Claims scaled for confidentiality; premiums normalised around a 50% "
         "average loss ratio. Negative increments are retained. Late-cell observation "
         "versus extrapolation is unspecified.",
@@ -134,50 +150,39 @@ def _month_start(origin: dt.date, months: int) -> dt.date:
     return dt.date(year, month + 1, 1)
 
 
-def _verified_bytes(raw: bytes) -> bytes:
-    actual = hashlib.sha256(raw).hexdigest()
-    if actual != SOURCE_SHA256:
+def _appendix() -> dict:
+    """Read the transcribed appendix, naming the file when it cannot be used."""
+    if not DATA_PATH.exists():
         raise ValueError(
-            f"Published appendix SHA256 mismatch: expected {SOURCE_SHA256}, got {actual}. "
-            "Do not use changed data as the pinned benchmark source."
+            f"The transcribed Balona-Richman appendix is missing from {DATA_PATH}. "
+            "It is committed to this repository; restore it rather than downloading data."
         )
-    return raw
+    try:
+        data = json.loads(DATA_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{DATA_PATH} is not valid JSON ({exc}); the file is damaged") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("triangles"), list):
+        raise ValueError(f"{DATA_PATH} must hold a source record and a list of triangles")
+    return data
 
 
-def _source_bytes(cache_dir: str | Path | None) -> bytes:
-    directory = (
-        Path(tempfile.gettempdir()) / "ibnr-published-examples"
-        if cache_dir is None
-        else Path(cache_dir)
-    )
-    cached = directory / f"{SOURCE_SHA256}.json"
-    if cached.exists():
-        return _verified_bytes(cached.read_bytes())
-    request = Request(SOURCE_URL, headers={"User-Agent": "ibnr-research-examples/1"})
-    try:
-        with urlopen(request, timeout=30) as response:
-            raw = _verified_bytes(response.read())
-    except (OSError, URLError) as exc:
-        raise RuntimeError(
-            f"Could not download the published appendix from {SOURCE_URL}. "
-            f"A verified copy may be placed at {cached}."
-        ) from exc
-    directory.mkdir(parents=True, exist_ok=True)
-    # Atomic replacement keeps two simultaneous research processes from seeing
-    # a partial cache file. Only this newly created temporary file is cleaned up.
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(dir=directory, suffix=".tmp", delete=False) as handle:
-            temporary = Path(handle.name)
-            handle.write(raw)
-        os.replace(temporary, cached)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-    return raw
+def _check_declared_tables(record: object) -> None:
+    """Refuse a file transcribed from a different edition of the paper."""
+    tables = record.get("tables") if isinstance(record, dict) else None
+    if not isinstance(tables, dict):
+        raise ValueError(f"{DATA_PATH} must record the table and page of each transcription")
+    for name, metadata in EXAMPLE_METADATA.items():
+        if tables.get(name) != metadata.declared_tables:
+            raise ValueError(
+                f"{DATA_PATH} records {tables.get(name)} for {name}, but this module declares "
+                f"{metadata.declared_tables}. The two describe different editions of the paper."
+            )
 
 
 def _triangle(source: dict, metadata: ExampleMetadata, backend: str) -> Triangle:
+    missing = [key for key in REQUIRED_KEYS if key not in source]
+    if missing:
+        raise ValueError(f"Transcribed {metadata.title} triangle is missing {', '.join(missing)}")
     origins = [
         _month_start(metadata.first_origin, i * metadata.step_months)
         for i in range(metadata.origin_count)
@@ -236,19 +241,20 @@ def _triangle(source: dict, metadata: ExampleMetadata, backend: str) -> Triangle
     )
 
 
-def load_published_examples(
-    backend: str = "duckdb", *, cache_dir: str | Path | None = None
-) -> dict[str, Triangle]:
-    """Return complete appendix data as ``swiss``, ``liability`` and ``property``.
+def load_published_examples(backend: str = "duckdb") -> dict[str, Triangle]:
+    """Return the appendix data as ``swiss``, ``liability`` and ``property``.
 
-    The first call downloads and verifies the source; later calls reuse the
-    verified cache. ``cache_dir`` permits an explicit offline cache location.
-    Constants record source provenance and the required fixed model horizons.
+    The transcribed tables are read from ``DATA_PATH`` inside this repository, so
+    the call needs no network access. Constants record source provenance and the
+    required fixed model horizons.
     """
-    data = json.loads(_source_bytes(cache_dir))
+    data = _appendix()
     sources = data["triangles"]
-    if len(sources) != len(EXAMPLE_METADATA) or {s["id"] for s in sources} != set(EXAMPLE_METADATA):
+    if len(sources) != len(EXAMPLE_METADATA) or {s.get("id") for s in sources} != set(
+        EXAMPLE_METADATA
+    ):
         raise ValueError(
-            "Published appendix must contain swiss, liability and property exactly once"
+            "The transcribed appendix must contain swiss, liability and property exactly once"
         )
+    _check_declared_tables(data.get("source"))
     return {s["id"]: _triangle(s, EXAMPLE_METADATA[s["id"]], backend) for s in sources}
