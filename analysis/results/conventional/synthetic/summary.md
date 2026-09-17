@@ -56,4 +56,4 @@ portfolio seed and exclude ties.
 - This is an exploratory synthetic stress test with 30 seeds per scenario.
   The generator, parameter ranges and comparison baselines were fixed before
   inspecting these results. The simulation is not evidence that one selection
-  metric is universally superior or that the library matches ReserveAI.
+  metric is superior in general.

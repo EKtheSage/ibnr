@@ -82,4 +82,5 @@ The source's ultimate-derived Swiss premiums and normalized quarterly premiums
 further limit what these data establish about historical feature availability.
 The [independent synthetic results](../synthetic/summary.md) test the procedure
 under an explicitly known data-generating process and also show failures after
-selection. Neither study establishes ReserveAI equivalence or universal gains.
+selection. Neither study establishes that this selection procedure improves on
+a fixed method in general.

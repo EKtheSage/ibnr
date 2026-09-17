@@ -1,19 +1,19 @@
-"""Calendar, basis and provenance checks for the published-example adapter.
+"""Calendar, basis and provenance checks for the transcribed-appendix adapter.
 
-Offline tests generate their own data. The separately marked network test reads
-the genuine appendix and checks published cells/totals, without redistributing
-that dataset in the test suite.
+Most tests build their own data and point the loader at it, so a schema or axis
+change is caught without depending on the real numbers. Two tests read the
+transcribed file that ships with this repository: one shows that loading it
+needs no network access at all, the other checks the published cells and totals
+it has to reproduce.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
-import io
 import json
+import socket
 import sys
 from pathlib import Path
-from urllib.error import URLError
 
 import pandas as pd
 import pytest
@@ -49,15 +49,14 @@ def synthetic_source():
                 "regionsAsPrinted": [["initial"] * depth for _ in range(count)],
             }
         )
-    return {"triangles": triangles}
+    tables = {name: meta.declared_tables for name, meta in examples.EXAMPLE_METADATA.items()}
+    return {"source": {"tables": tables}, "triangles": triangles}
 
 
 def write_source(monkeypatch, tmp_path, data=None):
-    raw = json.dumps(synthetic_source() if data is None else data).encode()
-    digest = hashlib.sha256(raw).hexdigest()
-    monkeypatch.setattr(examples, "SOURCE_SHA256", digest)
-    path = tmp_path / f"{digest}.json"
-    path.write_bytes(raw)
+    path = tmp_path / "balona_richman_2020_appendix.json"
+    path.write_text(json.dumps(synthetic_source() if data is None else data), encoding="utf-8")
+    monkeypatch.setattr(examples, "DATA_PATH", path)
     return path
 
 
@@ -65,7 +64,7 @@ def test_loaded_cells_keep_basis_dates_premiums_and_fixed_horizon(
     monkeypatch, tmp_path, backend_name
 ):
     write_source(monkeypatch, tmp_path)
-    triangles = examples.load_published_examples(backend_name, cache_dir=tmp_path)
+    triangles = examples.load_published_examples(backend_name)
     assert set(triangles) == {"swiss", "liability", "property"}
     for name, count, depth, grain, loss, first_end, last_end in (
         ("swiss", 19, 20, "Y", "paid_loss", dt.date(1979, 12, 31), dt.date(2016, 12, 31)),
@@ -104,45 +103,36 @@ def test_loaded_cells_keep_basis_dates_premiums_and_fixed_horizon(
     assert values.iloc[1] - values.iloc[0] == -1000
 
 
-def test_download_is_verified_then_reused_offline(monkeypatch, tmp_path):
-    raw = json.dumps(synthetic_source()).encode()
-    monkeypatch.setattr(examples, "SOURCE_SHA256", hashlib.sha256(raw).hexdigest())
-    calls = []
+def test_loading_the_repository_file_needs_no_network_access(monkeypatch):
+    """Opening any socket during the load is a failure, not a slow path."""
 
-    def download(request, timeout):
-        calls.append((request.full_url, timeout))
-        return io.BytesIO(raw)
+    def refuse(*args, **kwargs):
+        raise AssertionError("the loader opened a network connection")
 
-    monkeypatch.setattr(examples, "urlopen", download)
-    assert examples._source_bytes(tmp_path) == raw
-    assert examples._source_bytes(tmp_path) == raw
-    assert calls == [(examples.SOURCE_URL, 30)]
-    assert [p.suffix for p in tmp_path.iterdir()] == [".json"]
+    monkeypatch.setattr(socket, "socket", refuse)
+    monkeypatch.setattr(socket, "create_connection", refuse)
+    triangles = examples.load_published_examples()
+    assert sorted(triangles) == ["liability", "property", "swiss"]
+    assert examples.DATA_PATH.is_file()
+    assert not [name for name in vars(examples) if "SOURCE" in name or name == "urlopen"]
 
 
-def test_corrupt_cache_is_refused_before_parsing(monkeypatch, tmp_path):
-    path = write_source(monkeypatch, tmp_path)
-    path.write_bytes(b"not the published appendix")
-    with pytest.raises(ValueError, match="SHA256 mismatch"):
-        examples.load_published_examples(cache_dir=tmp_path)
-
-
-def test_changed_download_is_not_cached(monkeypatch, tmp_path):
-    monkeypatch.setattr(examples, "urlopen", lambda *args, **kwargs: io.BytesIO(b"changed"))
-    with pytest.raises(ValueError, match="SHA256 mismatch"):
-        examples._source_bytes(tmp_path)
-    assert list(tmp_path.iterdir()) == []
-
-
-def test_download_failure_names_source_and_offline_cache(monkeypatch, tmp_path):
-    def unavailable(*args, **kwargs):
-        raise URLError("offline")
-
-    monkeypatch.setattr(examples, "urlopen", unavailable)
-    with pytest.raises(RuntimeError, match="verified copy may be placed") as error:
-        examples._source_bytes(tmp_path)
-    assert examples.SOURCE_URL in str(error.value)
-    assert str(tmp_path) in str(error.value)
+def test_transcribed_appendix_reproduces_the_published_cells_and_totals(backend_name):
+    triangles = examples.load_published_examples(backend_name)
+    for name, first_claim, last_claim, all_claims, premiums, terminal in (
+        ("swiss", 3670, 31819, 7527375, 671862, 399434),
+        ("liability", 2014, 16406, 3034613, 375362, 180407),
+        ("property", 15886, 36437, 12713884, 1212009, 610466),
+    ):
+        frame = triangles[name].to_pandas()
+        claims = frame.loc[frame.field != "earned_premium"].sort_values(
+            ["origin_period", "dev_lag"]
+        )
+        assert claims.value.iloc[0] == first_claim
+        assert claims.value.iloc[-1] == last_claim
+        assert claims.value.sum() == all_claims
+        assert frame.loc[frame.field == "earned_premium", "value"].sum() == premiums
+        assert claims.loc[claims.dev_lag == claims.dev_lag.max(), "value"].sum() == terminal
 
 
 @pytest.mark.parametrize("mutation", ["duplicate", "basis", "origin", "horizon", "row"])
@@ -161,23 +151,61 @@ def test_source_axes_cannot_silently_change(monkeypatch, tmp_path, mutation):
         swiss["values"][0].pop()
     write_source(monkeypatch, tmp_path, data)
     with pytest.raises(ValueError, match="schema|exactly once"):
-        examples.load_published_examples(cache_dir=tmp_path)
+        examples.load_published_examples()
 
 
-@pytest.mark.network
-def test_published_appendix_cells_and_totals(tmp_path, backend_name):
-    triangles = examples.load_published_examples(backend_name, cache_dir=tmp_path)
-    for name, first_claim, last_claim, all_claims, premiums, terminal in (
-        ("swiss", 3670, 31819, 7527375, 671862, 399434),
-        ("liability", 2014, 16406, 3034613, 375362, 180407),
-        ("property", 15886, 36437, 12713884, 1212009, 610466),
-    ):
-        frame = triangles[name].to_pandas()
-        claims = frame.loc[frame.field != "earned_premium"].sort_values(
-            ["origin_period", "dev_lag"]
-        )
-        assert claims.value.iloc[0] == first_claim
-        assert claims.value.iloc[-1] == last_claim
-        assert claims.value.sum() == all_claims
-        assert frame.loc[frame.field == "earned_premium", "value"].sum() == premiums
-        assert claims.loc[claims.dev_lag == claims.dev_lag.max(), "value"].sum() == terminal
+def test_a_truncated_triangle_names_the_fields_it_lost(monkeypatch, tmp_path):
+    data = synthetic_source()
+    del data["triangles"][0]["values"]
+    del data["triangles"][0]["earnedPremium"]
+    write_source(monkeypatch, tmp_path, data)
+    with pytest.raises(ValueError, match="missing values, earnedPremium"):
+        examples.load_published_examples()
+
+
+def test_a_damaged_file_is_refused_before_parsing(monkeypatch, tmp_path):
+    path = write_source(monkeypatch, tmp_path)
+    path.write_text('{"source": {"tables": {}}, "triangles": [', encoding="utf-8")
+    with pytest.raises(ValueError, match="not valid JSON"):
+        examples.load_published_examples()
+
+
+def test_a_file_without_a_list_of_triangles_is_refused(monkeypatch, tmp_path):
+    write_source(monkeypatch, tmp_path, {"source": {"tables": {}}})
+    with pytest.raises(ValueError, match="source record and a list of triangles"):
+        examples.load_published_examples()
+
+
+def test_a_missing_file_names_the_path_it_expected(monkeypatch, tmp_path):
+    monkeypatch.setattr(examples, "DATA_PATH", tmp_path / "absent.json")
+    with pytest.raises(ValueError, match="missing from"):
+        examples.load_published_examples()
+
+
+@pytest.mark.parametrize("mutation", ["edition", "dropped", "absent"])
+def test_table_and_page_numbers_must_match_the_declared_edition(monkeypatch, tmp_path, mutation):
+    data = synthetic_source()
+    if mutation == "edition":
+        # The 23 April 2021 revision prints the Swiss triangle as Table 28 on
+        # page 52; this module declares the 14 August 2020 numbering.
+        data["source"]["tables"]["swiss"] = {
+            "claimsTable": 28,
+            "claimsPage": 52,
+            "premiumTable": 27,
+            "premiumPage": 51,
+        }
+    elif mutation == "dropped":
+        del data["source"]["tables"]["liability"]
+    else:
+        del data["source"]["tables"]
+    write_source(monkeypatch, tmp_path, data)
+    with pytest.raises(ValueError, match="different editions|record the table and page"):
+        examples.load_published_examples()
+
+
+def test_every_example_declares_where_it_was_transcribed_from():
+    declared = json.loads(examples.DATA_PATH.read_text(encoding="utf-8"))["source"]
+    assert declared["date"] == "2020-08-14"
+    assert declared["authors"] == ["Caesar Balona", "Ronald Richman"]
+    for name, metadata in examples.EXAMPLE_METADATA.items():
+        assert declared["tables"][name] == metadata.declared_tables
