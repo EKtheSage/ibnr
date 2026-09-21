@@ -89,6 +89,46 @@ from ibnr.triangle.core import GRAIN_MONTHS, Triangle
 #: default segment column that defines the LOB axis (the Schedule P mart's name)
 LOB_COLUMN = "line_of_business"
 
+#: smallest eigenvalue allowed in any estimated covariance (PD floor)
+EIG_FLOOR = 1e-10
+
+
+def nearest_pd(mat: np.ndarray) -> np.ndarray:
+    """Symmetrize and floor the eigenvalues so downstream Cholesky factors
+    exist. Floored dimensions bias correlations toward zero - documented.
+
+    Shared by every multi-line entry that draws correlated process noise
+    (``gallery/statistical/sur``, ``gallery/statistical/mcl``): a residual
+    covariance estimated from a handful of origin pairs is routinely singular
+    or slightly indefinite, and ``np.linalg.cholesky`` refuses both.
+    """
+    sym = (mat + mat.T) / 2.0
+    vals, vecs = np.linalg.eigh(sym)
+    if vals.min() >= EIG_FLOOR:
+        return sym
+    scale = max(np.abs(vals).max(), 1.0)
+    return (vecs * np.maximum(vals, EIG_FLOOR * scale)) @ vecs.T
+
+
+def mack_tail_variance(done: list[dict]) -> np.ndarray:
+    """Mack's tail rule per line: sigma^2_d = min(sigma^4_{d-1}/sigma^2_{d-2},
+    sigma^2_{d-1}, sigma^2_{d-2}), from the two most recent fitted transitions.
+
+    ``done`` is the list of transitions already fitted, oldest first; each
+    carries a ``sigma`` covariance whose diagonal holds the per-line
+    variances. Returns a (K,) variance vector; used only when a transition has
+    no residual degrees of freedom of its own.
+    """
+    variances = [np.diag(tr["sigma"]) for tr in done]  # each (K,) diag of a fitted cov
+    if not variances:
+        raise ValueError("cannot apply the variance tail rule with no earlier transitions")
+    if len(variances) == 1:
+        return variances[-1]
+    v1, v2 = variances[-1], variances[-2]  # d-1, d-2
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = np.where(v2 > 0, v1**2 / v2, v1)
+    return np.minimum(np.minimum(ratio, v1), v2)
+
 
 def multiline_data(
     triangle: Triangle,

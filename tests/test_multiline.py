@@ -27,10 +27,13 @@ import pytest
 
 from ibnr import Triangle
 from ibnr.kernels.multiline import (
+    EIG_FLOOR,
     assemble_predictive,
     flatten_with_totals,
+    mack_tail_variance,
     multiline_data,
     multiline_targets,
+    nearest_pd,
     realized_multiline,
 )
 
@@ -196,3 +199,45 @@ def test_assemble_predictive_validates_layout():
         assemble_predictive(np.zeros((4, 2)), targets)
     with pytest.raises(ValueError, match="target rows"):
         assemble_predictive(np.zeros((4, 2, 5)), targets)
+
+
+def test_nearest_pd_floors_eigenvalues_and_symmetrizes():
+    """The covariance repair every multi-line entry hands its Cholesky factor.
+
+    Both halves matter and one asymmetric matrix with a negative eigenvalue
+    exercises them together: ``[[4, 8], [4, 4]]`` averages to ``[[4, 6], [6, 4]]``,
+    whose eigenvalues are 10 and -2. The repaired matrix must be symmetric and
+    its smallest eigenvalue must be the floor times the largest absolute
+    eigenvalue, not ``EIG_FLOOR`` itself - a covariance of loss amounts is
+    measured in dollars, so an absolute floor would be no floor at all on a
+    large book and a hard clamp on a small one.
+    """
+    repaired = nearest_pd(np.array([[4.0, 8.0], [4.0, 4.0]]))
+    np.testing.assert_allclose(repaired, repaired.T)
+    vals = np.linalg.eigvalsh(repaired)
+    # the floored eigenvalue is rebuilt by a matrix product at the scale of the
+    # LARGEST eigenvalue, so it is only accurate to that scale's rounding: 1e-15
+    # absolute here, which is 1e-6 relative to a floor of 1e-9. That is still
+    # two orders of magnitude tighter than the factor of ten this pins.
+    np.testing.assert_allclose(vals.min(), EIG_FLOOR * 10.0, rtol=1e-6)
+    np.testing.assert_allclose(vals.max(), 10.0, rtol=1e-10)
+    # an already positive definite matrix is returned unchanged
+    already = np.array([[2.0, 0.5], [0.5, 3.0]])
+    np.testing.assert_allclose(nearest_pd(already), already)
+
+
+def test_mack_tail_variance_rule():
+    """Mack's tail rule reads the two most recent transitions, oldest first.
+
+    With per-line variances 4 at ``d - 2`` and 2 at ``d - 1`` the rule is
+    ``min(2^2 / 4, 2, 4) = 1``. Reading the pair in the other order would give
+    ``min(4^2 / 2, 4, 2) = 2``, so the direction is pinned here rather than
+    left to the caller's memory.
+    """
+    done = [{"sigma": np.diag([4.0, 4.0])}, {"sigma": np.diag([2.0, 2.0])}]
+    np.testing.assert_allclose(mack_tail_variance(done), [1.0, 1.0])
+    # a single earlier transition has nothing to extrapolate from, so its own
+    # variances carry forward unchanged
+    np.testing.assert_allclose(mack_tail_variance(done[:1]), [4.0, 4.0])
+    with pytest.raises(ValueError, match="no earlier transitions"):
+        mack_tail_variance([])

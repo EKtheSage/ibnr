@@ -90,6 +90,7 @@ ACCEPTS_NONE: dict[str, frozenset[str]] = {
     "england_verrall_odp": frozenset(),
     "guszcza_growth_curve": frozenset(),
     "mack": frozenset(),
+    "mcl": frozenset(),
     "mdn": frozenset(),
     "meyers_ccl": frozenset(),
     "meyers_csr": frozenset(),

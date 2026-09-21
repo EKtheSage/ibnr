@@ -43,6 +43,7 @@ SINGLE_COHORT = {
     "england_verrall_odp",
     "guszcza_growth_curve",
     "mack",
+    "mcl",
     "meyers_ccl",
     "meyers_csr",
     "sur",
@@ -195,7 +196,7 @@ SEGMENT = {"company_code": "0001"}
 
 def _fit(name, backend_name):
     """One fitted entry per family that needs neither cmdstan nor torch."""
-    if name in ("sur", "copula_glm"):
+    if name in ("sur", "mcl", "copula_glm"):
         tri = make_multiline_triangle(
             backend_name, {"lob_a": CUM, "lob_b": CUM * 2.0}, premium_by_lob=PREMIUM
         )
@@ -206,7 +207,7 @@ def _fit(name, backend_name):
     return gallery.fit(name, tri, loss_field="paid_loss")
 
 
-FAST = ["mack", "clark", "sur", "copula_glm"]
+FAST = ["mack", "clark", "sur", "mcl", "copula_glm"]
 
 
 @pytest.mark.parametrize("name", FAST)
@@ -264,7 +265,7 @@ def test_a_segment_naming_no_cohort_is_refused_by_evaluate(name, backend_name):
 
 
 def _triangle(backend_name, name):
-    if name in ("sur", "copula_glm"):
+    if name in ("sur", "mcl", "copula_glm"):
         return make_multiline_triangle(
             backend_name, {"lob_a": CUM, "lob_b": CUM * 2.0}, premium_by_lob=PREMIUM
         )
