@@ -223,3 +223,75 @@ def test_warmup_cosine_refusals():
         warmup_cosine(10, warmup=-1)
     with pytest.raises(ValueError, match="epoch"):
         warmup_cosine(10)(0)
+
+
+def _run(cfg=None, seed=3, **extra):
+    x, y = make_problem()
+    return train_ensemble(
+        16, config=cfg or config(), seed=seed, **_callbacks(x, y), **COMMON, **extra
+    )
+
+
+def test_a_zero_schedule_freezes_the_weights():
+    """Effect, not signature: multiplier 0 at every epoch means no parameter moves,
+    while the default run moves them."""
+    torch.manual_seed(3)
+    init = _states([Tiny()])[0]  # member 0 seeds torch with 3 + 1000*0 before make_model()
+    frozen, _ = _run(schedule=lambda epoch: 0.0)
+    moved, _ = _run()
+    for k in init:
+        assert torch.equal(frozen[0].state_dict()[k], init[k]), k
+        assert not torch.equal(moved[0].state_dict()[k], init[k]), k
+
+
+def test_the_schedule_is_called_once_per_epoch_with_one_based_epochs():
+    seen = []
+
+    def spy(epoch):
+        seen.append(epoch)
+        return 1.0
+
+    _, hist = _run(cfg=config(ensemble_size=1, max_epochs=4, patience=10), schedule=spy)
+    assert seen == [1, 2, 3, 4]
+    assert len(hist[0]) == 4
+
+
+def test_a_schedule_of_one_reproduces_the_default_run():
+    _assert_same_fit(_run(schedule=lambda epoch: 1.0), _run())
+
+
+def _weight_frozen_groups(model):
+    """The weight at rate 0, the bias on config.lr."""
+    return [{"params": [model.lin.weight], "lr": 0.0}, {"params": [model.lin.bias]}]
+
+
+def test_param_groups_give_each_group_its_own_rate():
+    """A group with lr 0 stays put while the other trains."""
+    torch.manual_seed(3)
+    init = _states([Tiny()])[0]
+    models, _ = _run(cfg=config(ensemble_size=1), param_groups=_weight_frozen_groups)
+    state = models[0].state_dict()
+    assert torch.equal(state["lin.weight"], init["lin.weight"])
+    assert not torch.equal(state["lin.bias"], init["lin.bias"])
+
+
+def test_param_groups_and_schedule_compose():
+    """The schedule scales each group's OWN base rate: a group at lr 0 stays at 0
+    under any multiplier, and the other group still moves at multiplier 0.5."""
+    torch.manual_seed(3)
+    init = _states([Tiny()])[0]
+    models, _ = _run(
+        cfg=config(ensemble_size=1),
+        param_groups=_weight_frozen_groups,
+        schedule=lambda epoch: 0.5,
+    )
+    state = models[0].state_dict()
+    assert torch.equal(state["lin.weight"], init["lin.weight"])
+    assert not torch.equal(state["lin.bias"], init["lin.bias"])
+
+
+def test_schedule_refusals():
+    with pytest.raises(ValueError, match="schedule"):
+        _run(schedule=lambda epoch: -0.5)
+    with pytest.raises(ValueError, match="schedule"):
+        _run(schedule=lambda epoch: float("nan"))

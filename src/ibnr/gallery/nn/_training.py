@@ -84,6 +84,8 @@ def train_ensemble(
     val_cutoff: int,
     device: Any,
     show_progress: bool = False,
+    schedule: Callable[[int], float] | None = None,
+    param_groups: Callable[[Any], list[dict]] | None = None,
 ) -> tuple[list, list[list[dict]]]:
     """Train ``config.ensemble_size`` independently-seeded members.
 
@@ -110,6 +112,15 @@ def train_ensemble(
                  ``[min_cutoff, val_cutoff)`` so the fixed validation
                  diagonal(s) are never conditioned on during training.
     device:      the ``torch.device`` batches should be built on.
+    schedule:    ``(epoch) -> float``, a multiplier on every parameter group's
+                 own base learning rate, called once per epoch with a 1-based
+                 epoch. ``None`` holds every rate at its base value, which is
+                 what the loop did before. :func:`warmup_cosine` is the R
+                 study's schedule.
+    param_groups: ``(model) -> list[dict]``, AdamW parameter groups, each free
+                 to carry its own ``lr``. ``None`` is one group over
+                 ``model.parameters()`` at ``config.lr``. A group without an
+                 ``lr`` inherits ``config.lr``.
 
     Returns ``(models, histories)``: each model in eval mode with its
     best-validation weights restored, and per-member per-epoch
@@ -130,11 +141,23 @@ def train_ensemble(
             torch.manual_seed(member_seed)
         rng = np.random.default_rng(member_seed)
         model = make_model()
-        opt = torch.optim.AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
+        params = param_groups(model) if param_groups is not None else model.parameters()
+        opt = torch.optim.AdamW(params, lr=config.lr, weight_decay=config.weight_decay)
+        for group in opt.param_groups:
+            group["base_lr"] = group["lr"]  # the rate the schedule multiplies
 
         best_val, best_state, patience_left = math.inf, None, config.patience
         history: list[dict] = []
         for epoch in range(config.max_epochs):
+            if schedule is not None:
+                mult = schedule(epoch + 1)  # 1-based, as the R study counts epochs
+                if not (isinstance(mult, int | float) and math.isfinite(mult) and mult >= 0):
+                    raise ValueError(
+                        f"schedule({epoch + 1}) returned {mult!r}; a learning-rate multiplier "
+                        "must be a finite number >= 0"
+                    )
+                for group in opt.param_groups:
+                    group["lr"] = group["base_lr"] * mult
             model.train()
             epoch_loss, n_batches = 0.0, 0
             perm = rng.permutation(n_cohorts)  # shuffle cohorts into batches each epoch
