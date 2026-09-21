@@ -54,13 +54,22 @@ src/ibnr/
                conventional.py (CL/BF/generalized Cape Cod point candidates),
                replay.py (refit fixed candidates at successive dates; AvE/CDR),
                selection.py (score the replay, select on it, evaluate later),
+               point_scores.py (0.7.0: point-error metrics with the aggregation
+               level explicit, reserve_rows, shrink_toward),
+               residual_calibration.py (0.7.0: size-stratified rolling-origin
+               residual calibration of a point forecaster),
+               nn_features.py (0.7.0: the tlrn example tensors from a company contract),
                stacking.py, parity.py, tuning.py
   gallery/     registry.py, entry.py (GalleryEntry ABC + ScoresHeldout/PredictsHeldout
                mixins), scaffold.py [PLANNED, decision 6]
     bayesian/  meyers_ccl/ meyers_csr/ england_verrall_odp/ clark_growth_curve/
                guszcza_growth_curve/ compartmental/
-    nn/        transformer/ transformer_ml/ deeptriangle/ mdn/ resnet/
-    statistical/    sur/ copula_glm/ clark/   (frequentist; clark = the 2003 MLE)
+    nn/        transformer/ transformer_ml/ deeptriangle/ mdn/ resnet/ nn_paid_case/
+               tlrn/ (0.7.0: the transformer loss reserving network, company cohorts,
+               point head, company-level calibrated draws, no held-out mixins)
+    statistical/    sur/ copula_glm/ clark/ mcl/   (frequentist; clark = the 2003 MLE;
+                    mcl (0.7.0) = the full-matrix multivariate chain ladder, systemfit
+                    conventions, tied out to the study's R reserves on 82 companies)
     deterministic/  mack/
   data/        schedule_p.py (gold mart adapter)
   viz/         [PLANNED, milestone 8] tidy.py, altair_.py, site.py (quarto gallery site)
