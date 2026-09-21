@@ -36,6 +36,17 @@ the deterministic ultimates in `predict()`'s target order. `reserve_rows` is
 exported from `ibnr.gallery`; the metrics themselves stay on `ibnr.kernels`,
 because they consume the table and never touch an entry.
 
+New: the shared NN training loop (`gallery/nn/_training.py::train_ensemble`)
+takes a learning-rate `schedule` (`warmup_cosine` ports the R study's warmup
+plus cosine decay), `param_groups`, `min_epochs`, `check_every` (patience now
+counts validation checks), `cutoff_sampling="per_epoch"` and `keep` (the best k
+members by validation score). Every default is bit-identical to 0.6.0, checked
+against a verbatim copy of the old loop. Every history record now also carries
+the `member` it belongs to. New: `kernels/residual_calibration.py`, the
+size-stratified rolling-origin residual calibration of a point forecaster
+(`rolling_residuals`, `calibrate`, `calibrated_draws`,
+`leave_one_out_coverage`), re-exported from `ibnr.kernels`.
+
 ## 0.6.0 - 2026-09-15
 
 A new family of estimators and the application that sits on it (#136), plus

@@ -24,6 +24,7 @@ The conventional point candidates (``conventional``, ``replay``, ``selection``)
 are re-exported here for the same reason the mack and CDR names are, and they
 add nothing to the cost above: between them they import numpy, pandas and
 ``kernels.contract``, every one of which this file already loads.
+``residual_calibration`` is in the same position: numpy and pandas only.
 """
 
 from ibnr.kernels.cdr import (
@@ -74,6 +75,13 @@ from ibnr.kernels.point_scores import (
 )
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.kernels.replay import ConventionalReplay, replay_conventional
+from ibnr.kernels.residual_calibration import (
+    Calibration,
+    calibrate,
+    calibrated_draws,
+    leave_one_out_coverage,
+    rolling_residuals,
+)
 from ibnr.kernels.selection import (
     ConventionalEvaluation,
     ConventionalSelection,
@@ -90,6 +98,7 @@ __all__ = [
     "DEFAULT_QUANTILES",
     "SCORE_DIRECTION",
     "Absence",
+    "Calibration",
     "CohortForecast",
     "ConventionalCandidate",
     "ConventionalEvaluation",
@@ -104,6 +113,8 @@ __all__ = [
     "ParityReport",
     "PredictiveDistribution",
     "align_panel",
+    "calibrate",
+    "calibrated_draws",
     "cdr_methods",
     "cdr_risk_measures",
     "compare_posteriors",
@@ -114,6 +125,7 @@ __all__ = [
     "from_arrow",
     "get_cdr_method",
     "leaderboard",
+    "leave_one_out_coverage",
     "level_errors",
     "next_diagonal",
     "one_year_cdr",
@@ -123,6 +135,7 @@ __all__ = [
     "replay_conventional",
     "rereserve",
     "reserve_rows",
+    "rolling_residuals",
     "score_replay",
     "select_conventional",
     "shrink_toward",

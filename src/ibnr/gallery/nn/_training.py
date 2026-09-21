@@ -27,6 +27,58 @@ a fixed seed reproduces the milestone-3 fits bit for bit; the equivalence was
 verified against pre-refactor loss trajectories, final weights and predictive
 draws on both entries.
 
+The training scheme
+-------------------
+
+Six keyword-only arguments extend the loop for the R transformer study. Every
+one of them is defaulted to the behaviour above, and
+``tests/test_nn_training_scheme.py`` keeps a verbatim copy of the loop as it
+stood before they were added and requires the defaults to reproduce its
+weights and its history bit for bit.
+
+``schedule`` is a function from a 1-based epoch to a multiplier on the
+learning rate. It is called once per epoch and multiplies each parameter
+group's own base rate, so a group set up to train faster keeps that ratio all
+the way down the decay. A multiplier that is negative, infinite or not a
+number is refused, naming the epoch. :func:`warmup_cosine` is the R study's
+own schedule: the rate rises linearly over the warmup epochs and then follows
+a cosine down to zero.
+
+``param_groups`` builds the AdamW parameter groups from the model, so one part
+of the network can train at a different rate from the rest. The R study trains
+its ``phi`` parameter at ten times the network rate. A group that names no
+``lr`` inherits ``config.lr``, and the default is the single group over
+``model.parameters()``.
+
+``min_epochs`` holds early stopping back until that many epochs have run, for
+a schedule whose first epochs are deliberately slow and whose validation loss
+therefore looks flat at the start.
+
+``check_every`` runs the validation pass every that many epochs, and always on
+the last epoch. ``config.patience`` then counts validation checks rather than
+epochs, which at the default of 1 is the same count as before. An epoch
+between two checks records ``val = nan``, which
+:func:`ibnr.kernels.tuning.validation_score` already skips.
+
+``cutoff_sampling`` chooses how the augmented cutoff is drawn. ``per_example``
+draws one per cohort per batch, as before. ``per_epoch`` draws one and gives
+it to every batch of that epoch, which is how the R study builds its example
+set; it takes one integer per epoch from the same member generator.
+
+``keep`` returns only the members that validated best, in member order, with
+ties going to the lower member index. The R study trains ten members and keeps
+two. Every history record carries its ``member`` index, so a kept member can
+still be traced back to the one that produced it.
+
+Two things the design document asks for are deliberately not here. There is no
+``n_workers``: members are independent given their seeds, but ``make_model``,
+``train_loss`` and ``val_loss`` are closures over the entry's tensors, and a
+closure cannot be sent to a spawned process, so member-parallel training would
+have to change the callback contract rather than add an argument.
+:func:`warmup_cosine` lives in this module rather than in ``ibnr.kernels``
+because ``kernels`` never imports the gallery and the schedule is only ever
+used by this loop.
+
 Torch is imported inside :func:`train_ensemble` only - this module must be
 importable without the ``[nn]`` extra (the subprocess test in
 ``tests/test_gallery.py`` is the honest check).
@@ -40,7 +92,40 @@ from typing import Any
 
 import numpy as np
 
-__all__ = ["train_ensemble"]
+__all__ = ["CUTOFF_SAMPLING", "train_ensemble", "warmup_cosine"]
+
+#: How the augmented cutoff is drawn: one per cohort per batch, or one shared
+#: by every batch of an epoch (the R study's scheme).
+CUTOFF_SAMPLING: tuple[str, ...] = ("per_example", "per_epoch")
+
+
+def warmup_cosine(schedule_epochs: int, warmup: int = 20) -> Callable[[int], float]:
+    """Linear warmup then cosine decay to zero, as a multiplier on the base rate.
+
+    The R study's ``learning_rate_multiplier``, ported with its edge cases: a
+    one-epoch schedule still performs one update (multiplier 1 at epoch 1, 0
+    after); the warmup is capped at ``schedule_epochs - 1`` so at least one
+    post-warmup epoch exists; progress past the schedule end is capped at 1, so
+    the multiplier stays at zero rather than rising again. Epochs are 1-based,
+    which is how :func:`train_ensemble` calls it.
+    """
+    if not isinstance(schedule_epochs, int) or schedule_epochs < 1:
+        raise ValueError(f"schedule_epochs must be an int >= 1, got {schedule_epochs!r}")
+    if not isinstance(warmup, int) or warmup < 0:
+        raise ValueError(f"warmup must be an int >= 0, got {warmup!r}")
+
+    def multiplier(epoch: int) -> float:
+        if not isinstance(epoch, int) or epoch < 1:
+            raise ValueError(f"epoch is 1-based and must be >= 1, got {epoch!r}")
+        if schedule_epochs == 1:
+            return float(epoch == 1)
+        w = min(warmup, schedule_epochs - 1)
+        if w > 0 and epoch <= w:
+            return epoch / w
+        progress = min((epoch - w) / (schedule_epochs - w), 1.0)
+        return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+    return multiplier
 
 
 def train_ensemble(
@@ -55,6 +140,12 @@ def train_ensemble(
     val_cutoff: int,
     device: Any,
     show_progress: bool = False,
+    schedule: Callable[[int], float] | None = None,
+    param_groups: Callable[[Any], list[dict]] | None = None,
+    min_epochs: int = 0,
+    check_every: int = 1,
+    cutoff_sampling: str = "per_example",
+    keep: int | None = None,
 ) -> tuple[list, list[list[dict]]]:
     """Train ``config.ensemble_size`` independently-seeded members.
 
@@ -81,12 +172,54 @@ def train_ensemble(
                  ``[min_cutoff, val_cutoff)`` so the fixed validation
                  diagonal(s) are never conditioned on during training.
     device:      the ``torch.device`` batches should be built on.
+    schedule:    ``(epoch) -> float``, a multiplier on every parameter group's
+                 own base learning rate, called once per epoch with a 1-based
+                 epoch. ``None`` holds every rate at its base value, which is
+                 what the loop did before. :func:`warmup_cosine` is the R
+                 study's schedule.
+    param_groups: ``(model) -> list[dict]``, AdamW parameter groups, each free
+                 to carry its own ``lr``. ``None`` is one group over
+                 ``model.parameters()`` at ``config.lr``. A group without an
+                 ``lr`` inherits ``config.lr``.
+    min_epochs:  early stopping cannot end a member before this many epochs
+                 have run. 0 is the old behaviour.
+    check_every: run the validation pass every this many epochs, and always on
+                 the last epoch. ``config.patience`` counts validation checks,
+                 which at ``check_every=1`` is the old count in epochs. An
+                 epoch that was not validated records ``val = nan``.
+    cutoff_sampling: ``"per_example"`` draws one augmented cutoff per cohort
+                 per batch, which is what the loop did before.
+                 ``"per_epoch"`` draws one cutoff and gives it to every batch
+                 of that epoch, which is how the R study builds its example
+                 set. Both draw from the member's own generator.
+    keep:        after every member has trained, return only the ``keep``
+                 members with the lowest best validation score, in member
+                 order. ``None`` returns them all, which is the old
+                 behaviour.
 
     Returns ``(models, histories)``: each model in eval mode with its
     best-validation weights restored, and per-member per-epoch
-    ``{"epoch", "train", "val"}`` records.
+    ``{"member", "epoch", "train", "val"}`` records. A member's best
+    validation score is the lowest finite ``val`` in its history, which is
+    what :func:`ibnr.kernels.tuning.validation_score` already reads.
     """
     import torch
+
+    if cutoff_sampling not in CUTOFF_SAMPLING:
+        raise ValueError(
+            f"cutoff_sampling must be one of {list(CUTOFF_SAMPLING)}, got {cutoff_sampling!r}"
+        )
+    if not isinstance(check_every, int) or check_every < 1:
+        raise ValueError(f"check_every must be an int >= 1, got {check_every!r}")
+    if not isinstance(min_epochs, int) or min_epochs < 0 or min_epochs > config.max_epochs:
+        raise ValueError(
+            f"min_epochs must be an int in [0, max_epochs={config.max_epochs}], got {min_epochs!r}"
+        )
+    if keep is not None and (not isinstance(keep, int) or not 1 <= keep <= config.ensemble_size):
+        raise ValueError(
+            f"keep must be an int in [1, ensemble_size={config.ensemble_size}] or None, "
+            f"got {keep!r}"
+        )
 
     models: list = []
     histories: list[list[dict]] = []
@@ -101,24 +234,45 @@ def train_ensemble(
             torch.manual_seed(member_seed)
         rng = np.random.default_rng(member_seed)
         model = make_model()
-        opt = torch.optim.AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
+        params = param_groups(model) if param_groups is not None else model.parameters()
+        opt = torch.optim.AdamW(params, lr=config.lr, weight_decay=config.weight_decay)
+        for group in opt.param_groups:
+            group["base_lr"] = group["lr"]  # the rate the schedule multiplies
 
         best_val, best_state, patience_left = math.inf, None, config.patience
         history: list[dict] = []
         for epoch in range(config.max_epochs):
+            if schedule is not None:
+                mult = schedule(epoch + 1)  # 1-based, as the R study counts epochs
+                if not (isinstance(mult, int | float) and math.isfinite(mult) and mult >= 0):
+                    raise ValueError(
+                        f"schedule({epoch + 1}) returned {mult!r}; a learning-rate multiplier "
+                        "must be a finite number >= 0"
+                    )
+                for group in opt.param_groups:
+                    group["lr"] = group["base_lr"] * mult
             model.train()
             epoch_loss, n_batches = 0.0, 0
             perm = rng.permutation(n_cohorts)  # shuffle cohorts into batches each epoch
+            # CALENDAR-CUTOFF AUGMENTATION: draw a fake as_of diagonal; the
+            # entry conditions on cells on/before it and scores the observed
+            # training cells strictly after it. Each triangle yields many
+            # "predict the next diagonals" tasks per epoch - the main
+            # small-data multiplier. Under "per_epoch" the whole epoch shares
+            # one diagonal, which costs one integer from the member's stream.
+            epoch_cutoff = (
+                int(rng.integers(min_cutoff, val_cutoff))
+                if cutoff_sampling == "per_epoch"
+                else None
+            )
             for start in range(0, n_cohorts, config.batch_size):
                 idx = torch.tensor(perm[start : start + config.batch_size], device=device)
-                # CALENDAR-CUTOFF AUGMENTATION: draw a fake as_of diagonal per
-                # cohort; the entry conditions on cells on/before it and scores
-                # the observed training cells strictly after it. Each triangle
-                # yields many "predict the next diagonals" tasks per epoch -
-                # the main small-data multiplier.
-                cutoffs = torch.tensor(
-                    rng.integers(min_cutoff, val_cutoff, size=len(idx)), device=device
-                )  # (B,) 1-based conditioning diagonal per cohort
+                if epoch_cutoff is None:
+                    cutoffs = torch.tensor(
+                        rng.integers(min_cutoff, val_cutoff, size=len(idx)), device=device
+                    )  # (B,) 1-based conditioning diagonal per cohort
+                else:
+                    cutoffs = torch.full((len(idx),), epoch_cutoff, dtype=torch.long, device=device)
                 loss = train_loss(model, idx, cutoffs)
                 if loss is None:
                     continue  # this batch's cutoffs left nothing to score
@@ -132,26 +286,56 @@ def train_ensemble(
             # validation: condition on the whole training window (cutoff =
             # val_cutoff), score NLL on the held-out trailing diagonal(s).
             # This is the eval_date-style split, not a random cell holdout.
+            # Epochs between two checks record a NaN val, which
+            # kernels.tuning.validation_score already skips.
+            is_last = epoch + 1 == config.max_epochs
+            if (epoch + 1) % check_every != 0 and not is_last:
+                history.append(
+                    {
+                        "member": member,
+                        "epoch": epoch,
+                        "train": epoch_loss / max(n_batches, 1),
+                        "val": math.nan,
+                    }
+                )
+                continue
             model.eval()
             with torch.no_grad():
                 epoch_val = float(val_loss(model))
             history.append(
-                {"epoch": epoch, "train": epoch_loss / max(n_batches, 1), "val": epoch_val}
+                {
+                    "member": member,
+                    "epoch": epoch,
+                    "train": epoch_loss / max(n_batches, 1),
+                    "val": epoch_val,
+                }
             )
             if show_progress:
                 print(f"member {member} epoch {epoch}: val {epoch_val:.4f}")
             # early stopping: snapshot best-val weights, stop after
-            # `patience` epochs without improvement, then restore the best.
+            # `patience` checks without improvement, then restore the best.
             if epoch_val < best_val - 1e-6:
                 best_val, patience_left = epoch_val, config.patience
                 best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
             else:
                 patience_left -= 1
-                if patience_left <= 0:
+                if patience_left <= 0 and epoch + 1 >= min_epochs:
                     break
         if best_state is not None:
             model.load_state_dict(best_state)  # restore best-val weights
         model.eval()
         models.append(model)
         histories.append(history)
+    if keep is not None and keep < len(models):
+        # The R study trains ten members and keeps the two that validated best.
+        # Ties go to the lower member index, and the kept members are returned
+        # in member order rather than in score order.
+        def best(history: list[dict]) -> float:
+            finite = [h["val"] for h in history if math.isfinite(h["val"])]
+            return min(finite) if finite else math.inf
+
+        order = sorted(range(len(models)), key=lambda m: (best(histories[m]), m))
+        chosen = sorted(order[:keep])
+        models = [models[m] for m in chosen]
+        histories = [histories[m] for m in chosen]
     return models, histories
