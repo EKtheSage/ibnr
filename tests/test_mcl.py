@@ -229,3 +229,96 @@ def test_failed_positivity_guard_leaves_the_previous_fit_intact(backend_name):
     after = vars(entry)
     assert set(after) == set(before)
     assert not [k for k in before if after[k] is not before[k]]
+
+
+def test_predict_layout_mean_and_determinism(backend_name):
+    """The predictive draws share point()'s layout, are centred on it when only
+    process risk is switched on, and repeat exactly for one seed."""
+    rng = np.random.default_rng(5)
+    cum = simulate_cl_square(rng, n_w=8, rho=0.3, factors=SQUARE_FACTORS[:7])
+    tri, cutoff = upper_triangle(backend_name, cum)
+    entry = MCL().fit(tri, as_of=cutoff)
+    # both draw paths are exercised: three system transitions, four fallbacks
+    assert {t["method"] for t in entry.transitions_} == {"system", "volume_weighted"}
+    pred = entry.predict(n_draws=4000, seed=9)
+    assert pred.samples.shape == (4000, 2 * 8 + 2 + 1)
+    assert pred.targets["label"].astype(str).tolist() == entry.point()["label"].astype(str).tolist()
+    assert np.isfinite(pred.samples).all()
+    # process-only draws are centred on the point recursion
+    only_process = entry.predict(n_draws=4000, seed=9, param_uncertainty=False)
+    np.testing.assert_allclose(only_process.mean()[-1], entry.point()["point"].iloc[-1], rtol=0.02)
+    again = entry.predict(n_draws=4000, seed=9)
+    np.testing.assert_array_equal(pred.samples, again.samples)
+    assert not np.array_equal(pred.samples, entry.predict(n_draws=4000, seed=10).samples)
+    # the grand total is the within-draw sum of the per-lob totals
+    np.testing.assert_allclose(pred.samples[:, -1], pred.samples[:, -3:-1].sum(axis=1))
+
+
+def test_parameter_risk_widens_the_total(backend_name):
+    """Estimation error in the coefficient matrices is real reserve risk, so
+    switching it on can only widen the predictive distribution."""
+    rng = np.random.default_rng(7)
+    cum = simulate_cl_square(rng, n_w=8, rho=0.3, factors=SQUARE_FACTORS[:7])
+    tri, cutoff = upper_triangle(backend_name, cum)
+    entry = MCL().fit(tri, as_of=cutoff)
+    with_param = entry.predict(n_draws=8000, seed=2, param_uncertainty=True).std()[-1]
+    without = entry.predict(n_draws=8000, seed=2, param_uncertainty=False).std()[-1]
+    assert with_param > without
+
+
+def test_correlated_process_noise_reaches_the_grand_total(backend_name):
+    """The off-diagonal of each transition's residual covariance has to reach
+    the draws, and the grand total is where that shows.
+
+    Summing the per-lob totals draw by draw is not enough to see it: the grand
+    total is their sum whether or not the two lines move together. What
+    distinguishes the two is the total's VARIANCE against the sum of the lines'
+    own variances, which are equal under independence and further apart the
+    stronger the dependence. At a planted correlation of 0.9 the gap is large,
+    so this fails outright on draws that use only the diagonal of sigma.
+    """
+    rng = np.random.default_rng(6)
+    cum = simulate_cl_square(rng, n_w=8, rho=0.9, factors=SQUARE_FACTORS[:7])
+    tri, cutoff = upper_triangle(backend_name, cum)
+    entry = MCL().fit(tri, as_of=cutoff)
+    samples = entry.predict(n_draws=20_000, seed=4, param_uncertainty=False).samples
+    total_var = samples[:, -1].var()
+    independent_var = samples[:, -3:-1].var(axis=0).sum()
+    assert total_var > 1.2 * independent_var
+
+
+def test_process_noise_scales_with_the_cumulative_it_sits_on(backend_name):
+    """Multiplying every loss amount by four must multiply every draw by four.
+
+    That is what Mack's variance assumption says, and it is the one thing a
+    test of the layout or of the total cannot see. The coefficients are
+    dimensionless and do not move; the whitened residual covariance scales by
+    16, so its Cholesky factor scales by 4; and the noise is un-whitened by
+    ``sqrt(C)``, which scales by 2 - so the noise added to a cumulative four
+    times as large is four times as large, not twice. Dropping the ``sqrt(C)``
+    factor leaves the draws scaling by two, which this catches and which a
+    standard deviation read on one triangle alone cannot.
+    """
+    rng = np.random.default_rng(15)
+    cum = simulate_cl_square(rng, n_w=8, rho=0.3, factors=SQUARE_FACTORS[:7])
+    tri, cutoff = upper_triangle(backend_name, cum)
+    big, _ = upper_triangle(backend_name, 4.0 * cum)
+    base = MCL().fit(tri, as_of=cutoff).predict(n_draws=2000, seed=3, param_uncertainty=False)
+    scaled = MCL().fit(big, as_of=cutoff).predict(n_draws=2000, seed=3, param_uncertainty=False)
+    np.testing.assert_allclose(scaled.samples, 4.0 * base.samples, rtol=1e-8)
+
+
+def test_realized_ultimates_align_to_predict(backend_name):
+    """Outcomes line up element for element with the predictive targets, and
+    the default scoring runs over them."""
+    rng = np.random.default_rng(6)
+    cum = simulate_cl_square(rng, n_w=6, rho=0.1)
+    tri, cutoff = upper_triangle(backend_name, cum)
+    entry = MCL().fit(tri, as_of=cutoff)
+    realized = entry.realized_ultimates(tri)
+    assert realized.shape == (2 * 6 + 2 + 1,)
+    np.testing.assert_allclose(realized[:12].reshape(2, 6), cum[:, :, -1])
+    np.testing.assert_allclose(realized[-1], cum[:, :, -1].sum())
+    scored = entry.evaluate(realized)
+    assert set(scored) == {"summary", "percentiles", "crps"}
+    assert np.isfinite(scored["crps"]).all()
