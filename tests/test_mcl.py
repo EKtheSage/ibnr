@@ -354,5 +354,7 @@ def test_realized_ultimates_align_to_predict(backend_name):
     np.testing.assert_allclose(realized[:12].reshape(2, 6), cum[:, :, -1])
     np.testing.assert_allclose(realized[-1], cum[:, :, -1].sum())
     scored = entry.evaluate(realized)
-    assert set(scored) == {"summary", "percentiles", "crps"}
+    # a subset, not the whole set: the ABC's default scoring is shared by every
+    # entry and is free to grow a key without this entry changing
+    assert {"summary", "percentiles", "crps"} <= set(scored)
     assert np.isfinite(scored["crps"]).all()
