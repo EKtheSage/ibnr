@@ -323,6 +323,11 @@ markers = [
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
+# docs/superpowers holds design specs and implementation plans: working documents
+# whose python blocks are excerpts and fragments for a reader, not documentation
+# samples a user copies. They are not held to the formatter or to the markdown
+# snippet lint (scripts/lint_md_snippets.py excludes the same directory).
+extend-exclude = ["docs/superpowers"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
