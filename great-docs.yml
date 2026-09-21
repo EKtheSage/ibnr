@@ -212,6 +212,19 @@ reference:
       - kernels.shrink_toward
       - kernels.point_summary
 
+  - title: Residual calibration
+    desc: >
+      Historical uncertainty for a point forecaster: apply it at earlier
+      cutoffs, pool the standardised errors by unit size, and resample them
+      around the final point.
+    contents:
+      - kernels.rolling_residuals
+      - kernels.calibrate
+      - name: kernels.Calibration
+        members: true
+      - kernels.calibrated_draws
+      - kernels.leave_one_out_coverage
+
   - title: Wire format
     desc: >
       The single place an ibnr result becomes bytes - one Arrow IPC stream per
