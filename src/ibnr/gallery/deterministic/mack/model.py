@@ -44,6 +44,7 @@ import datetime as dt
 from collections.abc import Mapping
 
 import numpy as np
+import pandas as pd
 
 from ibnr.gallery.entry import GalleryEntry, PredictsHeldout
 from ibnr.gallery.registry import register
@@ -169,6 +170,28 @@ class Mack(GalleryEntry, PredictsHeldout):
             ),
             process=process,
             parameter_risk=parameter_risk,
+        )
+
+    def point(self, segment: Mapping | None = None) -> pd.DataFrame:
+        """The deterministic chain-ladder ultimates, one row per origin plus ``total``.
+
+        Same rows, in the same order and under the same labels, as
+        ``predict().targets``, so a caller can read the point and the draws off
+        one set of labels. Read straight off ``fit_``: nothing is simulated
+        here, so there is no ``seed`` and no draw count.
+        """
+        # a single-cohort fit: accepts None or its own key, refuses anything else
+        self.cohort_index(segment)
+        fit = self._fitted()
+        ultimates = np.asarray(fit.ultimate, dtype=float)
+        return pd.DataFrame(
+            {
+                # str(date) is what kernels.mack.simulate_ultimates labels its
+                # targets with; the two lists have to match element for element.
+                "label": [*(str(o) for o in fit.origin_periods), "total"],
+                "origin_period": [*fit.origin_periods, None],
+                "point": [*ultimates.tolist(), float(ultimates.sum())],
+            }
         )
 
     def _draws_native(self, cells: CellIndex, *, rng: np.random.Generator) -> np.ndarray:

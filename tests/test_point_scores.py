@@ -7,11 +7,16 @@ so the reader can tell a company-level Pool_APE from a line-level one.
 
 from __future__ import annotations
 
+import datetime as dt
+
 import numpy as np
 import pandas as pd
 import pytest
 
-from ibnr.kernels.point_scores import level_errors, point_metrics, shrink_toward
+from ibnr import Triangle, gallery
+from ibnr.kernels.point_scores import level_errors, point_metrics, reserve_rows, shrink_toward
+
+from .conftest import make_cohort_triangle, make_multiline_triangle
 
 # Company 671 from the 2026-09-20 reconciliation, USD thousands. The three
 # overestimates almost offset the personal-auto underestimate.
@@ -123,3 +128,183 @@ def test_shrink_toward_refusals():
         shrink_toward([1.0, 2.0], [1.0], 0.5)
     with pytest.raises(ValueError, match="non-finite"):
         shrink_toward([np.nan], [1.0], 0.5)
+
+
+# A full 4 x 4 square of cumulative paid loss; origin i = 2010 + i. The first
+# development step's factors deliberately differ between origins (150/100
+# against 168/110). A square whose origins all develop by the identical factor
+# gives Mack a sigma of exactly zero, and then every simulated draw equals the
+# deterministic ultimate - so a test that reads the draw mean where it meant to
+# read the point passes, and so does the reverse.
+SQUARE = np.array(
+    [
+        [100.0, 150.0, 175.0, 185.0],
+        [110.0, 168.0, 190.0, 200.0],
+        [120.0, 180.0, 210.0, 222.0],
+        [130.0, 195.0, 230.0, 240.0],
+    ]
+)
+#: the third diagonal: origins 2010, 2011 and 2012 are written, 2013 is not.
+AS_OF = dt.date(2012, 12, 31)
+#: the anchor at that valuation: 2010 at dev 36, 2011 at dev 24, 2012 at dev 12.
+ANCHOR = SQUARE[0, 2] + SQUARE[1, 1] + SQUARE[2, 0]
+#: the fit sees three development steps, so its endpoint is dev 36, not dev 48.
+REALIZED = SQUARE[0, 2] + SQUARE[1, 2] + SQUARE[2, 2]
+
+
+def test_mack_point_is_the_deterministic_ultimate(backend_name):
+    tri = make_cohort_triangle(backend_name, SQUARE, start_year=2010)
+    entry = gallery.fit("mack", tri, loss_field="paid_loss", as_of=AS_OF)
+    frame = entry.point()
+    assert list(frame.columns) == ["label", "origin_period", "point"]
+    labels = frame["label"].astype(str).tolist()
+    assert labels == entry.predict(n_draws=10).targets["label"].astype(str).tolist()
+    assert labels[-1] == "total"
+    np.testing.assert_allclose(frame["point"].to_numpy()[:-1], entry.fit_.ultimate)
+    assert frame["point"].iloc[-1] == pytest.approx(entry.fit_.ultimate.sum())
+
+
+def test_reserve_rows_for_a_single_cohort_entry(backend_name):
+    tri = make_cohort_triangle(backend_name, SQUARE, start_year=2010)
+    entry = gallery.fit("mack", tri, loss_field="paid_loss", as_of=AS_OF)
+    rows = reserve_rows(
+        entry, tri, as_of=AS_OF, loss_field="paid_loss", premium_field=None, point="native"
+    )
+    assert len(rows) == 1
+    row = rows.iloc[0]
+    assert row["anchor"] == pytest.approx(ANCHOR)
+    assert row["realized_ultimate"] == pytest.approx(REALIZED)
+    assert row["actual_reserve"] == pytest.approx(row["realized_ultimate"] - row["anchor"])
+    assert row["predicted_ultimate"] == pytest.approx(entry.fit_.ultimate.sum())
+    assert row["predicted_reserve"] == pytest.approx(row["predicted_ultimate"] - row["anchor"])
+    assert row["point_source"] == "native"
+    assert np.isnan(row["premium"])
+
+    draws = reserve_rows(
+        entry,
+        tri,
+        as_of=AS_OF,
+        loss_field="paid_loss",
+        premium_field=None,
+        predict_kwargs={"seed": 3, "n_draws": 2000},
+    )
+    assert draws["point_source"].iloc[0] == "draw_mean"
+    assert draws["n_draws"].iloc[0] == 2000
+    # the draw mean sits near the deterministic point but is not it
+    assert draws["predicted_ultimate"].iloc[0] == pytest.approx(row["predicted_ultimate"], rel=0.05)
+
+
+# Two lines of one company over five origins. SUR needs the first development
+# transition to keep residual degrees of freedom, so the square is 5 x 5 rather
+# than the 4 x 4 above, and the two lines are not proportional to each other.
+AUTO = np.array(
+    [
+        [100.0, 152.0, 178.0, 194.0, 201.0],
+        [110.0, 163.0, 197.0, 214.0, 223.0],
+        [120.0, 184.0, 216.0, 239.0, 246.0],
+        [130.0, 191.0, 233.0, 251.0, 262.0],
+        [140.0, 217.0, 252.0, 274.0, 284.0],
+    ]
+)
+LIAB = np.array(
+    [
+        [200.0, 291.0, 355.0, 381.0, 402.0],
+        [220.0, 338.0, 393.0, 431.0, 441.0],
+        [240.0, 351.0, 425.0, 462.0, 481.0],
+        [260.0, 397.0, 464.0, 503.0, 518.0],
+        [280.0, 419.0, 501.0, 537.0, 562.0],
+    ]
+)
+AS_OF_ML = dt.date(2014, 12, 31)
+PREMIUM_ML = {"auto": np.full(5, 1000.0), "liab": np.full(5, 3000.0)}
+#: company 0002 writes five times company 0001 on both lines.
+SECOND_COMPANY_SCALE = 5.0
+
+
+def _two_company_triangle(backend_name):
+    """Companies 0001 and 0002, two lines each, and the triangle holding both.
+
+    Two companies rather than one on purpose: the cohort filter inside
+    ``reserve_rows`` is what keeps 0002's losses out of 0001's anchor, and a
+    one-company triangle cannot tell a working filter from a missing one.
+    """
+    first = make_multiline_triangle(
+        backend_name,
+        {"auto": AUTO, "liab": LIAB},
+        premium_by_lob=PREMIUM_ML,
+        start_year=2010,
+        company="0001",
+    )
+    second = make_multiline_triangle(
+        backend_name,
+        {"auto": AUTO * SECOND_COMPANY_SCALE, "liab": LIAB * SECOND_COMPANY_SCALE},
+        premium_by_lob=PREMIUM_ML,
+        start_year=2010,
+        company="0002",
+    )
+    both = pd.concat([first.execute(), second.execute()], ignore_index=True)
+    return first, second, Triangle.from_long(both, measure="cumulative", backend=backend_name)
+
+
+def test_reserve_rows_for_a_multi_line_entry_sums_the_company(backend_name):
+    first, second, both = _two_company_triangle(backend_name)
+    anchor = sum(AUTO[i, 4 - i] + LIAB[i, 4 - i] for i in range(5))
+    realized = AUTO[:, 4].sum() + LIAB[:, 4].sum()
+
+    entry = gallery.fit("sur", first, loss_field="paid_loss", as_of=AS_OF_ML)
+    rows = reserve_rows(
+        entry, both, as_of=AS_OF_ML, loss_field="paid_loss", predict_kwargs={"seed": 5}
+    )
+    assert len(rows) == 1
+    row = rows.iloc[0]
+    assert row["company_code"] == "0001"
+    assert row["anchor"] == pytest.approx(anchor)
+    assert row["realized_ultimate"] == pytest.approx(realized)
+    # premium is summed over the origins the valuation has written, on both lines
+    assert row["premium"] == pytest.approx(5 * 1000.0 + 5 * 3000.0)
+    assert row["point_source"] == "draw_mean"
+
+    other = gallery.fit("sur", second, loss_field="paid_loss", as_of=AS_OF_ML)
+    other_rows = reserve_rows(
+        other, both, as_of=AS_OF_ML, loss_field="paid_loss", predict_kwargs={"seed": 5}
+    )
+    assert other_rows["company_code"].iloc[0] == "0002"
+    assert other_rows["anchor"].iloc[0] == pytest.approx(SECOND_COMPANY_SCALE * anchor)
+    assert other_rows["realized_ultimate"].iloc[0] == pytest.approx(SECOND_COMPANY_SCALE * realized)
+
+
+def test_reserve_rows_refusals(backend_name):
+    tri = make_cohort_triangle(backend_name, SQUARE, start_year=2010)
+    entry = gallery.fit("mack", tri, loss_field="paid_loss", as_of=AS_OF)
+    with pytest.raises(ValueError, match="no field named 'earned_premium'"):
+        reserve_rows(entry, tri, as_of=AS_OF, loss_field="paid_loss")
+    with pytest.raises(ValueError, match="point must be"):
+        reserve_rows(
+            entry, tri, as_of=AS_OF, loss_field="paid_loss", premium_field=None, point="median"
+        )
+    with pytest.raises(ValueError, match="no field named 'incurred_loss'"):
+        reserve_rows(
+            entry, tri, as_of=AS_OF, loss_field="incurred_loss", premium_field=None, point="native"
+        )
+
+    class NoPoint:
+        """An entry-shaped object without point(); the native route must refuse it by name."""
+
+        name = "stub"
+
+        def cohorts(self):
+            return entry.cohorts()
+
+        def cohort_index(self, segment):
+            return entry.cohort_index(segment)
+
+        def predict(self, segment=None, **kw):
+            return entry.predict(segment=segment, **kw)
+
+        def realized_ultimates(self, full, segment=None):
+            return entry.realized_ultimates(full, segment=segment)
+
+    with pytest.raises(TypeError, match="does not implement point"):
+        reserve_rows(
+            NoPoint(), tri, as_of=AS_OF, loss_field="paid_loss", premium_field=None, point="native"
+        )

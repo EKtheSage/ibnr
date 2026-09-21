@@ -35,7 +35,10 @@ from collections.abc import Sequence
 import numpy as np
 import pandas as pd
 
-__all__ = ["level_errors", "point_metrics", "shrink_toward"]
+__all__ = ["level_errors", "point_metrics", "reserve_rows", "shrink_toward"]
+
+#: what ``reserve_rows`` may read a cohort's predicted ultimate from.
+POINT_SOURCES: tuple[str, ...] = ("draw_mean", "native")
 
 
 def point_metrics(predicted, actual) -> dict[str, float]:
@@ -121,3 +124,124 @@ def shrink_toward(point, baseline, alpha: float) -> np.ndarray:
     if not (np.isfinite(p).all() and np.isfinite(b).all()):
         raise ValueError("point and baseline must be finite; a non-finite entry cannot be blended")
     return b + alpha * (p - b)
+
+
+def _cohort_triangle(triangle, cohort: dict):
+    """``triangle`` restricted to one cohort's rows.
+
+    ``cohort`` may carry columns the triangle does not (a display column a
+    pooled fit kept beside its key); only the shared columns filter, and every
+    shared column must match. A cohort with no shared column - a single-cohort
+    fit on a triangle that has no segment columns at all - filters nothing,
+    which is that triangle's only cohort.
+    """
+    segments = triangle.segments
+    predicates = [triangle.expr[c] == v for c, v in cohort.items() if c in segments]
+    return triangle.filter(*predicates) if predicates else triangle
+
+
+def _latest_total(triangle, field: str, cohort: dict) -> float:
+    """The cohort's latest observed ``field`` value per origin, summed."""
+    frame = _cohort_triangle(triangle, cohort).select_fields(field).latest_diagonal().execute()
+    return float(frame["value"].sum())
+
+
+def _total_index(labels: list[str], what: str) -> int:
+    if "total" not in labels:
+        raise ValueError(
+            f"{what} carries no 'total' row (labels: {labels[:6]}...); reserve_rows reads the "
+            "cohort's total ultimate off that row"
+        )
+    return labels.index("total")
+
+
+def reserve_rows(
+    entry,
+    full_triangle,
+    *,
+    as_of,
+    loss_field: str,
+    premium_field: str | None = "earned_premium",
+    point: str = "draw_mean",
+    segment=None,
+    predict_kwargs: dict | None = None,
+) -> pd.DataFrame:
+    """One row per cohort: predicted and actual reserve at the grid endpoint.
+
+    ``reserve = ultimate - anchor``, the anchor being the cumulative observed at
+    ``as_of`` summed over the cohort's origins, read from
+    ``full_triangle.as_of(as_of)`` - the same slice the entry was fitted on.
+    ``realized_ultimate`` comes from ``entry.realized_ultimates``, which
+    restricts itself to the training origins, so both sides of the subtraction
+    cover the same accident years.
+
+    ``full_triangle`` may carry cohorts this entry was not fitted on: every read
+    of it here is filtered to the cohort first, so a company's anchor cannot
+    pick up its neighbour's losses and a single-cohort entry is handed only the
+    rows it answers for.
+
+    ``point="draw_mean"`` reads the mean of ``entry.predict()``'s ``total`` row;
+    ``point="native"`` reads the ``total`` row of ``entry.point()`` and refuses
+    an entry that has none. ``point_source`` records which. ``predict_kwargs``
+    are handed to ``predict`` unchanged (``seed``, ``n_draws``), so an entry
+    that does not accept one raises rather than quietly ignoring it.
+
+    ``premium`` is the premium field's latest value per origin, summed over the
+    origins written at ``as_of``; ``premium_field=None`` records NaN. Feed the
+    rows to :func:`level_errors` with ``level=["company_code"]`` for a company
+    board, or with the full cohort key for a company-line board.
+    """
+    if point not in POINT_SOURCES:
+        raise ValueError(f"point must be one of {POINT_SOURCES}, got {point!r}")
+    if point == "native" and not callable(getattr(entry, "point", None)):
+        name = getattr(entry, "name", type(entry).__name__)
+        raise TypeError(
+            f"{name} does not implement point(); it has draws only, so use point='draw_mean'"
+        )
+    training = full_triangle.as_of(as_of)
+    fields = list(training.fields)
+    if loss_field not in fields:
+        raise ValueError(f"no field named {loss_field!r}; the triangle carries {sorted(fields)}")
+    if premium_field is not None and premium_field not in fields:
+        raise ValueError(
+            f"no field named {premium_field!r}; the triangle carries {sorted(fields)}. "
+            "Pass premium_field=None to record no premium"
+        )
+    kwargs = dict(predict_kwargs or {})
+    cohorts = entry.cohorts()
+    index = entry.cohort_index(segment)
+    chosen = cohorts if index is None else [cohorts[index]]
+    name = getattr(entry, "name", type(entry).__name__)
+    rows = []
+    for cohort in chosen:
+        pred = entry.predict(segment=cohort, **kwargs)
+        labels = pred.targets["label"].astype(str).tolist()
+        i = _total_index(labels, f"{name}.predict targets")
+        outcomes = entry.realized_ultimates(_cohort_triangle(full_triangle, cohort), segment=cohort)
+        realized = np.asarray(outcomes, dtype=float)
+        if point == "native":
+            frame = entry.point(segment=cohort)
+            j = _total_index(frame["label"].astype(str).tolist(), f"{name}.point() frame")
+            predicted = float(frame["point"].iloc[j])
+        else:
+            predicted = float(pred.mean()[i])
+        anchor = _latest_total(training, loss_field, cohort)
+        premium = (
+            _latest_total(training, premium_field, cohort)
+            if premium_field is not None
+            else float("nan")
+        )
+        rows.append(
+            {
+                **cohort,
+                "predicted_ultimate": predicted,
+                "realized_ultimate": float(realized[i]),
+                "anchor": anchor,
+                "predicted_reserve": predicted - anchor,
+                "actual_reserve": float(realized[i]) - anchor,
+                "premium": premium,
+                "n_draws": int(pred.n_draws),
+                "point_source": point,
+            }
+        )
+    return pd.DataFrame(rows)
