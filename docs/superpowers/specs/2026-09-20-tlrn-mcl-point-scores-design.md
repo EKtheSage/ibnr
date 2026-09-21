@@ -1,6 +1,6 @@
 # Design: point scores, the TLRN entry, full-matrix MCL, and the reproduction notebook
 
-Date: 2026-09-20. Status: draft for review. Target release: 0.7.0.
+Date: 2026-09-20. Status: approved 2026-09-20 (Ethan). Target release: 0.7.0.
 
 ## 1. Context
 
@@ -489,15 +489,20 @@ Pull requests, each on its own branch and worktree, landing on `main` in order:
 
 A and B run in parallel with two workers; then C2 and M in parallel.
 
-Open questions for Ethan:
+Decisions taken 2026-09-20 (Ethan):
 
-1. Attribution in the `tlrn` card and the notebook: name the colleague and the
-   companion manuscript, or describe the method neutrally until the manuscript is out?
-   The ibnr repository is public.
-2. Early stopping under the published protocol: keep the R behaviour (best checkpoint,
-   no stop inside 3000 epochs) as the entry default, with the notebook choosing
-   `patience_checks=120` (600 epochs) and reporting both? Or make 120 the default?
-3. Notebook file name and whether `03b` stays untouched.
+1. Attribution: neutral. The `tlrn` card and the notebook describe the method as "the
+   TLRN protocol of a companion manuscript in preparation, reproduced from its R
+   implementation" and name nobody, until the manuscript is published. No private
+   repository URL anywhere in this repository.
+2. Early stopping: the entry default is the R behaviour (validation every 5 epochs,
+   best checkpoint restored, `patience_checks=600`, so no stop inside 3000 epochs). The
+   notebook runs that default AND a `patience_checks=120` (600 epochs) variant and
+   reports both, side by side.
+3. Notebook: new file `analysis/04_nn_architectures_vs_classical.ipynb`; `03b` and
+   `03c` untouched.
+4. Execution: A and B in parallel with two Opus workers; C1 and C2 after B; M beside
+   C2; then the release and the notebook.
 
 ## 10. Risks
 
