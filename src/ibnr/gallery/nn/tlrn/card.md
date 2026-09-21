@@ -141,6 +141,22 @@ because a selection over ten optimiser outcomes is part of the result, and a
 table showing only the survivors would hide how much of the reported score is
 the selection rather than the model.
 
+What that costs. Measured on the study's own company set - 93 companies, 243
+company-line pairs, four lines, accident years 1998 to 2007, valuation
+2007-12-31, from the Schedule P publish `20260613_041006` - on a Windows laptop
+with 16 torch threads, one member, no parallelism: about **1.1 seconds per
+epoch** paid-only and about **1.2 seconds per epoch** with the incurred and
+case features. So one member's full 3000-epoch schedule is roughly an hour, and
+the ten-member protocol run one after another is roughly 9 to 10 hours.
+
+Treat those as one significant figure. Eleven runs of the same two
+configurations on an otherwise idle machine spread from 0.8 to 1.5 seconds per
+epoch, which is wider than the gap between the two forms, so the ratio between
+them is not something this measurement establishes. Each timing also includes
+the one-off setup - reading the mart and building fourteen feature sets for 93
+companies - so the per-epoch figure is an upper bound and the projection is
+conservative.
+
 ## Prediction
 
 `point(segment)` gives one company's deterministic ultimates in the multi-line
