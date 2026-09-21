@@ -27,6 +27,58 @@ a fixed seed reproduces the milestone-3 fits bit for bit; the equivalence was
 verified against pre-refactor loss trajectories, final weights and predictive
 draws on both entries.
 
+The training scheme
+-------------------
+
+Six keyword-only arguments extend the loop for the R transformer study. Every
+one of them is defaulted to the behaviour above, and
+``tests/test_nn_training_scheme.py`` keeps a verbatim copy of the loop as it
+stood before they were added and requires the defaults to reproduce its
+weights and its history bit for bit.
+
+``schedule`` is a function from a 1-based epoch to a multiplier on the
+learning rate. It is called once per epoch and multiplies each parameter
+group's own base rate, so a group set up to train faster keeps that ratio all
+the way down the decay. A multiplier that is negative, infinite or not a
+number is refused, naming the epoch. :func:`warmup_cosine` is the R study's
+own schedule: the rate rises linearly over the warmup epochs and then follows
+a cosine down to zero.
+
+``param_groups`` builds the AdamW parameter groups from the model, so one part
+of the network can train at a different rate from the rest. The R study trains
+its ``phi`` parameter at ten times the network rate. A group that names no
+``lr`` inherits ``config.lr``, and the default is the single group over
+``model.parameters()``.
+
+``min_epochs`` holds early stopping back until that many epochs have run, for
+a schedule whose first epochs are deliberately slow and whose validation loss
+therefore looks flat at the start.
+
+``check_every`` runs the validation pass every that many epochs, and always on
+the last epoch. ``config.patience`` then counts validation checks rather than
+epochs, which at the default of 1 is the same count as before. An epoch
+between two checks records ``val = nan``, which
+:func:`ibnr.kernels.tuning.validation_score` already skips.
+
+``cutoff_sampling`` chooses how the augmented cutoff is drawn. ``per_example``
+draws one per cohort per batch, as before. ``per_epoch`` draws one and gives
+it to every batch of that epoch, which is how the R study builds its example
+set; it takes one integer per epoch from the same member generator.
+
+``keep`` returns only the members that validated best, in member order, with
+ties going to the lower member index. The R study trains ten members and keeps
+two. Every history record carries its ``member`` index, so a kept member can
+still be traced back to the one that produced it.
+
+Two things the design document asks for are deliberately not here. There is no
+``n_workers``: members are independent given their seeds, but ``make_model``,
+``train_loss`` and ``val_loss`` are closures over the entry's tensors, and a
+closure cannot be sent to a spawned process, so member-parallel training would
+have to change the callback contract rather than add an argument.
+:func:`warmup_cosine` lives in this module rather than in ``ibnr.kernels``
+because ``kernels`` never imports the gallery and the schedule is only ever
+used by this loop.
+
 Torch is imported inside :func:`train_ensemble` only - this module must be
 importable without the ``[nn]`` extra (the subprocess test in
 ``tests/test_gallery.py`` is the honest check).
