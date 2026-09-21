@@ -322,24 +322,27 @@ picks a basis for you:
 | `loss_field` default | entries |
 |---|---|
 | `"reported_loss"` | `meyers_ccl`, `mdn`, `nn_transformer`, `nn_transformer_ml`, `resnet` |
-| `"paid_loss"` | the other twelve: `clark`, `clark_growth_curve`, `compartmental`, `copula_glm`, `deeptriangle`, `england_verrall_odp`, `guszcza_growth_curve`, `mack`, `mcl`, `meyers_csr`, `nn_paid_case`, `sur` |
+| `"paid_loss"` | the other thirteen: `clark`, `clark_growth_curve`, `compartmental`, `copula_glm`, `deeptriangle`, `england_verrall_odp`, `guszcza_growth_curve`, `mack`, `mcl`, `meyers_csr`, `nn_paid_case`, `sur`, `tlrn` |
 
-Two NN entries are the ones to watch. `deeptriangle` keeps the paper's paid-loss
-basis, and `nn_paid_case` is paid by construction (it models paid development
-against the case reserve), so "the NN entries are reported-basis" is true of
-four of the six and wrong for those two. `nn_paid_case` also spells the argument
-`paid_field=`, not `loss_field=`, because it names two loss fields and
-"loss_field" would underdescribe it. Pass the field explicitly whenever the
-basis matters - which is always, if you are comparing entries to each other.
+Three NN entries are the ones to watch. `deeptriangle` keeps the paper's
+paid-loss basis, `nn_paid_case` is paid by construction (it models paid
+development against the case reserve), and `tlrn` reproduces a study whose
+target is outstanding paid - so "the NN entries are reported-basis" is true of
+four of the seven and wrong for those three. `nn_paid_case` also spells the
+argument `paid_field=`, not `loss_field=`, because it names two loss fields and
+"loss_field" would underdescribe it; `tlrn` keeps `loss_field=` and spells its
+two extra channels `incurred_field=` and `case_field=`, which name a role rather
+than the loss basis. Pass the field explicitly whenever the basis matters -
+which is always, if you are comparing entries to each other.
 
 Premium is genuinely required by every entry that models a loss *ratio* or
 carries a log-premium offset: `meyers_ccl`, `meyers_csr`,
 `guszcza_growth_curve`, `clark_growth_curve`, `compartmental`,
-`england_verrall_odp`, `copula_glm` and all six NN entries. Only `mack`, `mcl`
+`england_verrall_odp`, `copula_glm` and all seven NN entries. Only `mack`, `mcl`
 and `sur` have no `premium_field` argument at all. For the entries that do require
 it, a premium field that is missing, duplicated per origin, non-positive, or
 belongs to a different cohort than the losses is an error at fit time rather
-than a silent zero. All fourteen name the problem: `premium_field=None` gets a
+than a silent zero. All fifteen name the problem: `premium_field=None` gets a
 `ValueError` saying that entry cannot model a loss ratio without exposure, and
 a `premium_field` naming a column the triangle does not carry gets
 `ValueError: no rows for premium field 'earned_premium'`. The NN entries

@@ -85,6 +85,20 @@ def _mdn(n_w: int, n_d: int):
     return TriangleMDN(MDNConfig(), n_lob=N_LOB, n_features=N_FEATURES, n_w=n_w, n_d=n_d)
 
 
+def _tlrn(n_feat: int = 13, n_lines: int = 4, n_lag: int = 10):
+    """The tlrn network at the shape its card quotes.
+
+    Its size depends on the LINE and LAG counts rather than on the origin axis,
+    because one example is one accident year and its tokens are that year's
+    (line, lag) cells - so the grid argument the other builders take would mean
+    nothing here.
+    """
+    from ibnr.gallery.nn.tlrn.config import TLRNConfig
+    from ibnr.gallery.nn.tlrn.network import TLRNNetwork
+
+    return TLRNNetwork(TLRNConfig(), n_lines=n_lines, n_lag=n_lag, n_feat=n_feat)
+
+
 def _resnet(n_w: int, n_d: int, **overrides):
     from ibnr.gallery.nn.resnet.config import ResNetConfig
     from ibnr.gallery.nn.resnet.network import TriangleResNet
@@ -119,6 +133,12 @@ DISCLOSED: dict[str, tuple[Claim, ...]] = {
             "the resnet at channels=64, the rejected width", lambda: _resnet(10, 10, channels=64)
         ),
         Claim("the transformer's default network on a 10x10 grid", lambda: _transformer(10, 10)),
+    ),
+    "tlrn": (
+        Claim(
+            "the tlrn network at d_model 32 with 13 features on 4 lines and 10 lags",
+            lambda: _tlrn(),
+        ),
     ),
 }
 

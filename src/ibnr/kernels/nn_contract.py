@@ -68,6 +68,14 @@ n_d dev steps:
   ``loss_field`` (the prediction target); channels 1.. follow
   ``feature_fields`` order. NaN-free by construction: unusable cells are
   zero-filled (see the mask rule above).
+- ``values``         : (n_c, n_f, n_w, n_d) float64 - the field's RAW grid in
+  the units the triangle reported, NaN where the triangle has no cell: the
+  cumulative amount on an increment channel, the snapshot itself on a level
+  one. Undifferenced and not divided by premium, so it is the one key that is
+  not a ratio. It exists because a feature builder needs a cumulative amount
+  and a cumulative loss ratio at an arbitrary visible cell, and re-summing
+  ``x`` would fabricate them at every cell the masks exclude. Additive: no
+  earlier consumer reads it.
 - ``x_obs``          : (n_c, n_f, n_w, n_d) bool - per-channel usable VALUE.
   ``x_obs[:, 0]`` equals ``obs_mask`` exactly. An increment channel is usable
   where the cell and its predecessor are both present (first dev: the cell
@@ -352,6 +360,7 @@ def nn_data(
     dropped: list[dict] = []
     x_list, obs_list, prem_list, anchor_cum_list, anchor_dev_list = [], [], [], [], []
     x_obs_list: list[np.ndarray] = []
+    values_list: list[np.ndarray] = []
 
     for key in cohort_keys:
         sub = grouped[key]
@@ -431,6 +440,9 @@ def nn_data(
         x_list.append(x)
         obs_list.append(obs)
         x_obs_list.append(x_obs)
+        # the raw grid, before differencing and before the premium division; NaN
+        # stays NaN here rather than becoming the padding zero `x` carries
+        values_list.append(cum)
         # normalize "no premium" to NaN (a stray 0 would divide-by-zero later)
         prem_list.append(np.where(premium > 0, premium, np.nan))
         anchor_cum_list.append(latest_cum)
@@ -471,6 +483,8 @@ def nn_data(
     # see the module docstring for the per-key contract
     return {
         "x": np.stack(x_list),  # (n_c, n_f, n_w, n_d)
+        # raw amounts, NaN where absent - the one non-ratio key (docstring)
+        "values": np.stack(values_list),  # (n_c, n_f, n_w, n_d)
         # per-channel usable values; x_obs[:, 0] IS obs_mask (invariant)
         "x_obs": np.stack(x_obs_list),  # (n_c, n_f, n_w, n_d)
         "obs_mask": np.stack(obs_list),  # (n_c, n_w, n_d)
@@ -522,8 +536,8 @@ def nn_company_data(
     not write (or that were dropped) are all-zero and ``line_mask``-ed out.
 
     Adds over the flat contract:
-    - arrays gain a line axis: ``x`` (n_c, L, F, W, D), ``x_obs``
-      (n_c, L, F, W, D), ``obs_mask`` (n_c, L, W, D),
+    - arrays gain a line axis: ``x`` (n_c, L, F, W, D), ``values``
+      (n_c, L, F, W, D), ``x_obs`` (n_c, L, F, W, D), ``obs_mask`` (n_c, L, W, D),
       ``premium``/``latest_cum`` (n_c, L, W), ``latest_dev`` (n_c, L, W),
       ``log_premium`` (n_c, L);
     - ``line_mask`` (n_c, L) - lines actually present per company;
@@ -539,11 +553,13 @@ def nn_company_data(
       calendar time is a property of the grid, so one cutoff diagonal applies
       to all of a company's lines at once (which is what makes a company a
       single joint training example).
-    - Absent lines are all-zero across ``x``/``premium``/anchors and False in
-      ``line_mask``, ``obs_mask`` and ``x_obs``; as in the flat contract those
-      zeros are padding, so a consumer MUST gate on ``line_mask`` (and
+    - Absent lines are all-zero across ``x``/anchors and False in ``line_mask``,
+      ``obs_mask`` and ``x_obs``; as in the flat contract those zeros are
+      padding, so a consumer MUST gate on ``line_mask`` (and
       ``x_obs``/``obs_mask``) rather than on the values. ``log_premium`` is 0
-      there too - a padding value, not a $1 premium.
+      there too - a padding value, not a $1 premium. ``values`` and ``premium``
+      are the exceptions and pad with NaN: both are in dollars, where zero is a
+      real observation rather than a value an attention mask multiplies away.
     - Unlike ``kernels.multiline``, lines here are NOT required to share an
       observed-cell pattern: the mask is what the attention consumes, so
       ragged lines are representable rather than an error.
@@ -589,6 +605,8 @@ def nn_company_data(
 
     # zero/False prefill IS the "line absent" representation (see docstring)
     x = np.zeros((n_c, n_l, n_f, n_w, n_d))
+    # dollars, so the "line absent" padding is NaN and not a zero amount
+    values = np.full((n_c, n_l, n_f, n_w, n_d), np.nan)
     x_obs = np.zeros((n_c, n_l, n_f, n_w, n_d), dtype=bool)
     obs = np.zeros((n_c, n_l, n_w, n_d), dtype=bool)
     premium = np.full((n_c, n_l, n_w), np.nan)
@@ -603,6 +621,7 @@ def nn_company_data(
         ci = row_of[tuple(cohorts.iloc[k][company_cols])]
         li = int(flat["lob_idx"][k])
         x[ci, li] = flat["x"][k]
+        values[ci, li] = flat["values"][k]
         x_obs[ci, li] = flat["x_obs"][k]
         obs[ci, li] = flat["obs_mask"][k]
         premium[ci, li] = flat["premium"][k]
@@ -613,6 +632,7 @@ def nn_company_data(
 
     return {
         "x": x,  # (n_c, L, n_f, n_w, n_d)
+        "values": values,  # (n_c, L, n_f, n_w, n_d) raw amounts, NaN where absent
         "x_obs": x_obs,  # (n_c, L, n_f, n_w, n_d) per-channel usable values
         "obs_mask": obs,  # (n_c, L, n_w, n_d) usable target increments
         "line_mask": line_mask,  # (n_c, L) lines this company writes

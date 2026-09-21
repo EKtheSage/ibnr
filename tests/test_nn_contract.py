@@ -33,7 +33,7 @@ import pandas as pd
 import pytest
 
 from ibnr import Triangle
-from ibnr.kernels.nn_contract import cutoff_masks, nn_data
+from ibnr.kernels.nn_contract import cutoff_masks, nn_company_data, nn_data
 
 from .conftest import make_multiline_triangle, upper_mask
 
@@ -829,3 +829,89 @@ def test_quarterly_origins_on_a_quarterly_dev_grain_are_accepted(backend_name):
     # reach 2019-12-31 sit on cal_idx values that differ by one, as they must when
     # a step down the origin axis is a step along the dev axis
     assert data["cal_idx"][0, 7] == data["cal_idx"][7, 0] == 8
+
+
+def test_values_carries_the_raw_grid(backend_name):
+    """``values`` is the amount the triangle reported, NaN where it has no cell.
+
+    ``x`` is the increment over premium, which is the right input for a network
+    that predicts emergence and the wrong one for a feature builder that needs a
+    cumulative amount at an arbitrary visible cell: summing padded increments
+    back up would invent the amounts at every cell the masks exclude. So the
+    contract carries the raw grid beside the ratios, undifferenced and
+    un-normalized.
+    """
+    cum = np.array([[100.0, 150.0, 175.0], [110.0, 165.0, np.nan], [120.0, np.nan, np.nan]])
+    tri = make_multiline_triangle(
+        backend_name,
+        {"a": cum, "b": cum * 2},
+        premium_by_lob={"a": np.full(3, 1e3), "b": np.full(3, 1e3)},
+        start_year=2010,
+    )
+    c = nn_data(tri, loss_field="paid_loss")
+    assert c["values"].shape == (2, 1, 3, 3)
+    np.testing.assert_array_equal(c["values"][0, 0], cum)  # NaN where absent, equal elsewhere
+    np.testing.assert_array_equal(c["values"][1, 0], cum * 2)
+    # the increment channel is still x: 100, 50, 25 on the first origin over 1000
+    np.testing.assert_allclose(c["x"][0, 0, 0], [0.1, 0.05, 0.025])
+
+    company = nn_company_data(tri, loss_field="paid_loss")
+    assert company["values"].shape == (1, 2, 1, 3, 3)
+    np.testing.assert_array_equal(company["values"][0, 0, 0], cum)
+    np.testing.assert_array_equal(company["values"][0, 1, 0], cum * 2)
+
+
+def test_values_of_a_level_field_is_the_level(backend_name):
+    """On a level channel ``values`` is the snapshot itself, on the same terms.
+
+    ``x`` on a level channel is already undifferenced, so the two agree up to the
+    premium division wherever the cell is present - which is what makes this the
+    check that ``values`` is the RAW grid rather than a copy of whatever ``x``
+    held. An absent cell is NaN in ``values`` and a padding zero in ``x``.
+    """
+    t = _fields_triangle(backend_name, {"paid_loss": CUM, "case_reserve": CASE})
+    data = nn_data(
+        t,
+        loss_field="paid_loss",
+        feature_fields=("case_reserve",),
+        level_fields=("case_reserve",),
+        premium_field="earned_premium",
+    )
+    np.testing.assert_array_equal(data["values"][0, 1], CASE)
+    present = ~np.isnan(CASE)
+    ratio = CASE / PREMIUM["lob_a"][:, None]
+    np.testing.assert_allclose(data["x"][0, 1][present], ratio[present])
+    # and channel 0 is the cumulative paid loss, not the increment x carries
+    np.testing.assert_array_equal(data["values"][0, 0], CUM)
+
+
+def test_values_is_nan_on_a_line_a_company_does_not_write(backend_name):
+    """The company contract pads an absent line with NaN in ``values``.
+
+    Everywhere else the company contract pads with zero, because a zero ratio is
+    what an attention mask multiplies away. ``values`` is in dollars and a zero
+    dollar amount is a real observation, so the padding has to be NaN - which is
+    also what the rest of ``values`` already uses for "no cell here".
+    """
+    cum = np.array([[100.0, 150.0], [110.0, np.nan]])
+    rows = []
+    for company, lobs in (("0001", ("lob_a", "lob_b")), ("0002", ("lob_a",))):
+        for lob in lobs:
+            for w in range(2):
+                for dev in range(2):
+                    if np.isnan(cum[w, dev]):
+                        continue
+                    cell = {
+                        "company_code": company,
+                        "line_of_business": lob,
+                        "origin_period": dt.date(2010 + w, 1, 1),
+                        "dev_lag": 12 * (dev + 1),
+                        "eval_date": dt.date(2010 + w + dev, 12, 31),
+                    }
+                    rows.append({**cell, "field": "paid_loss", "value": float(cum[w, dev])})
+                    rows.append({**cell, "field": "earned_premium", "value": 1000.0})
+    t = Triangle.from_long(pd.DataFrame(rows), measure="cumulative", backend=backend_name)
+    company = nn_company_data(t, loss_field="paid_loss")
+    assert company["line_mask"].tolist() == [[True, True], [True, False]]
+    np.testing.assert_array_equal(company["values"][1, 0, 0], cum)
+    assert np.isnan(company["values"][1, 1, 0]).all()

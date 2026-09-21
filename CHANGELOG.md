@@ -75,6 +75,31 @@ size-stratified rolling-origin residual calibration of a point forecaster
 (`rolling_residuals`, `calibrate`, `calibrated_draws`,
 `leave_one_out_coverage`), re-exported from `ibnr.kernels`.
 
+New gallery entry `tlrn`, the transformer loss reserving network, family `nn`,
+fitted on company cohorts. It reproduces a companion study's R model: one
+training example is a company at one accident year, its tokens are that year's
+(line, development lag) cells, and axial attention runs across lines within a
+lag and across lags within a line. The network does not predict a cell - it
+predicts a positive log development factor per (line, step), and the cells
+follow by projecting each origin's cumulative forward, so setting the factors to
+the chain ladder's reproduces the chain ladder exactly. 14,309 parameters at the
+published shape. Trained under the study's checkpoint protocol: one cutoff drawn
+per epoch, the trailing calendar diagonals held out, ten seeds run for the whole
+schedule and the two that validated best kept with no refit. `point()` gives a
+company's ultimates in the multi-line layout; `predict()` gives its total
+ultimate as historically calibrated draws, which are not a native predictive
+distribution and are at company level only, so the entry takes neither held-out
+mixin. The card discloses both, and that the calibration cutoffs overlap the
+training targets at the earlier ones.
+
+Supporting it: `kernels/nn_features.py` (`tlrn_features`, `pooled_cl_factors`,
+`origin_cl_log_factors`), which builds the study's engineered example tensors -
+eight features from paid alone, thirteen with an incurred channel and a case
+reserve channel - from cells on or before the cutoff and nothing later. And
+`kernels.nn_contract.nn_data`/`nn_company_data` gain one key, `values`: the
+field's raw grid in the units the triangle reported, NaN where absent. Additive;
+no existing consumer reads it.
+
 ## 0.6.0 - 2026-09-15
 
 A new family of estimators and the application that sits on it (#136), plus
