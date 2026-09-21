@@ -79,6 +79,10 @@ EXCLUDE_DIRS = {
     ".venv",
     ".claude",
     "great-docs",
+    # design specs and implementation plans under docs/superpowers: their python
+    # blocks are excerpts and fragments, not samples (pyproject excludes the same
+    # directory from ruff)
+    "superpowers",
     "__pycache__",
     ".ruff_cache",
     ".pytest_cache",
