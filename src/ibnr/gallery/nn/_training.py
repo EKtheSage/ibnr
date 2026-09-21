@@ -40,7 +40,36 @@ from typing import Any
 
 import numpy as np
 
-__all__ = ["train_ensemble"]
+__all__ = ["train_ensemble", "warmup_cosine"]
+
+
+def warmup_cosine(schedule_epochs: int, warmup: int = 20) -> Callable[[int], float]:
+    """Linear warmup then cosine decay to zero, as a multiplier on the base rate.
+
+    The R study's ``learning_rate_multiplier``, ported with its edge cases: a
+    one-epoch schedule still performs one update (multiplier 1 at epoch 1, 0
+    after); the warmup is capped at ``schedule_epochs - 1`` so at least one
+    post-warmup epoch exists; progress past the schedule end is capped at 1, so
+    the multiplier stays at zero rather than rising again. Epochs are 1-based,
+    which is how :func:`train_ensemble` calls it.
+    """
+    if not isinstance(schedule_epochs, int) or schedule_epochs < 1:
+        raise ValueError(f"schedule_epochs must be an int >= 1, got {schedule_epochs!r}")
+    if not isinstance(warmup, int) or warmup < 0:
+        raise ValueError(f"warmup must be an int >= 0, got {warmup!r}")
+
+    def multiplier(epoch: int) -> float:
+        if not isinstance(epoch, int) or epoch < 1:
+            raise ValueError(f"epoch is 1-based and must be >= 1, got {epoch!r}")
+        if schedule_epochs == 1:
+            return float(epoch == 1)
+        w = min(warmup, schedule_epochs - 1)
+        if w > 0 and epoch <= w:
+            return epoch / w
+        progress = min((epoch - w) / (schedule_epochs - w), 1.0)
+        return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+    return multiplier
 
 
 def train_ensemble(

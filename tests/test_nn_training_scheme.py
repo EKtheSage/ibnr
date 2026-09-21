@@ -24,7 +24,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from ibnr.gallery.nn._training import train_ensemble  # noqa: E402
+from ibnr.gallery.nn._training import train_ensemble, warmup_cosine  # noqa: E402
 
 
 def _reference_train_ensemble(
@@ -193,3 +193,33 @@ def test_defaults_reproduce_the_reference_loop_when_early_stopping_fires():
     new = train_ensemble(16, config=config(**cfg), seed=1, **kw)
     _assert_same_fit(ref, new)
     assert len(ref[1][0]) == 3  # epoch 0 improves from inf; epochs 1 and 2 exhaust patience 2
+
+
+def test_warmup_cosine_matches_the_r_learning_rate_multiplier():
+    """Values of learning_rate_multiplier(epoch, schedule_epochs, warmup) from the
+    R study, checked at the corners: linear warmup, the peak, the midpoint, the end."""
+    f = warmup_cosine(100, warmup=20)
+    assert f(1) == pytest.approx(0.05)
+    assert f(20) == pytest.approx(1.0)
+    assert f(60) == pytest.approx(0.5)  # progress 40/80 -> cos(pi/2) = 0
+    assert f(100) == pytest.approx(0.0)
+    assert f(150) == pytest.approx(0.0)  # progress is capped at 1
+
+
+def test_warmup_cosine_edge_cases():
+    one = warmup_cosine(1)
+    assert one(1) == 1.0 and one(2) == 0.0  # a one-epoch run still updates once
+    short = warmup_cosine(5, warmup=20)  # warmup capped at schedule_epochs - 1 = 4
+    assert short(4) == pytest.approx(1.0)
+    assert short(5) == pytest.approx(0.0)
+    none = warmup_cosine(10, warmup=0)
+    assert none(1) == pytest.approx(0.5 * (1 + math.cos(math.pi * 0.1)))
+
+
+def test_warmup_cosine_refusals():
+    with pytest.raises(ValueError, match="schedule_epochs"):
+        warmup_cosine(0)
+    with pytest.raises(ValueError, match="warmup"):
+        warmup_cosine(10, warmup=-1)
+    with pytest.raises(ValueError, match="epoch"):
+        warmup_cosine(10)(0)
