@@ -379,3 +379,45 @@ def test_min_epochs_and_check_every_refusals():
         _flat_run(config(ensemble_size=1, max_epochs=3), min_epochs=4)
     with pytest.raises(ValueError, match="check_every"):
         _flat_run(config(ensemble_size=1), check_every=0)
+
+
+def _recorded_run(cfg, **extra):
+    """Run one member and hand back every batch's cutoffs, in order."""
+    x, y = make_problem(n=16)
+    record: list = []
+    make_model, train_loss, val_loss = loops(x, y, record=record)
+    train_ensemble(
+        16,
+        config=cfg,
+        seed=7,
+        make_model=make_model,
+        train_loss=train_loss,
+        val_loss=val_loss,
+        **COMMON,
+        **extra,
+    )
+    return record
+
+
+def test_per_epoch_cutoffs_are_shared_across_an_epochs_batches():
+    record = _recorded_run(
+        config(ensemble_size=1, batch_size=4, max_epochs=12, patience=100),
+        cutoff_sampling="per_epoch",
+    )
+    per_epoch = [record[i : i + 4] for i in range(0, len(record), 4)]  # 4 batches per epoch
+    assert len(per_epoch) == 12
+    for batches in per_epoch:
+        values = np.concatenate(batches)
+        assert values.min() == values.max()  # one cutoff for the whole epoch
+        assert 2 <= values[0] < 5
+    assert len({int(b[0][0]) for b in per_epoch}) > 1  # and it varies across epochs
+
+
+def test_per_example_cutoffs_vary_within_a_batch_by_default():
+    record = _recorded_run(config(ensemble_size=1, batch_size=8, max_epochs=6, patience=100))
+    assert any(len(np.unique(b)) > 1 for b in record)
+
+
+def test_cutoff_sampling_refusal():
+    with pytest.raises(ValueError, match="cutoff_sampling"):
+        _run(cutoff_sampling="per_batch")

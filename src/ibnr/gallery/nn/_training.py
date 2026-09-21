@@ -40,7 +40,11 @@ from typing import Any
 
 import numpy as np
 
-__all__ = ["train_ensemble", "warmup_cosine"]
+__all__ = ["CUTOFF_SAMPLING", "train_ensemble", "warmup_cosine"]
+
+#: How the augmented cutoff is drawn: one per cohort per batch, or one shared
+#: by every batch of an epoch (the R study's scheme).
+CUTOFF_SAMPLING: tuple[str, ...] = ("per_example", "per_epoch")
 
 
 def warmup_cosine(schedule_epochs: int, warmup: int = 20) -> Callable[[int], float]:
@@ -88,6 +92,7 @@ def train_ensemble(
     param_groups: Callable[[Any], list[dict]] | None = None,
     min_epochs: int = 0,
     check_every: int = 1,
+    cutoff_sampling: str = "per_example",
 ) -> tuple[list, list[list[dict]]]:
     """Train ``config.ensemble_size`` independently-seeded members.
 
@@ -129,6 +134,11 @@ def train_ensemble(
                  the last epoch. ``config.patience`` counts validation checks,
                  which at ``check_every=1`` is the old count in epochs. An
                  epoch that was not validated records ``val = nan``.
+    cutoff_sampling: ``"per_example"`` draws one augmented cutoff per cohort
+                 per batch, which is what the loop did before.
+                 ``"per_epoch"`` draws one cutoff and gives it to every batch
+                 of that epoch, which is how the R study builds its example
+                 set. Both draw from the member's own generator.
 
     Returns ``(models, histories)``: each model in eval mode with its
     best-validation weights restored, and per-member per-epoch
@@ -136,6 +146,10 @@ def train_ensemble(
     """
     import torch
 
+    if cutoff_sampling not in CUTOFF_SAMPLING:
+        raise ValueError(
+            f"cutoff_sampling must be one of {list(CUTOFF_SAMPLING)}, got {cutoff_sampling!r}"
+        )
     if not isinstance(check_every, int) or check_every < 1:
         raise ValueError(f"check_every must be an int >= 1, got {check_every!r}")
     if not isinstance(min_epochs, int) or min_epochs < 0 or min_epochs > config.max_epochs:
@@ -176,16 +190,27 @@ def train_ensemble(
             model.train()
             epoch_loss, n_batches = 0.0, 0
             perm = rng.permutation(n_cohorts)  # shuffle cohorts into batches each epoch
+            # CALENDAR-CUTOFF AUGMENTATION: draw a fake as_of diagonal; the
+            # entry conditions on cells on/before it and scores the observed
+            # training cells strictly after it. Each triangle yields many
+            # "predict the next diagonals" tasks per epoch - the main
+            # small-data multiplier. Under "per_epoch" the whole epoch shares
+            # one diagonal, which costs one integer from the member's stream.
+            epoch_cutoff = (
+                int(rng.integers(min_cutoff, val_cutoff))
+                if cutoff_sampling == "per_epoch"
+                else None
+            )
             for start in range(0, n_cohorts, config.batch_size):
                 idx = torch.tensor(perm[start : start + config.batch_size], device=device)
-                # CALENDAR-CUTOFF AUGMENTATION: draw a fake as_of diagonal per
-                # cohort; the entry conditions on cells on/before it and scores
-                # the observed training cells strictly after it. Each triangle
-                # yields many "predict the next diagonals" tasks per epoch -
-                # the main small-data multiplier.
-                cutoffs = torch.tensor(
-                    rng.integers(min_cutoff, val_cutoff, size=len(idx)), device=device
-                )  # (B,) 1-based conditioning diagonal per cohort
+                if epoch_cutoff is None:
+                    cutoffs = torch.tensor(
+                        rng.integers(min_cutoff, val_cutoff, size=len(idx)), device=device
+                    )  # (B,) 1-based conditioning diagonal per cohort
+                else:
+                    cutoffs = torch.full(
+                        (len(idx),), epoch_cutoff, dtype=torch.long, device=device
+                    )
                 loss = train_loss(model, idx, cutoffs)
                 if loss is None:
                     continue  # this batch's cutoffs left nothing to score
