@@ -93,6 +93,7 @@ def train_ensemble(
     min_epochs: int = 0,
     check_every: int = 1,
     cutoff_sampling: str = "per_example",
+    keep: int | None = None,
 ) -> tuple[list, list[list[dict]]]:
     """Train ``config.ensemble_size`` independently-seeded members.
 
@@ -139,10 +140,16 @@ def train_ensemble(
                  ``"per_epoch"`` draws one cutoff and gives it to every batch
                  of that epoch, which is how the R study builds its example
                  set. Both draw from the member's own generator.
+    keep:        after every member has trained, return only the ``keep``
+                 members with the lowest best validation score, in member
+                 order. ``None`` returns them all, which is the old
+                 behaviour.
 
     Returns ``(models, histories)``: each model in eval mode with its
     best-validation weights restored, and per-member per-epoch
-    ``{"epoch", "train", "val"}`` records.
+    ``{"member", "epoch", "train", "val"}`` records. A member's best
+    validation score is the lowest finite ``val`` in its history, which is
+    what :func:`ibnr.kernels.tuning.validation_score` already reads.
     """
     import torch
 
@@ -155,6 +162,11 @@ def train_ensemble(
     if not isinstance(min_epochs, int) or min_epochs < 0 or min_epochs > config.max_epochs:
         raise ValueError(
             f"min_epochs must be an int in [0, max_epochs={config.max_epochs}], got {min_epochs!r}"
+        )
+    if keep is not None and (not isinstance(keep, int) or not 1 <= keep <= config.ensemble_size):
+        raise ValueError(
+            f"keep must be an int in [1, ensemble_size={config.ensemble_size}] or None, "
+            f"got {keep!r}"
         )
 
     models: list = []
@@ -208,9 +220,7 @@ def train_ensemble(
                         rng.integers(min_cutoff, val_cutoff, size=len(idx)), device=device
                     )  # (B,) 1-based conditioning diagonal per cohort
                 else:
-                    cutoffs = torch.full(
-                        (len(idx),), epoch_cutoff, dtype=torch.long, device=device
-                    )
+                    cutoffs = torch.full((len(idx),), epoch_cutoff, dtype=torch.long, device=device)
                 loss = train_loss(model, idx, cutoffs)
                 if loss is None:
                     continue  # this batch's cutoffs left nothing to score
@@ -229,14 +239,24 @@ def train_ensemble(
             is_last = epoch + 1 == config.max_epochs
             if (epoch + 1) % check_every != 0 and not is_last:
                 history.append(
-                    {"epoch": epoch, "train": epoch_loss / max(n_batches, 1), "val": math.nan}
+                    {
+                        "member": member,
+                        "epoch": epoch,
+                        "train": epoch_loss / max(n_batches, 1),
+                        "val": math.nan,
+                    }
                 )
                 continue
             model.eval()
             with torch.no_grad():
                 epoch_val = float(val_loss(model))
             history.append(
-                {"epoch": epoch, "train": epoch_loss / max(n_batches, 1), "val": epoch_val}
+                {
+                    "member": member,
+                    "epoch": epoch,
+                    "train": epoch_loss / max(n_batches, 1),
+                    "val": epoch_val,
+                }
             )
             if show_progress:
                 print(f"member {member} epoch {epoch}: val {epoch_val:.4f}")
@@ -254,4 +274,16 @@ def train_ensemble(
         model.eval()
         models.append(model)
         histories.append(history)
+    if keep is not None and keep < len(models):
+        # The R study trains ten members and keeps the two that validated best.
+        # Ties go to the lower member index, and the kept members are returned
+        # in member order rather than in score order.
+        def best(history: list[dict]) -> float:
+            finite = [h["val"] for h in history if math.isfinite(h["val"])]
+            return min(finite) if finite else math.inf
+
+        order = sorted(range(len(models)), key=lambda m: (best(histories[m]), m))
+        chosen = sorted(order[:keep])
+        models = [models[m] for m in chosen]
+        histories = [histories[m] for m in chosen]
     return models, histories

@@ -421,3 +421,70 @@ def test_per_example_cutoffs_vary_within_a_batch_by_default():
 def test_cutoff_sampling_refusal():
     with pytest.raises(ValueError, match="cutoff_sampling"):
         _run(cutoff_sampling="per_batch")
+
+
+def _best_val(history):
+    finite = [h["val"] for h in history if math.isfinite(h["val"])]
+    return min(finite) if finite else math.inf
+
+
+def test_keep_selects_the_lowest_validation_members_in_member_order():
+    cfg = dict(ensemble_size=4, max_epochs=5, patience=10)
+    all_models, all_hist = _run(cfg=config(**cfg), seed=11)
+    kept_models, kept_hist = _run(cfg=config(**cfg), seed=11, keep=2)
+    scores = [_best_val(h) for h in all_hist]
+    want = sorted(sorted(range(4), key=lambda m: (scores[m], m))[:2])
+    assert [h[0]["member"] for h in kept_hist] == want
+    assert [h[0]["member"] for h in all_hist] == [0, 1, 2, 3]
+    for kept, m in zip(kept_models, want, strict=True):
+        for k, v in kept.state_dict().items():
+            assert torch.equal(v, all_models[m].state_dict()[k]), (m, k)
+
+
+def _scored_by_member(scores, **extra):
+    """Hand member m the validation score scores[m], so which members win is a
+    property of the test rather than of the data. Every member runs the same
+    number of epochs, so the call count says which member is validating."""
+    x, y = make_problem()
+    calls = [0]
+    epochs = 2
+
+    def scripted_val(model):
+        member = calls[0] // epochs
+        calls[0] += 1
+        return scores[member]
+
+    return train_ensemble(
+        16,
+        config=config(ensemble_size=len(scores), max_epochs=epochs, patience=100),
+        seed=5,
+        **_callbacks(x, y, val_loss=scripted_val),
+        **COMMON,
+        **extra,
+    )
+
+
+def test_keep_returns_the_kept_members_in_member_order_not_score_order():
+    """Members 3 and 1 validate best, in that order; they come back as 1 then 3."""
+    scores = [0.9, 0.2, 0.8, 0.1]
+    _, all_hist = _scored_by_member(scores)
+    assert [_best_val(h) for h in all_hist] == scores
+    kept_models, kept_hist = _scored_by_member(scores, keep=2)
+    assert [h[0]["member"] for h in kept_hist] == [1, 3]
+    assert len(kept_models) == 2
+
+
+def test_keep_breaks_ties_on_the_lower_member_index():
+    _, kept_hist = _scored_by_member([0.5, 0.1, 0.1, 0.5], keep=1)
+    assert [h[0]["member"] for h in kept_hist] == [1]
+
+
+def test_keep_equal_to_ensemble_size_keeps_everything():
+    _assert_same_fit(_run(keep=2), _run())
+
+
+def test_keep_refusals():
+    with pytest.raises(ValueError, match="keep"):
+        _run(keep=3)  # ensemble_size is 2
+    with pytest.raises(ValueError, match="keep"):
+        _run(keep=0)
