@@ -58,6 +58,38 @@ from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.kernels.rng import cohort_stream
 from ibnr.triangle.core import Triangle
 
+#: Smallest reciprocal condition number a matrix may have and still be solved.
+#: R's ``solve()`` refuses anything below its ``tol``, and ``systemfit`` leaves
+#: that tolerance at machine epsilon; the estimator below uses the same number
+#: so that the two implementations fall back on the same transitions.
+SOLVE_TOLERANCE = float(np.finfo(float).eps)
+
+
+def _refuse_singular(mat: np.ndarray, what: str) -> None:
+    """Raise ``LinAlgError`` when ``mat`` is singular to working precision.
+
+    ``numpy.linalg.inv`` and ``numpy.linalg.solve`` only raise when a pivot is
+    exactly zero, so a matrix that is singular in every meaningful sense - a
+    reciprocal condition number of 1e-30 - is inverted quite happily, and the
+    answer is rounding error multiplied by 1e30. R refuses it instead, and this
+    check is what makes the two agree. The comparison is written so that a NaN
+    condition number is refused too.
+
+    Both of the estimator's two solves are checked, as R checks both, and on
+    the Schedule P companies either one alone would catch the same transitions:
+    a singular residual covariance makes the normal matrix built from its
+    inverse ill-conditioned as well. Neither is therefore dead code - they are
+    two chances to catch the same thing, and which one fires depends on the
+    data.
+    """
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+        rcond = 1.0 / np.linalg.cond(mat, 1)
+    if not rcond > SOLVE_TOLERANCE:
+        raise np.linalg.LinAlgError(
+            f"{what} is computationally singular "
+            f"(reciprocal condition number {rcond:.3g}, tolerance {SOLVE_TOLERANCE:.3g})"
+        )
+
 
 @register
 class MCL(GalleryEntry):
@@ -168,8 +200,8 @@ class MCL(GalleryEntry):
             if n > min_obs_mult * n_lob:
                 try:
                     b, sigma, coef_cov = system_estimate(x0, y0)
-                except np.linalg.LinAlgError:
-                    reason = "the system's normal matrix is singular"
+                except np.linalg.LinAlgError as exc:
+                    reason = f"the system could not be solved: {exc}"
                 else:
                     if np.isfinite(b).all():
                         fitted = {
@@ -339,13 +371,21 @@ def system_estimate(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarra
        ``Sigma^-1[k,m] * (X_k' X_m)`` and block ``k`` of the right-hand side is
        ``sum_m Sigma^-1[k,m] * (X_k' y_m)``.
 
+    Both matrices this inverts are refused when they are singular to working
+    precision, by the same rule R applies (see :func:`_refuse_singular`), and
+    the caller then falls back to the diagonal chain ladder. That is not a
+    detail: a line whose paid loss has stopped developing has an exactly zero
+    residual in every origin, which makes the residual covariance singular, and
+    it happens on 6 of the 82 Schedule P companies this entry ties out against.
+    Inverting such a matrix anyway succeeds numerically and returns coefficients
+    of the wrong order - on one of those companies it turned a reserve of 2600
+    into 558.
+
     Returns ``(B (K, K), sigma (K, K), coef_cov (K*K, K*K))``. ``B[k, l]`` is
     equation ``k``'s coefficient on line ``l``; ``coef_cov`` is row-major over
     ``(k, l)``, matching ``B.reshape(-1)``. ``sigma`` is the covariance of the
     GLS residuals under the same ``n - K`` denominator - it is what the draws
-    use and it does not move the point estimate. Raises ``LinAlgError`` when
-    either the residual covariance or the normal matrix is singular; the caller
-    falls back to the diagonal chain ladder.
+    use and it does not move the point estimate.
     """
     n_lob, n = x.shape
     root = np.sqrt(x)  # (K, n)
@@ -358,6 +398,7 @@ def system_estimate(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarra
     resid = yw - np.einsum("knl,kl->kn", xw, beta_ols)  # (K, n)
     # step 2: uncentred residual covariance, geomean denominator = n - K here
     sigma_ols = (resid @ resid.T) / (n - n_lob)  # (K, K)
+    _refuse_singular(sigma_ols, "the residual covariance")
     sig_inv = np.linalg.inv(sigma_ols)  # (K, K)
 
     # step 3: one GLS solve, assembled block by block from the Kronecker structure
@@ -370,6 +411,7 @@ def system_estimate(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarra
                 xw[k].T @ xw[m]
             )
             rhs[k * n_lob : (k + 1) * n_lob] += sig_inv[k, m] * (xw[k].T @ yw[m])
+    _refuse_singular(a, "the system's normal matrix")
     b = np.linalg.solve(a, rhs).reshape(n_lob, n_lob)  # (K, K)
     coef_cov = np.linalg.inv(a)  # (K^2, K^2)
 

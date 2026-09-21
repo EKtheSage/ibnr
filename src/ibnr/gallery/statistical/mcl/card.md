@@ -42,6 +42,26 @@ ties out to the reference R implementation (`model.py:system_estimate`):
 `coef_cov` is `(X' Omega^-1 X)^-1`, row-major over `(equation, line)`, and is
 what parameter risk draws from.
 
+Only step 3 reaches the point estimate. Multiplying the residual covariance by
+a constant divides the normal matrix and its right-hand side by the same
+constant, so the coefficients do not move - the `geomean` denominator changes
+`coef_cov`, and therefore the width of the predictive distribution, and nothing
+else. The tie-out below cannot see it; the unit test in `tests/test_mcl.py`
+that solves a two-line system by hand can, and does.
+
+### A matrix that is singular to working precision
+
+Both of the solves above refuse a matrix whose reciprocal condition number is
+below machine epsilon, which is the rule R's `solve` applies and the tolerance
+`systemfit` leaves it at. This is not a nicety. A line whose paid loss has
+stopped developing has an exactly zero residual in every origin, so the
+residual covariance has a zero row and column; `numpy` inverts such a matrix
+happily unless a pivot is exactly zero, and the coefficients that come back are
+rounding error multiplied by 1e30 - finite, plausibly sized and wrong. Six of
+the 82 companies in the tie-out below have such a line, and before the check
+they were the only six that did not tie out. On one of them the reserve came
+out at 558 against the reference's 2600.
+
 ### When a transition is a system, and when it is not
 
 A full `B_d` costs `K^2` coefficients where a diagonal one costs `K`. So a
@@ -106,6 +126,33 @@ lines' coefficients. This is narrower than `sur`, which refuses any
 non-positive cumulative: `sur` has no cross-line coefficient with which to
 carry such a cell, and a zero latest diagonal would leave its whole origin at
 zero.
+
+## Tie-out
+
+`tests/test_mcl_tieout.py` refits the companion study's R replay: 93 multi-line
+Schedule P companies at 31 December 2007, accident years 1998 to 2007, paid
+loss, publish `20260613_041006`. The reserve compared is ultimate minus the
+latest observed cumulative, summed over lines. The R company tables are
+vendored at `tests/data/tlrn_study_company_reserves.csv` and
+`tests/data/tlrn_study_pairs.csv`; `tests/data/README.md` says how they were
+produced.
+
+On the 82 companies where every R method returned a finite number, `mcl`
+reproduces the R reserve to 1.3e-12 relative at worst (1.1e-06 in USD
+thousands), against a tolerance of 1e-6 relative. `mack` is checked in the same
+test and reproduces the same study's chain ladder to 8.6e-15 relative; it is
+the control, because the two implementations have to agree on the data and on
+the reserve definition before agreeing on the harder estimator means anything.
+
+The other 11 companies are the ones the R chain ladder could not score, on a
+line with a zero or negative paid cell. This entry refuses all 11 by name, for
+the same reason, and the test asserts the refusals rather than skipping them.
+
+Two conventions had to be matched before the 82 agreed, and both are recorded
+above: the singular-matrix rule, which accounts for 6 of them, and the scope of
+the positivity refusal, which accounts for 2 more. The third possible
+difference, the residual covariance's denominator, turns out not to reach the
+point estimate at all.
 
 ## Limitations
 

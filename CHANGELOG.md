@@ -17,6 +17,34 @@ corrected decision 8.)
 
 ## Unreleased
 
+New gallery entry `mcl` (family `statistical`): the full-matrix multivariate
+chain ladder, Zhang's (2010) general form, where each line's next cumulative is
+regressed on every line's current cumulative rather than only on its own.
+`sur`, its sibling, is the special case where that coefficient matrix is
+diagonal. Each development transition is one system, estimated in a single
+feasible-GLS step with the R `systemfit` conventions - per-equation OLS, an
+uncentred residual covariance with the geomean denominator, and Mack's
+weighting applied per equation by its own line's current cumulative. A
+transition with no more origin pairs than twice the line count, and one whose
+matrices are singular to working precision, falls back to the diagonal
+volume-weighted chain ladder; `transitions_[d]["method"]` and
+`fallback_reason` say which happened and why. `point()` is the vector
+recursion and `predict()` simulates it with parameter risk and correlated
+process risk, as `sur` does.
+
+The entry's point reserves tie out to the companion study's R implementation on
+82 Schedule P companies at 31 December 2007, to 1.3e-12 relative at worst, and
+`mack`'s tie out to the same study's chain ladder to 8.6e-15. The company
+tables that replay produced are vendored at `tests/data/`, and
+`tests/test_mcl_tieout.py` (marker `mart`) is the comparison. On the 11
+companies the R chain ladder could not score, this package refuses the fit by
+name for the same reason the R run failed: a paid cumulative at or below zero
+on a cell a development transition divides by.
+
+`nearest_pd` and `mack_tail_variance` moved out of the `sur` entry into
+`kernels.multiline`, with `EIG_FLOOR`, so the two entries share one copy. `sur`
+keeps the underscored spellings as module aliases.
+
 The appendix data behind the published conventional examples is now carried in
 the repository at `analysis/data/balona_richman_2020_appendix.json`, transcribed
 from the freely distributed 14 August 2020 manuscript, so the benchmark fetches

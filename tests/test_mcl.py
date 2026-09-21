@@ -142,6 +142,40 @@ def test_fallback_rule_by_transition_and_min_obs_mult(backend_name):
     assert boundary.transitions_[2]["method"] == "system"
 
 
+def test_a_line_that_has_stopped_developing_sends_its_transition_to_the_fallback(
+    backend_name,
+):
+    """A singular residual covariance falls back instead of being inverted.
+
+    When one line's cumulative is unchanged across a transition, that
+    equation's residuals are exactly zero, so the residual covariance has a
+    zero row and column and cannot be inverted. ``numpy`` inverts it anyway
+    unless a pivot is exactly zero, and then the coefficients are rounding
+    error multiplied by 1e30 - finite, plausibly sized and wrong. R's
+    ``solve`` refuses the matrix on its condition number, which is why the
+    estimator checks the same thing.
+
+    This is not a contrived case. Six of the 82 Schedule P companies in
+    tests/test_mcl_tieout.py have a line that has finished paying, and before
+    this check they were the only six that did not tie out; on one of them the
+    company reserve came out at 558 against the reference's 2600.
+    """
+    rng = np.random.default_rng(21)
+    cum = simulate_cl_square(rng, n_w=8, rho=0.3, factors=SQUARE_FACTORS[:7])
+    cum[0, :, 3] = cum[0, :, 2]  # line 0 pays nothing between dev steps 3 and 4
+    tri, cutoff = upper_triangle(backend_name, cum)
+    entry = MCL().fit(tri, as_of=cutoff)
+    degenerate = entry.transitions_[2]
+    assert degenerate["method"] == "volume_weighted"
+    assert "singular" in degenerate["fallback_reason"]
+    # the neighbouring transitions are unaffected, so this is the covariance
+    # and not the whole fit falling over
+    assert [t["method"] for t in entry.transitions_[:2]] == ["system", "system"]
+    # and the fallback is the chain ladder: line 0 keeps its cumulative
+    np.testing.assert_allclose(np.diag(degenerate["B"]), [1.0, np.diag(degenerate["B"])[1]])
+    assert np.isfinite(entry.point()["point"]).all()
+
+
 def test_point_layout_and_recursion(backend_name):
     """``point()`` is the vector recursion in the shared multiline layout."""
     rng = np.random.default_rng(3)
