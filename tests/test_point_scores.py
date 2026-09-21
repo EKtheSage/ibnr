@@ -14,7 +14,14 @@ import pandas as pd
 import pytest
 
 from ibnr import Triangle, gallery
-from ibnr.kernels.point_scores import level_errors, point_metrics, reserve_rows, shrink_toward
+from ibnr.kernels.point_scores import (
+    level_errors,
+    point_metrics,
+    point_summary,
+    reserve_rows,
+    shrink_toward,
+)
+from ibnr.kernels.predictive import PredictiveDistribution
 
 from .conftest import make_cohort_triangle, make_multiline_triangle
 
@@ -308,3 +315,81 @@ def test_reserve_rows_refusals(backend_name):
         reserve_rows(
             NoPoint(), tri, as_of=AS_OF, loss_field="paid_loss", premium_field=None, point="native"
         )
+
+
+def _three_target_prediction(samples=((10.0, 20.0, 30.0), (12.0, 22.0, 34.0))):
+    """Two origins and their total, the layout every entry's ``predict`` returns."""
+    return PredictiveDistribution(
+        samples=np.asarray(samples, dtype=float),
+        targets=pd.DataFrame({"label": ["2010", "2011", "total"]}),
+    )
+
+
+def test_point_summary_excludes_the_total_row_and_missing_outcomes():
+    out = point_summary(_three_target_prediction(), [11.0, np.nan, 32.0])
+    errors = out["errors"]
+    assert list(errors["label"]) == ["2010", "2011", "total"]
+    np.testing.assert_allclose(errors["estimate"], [11.0, 21.0, 32.0])
+    np.testing.assert_allclose(errors["error"], [0.0, np.nan, 0.0])
+    np.testing.assert_allclose(errors["pct_error"], [0.0, np.nan, 0.0])
+    assert out["excluded"] == {
+        "total": 1,
+        "missing_outcome": 1,
+        "missing_estimate": 0,
+        "non_positive_actual": 0,
+    }
+    assert out["metrics"]["n"] == 1
+    assert out["metrics"]["pool_ape"] == pytest.approx(0.0)
+
+
+def test_point_summary_with_nothing_scorable_reports_none():
+    pred = PredictiveDistribution(
+        samples=np.array([[1.0], [3.0]]), targets=pd.DataFrame({"label": ["total"]})
+    )
+    out = point_summary(pred, [2.0])
+    assert out["metrics"] is None
+    assert out["excluded"]["total"] == 1
+    assert out["excluded"]["missing_outcome"] == 0
+
+
+def test_point_summary_reports_no_metrics_on_a_cohort_whose_outcomes_sum_to_zero():
+    """Pool_APE divides by the sum of the outcomes, so a cohort that developed to
+    nothing has no ratio to report. evaluate() must say so rather than raise."""
+    out = point_summary(_three_target_prediction(), [0.0, 0.0, 0.0])
+    assert out["metrics"] is None
+    assert out["excluded"]["non_positive_actual"] == 1
+    # the per-target errors are still there; only the ratio is unavailable
+    np.testing.assert_allclose(out["errors"]["error"], [11.0, 21.0, 32.0])
+
+
+def test_point_summary_reports_no_metrics_when_a_draw_is_missing():
+    """A never-converged fit can carry missing draws, and their mean is missing
+    too. Scoring the rest would put this cohort on fewer targets than its
+    neighbours, so the metrics go away and the count says how many."""
+    out = point_summary(
+        _three_target_prediction(((10.0, np.nan, 30.0), (12.0, 22.0, 34.0))),
+        [11.0, 21.0, 32.0],
+    )
+    assert out["metrics"] is None
+    assert out["excluded"]["missing_estimate"] == 1
+    assert np.isnan(out["errors"]["error"].iloc[1])
+
+
+def test_point_summary_refuses_outcomes_of_the_wrong_length():
+    with pytest.raises(ValueError, match="observed must have shape"):
+        point_summary(_three_target_prediction(), [1.0, 2.0])
+
+
+def test_evaluate_carries_the_point_block(backend_name):
+    tri = make_cohort_triangle(backend_name, SQUARE, start_year=2010)
+    entry = gallery.fit("mack", tri, loss_field="paid_loss", as_of=AS_OF)
+    outcome = entry.realized_ultimates(tri)
+    scored = entry.evaluate(outcome)
+    assert set(scored) == {"summary", "percentiles", "crps", "point"}
+    point = scored["point"]
+    assert len(point["errors"]) == len(scored["summary"])
+    # three origins are written at as_of; the total row is excluded
+    assert point["metrics"]["n"] == 3
+    np.testing.assert_allclose(
+        point["errors"]["estimate"], scored["summary"]["estimate"], rtol=1e-12
+    )

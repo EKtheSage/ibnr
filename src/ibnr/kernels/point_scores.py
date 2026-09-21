@@ -35,7 +35,7 @@ from collections.abc import Sequence
 import numpy as np
 import pandas as pd
 
-__all__ = ["level_errors", "point_metrics", "reserve_rows", "shrink_toward"]
+__all__ = ["level_errors", "point_metrics", "point_summary", "reserve_rows", "shrink_toward"]
 
 #: what ``reserve_rows`` may read a cohort's predicted ultimate from.
 POINT_SOURCES: tuple[str, ...] = ("draw_mean", "native")
@@ -124,6 +124,59 @@ def shrink_toward(point, baseline, alpha: float) -> np.ndarray:
     if not (np.isfinite(p).all() and np.isfinite(b).all()):
         raise ValueError("point and baseline must be finite; a non-finite entry cannot be blended")
     return b + alpha * (p - b)
+
+
+def point_summary(pred, observed) -> dict:
+    """Point errors of a ``PredictiveDistribution``'s draw means against outcomes.
+
+    ``errors`` has one row per target: the target metadata plus ``estimate``
+    (the draw mean), ``outcome``, ``error`` and ``pct_error`` (missing where the
+    outcome is missing or zero).
+
+    ``metrics`` is :func:`point_metrics` over the scorable targets - those whose
+    ``label`` is not ``"total"`` (the total is the sum of the others and would
+    count every error twice) and whose outcome is a finite number. It is
+    ``None`` when the cohort cannot be scored at all, which happens three ways:
+    no scorable target, a scorable target whose draw mean is not finite (a fit
+    with missing draws; scoring the rest would put this cohort on fewer targets
+    than its neighbours), and scorable outcomes summing to zero or less
+    (``pool_ape`` divides by that sum). ``excluded`` counts each reason, so a
+    caller reading ``None`` can tell which one it was without re-deriving it.
+    """
+    obs = np.asarray(observed, dtype=float).reshape(-1)
+    if obs.shape != (pred.n_targets,):
+        raise ValueError(f"observed must have shape ({pred.n_targets},), got {obs.shape}")
+    estimate = pred.mean()
+    errors = pred.targets.copy()
+    errors["estimate"] = estimate
+    errors["outcome"] = obs
+    errors["error"] = estimate - obs
+    with np.errstate(divide="ignore", invalid="ignore"):
+        errors["pct_error"] = np.where(obs != 0, (estimate - obs) / obs, np.nan)
+    is_total = (
+        errors["label"].astype(str).to_numpy() == "total"
+        if "label" in errors.columns
+        else np.zeros(len(errors), dtype=bool)
+    )
+    missing = ~np.isfinite(obs)
+    scorable = ~is_total & ~missing
+    no_estimate = int((~np.isfinite(estimate[scorable])).sum())
+    non_positive = int(bool(scorable.any()) and float(obs[scorable].sum()) <= 0)
+    metrics = (
+        point_metrics(estimate[scorable], obs[scorable])
+        if scorable.any() and not no_estimate and not non_positive
+        else None
+    )
+    return {
+        "errors": errors,
+        "metrics": metrics,
+        "excluded": {
+            "total": int(is_total.sum()),
+            "missing_outcome": int(missing.sum()),
+            "missing_estimate": no_estimate,
+            "non_positive_actual": non_positive,
+        },
+    }
 
 
 def _cohort_triangle(triangle, cohort: dict):

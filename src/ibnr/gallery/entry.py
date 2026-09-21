@@ -32,6 +32,7 @@ import numpy as np
 
 from ibnr.kernels.densities import MEASURES, to_amount_scale
 from ibnr.kernels.holdout import CellIndex, HoldoutCells, index_into, training_index
+from ibnr.kernels.point_scores import point_summary
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.kernels.rng import heldout_stream
 from ibnr.kernels.scores import crps
@@ -164,8 +165,12 @@ class GalleryEntry(ABC):
         """Score realized outcomes against the predictive distribution.
 
         Default implementation (kernels-backed): the Meyers-style summary
-        table plus the outcome percentile of each target. Richer harnesses
-        (ELPD, stacking) extend this in kernels, not in entries.
+        table, the outcome percentile of each target, the CRPS of each target,
+        and the point errors of the draw means
+        (:func:`ibnr.kernels.point_scores.point_summary`: the error and percent
+        error of each target, plus the point metrics over the targets that are
+        not the total). Richer harnesses (ELPD, stacking) extend this in
+        kernels, not in entries.
 
         ``segment`` is passed straight to :meth:`predict`, so it selects exactly
         the same cohort here as there. Without it a pooled fit could only ever be
@@ -178,6 +183,7 @@ class GalleryEntry(ABC):
             "summary": table,
             "percentiles": pred.cdf(obs) * 100.0,
             "crps": crps(pred.samples, obs),
+            "point": point_summary(pred, obs),
         }
 
     @classmethod
