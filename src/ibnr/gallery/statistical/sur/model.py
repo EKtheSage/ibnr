@@ -38,16 +38,22 @@ from ibnr.gallery.registry import register
 from ibnr.kernels.multiline import (
     assemble_predictive,
     flatten_with_totals,
+    mack_tail_variance,
     multiline_data,
     multiline_targets,
+    nearest_pd,
     realized_multiline,
 )
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.kernels.rng import cohort_stream
 from ibnr.triangle.core import Triangle
 
-#: smallest eigenvalue allowed in any estimated covariance (PD floor)
-EIG_FLOOR = 1e-10
+# The covariance repair and Mack's variance tail rule live in
+# ``kernels.multiline`` so that ``mcl``, this entry's full-matrix sibling, runs
+# the same code rather than a second copy of it. The underscored names stay as
+# module aliases, because they are how this module has always spelled them.
+_nearest_pd = nearest_pd
+_mack_tail_variance = mack_tail_variance
 
 
 @register
@@ -390,32 +396,3 @@ def _fgls(
     resid = yw - np.einsum("knp,kp->kn", xw, beta)
     sigma = _nearest_pd((resid @ resid.T) / max(n - p, 1))
     return beta, sigma, np.linalg.inv(a)
-
-
-def _mack_tail_variance(done: list[dict]) -> np.ndarray:
-    """Mack's tail rule per line: sigma^2_d = min(sigma^4_{d-1}/sigma^2_{d-2},
-    sigma^2_{d-1}, sigma^2_{d-2}), from the two most recent fitted transitions.
-
-    Returns a (K,) variance vector; used only when a transition has no residual
-    df of its own (the ``tail`` branch of ``_fallback``).
-    """
-    variances = [np.diag(tr["sigma"]) for tr in done]  # each (K,) diag of a fitted cov
-    if not variances:
-        raise ValueError("cannot apply the variance tail rule with no earlier transitions")
-    if len(variances) == 1:
-        return variances[-1]
-    v1, v2 = variances[-1], variances[-2]  # d-1, d-2
-    with np.errstate(divide="ignore", invalid="ignore"):
-        ratio = np.where(v2 > 0, v1**2 / v2, v1)
-    return np.minimum(np.minimum(ratio, v1), v2)
-
-
-def _nearest_pd(mat: np.ndarray) -> np.ndarray:
-    """Symmetrize and floor the eigenvalues so downstream Cholesky factors
-    exist. Floored dimensions bias correlations toward zero - documented."""
-    sym = (mat + mat.T) / 2.0
-    vals, vecs = np.linalg.eigh(sym)
-    if vals.min() >= EIG_FLOOR:
-        return sym
-    scale = max(np.abs(vals).max(), 1.0)
-    return (vecs * np.maximum(vals, EIG_FLOOR * scale)) @ vecs.T
