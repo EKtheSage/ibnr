@@ -346,10 +346,14 @@ NAMED_TEST_ENTRIES = {
     "clark",  # parameter count vs cells, after the curve MLE
 }
 
-#: covered end to end elsewhere rather than here: mack's failed refit is
-#: asserted straight through ``predict_at`` (cohort A's draws stay
-#: bit-identical, cohort B's cells are refused as the wrong cohort)
-COVERED_ELSEWHERE = {"mack": "tests/test_mack_heldout.py"}
+#: covered elsewhere rather than here: mack's failed refit is asserted straight
+#: through ``predict_at`` (cohort A's draws stay bit-identical, cohort B's cells
+#: are refused as the wrong cohort), and mcl's sits with the rest of that
+#: entry's tests because its refusal needs the simulated square they all build
+COVERED_ELSEWHERE = {
+    "mack": "tests/test_mack_heldout.py",
+    "mcl": "tests/test_mcl.py",
+}
 
 
 def test_every_registered_entry_is_covered():
