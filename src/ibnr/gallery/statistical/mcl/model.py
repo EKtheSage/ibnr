@@ -29,7 +29,7 @@ says so.
 Cross-refs: card.md; ``kernels.multiline`` (the shared one-company/many-LOB data
 contract, target layout and PredictiveDistribution assembly - this entry never
 grows its own data prep); ``gallery/statistical/sur`` (the diagonal sibling);
-Zhang (2010), *A general multivariate framework for predicting reserves*;
+Zhang (2010), *A general multivariate chain ladder model*;
 Henningsen and Hamann (2007), *systemfit: A Package for Estimating Systems of
 Simultaneous Equations in R*, Journal of Statistical Software 23(4), whose
 defaults the estimator below reproduces.
@@ -196,7 +196,9 @@ class MCL(GalleryEntry):
         transitions: list[dict] = []
         for tr in prepared:
             n, x0, y0 = tr["n"], tr["x0"], tr["y0"]
-            fitted = None
+            # `fitted` stays None until the system has produced usable
+            # coefficients; `reason` is what the fallback records instead.
+            fitted, reason = None, ""
             if n > min_obs_mult * n_lob:
                 try:
                     b, sigma, coef_cov = system_estimate(x0, y0)
@@ -261,8 +263,9 @@ class MCL(GalleryEntry):
         cum = c["cum"]
         ults = np.empty((n_lob, n_w))
         for w in range(n_w):
-            state = cum[:, w, self._latest_dev(w)]  # (K,) all lines at that origin's latest dev
-            for d in range(self._latest_dev(w), n_d - 1):
+            d0 = self._latest_dev(w)
+            state = cum[:, w, d0]  # (K,) every line at that origin's latest dev step
+            for d in range(d0, n_d - 1):
                 state = self.transitions_[d]["B"] @ state
             ults[:, w] = state
         return ults

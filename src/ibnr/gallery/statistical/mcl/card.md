@@ -1,10 +1,10 @@
 # mcl - the full-matrix multivariate chain ladder
 
 **Family:** statistical (frequentist stochastic; simulation-based predictive)
-**Provenance:** Zhang (2010), *A general multivariate framework for predicting
-reserves*, in its general form: every line's next cumulative is regressed on
-every line's current cumulative. `sur` is the special case where that
-coefficient matrix is diagonal.
+**Provenance:** Zhang (2010), *A general multivariate chain ladder model*, in
+its general form: every line's next cumulative is regressed on every line's
+current cumulative. `sur` is the special case where that coefficient matrix is
+diagonal.
 
 ## Model
 
