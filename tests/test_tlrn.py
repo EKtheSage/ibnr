@@ -25,6 +25,8 @@ output.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -32,10 +34,12 @@ torch = pytest.importorskip("torch")
 
 from ibnr.gallery.nn.tlrn import head as tlrn_head  # noqa: E402
 from ibnr.gallery.nn.tlrn.config import TLRNConfig  # noqa: E402
+from ibnr.gallery.nn.tlrn.model import TLRN as TLRNEntry  # noqa: E402
+from ibnr.gallery.nn.tlrn.model import _refuse_overlap  # noqa: E402
 from ibnr.gallery.nn.tlrn.network import TLRNNetwork  # noqa: E402
 from ibnr.kernels.nn_features import pooled_cl_factors  # noqa: E402
 
-from .test_nn_features import company_contract, study_arrays  # noqa: E402
+from .test_nn_features import company_contract, study_arrays, study_triangle  # noqa: E402
 
 
 def cfg(**overrides) -> TLRNConfig:
@@ -403,3 +407,286 @@ def tlrn_features_at(contract: dict, cutoff: int) -> dict:
         incurred_field="incurred_loss",
         case_field="case_reserve",
     )
+
+
+# -- the entry ---------------------------------------------------------------------
+
+
+def tiny() -> TLRNConfig:
+    """The smallest config that still runs every step of the protocol.
+
+    Three training cutoffs, two validation diagonals, two members of which one
+    is kept, and a calibration over three cutoffs - the fixture's ``c_max`` is
+    6, so the horizons are 3, 2 and 1. Nothing here asserts predictive quality.
+    """
+    return TLRNConfig(
+        d_model=8,
+        n_heads=1,
+        n_layers=1,
+        dropout=0.0,
+        max_epochs=3,
+        min_epochs=0,
+        check_every=1,
+        patience=5,
+        batch_size=8,
+        ensemble_size=2,
+        keep=1,
+        min_cutoff=2,
+        val_diagonals=2,
+        calibration_cutoffs=(3, 4, 5),
+        calibration_horizons=(1, 2, 3),
+        n_strata=1,
+        min_per_stratum=3,
+        n_draws=50,
+        warmup=1,
+    )
+
+
+AS_OF = "2005-12-31"  # the fixture's full square, sliced to a run-off triangle
+
+
+def fit_tiny(backend_name, arrays=None, *, seed=0, incurred=False, **kwargs):
+    roles = {"incurred_field": "incurred_loss", "case_field": "case_reserve"} if incurred else {}
+    return TLRNEntry().fit(
+        study_triangle(backend_name, arrays),
+        loss_field="paid_loss",
+        as_of=AS_OF,
+        config=tiny(),
+        seed=seed,
+        **roles,
+        **kwargs,
+    )
+
+
+def test_fit_selection_and_history(backend_name):
+    """Every trained member is reported; only the kept ones survive as models."""
+    entry = fit_tiny(backend_name)
+    table = entry.selection_
+    assert len(table) == 2
+    assert list(table.columns) == [
+        "member",
+        "best_epoch",
+        "epochs_run",
+        "validation_ay_line_ape",
+        "validation_company_ape",
+        "kept",
+    ]
+    assert int(table["kept"].sum()) == 1
+    # the kept member is the one with the lowest held-out accident-year/line
+    # error, which is the score the selection is made on
+    best = table.sort_values(["validation_ay_line_ape", "member"]).iloc[0]["member"]
+    assert int(table.loc[table["kept"], "member"].iloc[0]) == int(best)
+    assert len(entry.models_) == len(entry.history_) == 1
+    assert (table["epochs_run"] == 3).all()
+    assert table["validation_company_ape"].notna().all()
+    # the factor support covers 2 lines x 5 development steps
+    assert entry.factor_support_.shape == (2, 5)
+
+
+def test_point_layout_and_reserve_identity(backend_name):
+    """The multi-line layout for one company, the flat panel for none."""
+    entry = fit_tiny(backend_name)
+    company = entry.cohorts()[0]
+    one = entry.point(company)
+    assert len(one) == 2 * 6 + 2 + 1  # per (line, origin), per-line totals, grand total
+    assert one["label"].iloc[-1] == "total"
+    assert list(one["label"][12:14]) == ["lob_a/total", "lob_b/total"]
+    per_lob = one.loc[one["label"].str.endswith("/total"), "point"].sum()
+    assert one["point"].iloc[-1] == pytest.approx(per_lob)
+
+    every = entry.point()
+    assert len(every) == 3 * 2 * 6
+    assert "label" not in every.columns
+    assert set(every.columns) >= {"company_code", "line_of_business", "origin_period", "point"}
+
+    # the ultimate is the cumulative paid to date plus the projected reserve
+    written = entry.contract_["line_mask"][:, :, None]
+    np.testing.assert_allclose(
+        np.where(written, entry.point_ultimates_ - entry.contract_["latest_cum"], 0.0),
+        np.where(written, entry.point_reserves_, 0.0),
+    )
+    assert np.isnan(entry.point_ultimates_[~entry.contract_["line_mask"]]).all()
+
+
+def test_the_cumulative_grid_holds_the_observed_cells(backend_name):
+    """``point_cumulative_`` is the triangle where it is observed and the
+    projection where it is not, so a caller can read the next diagonal off it."""
+    arrays = study_arrays()
+    entry = fit_tiny(backend_name, arrays)
+    c_max, n_d = 6, 6
+    for ci in range(3):
+        for li in range(2):
+            for w in range(6):
+                lk = max(min(c_max - w, n_d), 1)
+                np.testing.assert_allclose(
+                    entry.point_cumulative_[ci, li, w, :lk], arrays["paid"][ci, li, w, :lk]
+                )
+                if lk < n_d:
+                    # the projection grows, so the first projected cell minus the
+                    # anchor is the next calendar diagonal's point
+                    assert (
+                        entry.point_cumulative_[ci, li, w, lk] > arrays["paid"][ci, li, w, lk - 1]
+                    )
+    reserve = entry.point_cumulative_[:, :, :, -1] - entry.contract_["latest_cum"]
+    written = entry.contract_["line_mask"][:, :, None]
+    np.testing.assert_allclose(
+        np.where(written, reserve, 0.0), np.where(written, entry.point_reserves_, 0.0), rtol=1e-5
+    )
+
+
+def test_predict_is_calibrated_draws_around_the_point(backend_name):
+    """One target per company, drawn from the kept checkpoints' own history."""
+    entry = fit_tiny(backend_name)
+    company = entry.cohorts()[0]
+    pred = entry.predict(company, seed=3)
+    assert pred.samples.shape == (50, 1)
+    assert list(pred.targets["label"]) == ["total"]
+
+    # EVERY pool is centred on its own median, which is what makes the draws a
+    # spread around the point rather than a spread around the point shifted by
+    # however biased this model happened to be historically. Checked on the
+    # pools themselves: on a small stratum the median of fifty resampled draws
+    # is too blunt to tell a centred pool from an uncentred one.
+    for pool in entry.calibration_.pools:
+        assert np.median(pool) == pytest.approx(0.0, abs=1e-12)
+    point = entry.company_reserves()[0] + entry.company_anchors()[0]
+    assert np.median(pred.samples) == pytest.approx(point, rel=0.2)
+
+    again = entry.predict(company, seed=3)
+    np.testing.assert_array_equal(pred.samples, again.samples)
+    assert not np.array_equal(entry.predict(company, seed=4).samples, pred.samples)
+
+    every = entry.predict(seed=3)
+    assert every.samples.shape == (50, 3)
+    # one company drawn alone is the same company's column of the whole panel
+    np.testing.assert_array_equal(every.samples[:, [0]], pred.samples)
+
+    # and the same spread can be put around any other reserve vector
+    other = entry.predict_reserve_draws(entry.company_reserves() * 1.5, seed=3)
+    assert other.shape == (50, 3)
+    assert np.median(other[:, 0]) > np.median(pred.samples) - entry.company_anchors()[0]
+
+
+def test_realized_ultimates_align(backend_name):
+    """One number per company, read from the FULL triangle at the last lag."""
+    arrays = study_arrays()
+    full = study_triangle(backend_name, arrays)
+    entry = fit_tiny(backend_name, arrays)
+    company = entry.cohorts()[0]
+
+    one = entry.realized_ultimates(full, company)
+    assert one.shape == (1,)
+    assert one[0] == pytest.approx(arrays["paid"][0, :, :, -1].sum())
+    every = entry.realized_ultimates(full)
+    assert every.shape == (3,)
+    np.testing.assert_allclose(every, arrays["paid"][:, :, :, -1].sum(axis=(1, 2)))
+
+    scores = entry.evaluate(one, company)
+    assert set(scores) == {"summary", "percentiles", "crps"}
+    assert len(scores["percentiles"]) == 1
+
+
+def test_seed_determinism(backend_name):
+    """Two fits under one seed give the same point; a different seed does not."""
+    arrays = study_arrays()
+    same = [fit_tiny(backend_name, arrays, seed=5).point_ultimates_ for _ in range(2)]
+    np.testing.assert_array_equal(same[0], same[1])
+    other = fit_tiny(backend_name, arrays, seed=6).point_ultimates_
+    assert not np.array_equal(same[0], other)
+
+
+def test_thirteen_feature_form(backend_name):
+    """Naming both roles widens the input projection; naming one is refused."""
+    paid_only = fit_tiny(backend_name)
+    assert paid_only.models_[0].inp.in_features == 8
+    both = fit_tiny(backend_name, incurred=True)
+    assert both.models_[0].inp.in_features == 13
+    assert both.feature_stats_["n_feat"] == 13
+
+    with pytest.raises(ValueError, match="both"):
+        TLRNEntry().fit(
+            study_triangle(backend_name),
+            loss_field="paid_loss",
+            incurred_field="incurred_loss",
+            as_of=AS_OF,
+            config=tiny(),
+        )
+
+
+def test_config_refusals():
+    with pytest.raises(ValueError, match="keep"):
+        TLRNConfig(keep=3, ensemble_size=2)
+    with pytest.raises(ValueError, match="val_diagonals"):
+        TLRNConfig(val_diagonals=0)
+    with pytest.raises(ValueError, match="patience"):
+        TLRNConfig(patience=0)
+    with pytest.raises(ValueError, match="check_every"):
+        TLRNConfig(check_every=0)
+    with pytest.raises(ValueError, match="min_epochs"):
+        TLRNConfig(min_epochs=10, max_epochs=5)
+    with pytest.raises(ValueError, match="tail_policy"):
+        TLRNConfig(tail_policy="guess")
+    with pytest.raises(ValueError, match="cutoff_sampling"):
+        TLRNConfig(cutoff_sampling="per_cell")
+    with pytest.raises(ValueError, match="n_heads"):
+        TLRNConfig(d_model=8, n_heads=3)
+
+
+def test_fit_refusals(backend_name):
+    """A calibration cutoff the triangle cannot score, and no room to train."""
+    t = study_triangle(backend_name)
+    with pytest.raises(ValueError, match="calibration cutoff"):
+        TLRNEntry().fit(
+            t,
+            loss_field="paid_loss",
+            as_of=AS_OF,
+            config=replace(tiny(), calibration_cutoffs=(9,)),
+        )
+    with pytest.raises(ValueError, match="training cutoffs"):
+        TLRNEntry().fit(
+            t, loss_field="paid_loss", as_of=AS_OF, config=replace(tiny(), min_cutoff=4)
+        )
+
+
+def test_no_leak_through_the_entry(backend_name):
+    """Nothing past the valuation date reaches the fit, and the last visible
+    diagonal does.
+
+    The first half is the leak check: move every cell the ``as_of`` slice drops
+    and the point must be bit-identical. The second half is what makes the first
+    half a test rather than a statement that the model ignores its data - move
+    the last diagonal the fit DOES see and the point must change.
+    """
+    arrays = study_arrays()
+    base = fit_tiny(backend_name, arrays, seed=2).point_ultimates_
+
+    hidden = {k: v.copy() for k, v in arrays.items()}
+    for w in range(6):
+        for d in range(6):
+            if w + d + 1 > 6:  # past the valuation date, dropped by as_of
+                for key in ("paid", "incurred", "case"):
+                    hidden[key][:, :, w, d] = hidden[key][:, :, w, d] * 1.37 + 0.123
+    np.testing.assert_array_equal(base, fit_tiny(backend_name, hidden, seed=2).point_ultimates_)
+
+    visible = {k: v.copy() for k, v in arrays.items()}
+    for w in range(6):
+        d = 5 - w  # the latest visible diagonal
+        for key in ("paid", "incurred", "case"):
+            visible[key][:, :, w, d] = visible[key][:, :, w, d] * 1.37 + 0.123
+    assert not np.array_equal(base, fit_tiny(backend_name, visible, seed=2).point_ultimates_)
+
+
+def test_training_and_validation_targets_cannot_share_a_cell():
+    """The guard `fit` runs on its own windows, on hand-made masks.
+
+    Validation picks which member is kept, so a cell scored in both windows
+    makes that choice on data every member trained on. The check is on the masks
+    rather than on the arithmetic that built them, because the arithmetic is
+    what a change here gets wrong.
+    """
+    trained = np.array([[1.0, 1.0, 0.0, 0.0]])
+    apart = np.array([[0.0, 0.0, 1.0, 1.0]])
+    _refuse_overlap([trained], [apart])  # disjoint: nothing to say
+    _refuse_overlap([], [apart])  # a fit with no validation set at all
+    with pytest.raises(ValueError, match="both a training target and a validation target"):
+        _refuse_overlap([trained], [np.array([[0.0, 1.0, 1.0, 0.0]])])

@@ -20,5 +20,6 @@ subprocess-tested by ``tests/test_import_purity.py`` and ``tests/test_gallery.py
 """
 
 from ibnr.gallery.nn.tlrn.config import TLRNConfig
+from ibnr.gallery.nn.tlrn.model import TLRN
 
-__all__ = ["TLRNConfig"]
+__all__ = ["TLRN", "TLRNConfig"]
