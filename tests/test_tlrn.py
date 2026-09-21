@@ -28,6 +28,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 import numpy as np
+import pandas as pd
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -445,9 +446,10 @@ def tiny() -> TLRNConfig:
 AS_OF = "2005-12-31"  # the fixture's full square, sliced to a run-off triangle
 
 
-def fit_tiny(backend_name, arrays=None, *, seed=0, incurred=False, **kwargs):
+def fit_tiny(backend_name, arrays=None, *, seed=0, incurred=False, entry=None, **kwargs):
+    """``entry`` refits an existing instance, which the atomicity test needs."""
     roles = {"incurred_field": "incurred_loss", "case_field": "case_reserve"} if incurred else {}
-    return TLRNEntry().fit(
+    return (entry or TLRNEntry()).fit(
         study_triangle(backend_name, arrays),
         loss_field="paid_loss",
         as_of=AS_OF,
@@ -690,3 +692,64 @@ def test_training_and_validation_targets_cannot_share_a_cell():
     _refuse_overlap([], [apart])  # a fit with no validation set at all
     with pytest.raises(ValueError, match="both a training target and a validation target"):
         _refuse_overlap([trained], [np.array([[0.0, 1.0, 1.0, 0.0]])])
+
+
+def test_a_fully_developed_triangle_reserves_nothing(backend_name):
+    """Every cell observed means nothing left to forecast, and that is an answer.
+
+    The fixture's full square is such a triangle: fitted without an ``as_of``
+    its latest diagonal is the last one, so the final scoring window is empty,
+    the reserve is zero and the ultimate is what has already been paid. Refusing
+    it would make this the only entry that cannot read a run-off triangle that
+    has finished running off.
+    """
+    arrays = study_arrays()
+    entry = TLRNEntry().fit(
+        study_triangle(backend_name, arrays),
+        loss_field="paid_loss",
+        config=replace(tiny(), calibration_cutoffs=(6, 7, 8), calibration_horizons=(3, 4, 5)),
+        seed=0,
+    )
+    written = entry.contract_["line_mask"][:, :, None]
+    np.testing.assert_allclose(np.where(written, entry.point_reserves_, 0.0), 0.0)
+    np.testing.assert_allclose(
+        np.where(written, entry.point_ultimates_, 0.0),
+        np.where(written, arrays["paid"][:, :, :, -1], 0.0),
+    )
+    np.testing.assert_allclose(entry.company_reserves(), 0.0)
+
+
+def test_a_failed_refit_leaves_the_previous_fit_intact(backend_name, monkeypatch):
+    """``fit`` is atomic: a fit that raises must not half-replace the last one.
+
+    The shared parametrized check in ``tests/test_fit_atomicity.py`` stubs the
+    trainer with sentinel objects, which works for an entry that stores what
+    training returned and stops. This one computes its point, its selection
+    table and its calibration from the trained members, so the stub cannot
+    stand in for them and the claim is asserted against a real fit here.
+    """
+    arrays = study_arrays()
+    entry = fit_tiny(backend_name, arrays, seed=1)
+    before = {
+        "point": entry.point_ultimates_.copy(),
+        "selection": entry.selection_.copy(),
+        "models": entry.models_,
+        "contract": entry.contract_,
+        "calibration": entry.calibration_,
+        "size": entry.company_size_.copy(),
+    }
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("ibnr.gallery.nn.tlrn.model.train_ensemble", boom)
+    moved = {k: v * 3.0 for k, v in arrays.items()}
+    with pytest.raises(RuntimeError, match="boom"):
+        fit_tiny(backend_name, moved, seed=1, entry=entry)
+
+    np.testing.assert_array_equal(entry.point_ultimates_, before["point"])
+    pd.testing.assert_frame_equal(entry.selection_, before["selection"])
+    assert entry.models_ is before["models"]
+    assert entry.contract_ is before["contract"]
+    assert entry.calibration_ is before["calibration"]
+    np.testing.assert_array_equal(entry.company_size_, before["size"])

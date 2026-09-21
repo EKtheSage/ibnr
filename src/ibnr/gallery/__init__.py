@@ -61,6 +61,7 @@ from ibnr.gallery.nn import deeptriangle as _nn_deeptriangle  # noqa: F401
 from ibnr.gallery.nn import mdn as _nn_mdn  # noqa: F401
 from ibnr.gallery.nn import nn_paid_case as _nn_paid_case  # noqa: F401
 from ibnr.gallery.nn import resnet as _nn_resnet  # noqa: F401
+from ibnr.gallery.nn import tlrn as _nn_tlrn  # noqa: F401
 from ibnr.gallery.nn import transformer as _nn_transformer  # noqa: F401
 from ibnr.gallery.nn import transformer_ml as _nn_transformer_ml  # noqa: F401
 

@@ -385,14 +385,16 @@ jobs:
             forbid_skips: ""
             allow_skips: ""
             strict_skips: "false"
-            required_files: "tests/test_deeptriangle.py;tests/test_mdn.py;tests/test_nn_heldout.py;tests/test_nn_heldout_cutoff.py;tests/test_nn_heldout_premium.py;tests/test_nn_segment_contract.py;tests/test_nn_training_context.py;tests/test_nn_transformer.py;tests/test_nn_transformer_ml.py;tests/test_resnet.py"
+            required_files: "tests/test_deeptriangle.py;tests/test_mdn.py;tests/test_nn_features.py;tests/test_nn_heldout.py;tests/test_nn_heldout_cutoff.py;tests/test_nn_heldout_premium.py;tests/test_nn_segment_contract.py;tests/test_nn_training_context.py;tests/test_nn_transformer.py;tests/test_nn_transformer_ml.py;tests/test_resnet.py;tests/test_tlrn.py"
             # measured one base earlier (core 553 there): 690 passed, 253
             # skipped - +137 over core, still smaller than the number of tests
-            # in those ten files,
+            # in those files,
             # because this leg has no polars and many of them are parametrized
             # over both backends. The +137 is up from +97 when this leg landed:
             # the two NN fixes this branch rebased onto brought 614 lines of new
-            # tests with them.
+            # tests with them. The floor keeps a cushion and is not raised for
+            # the two tlrn files; their required_files entries are what hold
+            # them, and a floor is the blunter of the two checks.
             min_tests: "590"
 
           # ---------------------------------------------------------------
@@ -505,7 +507,7 @@ jobs:
             forbid_skips: ""
             allow_skips: "gold mart;cmdstan"
             strict_skips: "true"
-            required_files: "tests/test_transforms.py;tests/test_deeptriangle.py;tests/test_mdn.py;tests/test_resnet.py;tests/test_nn_heldout.py;tests/test_stacking.py;tests/test_tieout_chainladder.py;tests/test_clark.py;tests/test_interop_bermuda.py;tests/test_polars_extra.py;tests/test_import_purity.py;tests/test_codec.py"
+            required_files: "tests/test_transforms.py;tests/test_deeptriangle.py;tests/test_mdn.py;tests/test_resnet.py;tests/test_nn_heldout.py;tests/test_tlrn.py;tests/test_stacking.py;tests/test_tieout_chainladder.py;tests/test_clark.py;tests/test_interop_bermuda.py;tests/test_polars_extra.py;tests/test_import_purity.py;tests/test_codec.py"
             # measured one base earlier: 968 passed, 7 skipped - and the 7 are
             # the allowlisted gold-mart skips above, re-counted rather than
             # assumed. The 7 is the part that must not drift; the total is the

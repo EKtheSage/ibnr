@@ -403,10 +403,15 @@ def tlrn_features(
             "the cutoff is an input, so scoring it would score the network on what it was "
             "shown"
         )
-    if not target_lo <= target_hi <= last:
+    # target_hi == target_lo - 1 is the EMPTY window, and it is a real state
+    # rather than a mistake: a triangle with every cell observed has nothing past
+    # its cutoff to forecast, so the scoring mask is all zero and the reserve is
+    # zero. Anything more inverted than that is a swapped pair of arguments.
+    if not target_lo - 1 <= target_hi <= last:
         raise ValueError(
-            f"target_hi {target_hi} must be at least target_lo {target_lo} and at most "
-            f"{last}, this triangle's last calendar diagonal"
+            f"target_hi {target_hi} must be at least target_lo - 1 = {target_lo - 1} and at "
+            f"most {last}, this triangle's last calendar diagonal. target_lo - 1 exactly "
+            "means an empty scoring window, which is what a fully developed triangle has"
         )
 
     x_obs = np.asarray(contract["x_obs"], dtype=bool)

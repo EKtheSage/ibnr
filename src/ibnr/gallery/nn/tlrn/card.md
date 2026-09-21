@@ -170,7 +170,7 @@ reserve vector, which is what the study's blended point needs.
 ## Evaluate flow
 
 ```python
-from ibnr import Triangle, gallery
+from ibnr import gallery
 
 entry = gallery.get("tlrn")().fit(triangle, loss_field="paid_loss", as_of="2007-12-31")
 company = entry.cohorts()[0]

@@ -572,9 +572,29 @@ def test_the_cutoff_and_the_scoring_window_are_checked(backend_name):
     with pytest.raises(ValueError, match="target_lo"):
         build(contract, 4, 4, 6)
     with pytest.raises(ValueError, match="target_hi"):
-        build(contract, 4, 5, 4)
+        build(contract, 4, 5, 3)  # inverted by more than one: a swapped pair
     with pytest.raises(ValueError, match="target_hi"):
         build(contract, 4, 5, 12)
+
+
+def test_an_empty_scoring_window_is_legal_and_scores_nothing(backend_name):
+    """A fully developed triangle has nothing past its cutoff to forecast.
+
+    ``target_hi == target_lo - 1`` says exactly that, and it is a state a real
+    triangle reaches rather than a swapped pair of arguments, so the mask comes
+    back all zero instead of the call being refused. Everything else about the
+    example tensors is unchanged, which is what lets a caller build its final
+    set the same way whatever the triangle's shape.
+    """
+    contract = company_contract(backend_name)
+    last = contract["n_w"] + contract["n_d"] - 1
+    empty = build(contract, last, last + 1, last)
+    assert empty["target_mask"].sum() == 0.0
+    assert empty["n_dropped"] == 0
+    # every origin is fully developed at this cutoff, so nothing projects
+    np.testing.assert_array_equal(empty["lk"], contract["n_d"])
+    assert empty["has_history"].all()
+    assert empty["feat"].shape == build(contract, 4, 5, 6)["feat"].shape
 
 
 def test_a_hole_inside_the_visible_region_is_refused(backend_name):

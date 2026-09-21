@@ -79,6 +79,8 @@ NEEDS_NN_EXTRA = frozenset(
         "ibnr.gallery.nn.nn_paid_case.network_gru",
         "ibnr.gallery.nn.nn_paid_case.network_transformer",
         "ibnr.gallery.nn.resnet.network",
+        "ibnr.gallery.nn.tlrn.head",
+        "ibnr.gallery.nn.tlrn.network",
         "ibnr.gallery.nn.transformer.network",
         "ibnr.gallery.nn.transformer_ml.network",
     }

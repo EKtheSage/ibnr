@@ -349,10 +349,17 @@ NAMED_TEST_ENTRIES = {
 #: covered elsewhere rather than here: mack's failed refit is asserted straight
 #: through ``predict_at`` (cohort A's draws stay bit-identical, cohort B's cells
 #: are refused as the wrong cohort), and mcl's sits with the rest of that
-#: entry's tests because its refusal needs the simulated square they all build
+#: entry's tests because its refusal needs the simulated square they all build.
+#:
+#: ``tlrn`` is here for a third reason: the stub above hands the entry two
+#: sentinel strings in place of the trained members, and every other NN entry
+#: stores them and stops, while this one computes its point, its selection table
+#: and its calibration FROM the members. So the stub cannot stand in for a
+#: trained fit here, and the same claim is asserted against a real one instead.
 COVERED_ELSEWHERE = {
     "mack": "tests/test_mack_heldout.py",
     "mcl": "tests/test_mcl.py",
+    "tlrn": "tests/test_tlrn.py",
 }
 
 

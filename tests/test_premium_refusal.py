@@ -155,6 +155,7 @@ RAISER = {name: "nn_data" for name in ("deeptriangle", "mdn", "resnet")}
 RAISER["nn_transformer"] = "nn_data"
 RAISER["nn_transformer_ml"] = "nn_data"
 RAISER["nn_paid_case"] = "nn_data"
+RAISER["tlrn"] = "nn_data"
 
 
 def _assert_names_the_requirement(message: str, name: str) -> None:

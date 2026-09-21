@@ -101,6 +101,10 @@ ACCEPTS_NONE: dict[str, frozenset[str]] = {
     "nn_paid_case": frozenset(),
     "nn_transformer": frozenset(),
     "nn_transformer_ml": frozenset(),
+    # its two extra channels are spelled incurred_field/case_field, which are
+    # outside SWEPT_PARAMS for the same reason nn_paid_case's are: they name a
+    # ROLE rather than the loss basis. Premium is required, in nn_data.
+    "tlrn": frozenset(),
     "resnet": frozenset(),
     "sur": frozenset(),
 }
