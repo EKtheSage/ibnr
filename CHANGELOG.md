@@ -25,6 +25,17 @@ paper directly - Caesar Balona and Ronald Richman, "The Actuary and IBNR
 Techniques: A Machine Learning Approach", https://ssrn.com/abstract=3697256 -
 rather than a copy hosted elsewhere.
 
+New: point-error metrics. `kernels/point_scores.py` implements `point_metrics`
+(Pool_APE, Pool_PE, MAE, RMSE, wRMSE, MAPE, MedAPE, prop_over), `level_errors`
+(sum within a named level before the absolute value), `shrink_toward` (a point
+pulled toward a baseline) and `reserve_rows` (predicted against actual reserve
+per cohort for any fitted entry, from the draw mean or a native point).
+`GalleryEntry.evaluate()` gains a `point` key carrying the per-target error and
+those metrics over the targets that are not the total. `mack` gains `point()`,
+the deterministic ultimates in `predict()`'s target order. `reserve_rows` is
+exported from `ibnr.gallery`; the metrics themselves stay on `ibnr.kernels`,
+because they consume the table and never touch an entry.
+
 ## 0.6.0 - 2026-09-15
 
 A new family of estimators and the application that sits on it (#136), plus

@@ -393,11 +393,28 @@ def test_entry_exposes_both_cdr_routes(backend_name):
     assert total == pytest.approx(np.sqrt(analytic.msep_total), rel=0.1)
 
 
+def test_entry_point_is_the_chain_ladder_ultimate(backend_name):
+    """``point()`` is the deterministic answer the draws are simulated around:
+    the ultimate column of Mack's own summary, total row included, under
+    ``predict()``'s labels. Nothing is sampled, so two calls agree exactly."""
+    from ibnr import gallery
+
+    tri = make_cohort_triangle(backend_name, full_square(), start_year=2010)
+    entry = gallery.fit("mack", tri, loss_field="paid_loss", as_of="2015-12-31")
+    frame = entry.point()
+    np.testing.assert_allclose(frame["point"].to_numpy(), entry.summary()["ultimate"].to_numpy())
+    pd.testing.assert_frame_equal(frame, entry.point())
+    with pytest.raises(KeyError, match="unknown segment column"):
+        entry.point({"line_of_business": "wkcomp"})
+
+
 def test_entry_requires_fit_first():
     from ibnr.gallery.deterministic.mack.model import Mack
 
     with pytest.raises(RuntimeError, match="call fit"):
         Mack().one_year_cdr()
+    with pytest.raises(RuntimeError, match="call fit"):
+        Mack().point()
 
 
 # -- tie-out to chainladder-python -------------------------------------------
