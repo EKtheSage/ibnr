@@ -65,6 +65,13 @@ from ibnr.kernels.forecast import (
 from ibnr.kernels.holdout import HoldoutCells, next_diagonal
 from ibnr.kernels.mack import MackFit, fit_mack, simulate_ultimates
 from ibnr.kernels.parity import ParityReport, compare_posteriors
+from ibnr.kernels.point_scores import (
+    level_errors,
+    point_metrics,
+    point_summary,
+    reserve_rows,
+    shrink_toward,
+)
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.kernels.replay import ConventionalReplay, replay_conventional
 from ibnr.kernels.selection import (
@@ -107,13 +114,18 @@ __all__ = [
     "from_arrow",
     "get_cdr_method",
     "leaderboard",
+    "level_errors",
     "next_diagonal",
     "one_year_cdr",
     "peek_kind",
+    "point_metrics",
+    "point_summary",
     "replay_conventional",
     "rereserve",
+    "reserve_rows",
     "score_replay",
     "select_conventional",
+    "shrink_toward",
     "simulate_one_year_cdr",
     "simulate_ultimates",
     "to_amount_scale",

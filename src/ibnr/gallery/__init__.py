@@ -23,6 +23,12 @@ name from ``kernels.cdr.cdr_methods()`` the way ``"mack"`` can, precisely
 because it carries a fitted entry, so if it were not exported here there would
 be no short way to write it down at all.
 
+``reserve_rows`` (0.7.0) joins on the first clause: it is the call a caller
+makes to get from fitted entries to a published point board - the company
+reserve table that ``kernels.point_metrics`` scores. ``point_metrics`` and
+``level_errors`` stay on ``ibnr.kernels``: they consume that table and never
+touch an entry.
+
 Deliberately NOT here: ``ForecastPanel`` and ``HoldoutCells`` (returned, never
 constructed), ``logmeanexp`` / ``resolve_field`` / ``CAPABILITIES`` /
 ``ABSENCE_REASONS`` / ``index_into`` / ``CellIndex`` (implementation seams the
@@ -68,6 +74,7 @@ from ibnr.kernels.forecast import (
     leaderboard,
 )
 from ibnr.kernels.holdout import next_diagonal
+from ibnr.kernels.point_scores import reserve_rows
 from ibnr.kernels.stacking import stack
 
 get = _registry.get
@@ -91,5 +98,6 @@ __all__ = [
     "leaderboard",
     "list",
     "next_diagonal",
+    "reserve_rows",
     "stack",
 ]

@@ -144,6 +144,7 @@ reference:
       - gallery.Absence
       - gallery.align_panel
       - gallery.leaderboard
+      - gallery.reserve_rows
       - gallery.SCORE_DIRECTION
       - gallery.stack
 
@@ -196,13 +197,20 @@ reference:
 
   - title: Evaluation kernels
     desc: >
-      The unifying predictive-distribution output type and the cross-backend
-      posterior-parity tooling.
+      The unifying predictive-distribution output type, the cross-backend
+      posterior-parity tooling, and the point-error metrics - which take the
+      level errors are summed within as an argument, because summing before
+      the absolute value is where one line's overestimate cancels another's
+      underestimate.
     contents:
       - name: kernels.PredictiveDistribution
         members: true
       - kernels.ParityReport
       - kernels.compare_posteriors
+      - kernels.point_metrics
+      - kernels.level_errors
+      - kernels.shrink_toward
+      - kernels.point_summary
 
   - title: Wire format
     desc: >

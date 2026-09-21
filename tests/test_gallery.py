@@ -112,6 +112,7 @@ EXPECTED_EXPORTS = {
     "leaderboard",
     "list",
     "next_diagonal",
+    "reserve_rows",
     "stack",
 }
 
@@ -135,6 +136,11 @@ def test_gallery_exports_the_whole_leaderboard_pipeline():
     clause - a fitted entry to a one-year CDR rather than to a board row. It has
     to be here: ``kernels.cdr`` cannot hand it out by name the way it hands out
     ``"mack"``, because it carries a fitted entry.
+
+    ``reserve_rows`` (0.7.0) joins on the first clause: it is the call from
+    fitted entries to a published point board. The metrics that score that
+    board stay on ``ibnr.kernels``, because they consume the table and never
+    touch an entry.
     """
     assert set(gallery.__all__) == EXPECTED_EXPORTS
 
@@ -146,9 +152,9 @@ def test_every_export_is_the_kernels_object_itself(name):
     ``leaderboard`` reading a different ``SCORE_DIRECTION`` than the caller
     sorted by would be invisible until the board ranked backwards.
     """
-    from ibnr.kernels import forecast, holdout, stacking
+    from ibnr.kernels import forecast, holdout, point_scores, stacking
 
-    modules = [m for m in (forecast, holdout, stacking) if hasattr(m, name)]
+    modules = [m for m in (forecast, holdout, point_scores, stacking) if hasattr(m, name)]
     assert modules, (
         f"{name} is in EXPECTED_EXPORTS but lives in no kernels module; if the gallery "
         "now defines it, add it to GALLERY_OWN_EXPORTS deliberately"
@@ -162,9 +168,9 @@ def test_the_gallerys_own_exports_are_not_kernels_re_exports(name):
     silently become a kernels re-export - that would mean ``kernels`` had grown
     an import of something in the gallery, or the two had diverged into a copy
     each."""
-    from ibnr.kernels import cdr, forecast, holdout, stacking
+    from ibnr.kernels import cdr, forecast, holdout, point_scores, stacking
 
-    assert not any(hasattr(m, name) for m in (cdr, forecast, holdout, stacking))
+    assert not any(hasattr(m, name) for m in (cdr, forecast, holdout, point_scores, stacking))
 
 
 def test_kernels_never_imports_the_gallery():
