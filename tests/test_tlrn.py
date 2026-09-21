@@ -486,7 +486,7 @@ def test_fit_selection_and_history(backend_name):
 
 
 def test_point_layout_and_reserve_identity(backend_name):
-    """The multi-line layout for one company, the flat panel for none."""
+    """The multi-line layout for one company, every (company, line, origin) for none."""
     entry = fit_tiny(backend_name)
     company = entry.cohorts()[0]
     one = entry.point(company)
@@ -560,7 +560,7 @@ def test_predict_is_calibrated_draws_around_the_point(backend_name):
 
     every = entry.predict(seed=3)
     assert every.samples.shape == (50, 3)
-    # one company drawn alone is the same company's column of the whole panel
+    # one company drawn alone is the same company's column when every company is drawn
     np.testing.assert_array_equal(every.samples[:, [0]], pred.samples)
 
     # and the same spread can be put around any other reserve vector
