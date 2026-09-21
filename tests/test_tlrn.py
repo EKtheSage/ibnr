@@ -583,9 +583,30 @@ def test_realized_ultimates_align(backend_name):
     assert every.shape == (3,)
     np.testing.assert_allclose(every, arrays["paid"][:, :, :, -1].sum(axis=(1, 2)))
 
+    # the base class's four blocks, point errors included
     scores = entry.evaluate(one, company)
-    assert set(scores) == {"summary", "percentiles", "crps"}
+    assert set(scores) == {"summary", "percentiles", "crps", "point"}
     assert len(scores["percentiles"]) == 1
+    errors = scores["point"]["errors"]
+    assert len(errors) == 1
+    assert float(errors["outcome"].iloc[0]) == pytest.approx(one[0])
+    # the estimate is the DRAW MEAN, which is unseeded here, so the row is
+    # checked for internal consistency and for sitting near the entry's own
+    # deterministic point rather than against a second unseeded draw
+    assert float(errors["error"].iloc[0]) == pytest.approx(
+        float(errors["estimate"].iloc[0]) - float(errors["outcome"].iloc[0])
+    )
+    point = entry.company_reserves()[0] + entry.company_anchors()[0]
+    assert float(errors["estimate"].iloc[0]) == pytest.approx(point, rel=0.2)
+    # This entry's ONLY target is the company total, and the point metrics drop
+    # a target labelled "total" because it is otherwise the sum of the others
+    # counted twice. So there is nothing left to compute them on, and the block
+    # says which exclusion emptied it rather than reporting a number built from
+    # one row. The cross-model point board reaches this entry through
+    # reserve_rows(point="native"), which reads the native point rather than
+    # this per-target table.
+    assert scores["point"]["metrics"] is None
+    assert scores["point"]["excluded"]["total"] == 1
 
 
 def test_seed_determinism(backend_name):

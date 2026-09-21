@@ -183,6 +183,16 @@ uncertainty the method never claimed.
 `predict_reserve_draws` puts the same calibrated spread around any company
 reserve vector, which is what the study's blended point needs.
 
+One thing to know before reading `evaluate()`'s point block. Its only target is
+labelled `"total"`, and `kernels.point_scores.point_summary` drops a target with
+that label, because on a multi-line layout the total is the sum of the others
+and scoring it too would count every error twice. So `point["errors"]` carries
+the company's one row while `point["metrics"]` is `None`, with
+`point["excluded"]["total"]` saying which exclusion emptied it. That is the
+right answer for a per-target table; the cross-model point board reaches this
+entry through `reserve_rows(point="native")`, which reads the deterministic
+point rather than this table.
+
 ## Evaluate flow
 
 ```python
