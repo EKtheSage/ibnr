@@ -86,6 +86,8 @@ def train_ensemble(
     show_progress: bool = False,
     schedule: Callable[[int], float] | None = None,
     param_groups: Callable[[Any], list[dict]] | None = None,
+    min_epochs: int = 0,
+    check_every: int = 1,
 ) -> tuple[list, list[list[dict]]]:
     """Train ``config.ensemble_size`` independently-seeded members.
 
@@ -121,12 +123,25 @@ def train_ensemble(
                  to carry its own ``lr``. ``None`` is one group over
                  ``model.parameters()`` at ``config.lr``. A group without an
                  ``lr`` inherits ``config.lr``.
+    min_epochs:  early stopping cannot end a member before this many epochs
+                 have run. 0 is the old behaviour.
+    check_every: run the validation pass every this many epochs, and always on
+                 the last epoch. ``config.patience`` counts validation checks,
+                 which at ``check_every=1`` is the old count in epochs. An
+                 epoch that was not validated records ``val = nan``.
 
     Returns ``(models, histories)``: each model in eval mode with its
     best-validation weights restored, and per-member per-epoch
     ``{"epoch", "train", "val"}`` records.
     """
     import torch
+
+    if not isinstance(check_every, int) or check_every < 1:
+        raise ValueError(f"check_every must be an int >= 1, got {check_every!r}")
+    if not isinstance(min_epochs, int) or min_epochs < 0 or min_epochs > config.max_epochs:
+        raise ValueError(
+            f"min_epochs must be an int in [0, max_epochs={config.max_epochs}], got {min_epochs!r}"
+        )
 
     models: list = []
     histories: list[list[dict]] = []
@@ -184,6 +199,14 @@ def train_ensemble(
             # validation: condition on the whole training window (cutoff =
             # val_cutoff), score NLL on the held-out trailing diagonal(s).
             # This is the eval_date-style split, not a random cell holdout.
+            # Epochs between two checks record a NaN val, which
+            # kernels.tuning.validation_score already skips.
+            is_last = epoch + 1 == config.max_epochs
+            if (epoch + 1) % check_every != 0 and not is_last:
+                history.append(
+                    {"epoch": epoch, "train": epoch_loss / max(n_batches, 1), "val": math.nan}
+                )
+                continue
             model.eval()
             with torch.no_grad():
                 epoch_val = float(val_loss(model))
@@ -193,13 +216,13 @@ def train_ensemble(
             if show_progress:
                 print(f"member {member} epoch {epoch}: val {epoch_val:.4f}")
             # early stopping: snapshot best-val weights, stop after
-            # `patience` epochs without improvement, then restore the best.
+            # `patience` checks without improvement, then restore the best.
             if epoch_val < best_val - 1e-6:
                 best_val, patience_left = epoch_val, config.patience
                 best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
             else:
                 patience_left -= 1
-                if patience_left <= 0:
+                if patience_left <= 0 and epoch + 1 >= min_epochs:
                     break
         if best_state is not None:
             model.load_state_dict(best_state)  # restore best-val weights

@@ -295,3 +295,87 @@ def test_schedule_refusals():
         _run(schedule=lambda epoch: -0.5)
     with pytest.raises(ValueError, match="schedule"):
         _run(schedule=lambda epoch: float("nan"))
+
+
+def _flat_run(cfg, **extra):
+    """A validation loss that never improves, so early stopping decides the length."""
+    x, y = make_problem()
+    return train_ensemble(
+        16,
+        config=cfg,
+        seed=1,
+        **_callbacks(x, y, val_loss=lambda model: 1.0),
+        **COMMON,
+        **extra,
+    )
+
+
+def test_min_epochs_holds_early_stopping_back():
+    """Patience 1 with a flat validation loss would stop after epoch 2 (0-based
+    epoch 1); min_epochs=5 keeps training through epoch 5."""
+    _, hist = _flat_run(config(ensemble_size=1, patience=1, max_epochs=8))
+    assert len(hist[0]) == 2
+    _, hist = _flat_run(config(ensemble_size=1, patience=1, max_epochs=8), min_epochs=5)
+    assert len(hist[0]) == 5
+
+
+def test_check_every_validates_on_multiples_and_on_the_last_epoch():
+    calls = []
+
+    def counting_val(model):
+        calls.append(len(calls))
+        return 1.0
+
+    x, y = make_problem()
+    _, hist = train_ensemble(
+        16,
+        config=config(ensemble_size=1, patience=100, max_epochs=7),
+        seed=1,
+        **_callbacks(x, y, val_loss=counting_val),
+        **COMMON,
+        check_every=3,
+    )
+    assert len(calls) == 3  # epochs 3, 6 and the last (7), 1-based
+    vals = [h["val"] for h in hist[0]]
+    assert [math.isfinite(v) for v in vals] == [False, False, True, False, False, True, True]
+    assert all(math.isfinite(h["train"]) for h in hist[0])  # training ran on every epoch
+
+
+def test_patience_counts_checks_not_epochs():
+    """check_every=2 and patience=2: the flat loss stops after the third check
+    (epoch 6, 1-based) rather than after three epochs."""
+    _, hist = _flat_run(config(ensemble_size=1, patience=2, max_epochs=20), check_every=2)
+    assert len(hist[0]) == 6
+
+
+def test_best_weights_are_restored_from_a_validated_epoch_only():
+    """With check_every=2 the restored state is the best CHECKED epoch's, even if an
+    unchecked epoch would have scored better."""
+    x, y = make_problem()
+    _, _, real_val = loops(x, y)
+    seen = []
+
+    def spy_val(model):
+        seen.append({k: v.clone() for k, v in model.state_dict().items()})
+        return real_val(model)
+
+    models, hist = train_ensemble(
+        16,
+        config=config(ensemble_size=1, patience=100, max_epochs=6),
+        seed=2,
+        **_callbacks(x, y, val_loss=spy_val),
+        **COMMON,
+        check_every=2,
+    )
+    checked = [h["val"] for h in hist[0] if math.isfinite(h["val"])]
+    assert len(checked) == 3 < len(hist[0])
+    best = int(np.argmin(checked))
+    for k, v in models[0].state_dict().items():
+        assert torch.equal(v, seen[best][k]), k
+
+
+def test_min_epochs_and_check_every_refusals():
+    with pytest.raises(ValueError, match="min_epochs"):
+        _flat_run(config(ensemble_size=1, max_epochs=3), min_epochs=4)
+    with pytest.raises(ValueError, match="check_every"):
+        _flat_run(config(ensemble_size=1), check_every=0)
