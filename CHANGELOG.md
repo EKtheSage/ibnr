@@ -15,7 +15,34 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
-## Unreleased
+## 0.7.0 - 2026-09-22
+
+The pieces a companion transformer reserving study needed before it could run
+through `ibnr.gallery` end to end (#139, #140, #141, #143, #145), plus the citation
+fix for the conventional examples (#138). Design and plans:
+`docs/superpowers/specs/2026-09-20-tlrn-mcl-point-scores-design.md`.
+
+New: `tlrn`, the transformer loss reserving network of that study, reproduced
+from its R implementation - company x accident-year examples of line-by-lag
+tokens, axial attention, a positive development-factor head with cumulative
+projection, the study's point objective and checkpoint protocol, best-two-of-
+ten seed selection, and company-level draws from a size-stratified historical
+residual calibration. New: `mcl`, the full-matrix multivariate chain ladder,
+tied out to the study's R reserves on 82 Schedule P companies. New:
+`kernels/point_scores.py` (Pool_APE, Pool_PE, MAE, RMSE and the rest, with the
+aggregation level explicit, `reserve_rows` and `shrink_toward`),
+`kernels/residual_calibration.py`, `kernels/nn_features.py`, and six
+extensions of the shared NN training loop. `GalleryEntry.evaluate()` gains a
+`point` key, `mack` gains `point()`, and the NN contract carries `values`.
+
+Numbered 0.7.0 rather than 0.6.1 because the public surface grew: two gallery
+entries, `reserve_rows` on `ibnr.gallery`, eleven names on `ibnr.kernels`, and
+a new key in every `evaluate()` result.
+
+Still open, in the next notebook rather than in the package: the reproduction
+of the study's headline on its own 93-company cohort set under its 10-seed,
+3000-epoch protocol (`analysis/04_nn_architectures_vs_classical.ipynb`,
+planned).
 
 New gallery entry `mcl` (family `statistical`): the full-matrix multivariate
 chain ladder, Zhang's (2010) general form, where each line's next cumulative is
