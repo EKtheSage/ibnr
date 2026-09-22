@@ -201,6 +201,41 @@ def test_reserve_rows_for_a_single_cohort_entry(backend_name):
     assert draws["predicted_ultimate"].iloc[0] == pytest.approx(row["predicted_ultimate"], rel=0.05)
 
 
+def test_native_point_accepts_a_single_realized_total(backend_name):
+    """``tlrn``'s shape: a point frame of many rows against ONE realized value,
+    the company total on its own. The native route reads the realized total as
+    the last element, and one element is that total, so the row is built."""
+    tri = make_cohort_triangle(backend_name, SQUARE, start_year=2010)
+    entry = gallery.fit("mack", tri, loss_field="paid_loss", as_of=AS_OF)
+
+    class CompanyTotalOnly:
+        name = "stub"
+        contract_ = entry.contract_
+
+        def cohorts(self):
+            return entry.cohorts()
+
+        def cohort_index(self, segment):
+            return entry.cohort_index(segment)
+
+        def point(self, segment=None):
+            return entry.point(segment=segment)
+
+        def realized_ultimates(self, full, segment=None):
+            return np.array([float(entry.realized_ultimates(full, segment=segment)[-1])])
+
+    row = reserve_rows(
+        CompanyTotalOnly(),
+        tri,
+        as_of=AS_OF,
+        loss_field="paid_loss",
+        premium_field=None,
+        point="native",
+    ).iloc[0]
+    assert row["realized_ultimate"] == pytest.approx(REALIZED)
+    assert row["predicted_ultimate"] == pytest.approx(entry.fit_.ultimate.sum())
+
+
 # Two lines of one company over five origins. SUR needs the first development
 # transition to keep residual degrees of freedom, so the square is 5 x 5 rather
 # than the 4 x 4 above, and the two lines are not proportional to each other.
@@ -271,6 +306,14 @@ def test_reserve_rows_for_a_multi_line_entry_sums_the_company(backend_name):
     assert row["premium"] == pytest.approx(5 * 1000.0 + 5 * 3000.0)
     assert row["point_source"] == "draw_mean"
 
+    native_rows = reserve_rows(entry, both, as_of=AS_OF_ML, loss_field="paid_loss", point="native")
+    native = native_rows.iloc[0]
+    assert native["point_source"] == "native"
+    assert native["n_draws"] == 0
+    assert native["predicted_ultimate"] == pytest.approx(entry.point()["point"].iloc[-1])
+    assert native["anchor"] == pytest.approx(anchor)
+    assert native["realized_ultimate"] == pytest.approx(realized)
+
     other = gallery.fit("sur", second, loss_field="paid_loss", as_of=AS_OF_ML)
     other_rows = reserve_rows(
         other, both, as_of=AS_OF_ML, loss_field="paid_loss", predict_kwargs={"seed": 5}
@@ -278,6 +321,88 @@ def test_reserve_rows_for_a_multi_line_entry_sums_the_company(backend_name):
     assert other_rows["company_code"].iloc[0] == "0002"
     assert other_rows["anchor"].iloc[0] == pytest.approx(SECOND_COMPANY_SCALE * anchor)
     assert other_rows["realized_ultimate"].iloc[0] == pytest.approx(SECOND_COMPANY_SCALE * realized)
+
+
+# The same square with the newest written origin sitting at zero on the
+# valuation diagonal. Mack's point estimate is a product of factors off that
+# cell and is fine; every variance formula divides by it, so predict() refuses.
+ZERO_DIAGONAL = SQUARE.copy()
+ZERO_DIAGONAL[2, 0] = 0.0
+#: 2010 at dev 36, 2011 at dev 24, 2012 at dev 12 - the last of them zero.
+ZERO_ANCHOR = ZERO_DIAGONAL[0, 2] + ZERO_DIAGONAL[1, 1] + ZERO_DIAGONAL[2, 0]
+
+
+def test_native_point_does_not_need_draws(backend_name):
+    """An entry whose draws refuse a cohort still has a point, and the native
+    route must report it. Calling predict() first dropped the row, and a company
+    total one line short is plausible enough that nothing downstream notices."""
+    tri = make_cohort_triangle(backend_name, ZERO_DIAGONAL, start_year=2010)
+    entry = gallery.fit("mack", tri, loss_field="paid_loss", as_of=AS_OF)
+    with pytest.raises(ValueError, match="latest diagonal of open origin"):
+        entry.predict(n_draws=10)
+
+    rows = reserve_rows(
+        entry, tri, as_of=AS_OF, loss_field="paid_loss", premium_field=None, point="native"
+    )
+    assert len(rows) == 1
+    row = rows.iloc[0]
+    assert row["anchor"] == pytest.approx(ZERO_ANCHOR)
+    assert row["predicted_ultimate"] == pytest.approx(entry.fit_.ultimate.sum())
+    assert row["predicted_reserve"] == pytest.approx(entry.fit_.reserve.sum())
+    assert row["realized_ultimate"] == pytest.approx(
+        ZERO_DIAGONAL[0, 2] + ZERO_DIAGONAL[1, 2] + ZERO_DIAGONAL[2, 2]
+    )
+    assert row["n_draws"] == 0
+    assert row["point_source"] == "native"
+
+    # the draw route reports the same refusal rather than skipping the cohort
+    with pytest.raises(ValueError, match="latest diagonal of open origin"):
+        reserve_rows(entry, tri, as_of=AS_OF, loss_field="paid_loss", premium_field=None)
+
+
+# Twelve origins, 2000 to 2011, of a plausible paid development. The per-origin
+# offset keeps the development factors from being identical across origins.
+_PATTERN = np.array([1.00, 1.45, 1.70, 1.82, 1.88, 1.92, 1.95, 1.97, 1.98, 1.99, 1.995, 2.00])
+BIG_SQUARE = np.outer(100.0 + 10.0 * np.arange(12.0), _PATTERN) + (np.arange(12.0) % 3.0)[:, None]
+#: the fit sees the 5th origin onward - a study window inside a longer history.
+WINDOW_START = dt.date(2004, 1, 1)
+#: the window's last diagonal: 2004 at dev 96 down to 2011 at dev 12.
+AS_OF_WINDOW = dt.date(2011, 12, 31)
+PREMIUM_PER_ORIGIN = 1000.0
+
+
+def _twelve_origin_triangle(backend_name):
+    """The full twelve-origin square, with a flat premium on every origin."""
+    losses = make_cohort_triangle(backend_name, BIG_SQUARE, start_year=2000).execute()
+    premium = losses.assign(field="earned_premium", value=PREMIUM_PER_ORIGIN)
+    both = pd.concat([losses, premium], ignore_index=True)
+    return Triangle.from_long(both, measure="cumulative", backend=backend_name)
+
+
+def test_reserve_rows_anchors_on_the_fitted_origins(backend_name):
+    """The Schedule P mart holds 1988 to 2007 and a study fits a window of it.
+    Reading the anchor over every origin the valuation observes doubles it,
+    while realized_ultimate stays on the window - so the reserve is wrong by the
+    four origins the fit never saw, with every number looking plausible."""
+    full = _twelve_origin_triangle(backend_name)
+    window = full.filter(full.expr["origin_period"] >= WINDOW_START)
+    entry = gallery.fit("mack", window, loss_field="paid_loss", as_of=AS_OF_WINDOW)
+
+    # the window's diagonal: origin 2004+k at dev index 7-k
+    want_anchor = sum(BIG_SQUARE[4 + k, 7 - k] for k in range(8))
+    # what the full twelve-origin diagonal would have added
+    earlier = sum(BIG_SQUARE[i, 11 - i] for i in range(4))
+    assert earlier > 0
+
+    rows = reserve_rows(entry, full, as_of=AS_OF_WINDOW, loss_field="paid_loss")
+    row = rows.iloc[0]
+    assert row["anchor"] == pytest.approx(want_anchor)
+    assert row["anchor"] != pytest.approx(want_anchor + earlier)
+    # premium is read off the same diagonal and must be restricted with it
+    assert row["premium"] == pytest.approx(8 * PREMIUM_PER_ORIGIN)
+    # realized_ultimates already restricts itself; the fit's endpoint is dev 96
+    assert row["realized_ultimate"] == pytest.approx(BIG_SQUARE[4:, 7].sum())
+    assert row["actual_reserve"] == pytest.approx(BIG_SQUARE[4:, 7].sum() - want_anchor)
 
 
 def test_reserve_rows_refusals(backend_name):
@@ -314,6 +439,47 @@ def test_reserve_rows_refusals(backend_name):
     with pytest.raises(TypeError, match="does not implement point"):
         reserve_rows(
             NoPoint(), tri, as_of=AS_OF, loss_field="paid_loss", premium_field=None, point="native"
+        )
+
+    with pytest.raises(ValueError, match="would be inert"):
+        reserve_rows(
+            entry,
+            tri,
+            as_of=AS_OF,
+            loss_field="paid_loss",
+            premium_field=None,
+            point="native",
+            predict_kwargs={"seed": 3},
+        )
+
+    class Detached(NoPoint):
+        """point() and draws, but nothing saying which origins were fitted."""
+
+        def point(self, segment=None):
+            return entry.point(segment=segment)
+
+    with pytest.raises(AttributeError, match="origin_periods"):
+        reserve_rows(
+            Detached(), tri, as_of=AS_OF, loss_field="paid_loss", premium_field=None, point="native"
+        )
+
+    class ShortRealized(Detached):
+        """Four point rows against two realized values: the native route reads the
+        realized total as the last element and must refuse rather than guess."""
+
+        contract_ = entry.contract_
+
+        def realized_ultimates(self, full, segment=None):
+            return entry.realized_ultimates(full, segment=segment)[:2]
+
+    with pytest.raises(ValueError, match="cannot line the two up"):
+        reserve_rows(
+            ShortRealized(),
+            tri,
+            as_of=AS_OF,
+            loss_field="paid_loss",
+            premium_field=None,
+            point="native",
         )
 
 

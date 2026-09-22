@@ -32,6 +32,7 @@ import datetime as dt
 from collections.abc import Mapping
 
 import numpy as np
+import pandas as pd
 
 from ibnr.gallery.entry import GalleryEntry
 from ibnr.gallery.registry import register
@@ -269,6 +270,58 @@ class SUR(GalleryEntry):
             raise RuntimeError("call fit() first")
         return [dict(self.contract_["segment"])]
 
+    def point(self, segment: Mapping | None = None) -> pd.DataFrame:
+        """The point ultimates: each origin's latest observed diagonal rolled
+        forward through the fitted transitions with no noise.
+
+        Returns the ``kernels.multiline`` target frame with one extra column,
+        ``point`` - per-(lob, origin) ultimates, then per-lob totals, then the
+        grand total, in the same order and under the same labels ``predict()``
+        uses, so a point board and a draw board read the same rows. Reserves are
+        the caller's subtraction: ultimate minus the latest observed cumulative.
+        """
+        # a single-cohort fit: accepts None or its own key, refuses anything else
+        self.cohort_index(segment)
+        if self.transitions_ is None or self.contract_ is None:
+            raise RuntimeError("call fit() first")
+        c = self.contract_
+        frame = multiline_targets(c["lobs"], c["origin_periods"])
+        frame["point"] = flatten_with_totals(self._roll_forward())
+        return frame
+
+    def _roll_forward(self) -> np.ndarray:
+        """(n_lob, n_w) point ultimates: ``predict``'s recursion with no noise.
+
+        The conditional mean is the same expression ``predict`` builds before it
+        adds a shock - ``C_{d+1} = b0 + b1 C_d`` under ``intercept=True``,
+        ``b C_d`` otherwise - and the floor at zero is that line's own floor
+        with the shock set to zero. It bites only when a fitted coefficient
+        carries a line below zero, which a paid-loss fit does not do; keeping it
+        is what makes this recursion the noise-free ``predict`` rather than a
+        second recursion that happens to agree on well-behaved data.
+        """
+        c = self.contract_
+        n_lob, n_w, n_d = c["n_lob"], c["n_w"], c["n_d"]
+        cum = c["cum"]
+        ults = np.empty((n_lob, n_w))
+        for w in range(n_w):
+            d0 = self._latest_dev(w)
+            state = cum[:, w, d0]  # (K,) every line at that origin's latest dev step
+            for d in range(d0, n_d - 1):
+                b = self.transitions_[d]["beta"]  # (K, p)
+                mean = b[:, 0] + b[:, 1] * state if self._intercept else b[:, 0] * state
+                state = np.maximum(mean, 0.0)
+            ults[:, w] = state
+        return ults
+
+    def _latest_dev(self, w: int) -> int:
+        """Index of origin ``w``'s latest observed development step."""
+        c = self.contract_
+        devs = np.nonzero(c["obs_mask"][0, w])[0]
+        if devs.size == 0:
+            raise ValueError(f"origin {c['origin_periods'][w]} has no observations")
+        return int(devs[-1])
+
     def predict(
         self,
         segment: Mapping | None = None,
@@ -289,7 +342,7 @@ class SUR(GalleryEntry):
             raise RuntimeError("call fit() first")
         c = self.contract_
         n_lob, n_w, n_d = c["n_lob"], c["n_w"], c["n_d"]
-        cum, mask = c["cum"], c["obs_mask"]
+        cum = c["cum"]
         p = 2 if self._intercept else 1
         rng = np.random.default_rng(
             cohort_stream(seed, label="predict", cohorts=self.cohorts(), field=self._loss_field)
@@ -312,11 +365,9 @@ class SUR(GalleryEntry):
 
         ults = np.empty((n_draws, n_lob, n_w))
         for w in range(n_w):
-            # Start each origin at its latest observed diagonal and roll forward.
-            devs = np.nonzero(mask[0, w])[0]
-            if devs.size == 0:
-                raise ValueError(f"origin {c['origin_periods'][w]} has no observations")
-            d0 = int(devs[-1])  # index of the latest observed dev step
+            # Start each origin at its latest observed diagonal and roll forward
+            # from the same cell point() starts from.
+            d0 = self._latest_dev(w)
             state = np.tile(cum[:, w, d0], (n_draws, 1))  # (n_draws, n_lob)
             for d in range(d0, n_d - 1):
                 b = beta_draws[d]  # (n_draws, K, p)
