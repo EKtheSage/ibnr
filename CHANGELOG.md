@@ -64,6 +64,29 @@ the deterministic ultimates in `predict()`'s target order. `reserve_rows` is
 exported from `ibnr.gallery`; the metrics themselves stay on `ibnr.kernels`,
 because they consume the table and never touch an entry.
 
+Fixed, both in `reserve_rows`, both surfaced by a notebook built on this code.
+`point="native"` called `predict()` before it read `point()`, so an entry whose
+draws refuse a cohort contributed no row at all even though its point estimate
+was defined: `mack` on a Schedule P cohort whose newest accident year sits at
+zero on the valuation diagonal raises from `predict`, and that company's total
+then came out one line short, 12.42 percent from the reference, with every
+number plausible. The native route now never calls `predict`, reads the realized
+total as the last element of `realized_ultimates` (checking that layout rather
+than assuming it), records `n_draws = 0`, and refuses `predict_kwargs` beside
+itself rather than leaving them inert. Separately, the anchor and the premium
+were summed over every origin the valuation observes rather than over the
+origins the entry was fitted on. On the Schedule P mart, which carries accident
+years 1988 to 2007 with all of them observed at a 2007 valuation, that more than
+doubled company 10022's anchor - 123,543 against 54,153 - while
+`realized_ultimates` stayed on the study window, so the reserve was wrong by the
+accident years the fit never saw. Both are now restricted to the fitted origins,
+read from `contract_["origin_periods"]` or `fit_.origin_periods`.
+
+`sur` gains `point()`: the conditional-mean recursion of `predict()` with the
+noise removed, in the `kernels.multiline` layout with a `point` column, so
+`reserve_rows(..., point="native")` accepts it as it already accepted `mack`,
+`mcl` and `tlrn`.
+
 New: the shared NN training loop (`gallery/nn/_training.py::train_ensemble`)
 takes a learning-rate `schedule` (`warmup_cosine` ports the R study's warmup
 plus cosine decay), `param_groups`, `min_epochs`, `check_every` (patience now

@@ -58,6 +58,17 @@ correlations toward zero.
 estimable only for the first ~4 transitions; later-transition correlations are
 pooled, not estimated.** This is a documented limitation, not a bug.
 
+## Point
+
+`point()` rolls each origin forward from its latest observed diagonal with no
+noise: `C_{d+1} = b_d C_d` per line, or `b0 + b1 C_d` under `intercept=True`.
+That is exactly the conditional mean `predict()` builds before it adds a shock,
+including that line's floor at zero, and both start from the same cell. It
+returns the `kernels.multiline` target frame - per-(lob, origin) ultimates,
+per-lob totals, grand total - with a `point` column, so a point board and a
+draw board read the same rows. Reserves are the caller's subtraction: ultimate
+minus the latest observed cumulative.
+
 ## Prediction
 
 `predict()` simulates each origin forward from its latest observed diagonal:

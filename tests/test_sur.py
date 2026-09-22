@@ -210,6 +210,89 @@ def test_sur_target_layout_and_realized(backend_name):
     assert {"estimate", "se", "cv", "outcome", "percentile"} <= set(table.columns)
 
 
+def _hand_recursion(entry):
+    """(n_lob, n_w) point ultimates written out from ``transitions_`` in the test.
+
+    The noise-free half of ``predict``'s loop, rebuilt from the fitted betas so
+    a change to the entry's own recursion cannot move both sides together.
+    """
+    c = entry.contract_
+    n_lob, n_w, n_d = c["n_lob"], c["n_w"], c["n_d"]
+    out = np.empty((n_lob, n_w))
+    for w in range(n_w):
+        d0 = int(np.nonzero(c["obs_mask"][0, w])[0][-1])
+        state = c["cum"][:, w, d0].copy()
+        for d in range(d0, n_d - 1):
+            b = entry.transitions_[d]["beta"]
+            mean = b[:, 0] + b[:, 1] * state if entry._intercept else b[:, 0] * state
+            state = np.maximum(mean, 0.0)
+        out[:, w] = state
+    return out
+
+
+@pytest.mark.parametrize("intercept", [False, True])
+def test_sur_point_is_the_noise_free_recursion(backend_name, intercept):
+    """``point()`` is ``predict``'s conditional mean with the noise removed, in
+    the shared multiline layout, so a point board and a draw board read the same
+    rows. ``intercept=True`` puts the two-parameter design on the same data."""
+    rng = np.random.default_rng(3)
+    cum = simulate_cl_square(rng, rho=0.2)
+    entry, _ = fit_on_upper(backend_name, cum, intercept=intercept, min_pts_full_cov=1)
+    frame = entry.point()
+    n_cells = entry.contract_["n_lob"] * entry.contract_["n_w"]
+
+    labels = frame["label"].astype(str).tolist()
+    assert labels == entry.predict(n_draws=10, seed=0).targets["label"].astype(str).tolist()
+    assert list(frame.columns)[-1] == "point"
+    assert len(frame) == n_cells + entry.contract_["n_lob"] + 1
+
+    want = _hand_recursion(entry)
+    np.testing.assert_allclose(frame["point"].to_numpy()[:n_cells], want.reshape(-1), rtol=1e-12)
+    # the totals are sums of the same cells, per lob and then over all of them
+    np.testing.assert_allclose(frame["point"].to_numpy()[n_cells:-1], want.sum(axis=1), rtol=1e-12)
+    assert frame["point"].iloc[-1] == pytest.approx(want.sum())
+
+    # the draws are centred on it
+    draws = entry.predict(param_uncertainty=False, n_draws=4000, seed=0)
+    assert draws.mean()[-1] == pytest.approx(frame["point"].iloc[-1], rel=0.03)
+
+
+def test_sur_point_carries_a_fully_developed_origin_through_unchanged(backend_name):
+    """The oldest origin observes every development step, so its point ultimate
+    is its own latest cumulative and no transition touches it."""
+    rng = np.random.default_rng(8)
+    cum = simulate_cl_square(rng, n_w=6, rho=0.0)
+    entry, _ = fit_on_upper(backend_name, cum)
+    frame = entry.point()
+    np.testing.assert_allclose(frame["point"].to_numpy()[[0, 6]], cum[:, 0, -1], rtol=1e-12)
+
+
+def test_sur_point_floors_a_negative_mean_at_zero(backend_name):
+    """``predict`` floors each rolled-forward cumulative at zero, and ``point``
+    is that same line with the noise set to zero, so it floors too rather than
+    reporting a negative ultimate. Real fits stay positive, so the slopes are
+    flipped here to drive the recursion below zero on purpose."""
+    rng = np.random.default_rng(3)
+    cum = simulate_cl_square(rng, n_w=6, rho=0.0)
+    entry, _ = fit_on_upper(backend_name, cum)
+    for tr in entry.transitions_:
+        tr["beta"] = -np.abs(tr["beta"])
+    c = entry.contract_
+    points = entry.point()["point"].to_numpy()[: c["n_w"]]  # the first line's origins
+    rolled = [w for w in range(c["n_w"]) if entry._latest_dev(w) < c["n_d"] - 1]
+    done = [w for w in range(c["n_w"]) if entry._latest_dev(w) == c["n_d"] - 1]
+    assert rolled and done
+    # an origin that takes at least one transition is held at zero, not reported negative
+    assert (points[rolled] == 0.0).all()
+    # a fully developed origin takes none, so no slope touches it
+    np.testing.assert_allclose(points[done], cum[0, done, -1])
+
+
+def test_sur_point_before_fit_raises():
+    with pytest.raises(RuntimeError, match="fit"):
+        SUR().point()
+
+
 def test_sur_small_sample_ladder_kicks_in(backend_name):
     """Schedule P triangles are tiny, so the deepest transitions cannot support
     a full K x K covariance. This pins the graceful degradation ladder:

@@ -252,6 +252,20 @@ as good as the draws behind it (at 20k draws it rests on 100 observations).
 This needs the simulation, not the closed form - a second moment does not imply
 a quantile - and it is where the choice of `process` law bites hardest.
 
+## Point
+
+`point()` returns the deterministic chain-ladder ultimates read straight off
+the fit: one row per origin and then `total`, under the same labels and in the
+same order as `predict().targets`, with an `origin_period` column and a `point`
+column. Nothing is simulated, so there is no seed and no draw count. It is
+defined on cohorts whose *draws* are not: the ultimate is a product of
+development factors and needs no positivity on the latest diagonal, while every
+variance formula divides by that cell, so a cohort whose newest accident year
+sits at zero on the valuation diagonal has a point estimate and no run-off
+simulation. `kernels.point_scores.reserve_rows(..., point="native")` reads this
+frame and never calls `predict`, which is what keeps such a cohort on a company
+reserve table.
+
 ## Prediction
 
 `predict()` returns simulated **full run-off ultimates** (per origin, plus a

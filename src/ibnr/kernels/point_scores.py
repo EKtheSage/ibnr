@@ -30,7 +30,7 @@ cannot forecast a unit must not score on a smaller set than its neighbours.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -193,10 +193,43 @@ def _cohort_triangle(triangle, cohort: dict):
     return triangle.filter(*predicates) if predicates else triangle
 
 
-def _latest_total(triangle, field: str, cohort: dict) -> float:
-    """The cohort's latest observed ``field`` value per origin, summed."""
+def _fitted_origins(entry) -> list:
+    """The origin periods ``entry`` was fitted on.
+
+    Every contract in this package carries them under ``origin_periods`` - the
+    three Stan grids, the dense cohort grid, the multi-LOB grid and the neural
+    grids alike - and Mack's fit object carries them too, which is the fallback.
+
+    ``reserve_rows`` reads the anchor and the premium off the full triangle,
+    which can hold accident years the fit never saw: the Schedule P mart holds
+    1988 to 2007 and a 2007 valuation observes all of them, while a study fits
+    1988 to 1997. ``realized_ultimates`` already restricts itself to these
+    origins, so the anchor has to as well or the two sides of
+    ``ultimate - anchor`` cover different accident years.
+    """
+    contract = getattr(entry, "contract_", None)
+    if isinstance(contract, Mapping) and "origin_periods" in contract:
+        return list(contract["origin_periods"])
+    origins = getattr(getattr(entry, "fit_", None), "origin_periods", None)
+    if origins is not None:
+        return list(origins)
+    name = getattr(entry, "name", type(entry).__name__)
+    raise AttributeError(
+        f"{name} exposes neither contract_['origin_periods'] nor fit_.origin_periods; "
+        "reserve_rows restricts the anchor and the premium to the origins the entry was "
+        "fitted on and cannot tell which those are"
+    )
+
+
+def _latest_total(triangle, field: str, cohort: dict, origins) -> float:
+    """The cohort's latest observed ``field`` value per origin, summed over ``origins``.
+
+    The restriction is the whole point: see :func:`_fitted_origins`.
+    """
     frame = _cohort_triangle(triangle, cohort).select_fields(field).latest_diagonal().execute()
-    return float(frame["value"].sum())
+    wanted = set(pd.to_datetime(pd.Index(list(origins))))
+    keep = pd.to_datetime(frame["origin_period"]).isin(wanted)
+    return float(frame.loc[keep, "value"].sum())
 
 
 def _total_index(labels: list[str], what: str) -> int:
@@ -206,6 +239,26 @@ def _total_index(labels: list[str], what: str) -> int:
             "cohort's total ultimate off that row"
         )
     return labels.index("total")
+
+
+def _realized_total_index(n_rows: int, total_row: int, n_realized: int, what: str) -> int:
+    """Where a cohort's realized total sits in its ``realized_ultimates`` array.
+
+    Every entry puts it last: the single-line and pooled entries return one
+    value per origin and then the total, the multi-LOB layout ends with the
+    grand total, and ``tlrn`` returns the company total on its own. The native
+    route never calls ``predict``, so it cannot read the index off the draws'
+    labels; it checks that rule here instead of assuming it.
+    """
+    if n_realized == 1:
+        return 0
+    if n_rows == n_realized and total_row == n_realized - 1:
+        return n_realized - 1
+    raise ValueError(
+        f"{what} has {n_rows} row(s) with 'total' at index {total_row}, against {n_realized} "
+        "realized value(s); reserve_rows reads the realized total as the last element and "
+        "cannot line the two up"
+    )
 
 
 def reserve_rows(
@@ -222,11 +275,11 @@ def reserve_rows(
     """One row per cohort: predicted and actual reserve at the grid endpoint.
 
     ``reserve = ultimate - anchor``, the anchor being the cumulative observed at
-    ``as_of`` summed over the cohort's origins, read from
-    ``full_triangle.as_of(as_of)`` - the same slice the entry was fitted on.
-    ``realized_ultimate`` comes from ``entry.realized_ultimates``, which
-    restricts itself to the training origins, so both sides of the subtraction
-    cover the same accident years.
+    ``as_of`` summed over the origins the entry was FITTED on, read from
+    ``full_triangle.as_of(as_of)``. ``realized_ultimate`` comes from
+    ``entry.realized_ultimates``, which restricts itself to those same origins,
+    so both sides of the subtraction cover the same accident years even when the
+    triangle carries more history than the fit saw.
 
     ``full_triangle`` may carry cohorts this entry was not fitted on: every read
     of it here is filtered to the cohort first, so a company's anchor cannot
@@ -234,15 +287,21 @@ def reserve_rows(
     rows it answers for.
 
     ``point="draw_mean"`` reads the mean of ``entry.predict()``'s ``total`` row;
-    ``point="native"`` reads the ``total`` row of ``entry.point()`` and refuses
-    an entry that has none. ``point_source`` records which. ``predict_kwargs``
-    are handed to ``predict`` unchanged (``seed``, ``n_draws``), so an entry
-    that does not accept one raises rather than quietly ignoring it.
+    ``point="native"`` reads the ``total`` row of ``entry.point()``, refuses an
+    entry that has none, and does not call ``predict`` at all - an entry whose
+    DRAWS refuse a cohort (Mack on a cohort whose newest accident year has a
+    zero on the valuation diagonal) still has a point, and dropping its row
+    leaves a company total one line short and entirely plausible. Such a row
+    records ``n_draws = 0``. ``point_source`` records which route was taken.
+    ``predict_kwargs`` are handed to ``predict`` unchanged (``seed``,
+    ``n_draws``), so an entry that does not accept one raises rather than
+    quietly ignoring it; on the native route they are refused instead, because
+    nothing would read them.
 
     ``premium`` is the premium field's latest value per origin, summed over the
-    origins written at ``as_of``; ``premium_field=None`` records NaN. Feed the
-    rows to :func:`level_errors` with ``level=["company_code"]`` for a company
-    board, or with the full cohort key for a company-line board.
+    same fitted origins; ``premium_field=None`` records NaN. Feed the rows to
+    :func:`level_errors` with ``level=["company_code"]`` for a company board, or
+    with the full cohort key for a company-line board.
     """
     if point not in POINT_SOURCES:
         raise ValueError(f"point must be one of {POINT_SOURCES}, got {point!r}")
@@ -250,6 +309,11 @@ def reserve_rows(
         name = getattr(entry, "name", type(entry).__name__)
         raise TypeError(
             f"{name} does not implement point(); it has draws only, so use point='draw_mean'"
+        )
+    if point == "native" and predict_kwargs:
+        raise ValueError(
+            f"predict_kwargs {sorted(predict_kwargs)} were passed beside point='native', which "
+            "never calls predict(); they would be inert. Drop them or use point='draw_mean'"
         )
     training = full_triangle.as_of(as_of)
     fields = list(training.fields)
@@ -265,22 +329,26 @@ def reserve_rows(
     index = entry.cohort_index(segment)
     chosen = cohorts if index is None else [cohorts[index]]
     name = getattr(entry, "name", type(entry).__name__)
+    origins = _fitted_origins(entry)
     rows = []
     for cohort in chosen:
-        pred = entry.predict(segment=cohort, **kwargs)
-        labels = pred.targets["label"].astype(str).tolist()
-        i = _total_index(labels, f"{name}.predict targets")
         outcomes = entry.realized_ultimates(_cohort_triangle(full_triangle, cohort), segment=cohort)
         realized = np.asarray(outcomes, dtype=float)
         if point == "native":
             frame = entry.point(segment=cohort)
             j = _total_index(frame["label"].astype(str).tolist(), f"{name}.point() frame")
             predicted = float(frame["point"].iloc[j])
+            i = _realized_total_index(len(frame), j, realized.size, f"{name}.point() frame")
+            n_draws = 0
         else:
+            pred = entry.predict(segment=cohort, **kwargs)
+            labels = pred.targets["label"].astype(str).tolist()
+            i = _total_index(labels, f"{name}.predict targets")
             predicted = float(pred.mean()[i])
-        anchor = _latest_total(training, loss_field, cohort)
+            n_draws = int(pred.n_draws)
+        anchor = _latest_total(training, loss_field, cohort, origins)
         premium = (
-            _latest_total(training, premium_field, cohort)
+            _latest_total(training, premium_field, cohort, origins)
             if premium_field is not None
             else float("nan")
         )
@@ -293,7 +361,7 @@ def reserve_rows(
                 "predicted_reserve": predicted - anchor,
                 "actual_reserve": float(realized[i]) - anchor,
                 "premium": premium,
-                "n_draws": int(pred.n_draws),
+                "n_draws": n_draws,
                 "point_source": point,
             }
         )
