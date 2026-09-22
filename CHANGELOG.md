@@ -15,10 +15,10 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
-## 0.7.0 - 2026-09-21
+## 0.7.0 - 2026-09-22
 
 The pieces a companion transformer reserving study needed before it could run
-through `ibnr.gallery` end to end (#139, #140, #141, #143), plus the citation
+through `ibnr.gallery` end to end (#139, #140, #141, #143, #145), plus the citation
 fix for the conventional examples (#138). Design and plans:
 `docs/superpowers/specs/2026-09-20-tlrn-mcl-point-scores-design.md`.
 
