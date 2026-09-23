@@ -758,6 +758,7 @@ def test_a_failed_refit_leaves_the_previous_fit_intact(backend_name, monkeypatch
         "contract": entry.contract_,
         "calibration": entry.calibration_,
         "size": entry.company_size_.copy(),
+        "members": entry.member_company_reserves().copy(),
     }
 
     def boom(*args, **kwargs):
@@ -774,3 +775,81 @@ def test_a_failed_refit_leaves_the_previous_fit_intact(backend_name, monkeypatch
     assert entry.contract_ is before["contract"]
     assert entry.calibration_ is before["calibration"]
     np.testing.assert_array_equal(entry.company_size_, before["size"])
+    np.testing.assert_array_equal(entry.member_company_reserves(), before["members"])
+
+
+# -- every member, and members trained in parallel ------------------------------------
+
+
+def test_every_trained_member_keeps_its_company_reserves(backend_name):
+    """The members the selection drops are scored too, and the ensemble is their mean.
+
+    The kept ensemble averages its members' forecast cells and a reserve is a sum of
+    cells, so the kept rows must average to ``company_reserves()`` exactly; any other
+    combination of members can then be scored without refitting.
+    """
+    entry = fit_tiny(backend_name, seed=3)
+    members = entry.member_company_reserves()
+    assert members.shape == (2, len(entry.cohorts()))
+    kept = entry.selection_["kept"].to_numpy()
+    assert kept.sum() == 1
+    np.testing.assert_allclose(members[kept].mean(axis=0), entry.company_reserves(), rtol=1e-6)
+    assert not np.allclose(members[0], members[1])  # the dropped member is its own forecast
+
+
+def test_keeping_every_member_averages_them_all(backend_name):
+    """``keep = ensemble_size`` is the average of every trained member."""
+    arrays = study_arrays()
+    one = fit_tiny(backend_name, arrays, seed=3)
+    every = TLRNEntry().fit(
+        study_triangle(backend_name, arrays),
+        loss_field="paid_loss",
+        as_of=AS_OF,
+        config=replace(tiny(), keep=2),
+        seed=3,
+    )
+    assert every.selection_["kept"].all()
+    np.testing.assert_allclose(
+        every.company_reserves(), one.member_company_reserves().mean(axis=0), rtol=1e-6
+    )
+
+
+def test_members_trained_in_processes_are_the_members_trained_in_one():
+    """``processes`` changes where the members train, never what they learn.
+
+    Member m is seeded ``seed + 1000 * m`` wherever it runs, and each worker uses the
+    calling process's torch thread count, so the two fits must agree exactly: the same
+    selection, the same member forecasts and the same kept weights. The caller runs on
+    one thread here, which is not torch's default, so a worker that ignored the count
+    it was sent would be refused by the pool's own check.
+    """
+    arrays = study_arrays()
+    before = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        one = fit_tiny("duckdb", arrays, seed=7)
+        two = fit_tiny("duckdb", arrays, seed=7, processes=2)
+    finally:
+        torch.set_num_threads(before)
+    pd.testing.assert_frame_equal(one.selection_, two.selection_)
+    np.testing.assert_array_equal(one.member_company_reserves(), two.member_company_reserves())
+    assert one.history_ == two.history_
+    for a, b in zip(one.models_, two.models_, strict=True):
+        for (name_a, value_a), (name_b, value_b) in zip(
+            a.state_dict().items(), b.state_dict().items(), strict=True
+        ):
+            assert name_a == name_b
+            assert torch.equal(value_a, value_b), name_a
+
+
+@pytest.mark.parametrize("processes", [0, -1, 1.5, "2"])
+def test_processes_must_be_a_positive_int(processes):
+    with pytest.raises(ValueError, match="processes"):
+        fit_tiny("duckdb", processes=processes)
+
+
+def test_processes_train_on_the_cpu_only():
+    """A worker process cannot share the caller's accelerator, so it is refused by name
+    rather than silently trained on the CPU."""
+    with pytest.raises(ValueError, match="processes"):
+        fit_tiny("duckdb", processes=2, device="meta")

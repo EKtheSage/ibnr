@@ -15,6 +15,29 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
+## Unreleased
+
+`tlrn` keeps every trained member's reserves, and can train its members in
+parallel. Nothing it produced before changes: a one-process fit is bit for bit
+the 0.7.0 fit (checked on the test configuration, both feature sets, two seeds).
+
+- `TLRN.member_company_reserves()`: `(n_members, n_companies)`, every TRAINED
+  member's point reserve per company, in `selection_` row order, the members the
+  selection dropped included. The kept ensemble is exactly the mean of the kept
+  rows, so any group of members is scored without refitting. On the study's data
+  the choice of which two members to keep moved the company Pool_APE of one
+  ten-member run anywhere from 4.7% to 7.7%, which is why the dropped members are
+  now kept. Averaging every member was already available: `keep = ensemble_size`.
+- `TLRN.fit(..., processes=n)` trains the members in `n` worker processes
+  (`spawn`, CPU only). Member `m` is seeded `seed + 1000 * m` wherever it runs and
+  each worker uses the caller's torch thread count, so the members are the ones
+  `processes=1` trains, weight for weight; the pool refuses a worker that trained
+  on a different thread count, because on a small problem nothing else would show
+  it.
+- The shared NN training loop gains `members=`: train only the named member
+  indices, each exactly as the whole loop would. It cannot be combined with
+  `keep`.
+
 ## 0.7.0 - 2026-09-22
 
 The pieces a companion transformer reserving study needed before it could run

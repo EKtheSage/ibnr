@@ -141,21 +141,35 @@ because a selection over ten optimiser outcomes is part of the result, and a
 table showing only the survivors would hide how much of the reported score is
 the selection rather than the model.
 
-What that costs. Measured on the study's own company set - 93 companies, 243
-company-line pairs, four lines, accident years 1998 to 2007, valuation
-2007-12-31, from the Schedule P publish `20260613_041006` - on a Windows laptop
-with 16 torch threads, one member, no parallelism: about **1.1 seconds per
-epoch** paid-only and about **1.2 seconds per epoch** with the incurred and
-case features. So one member's full 3000-epoch schedule is roughly an hour, and
-the ten-member protocol run one after another is roughly 9 to 10 hours.
+Every trained member's own reserves stay on the fitted model, the dropped ones
+included: `member_company_reserves()` is `(n_members, n_companies)` in
+`selection_` row order. The kept ensemble averages its members' forecast cells
+and a reserve is a sum of cells, so `company_reserves()` is exactly the mean of
+the kept rows, and any other group of members - the best two of a different ten,
+or all of them - is the mean of its rows, scored without refitting. That matters
+because the selection is not stable. On the study's data the validation score
+that picks the two members barely predicts their test error, and across the 45
+possible pairs of one ten-member run the company Pool_APE of the pair ran from
+4.7% to 7.7%. Averaging every member is a fit as well: `keep = ensemble_size`.
 
-Treat those as one significant figure. Eleven runs of the same two
-configurations on an otherwise idle machine spread from 0.8 to 1.5 seconds per
-epoch, which is wider than the gap between the two forms, so the ratio between
-them is not something this measurement establishes. Each timing also includes
-the one-off setup - reading the mart and building fourteen feature sets for 93
-companies - so the per-epoch figure is an upper bound and the projection is
-conservative.
+The members can train in parallel: `fit(..., processes=4)` runs them in four
+worker processes. Member `m` is seeded `seed + 1000 * m` wherever it runs, and
+every worker uses the calling process's torch thread count - the pool checks
+that it did - so the fit is the one `processes=1` gives, weight for weight. Set
+the thread count before fitting, and keep `processes` times that count within
+the machine's cores.
+
+What that costs, on the study's own company set - 93 companies, 243
+company-line pairs, four lines, accident years 1998 to 2007, valuation
+2007-12-31, from the Schedule P publish `20260613_041006` - on a 16-core Windows
+laptop. A network this small spends most of a step on the fixed cost of each
+operation, which more threads only add to: one member runs about 1 second per
+epoch at torch's default of 16 threads and about 0.25 to 0.3 seconds at 4. At 4
+threads the ten-member run one after another took 148 to 158 minutes in a
+published notebook run, and four processes at four threads each trained the
+same ten members in 88 minutes. Treat these as one significant figure: in that
+88-minute run the middle round of members took 48 minutes each against 26 in
+the first, with nothing in the run itself to explain the difference.
 
 ## Prediction
 

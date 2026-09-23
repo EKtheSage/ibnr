@@ -232,6 +232,29 @@ def _run(cfg=None, seed=3, **extra):
     )
 
 
+def test_members_trains_each_named_member_exactly_as_the_whole_run_does():
+    """``members`` lets one ensemble be spread over several processes: member m trained
+    alone must be member m of the whole run, weights and history alike."""
+    cfg = config(ensemble_size=3)
+    whole_models, whole_history = _run(cfg)
+    for m in range(3):
+        models, history = _run(cfg, members=[m])
+        _assert_same_fit(([whole_models[m]], [whole_history[m]]), (models, history))
+        assert {h["member"] for h in history[0]} == {m}
+
+
+@pytest.mark.parametrize("members", [[2], [-1], [0, 0], [], ["0"], [True], 0])
+def test_members_refusals(members):
+    with pytest.raises(ValueError, match="members"):
+        _run(config(ensemble_size=2), members=members)
+
+
+def test_members_and_keep_do_not_combine():
+    """``keep`` selects across the whole ensemble, which a subset of it cannot do."""
+    with pytest.raises(ValueError, match="members"):
+        _run(config(ensemble_size=2), members=[0], keep=1)
+
+
 def test_a_zero_schedule_freezes_the_weights():
     """Effect, not signature: multiplier 0 at every epoch means no parameter moves,
     while the default run moves them."""
