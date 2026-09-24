@@ -5,6 +5,12 @@ reserving methods with mandatory evaluation, model stacking, and a long-format
 triangle data layer backed by duckdb and polars (via ibis). A companion to
 [chainladder-python](https://github.com/casact/chainladder-python), not a fork.
 
+**Coming from chainladder-python?** `from ibnr import methods`, then
+`methods.chain_ladder(cells)`, `methods.mack(cells)`,
+`methods.bornhuetter_ferguson(...)` or `methods.cape_cod(...)`: see [Run a chain
+ladder](#run-a-chain-ladder) and [the lookup table from chainladder-python to
+ibnr](https://github.com/EKtheSage/ibnr/blob/main/docs/coming-from-chainladder.md).
+
 ## Status
 
 Early development.
@@ -127,8 +133,14 @@ uv add "ibnr[bayesian]"   # cmdstanpy, numpyro, pymc, arviz, bayesblend
 uv add "ibnr[nn]"         # torch
 uv add "ibnr[viz]"        # altair
 uv add "ibnr[interop]"    # chainladder + bermuda, for to_chainladder()/to_bermuda()
-uv add "ibnr[polars]"     # the second ibis backend (duckdb is the default)
+uv add "ibnr[polars]"     # polars: the second ibis backend, and .to_polars() on results
 ```
+
+**For analysis, install the `polars` extra** (`pip install "ibnr[polars]"`).
+The reserving methods below return their results as Arrow tables (pyarrow,
+which the core install already has), and `.to_polars()` turns any of them
+into a polars DataFrame in one call. A service that only passes results on
+needs no DataFrame library at all: the Arrow tables go straight onto the wire.
 
 **Python 3.11 and 3.12.** The cap is set by `[bayesian]` and `[interop]`, which
 both pin numpy below 2 through their own dependencies and so cannot install on
@@ -167,6 +179,47 @@ stack the test suite actually runs. The bundled `Dockerfile` installs from
 > toolchain (RTools on Windows, `build-essential`/Xcode command-line tools on
 > Linux/macOS). The bundled `Dockerfile` ships CmdStan with every gallery Stan
 > model pre-compiled if you would rather not set this up locally.
+
+## Run a chain ladder
+
+`ibnr.methods` has one function per traditional method, named after it:
+`chain_ladder`, `bornhuetter_ferguson`, `cape_cod` and `mack`. Each takes one
+triangle's cells as a table with the columns `origin_period` (the first day of
+the origin period), `dev_lag` (months from that day) and `value` (cumulative
+loss), one row per observed cell. A polars DataFrame works, and so does a
+pyarrow Table or anything else Arrow can read.
+
+```python
+from datetime import date
+
+import polars as pl
+
+from ibnr import methods
+
+cells = pl.DataFrame(
+    {
+        "origin_period": [date(2021, 1, 1)] * 3 + [date(2022, 1, 1)] * 2 + [date(2023, 1, 1)],
+        "dev_lag": [12, 24, 36, 12, 24, 12],
+        "value": [1000.0, 1500.0, 1650.0, 1100.0, 1700.0, 1200.0],
+    }
+)
+
+result = methods.chain_ladder(cells)
+result.to_polars()  # origin_period, latest_dev_lag, latest, ultimate, ibnr
+result.to_polars("development")  # dev_lag, factor, cdf, pct_reported, ...
+result.to_polars("totals")
+
+mack = methods.mack(cells)  # the same ultimates, with Mack's standard errors
+mack.to_polars()  # ... mack_se, parameter_se, process_se
+```
+
+`bornhuetter_ferguson` and `cape_cod` also take `premium=`, a table with columns
+`origin_period` and `premium` (or a dict keyed by origin period). The development
+options (`average`, `history_periods`, `drop_high`, `drop_low`, `exclude`) are
+keyword arguments of all three point methods. Coming from chainladder-python,
+[this lookup table](https://github.com/EKtheSage/ibnr/blob/main/docs/coming-from-chainladder.md) maps its classes and
+attributes onto these functions. Import it with `from ibnr import methods`: a
+bare `import ibnr` does not load it.
 
 ## Building a Triangle from your own data
 

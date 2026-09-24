@@ -622,19 +622,64 @@ def cohort_grid_frame(
     # refuses cells by it. ``fields``/``models`` are ``(loss_field,)``: the
     # deterministic entries model exactly the field they read.
     #
+    # The work is done by grid_from_columns, which holds no pandas; this wrapper
+    # only takes the three columns out of the frame. The value column is passed
+    # as the Series itself so it is converted at the same point, and with the
+    # same result, as it always was.
+    return grid_from_columns(
+        df["origin_period"].to_numpy(),
+        df["dev_lag"].to_numpy(),
+        df["value"],
+        dev_grain_months=dev_grain_months,
+        units=units,
+        loss_field=loss_field,
+        segment=segment,
+        measure=measure,
+    )
+
+
+def grid_from_columns(
+    origin_period,
+    dev_lag,
+    value,
+    *,
+    dev_grain_months: int,
+    measure: str,
+    units: str | None = None,
+    loss_field: str | None = None,
+    segment: dict | None = None,
+) -> dict[str, Any]:
+    """One cohort's cells, given as three equal-length columns, turned into the grid dict.
+
+    The same grid, with the same checks and messages, as
+    :func:`cohort_grid_frame`, which is a thin wrapper over this function. The
+    columns are plain sequences or numpy arrays and nothing here uses pandas:
+
+    - ``origin_period``: the first day of each cell's origin period, as
+      ``datetime.date`` or ``datetime`` values, numpy ``datetime64`` values or
+      ISO strings such as ``"2010-01-01"``.
+    - ``dev_lag``: months from the start of the origin period, a whole multiple
+      of ``dev_grain_months``.
+    - ``value``: the amount in the cell, as numbers.
+
+    ``ibnr.methods`` builds its grids here.
+    """
     # Vectorized throughout: this runs once per cohort in fit_mack_many's batch
-    # loop, so per-row pandas iteration here would put the loop's cost right
-    # back after the engine round-trips were removed.
+    # loop, so per-row work here would put the loop's cost right back after the
+    # engine round-trips were removed.
     if measure not in get_args(Measure):
         raise ValueError(f"measure must be one of {get_args(Measure)}, got {measure!r}")
     step = dev_grain_months
-    d = dev_step_index(df["dev_lag"], step=step)
+    d = dev_step_index(dev_lag, step=step)
     # Factorize the raw values, then read each DISTINCT value as a date: two
     # spellings of one origin ("2010-01-01" and a date) become one row, and the
     # conversion costs one call per origin rather than one per cell.
-    codes, uniques = pd.factorize(_as_date(df["origin_period"]))
-    if (codes < 0).any():
-        raise ValueError("origin_period has missing values; every row needs its origin period")
+    codes, uniques = _factorize(origin_period)
+    if len(codes) != len(d):
+        raise ValueError(
+            f"origin_period has {len(codes)} values and dev_lag has {len(d)}; "
+            "the columns must have one value per cell"
+        )
     try:
         as_dates = [as_date(value) for value in uniques]
     except (TypeError, ValueError) as exc:
@@ -648,8 +693,14 @@ def cohort_grid_frame(
         raise ValueError(
             "multiple rows per (origin, dev) cell; slice with as_of()/latest_diagonal() first"
         )
+    amounts = np.asarray(value, dtype=float)
+    if amounts.shape != d.shape:
+        raise ValueError(
+            f"value has {amounts.size} values and dev_lag has {d.size}; "
+            "the columns must have one value per cell"
+        )
     cum = np.full((n_w, n_d), np.nan)
-    cum[w_idx, d - 1] = df["value"].to_numpy(dtype=float)
+    cum[w_idx, d - 1] = amounts
     obs_mask = ~np.isnan(cum)
     latest_dev = require_run_off(obs_mask, origins)
 
@@ -675,6 +726,58 @@ def cohort_grid_frame(
         "w": (w_obs + 1).astype(int),
         "d": (d_obs + 1).astype(int),
     }
+
+
+_MISSING_ORIGIN = "origin_period has missing values; every row needs its origin period"
+
+
+def _factorize(values) -> tuple[np.ndarray, list]:
+    """Codes into the distinct values, and the distinct values, or a refusal of a missing one.
+
+    A typed array (numpy datetime64, strings, numbers) is factorized by
+    ``np.unique``. Anything else, such as an object array that mixes dates and
+    ISO strings, is factorized by hashing, one dictionary lookup per value, and
+    never sorted, because values of different types cannot be ordered.
+
+    Either way the distinct values come back in the order they first appear,
+    and numbers come back as plain Python numbers, so a refusal of a value that
+    is not a date names the same value, spelled the same way, as it always has.
+    """
+    arr = np.asarray(values)
+    if arr.ndim != 1:
+        arr = arr.reshape(-1)
+    kind = arr.dtype.kind
+    if kind == "M" and np.isnat(arr).any():
+        raise ValueError(_MISSING_ORIGIN)
+    if kind == "f" and np.isnan(arr).any():
+        raise ValueError(_MISSING_ORIGIN)
+    if kind != "O":
+        uniques, first, inverse = np.unique(arr, return_index=True, return_inverse=True)
+        order = np.argsort(first, kind="stable")  # first appearance, not sorted order
+        rank = np.empty_like(order)
+        rank[order] = np.arange(order.size)
+        uniques = uniques[order]
+        # datetime64 stays as it is: tolist() would turn nanoseconds into an int
+        distinct = list(uniques) if kind == "M" else uniques.tolist()
+        return rank[inverse.reshape(-1)].astype(np.int64), distinct
+    if any(_is_missing(v) for v in arr):
+        raise ValueError(_MISSING_ORIGIN)
+    index: dict = {}
+    codes = np.fromiter(
+        (index.setdefault(v, len(index)) for v in arr), dtype=np.int64, count=arr.size
+    )
+    return codes, list(index)
+
+
+def _is_missing(value) -> bool:
+    """None, a NaN or a NaT. A value that refuses to be compared with itself, as
+    pandas' missing-value marker does, counts as missing too."""
+    if value is None:
+        return True
+    try:
+        return bool(value != value)
+    except TypeError:
+        return True
 
 
 def require_run_off(obs_mask: np.ndarray, origins: list) -> np.ndarray:
@@ -854,13 +957,20 @@ def as_date(value) -> dt.date:
     keys) and :func:`check_grid` (origin periods), so two dates that were typed
     differently compare equal. A missing value (``NaT``) is refused.
     """
+    # No pandas here: grid_from_columns reads origin periods through this. A
+    # pandas Timestamp is a datetime and is read as one; its missing value, NaT,
+    # is also a datetime but is not equal to itself, which is how it is refused.
     if isinstance(value, str):
         return dt.date.fromisoformat(value)
     if isinstance(value, np.datetime64):
-        value = pd.Timestamp(value)
-    if isinstance(value, dt.datetime) and not pd.isna(value):
+        # NaT comes back as None, and a year outside 1 to 9999 as a plain number
+        day = value.astype("datetime64[D]").item()
+        if not isinstance(day, dt.date):
+            raise ValueError(f"expected an ISO date or date object, got {value!r}")
+        return day
+    if isinstance(value, dt.datetime) and value == value:
         return value.date()
-    if isinstance(value, dt.date) and not pd.isna(value):
+    if isinstance(value, dt.date) and value == value:
         return value
     raise ValueError(f"expected an ISO date or date object, got {value!r}")
 

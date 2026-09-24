@@ -11,11 +11,78 @@ kernel signature. The public surface named in CLAUDE.md decision 8 (`Triangle`,
 stable. Nothing in it was removed or renamed in this release; it GREW (the
 held-out evaluation pipeline, and a `segment` argument on three entry methods).
 (As built that surface is `Triangle` plus
-`gallery.list/get/fit/stack/leaderboard/next_diagonal/CohortForecast/Absence/align_panel/SCORE_DIRECTION`
+`gallery.list/get/fit/stack/leaderboard/next_diagonal/CohortForecast/Absence/align_panel/SCORE_DIRECTION/GalleryDiagonal/reserve_rows`
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
-corrected decision 8.)
+corrected decision 8 - and, from the release after 0.7.1,
+`methods.chain_ladder/bornhuetter_ferguson/cape_cod/mack/ReserveResult`.)
 
 ## Unreleased
+
+**`ibnr.methods`, the front door for the traditional methods.** One function per
+method, named after it: `methods.chain_ladder`, `methods.bornhuetter_ferguson`,
+`methods.cape_cod` (Gluck's generalized Cape Cod; `decay=1` is the classic one)
+and `methods.mack`. Import it with `from ibnr import methods`; a bare
+`import ibnr` does not load it.
+
+- Each takes one triangle's cells as any Arrow-readable table (a polars
+  DataFrame, a pyarrow Table or RecordBatch, anything with
+  `__arrow_c_stream__`) with columns `origin_period`, `dev_lag` (months) and
+  `value` (cumulative loss). ibnr reads it with pyarrow and never imports
+  polars to do so. `origin_period` may be a date, a timestamp (with or without
+  a time zone; the date read is the one in that zone, and a time of day is
+  dropped) or an ISO string, and may be dictionary-encoded (a polars
+  Categorical or Enum).
+- Each returns a `methods.ReserveResult` holding pyarrow Tables with fixed
+  column types: `origins` (latest, ultimate, ibnr per origin; Mack adds
+  `mack_se`, `parameter_se`, `process_se`), `development` (factor, cdf,
+  pct_reported per age; null factor at the last age), `link_ratios` (every
+  observed link ratio and why any was left out; none for Mack) and `totals`
+  (for Mack, the total standard error, which is not the sum of the origins').
+  `ReserveResult.to_polars(name)` gives any table as a polars DataFrame and
+  names the `polars` extra when polars is missing. There are no pandas objects
+  on the result.
+- Development options use ibnr's names: `average`, `history_periods`,
+  `drop_high`, `drop_low`, `exclude`, `unsupported_factor` and
+  `exhausted_exclusions`. `exhausted_exclusions` defaults to `"keep"` here (the
+  kernel candidate keeps `"raise"`), because on a complete triangle the last
+  age has one link ratio and `drop_high=True` would otherwise always be
+  refused; the skip is recorded in `development.extreme_trimming_skipped`.
+  `methods.mack` takes no development options (the Mack kernel has none yet)
+  and defaults to `sigma_rule="log_linear"`, chainladder-python's default;
+  `kernels.fit_mack` keeps `"mack"`, so published numbers do not move.
+- Refused by name: a missing column, a `dev_lag` that is not whole months, a
+  null or NaN `value` (an unobserved cell is left out, not null), a null or
+  non-date `origin_period`, two rows for one cell (the message says the methods
+  fit one cohort at a time; ibnr refuses rather than sums them), premium
+  without `origin_period` and `premium` columns or with two rows for one
+  origin, and an `exclude` pair that names no link ratio of the triangle. Also
+  refused, each with a message in the caller's terms: `dev_lag` values that are
+  not multiples of `dev_grain_months` (quarterly ages with the default annual
+  grain are told to pass `dev_grain_months=3`), a negative cumulative (naming
+  the cells), a missing origin period or origin periods longer than a
+  development step (naming the periods), an integer `origin_period` (with how
+  to make a date of an accident year), and a `methods.mack` triangle with at
+  most one link ratio at every age, where every sigma would be 0 and the
+  standard errors would read as no uncertainty.
+- Tied out from polars frames to chainladder-python 0.9.2 on raa and genins,
+  to a relative 1e-9: chain-ladder ultimates, factors and cdfs; Mack's
+  per-origin and total standard errors with the parameter and process parts,
+  sigma and std_err; Bornhuetter-Ferguson with a premium that rises across the
+  origins; Cape Cod with `decay=1` and `trend=0`; and on raa, the chain-ladder
+  factors under `history_periods`, `average="simple"`, `drop_high`, both drops
+  and `exclude`.
+- `docs/coming-from-chainladder.md`: a lookup table from chainladder-python's
+  classes and attributes to these functions, what is not there yet, and the
+  behaviours that differ on purpose.
+- `kernels.contract.grid_from_columns`: the grid builder, now taking three
+  plain columns with no pandas inside it. `cohort_grid_frame` is a thin wrapper
+  over it with the same checks and messages. As a side effect `fit_mack_many`
+  on clrd's paid losses (725 cohorts, 496 fitted and 229 refused, the same
+  split as before) went from about 0.34 s to about 0.23 s (three interleaved
+  pairs of processes, median of seven warm runs each, one loaded Windows
+  laptop), because origin periods are now factorized as numpy dates rather
+  than as Python date objects. `kernels.contract.as_date` no longer uses
+  pandas.
 
 A public array entry point for the conventional point estimators, for a
 service that fits one small triangle per request. Mostly additive; the few new
