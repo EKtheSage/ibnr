@@ -15,7 +15,11 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
-## Unreleased
+## 0.7.1 - 2026-09-23
+
+One pull request (#147), for notebook 04's next run: it trains forty `tlrn`
+members per fit and compares the study's keep-two-of-ten rule with averaging, from
+the members' own reserves. Additive only, hence a patch release.
 
 `tlrn` keeps every trained member's reserves, and can train its members in
 parallel. Nothing it produced before changes: a one-process fit is bit for bit
