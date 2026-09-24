@@ -157,7 +157,11 @@ worker processes. Member `m` is seeded `seed + 1000 * m` wherever it runs, and
 every worker uses the calling process's torch thread count - the pool checks
 that it did - so the fit is the one `processes=1` gives, weight for weight. Set
 the thread count before fitting, and keep `processes` times that count within
-the machine's cores.
+the machine's cores. From a script, call `fit` under
+`if __name__ == "__main__":`: every worker re-imports the script that started it,
+and without the guard each worker would try to start workers of its own. Python
+stops those, and `fit` then raises an error that says so. A notebook needs no
+guard.
 
 What that costs, on the study's own company set - 93 companies, 243
 company-line pairs, four lines, accident years 1998 to 2007, valuation

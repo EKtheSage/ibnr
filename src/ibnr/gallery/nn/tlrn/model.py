@@ -158,16 +158,23 @@ def _training_parts(cfg, n_l, n_d, n_feat, dev, support, train_tensors, val_tens
 _WORKER: dict[str, Any] = {}
 
 
-def _start_worker(payload: dict, threads: int) -> None:
+def _start_worker(payload_path: str, threads: int) -> None:
     """Rebuild the training parts in a worker process, once, from plain arrays.
 
-    The payload carries numpy arrays rather than tensors, so nothing here depends on
-    how torch shares memory between processes; the tensors are made in the worker the
-    same way ``fit`` makes them. ``threads`` is the calling process's torch thread
-    count, because the arithmetic, and so the trained weights, depend on it.
+    The payload is read from a file the caller wrote rather than sent with the worker:
+    a worker that dies while starting never reads what it was sent, and on Windows the
+    caller then waits forever writing several megabytes into that worker's pipe. It
+    carries numpy arrays rather than tensors, so nothing here depends on how torch
+    shares memory between processes; the tensors are made in the worker the same way
+    ``fit`` makes them. ``threads`` is the calling process's torch thread count,
+    because the arithmetic, and so the trained weights, depend on it.
     """
+    import pickle
+
     import torch
 
+    with open(payload_path, "rb") as handle:
+        payload = pickle.load(handle)  # written by this module's own caller, just now
     torch.set_num_threads(threads)
     dev = torch.device("cpu")
     support = payload["support"]
@@ -695,16 +702,34 @@ class TLRN(GalleryEntry):
         ``train_ensemble`` returns them.
         """
         import multiprocessing
+        import os
+        import pickle
+        import tempfile
         from concurrent.futures import ProcessPoolExecutor
+        from concurrent.futures.process import BrokenProcessPool
 
         threads = torch.get_num_threads()
-        with ProcessPoolExecutor(
-            max_workers=min(processes, n_members),
-            mp_context=multiprocessing.get_context("spawn"),
-            initializer=_start_worker,
-            initargs=(payload, threads),
-        ) as pool:
-            trained = list(pool.map(_train_member, range(n_members)))
+        with tempfile.TemporaryDirectory(prefix="ibnr-tlrn-") as scratch:
+            payload_path = os.path.join(scratch, "payload.pkl")
+            with open(payload_path, "wb") as handle:
+                pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            try:
+                with ProcessPoolExecutor(
+                    max_workers=min(processes, n_members),
+                    mp_context=multiprocessing.get_context("spawn"),
+                    initializer=_start_worker,
+                    initargs=(payload_path, threads),
+                ) as pool:
+                    trained = list(pool.map(_train_member, range(n_members)))
+            except BrokenProcessPool as err:
+                raise RuntimeError(
+                    "a tlrn worker process stopped before it finished training. The usual "
+                    "cause: every worker re-imports the script that started it, so a script "
+                    'that calls fit(processes=...) must do so under if __name__ == "__main__": '
+                    "- otherwise each worker tries to start workers of its own and Python "
+                    "stops it. A notebook needs no guard. The workers' own error is printed "
+                    "above this one"
+                ) from err
         used = sorted({t for *_, t in trained})
         if used != [threads]:
             raise RuntimeError(

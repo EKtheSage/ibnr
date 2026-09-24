@@ -25,7 +25,10 @@ output.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -846,6 +849,29 @@ def test_members_trained_in_processes_are_the_members_trained_in_one():
 def test_processes_must_be_a_positive_int(processes):
     with pytest.raises(ValueError, match="processes"):
         fit_tiny("duckdb", processes=processes)
+
+
+def test_an_unguarded_script_gets_an_error_not_a_hang(tmp_path):
+    """A worker process re-imports the script that started it, so a script that calls
+    ``fit(processes=...)`` at top level, with no ``if __name__ == "__main__":`` guard,
+    starts workers that each try to start workers, and Python stops them while they
+    start. The caller must be told so, promptly. Before the setup data went through a
+    file, the caller instead blocked forever writing that data into a pipe the stopped
+    worker never read."""
+    script = tmp_path / "unguarded.py"
+    script.write_text(
+        "import sys\n"
+        f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})\n"
+        "from tests.test_tlrn import fit_tiny, study_arrays\n"
+        'fit_tiny("duckdb", study_arrays(), seed=7, processes=2)\n',
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [sys.executable, str(script)], capture_output=True, text=True, timeout=180
+    )
+    assert result.returncode != 0
+    assert 'if __name__ == "__main__":' in result.stderr
+    assert "processes" in result.stderr
 
 
 def test_processes_train_on_the_cpu_only():

@@ -33,7 +33,12 @@ the 0.7.0 fit (checked on the test configuration, both feature sets, two seeds).
   each worker uses the caller's torch thread count, so the members are the ones
   `processes=1` trains, weight for weight; the pool refuses a worker that trained
   on a different thread count, because on a small problem nothing else would show
-  it.
+  it. A script must call it under `if __name__ == "__main__":`, since every worker
+  re-imports the script that started it; without the guard `fit` raises an error
+  that names the guard. The workers' setup data goes through a temporary file
+  rather than down each worker's pipe, because a worker that stops while starting
+  never reads its pipe, and on Windows the caller then waited forever writing
+  into it (measured while building this, before it shipped).
 - The shared NN training loop gains `members=`: train only the named member
   indices, each exactly as the whole loop would. It cannot be combined with
   `keep`.
