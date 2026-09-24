@@ -37,12 +37,12 @@ Conventions:
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any
+from typing import Any, get_args
 
 import numpy as np
 import pandas as pd
 
-from ibnr.triangle.core import GRAIN_MONTHS, Triangle
+from ibnr.triangle.core import GRAIN_MONTHS, Measure, Triangle
 
 
 def _cohort_identity(
@@ -563,32 +563,85 @@ def cohort_grid_frame(
     segment: dict | None = None,
     measure: str,
 ) -> dict[str, Any]:
-    """:func:`cohort_grid`'s frame half: one cohort's already-materialized rows
-    (``origin_period``, ``dev_lag``, ``value``) to the dense contract dict.
+    """One cohort's rows as a plain pandas frame, turned into the dense grid dict.
 
-    Split out so a batch caller (``kernels.mack.fit_mack_many``) can materialize
-    a multi-cohort triangle ONCE and grid each cohort from the shared frame;
-    the per-cohort engine round-trip is what dominates a filter+fit loop. All
-    contract guarantees (dev-grain multiples, one row per cell, run-off
-    staircase) are enforced here, identically for both entry points.
+    This is the array entry point to the chain-ladder fits: no Triangle and no
+    database queries, just a pandas frame with three columns, one row per
+    observed cell:
 
-    ``segment``/``measure`` are the cohort-identity half a bare frame cannot
-    derive for itself (no Triangle here): the batch caller supplies them from
-    its own group key and metadata, :func:`cohort_grid` from
-    :func:`_cohort_identity`. ``measure`` is REQUIRED, no default: it stamps an
-    identity fact this function cannot verify, and ``index_into``'s measure
-    refusal would be keyed off a defaulted lie the first time an incremental
-    frame reached it. Like ``segment``, it is consciously supplied or the call
-    is refused. ``fields``/``models`` are ``(loss_field,)`` - the deterministic
-    entries model exactly the field they read.
+    - ``origin_period``: the first day of the origin period. Dates, timestamps,
+      a ``datetime64`` column and ISO strings such as ``"2010-01-01"`` are all
+      read as dates.
+    - ``dev_lag``: months from the start of the origin period, a whole multiple
+      of ``dev_grain_months`` (the first cell of an annual triangle is at 12).
+    - ``value``: the amount in that cell, cumulative or incremental as the
+      measure argument says.
+
+    The other arguments:
+
+    - ``dev_grain_months``: months per development step, 12 for an annual
+      triangle.
+    - measure: ``"cumulative"`` or ``"incremental"``, and required. It is
+      written onto the grid as given, because a bare frame cannot show which
+      one it holds; the fits that read the grid refuse anything but cumulative.
+    - units, loss_field and segment: labels copied onto the grid for the
+      caller's own records. Nothing here checks them.
+
+    The result is a dict. The keys the array fits
+    (``kernels.fit_conventional_grid`` and ``kernels.fit_mack_grid``) read are:
+
+    - ``n_w``, ``n_d``: the number of origins and of development steps.
+    - ``cum``: a float array of shape ``(n_w, n_d)``, NaN where a cell is not
+      observed. ``cum[i, j]`` is origin ``i`` at ``(j + 1) * dev_grain_months``
+      months.
+    - ``obs_mask``: a boolean array equal to ``~isnan(cum)``.
+    - ``latest_dev``: an integer array, each origin's last observed column.
+    - ``origin_periods``: the origins as dates, oldest first.
+    - ``dev_grain_months``, and the measure as passed in.
+
+    It also carries ``w`` and ``d`` (the 1-based origin and development index of
+    every observed cell) and the labels above. A caller may build this dict by
+    hand instead; both fits check it again before using it.
+
+    Refused, by name: a measure other than the two above, a ``dev_lag`` that is
+    not positive or not on the declared grain, more than one row for the same
+    cell, an origin with no observation at the first development step, and
+    cells that do not form a run-off triangle. A run-off triangle has every
+    origin observed from the first development step up to one common diagonal,
+    or up to the last development step once that origin has run off. The check
+    counts origins by position, so a missing origin period is accepted only
+    where every origin before it has already run off.
+
+    The Triangle path to the same dict is ``kernels.contract.cohort_grid``,
+    which builds it through this function, and so does
+    ``kernels.mack.fit_mack_many`` for each cohort of a multi-cohort triangle it
+    has read once.
     """
+    # Internal note: ``measure`` has no default because it stamps an identity
+    # fact this function cannot verify, and ``kernels.holdout.index_into``
+    # refuses cells by it. ``fields``/``models`` are ``(loss_field,)``: the
+    # deterministic entries model exactly the field they read.
+    #
     # Vectorized throughout: this runs once per cohort in fit_mack_many's batch
     # loop, so per-row pandas iteration here would put the loop's cost right
     # back after the engine round-trips were removed.
+    if measure not in get_args(Measure):
+        raise ValueError(f"measure must be one of {get_args(Measure)}, got {measure!r}")
     step = dev_grain_months
     d = dev_step_index(df["dev_lag"], step=step)
-    w_idx, origin_arr = pd.factorize(_as_date(df["origin_period"]), sort=True)
-    origins = list(origin_arr)
+    # Factorize the raw values, then read each DISTINCT value as a date: two
+    # spellings of one origin ("2010-01-01" and a date) become one row, and the
+    # conversion costs one call per origin rather than one per cell.
+    codes, uniques = pd.factorize(_as_date(df["origin_period"]))
+    if (codes < 0).any():
+        raise ValueError("origin_period has missing values; every row needs its origin period")
+    try:
+        as_dates = [as_date(value) for value in uniques]
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"origin_period values must be dates: {exc}") from exc
+    origins = sorted(set(as_dates))
+    position = {origin: i for i, origin in enumerate(origins)}
+    w_idx = np.array([position[o] for o in as_dates], dtype=np.int64)[codes]
     n_w, n_d = len(origins), int(d.max())
     flat = w_idx.astype(np.int64) * n_d + (d - 1)
     if np.unique(flat).size != flat.size:
@@ -598,25 +651,7 @@ def cohort_grid_frame(
     cum = np.full((n_w, n_d), np.nan)
     cum[w_idx, d - 1] = df["value"].to_numpy(dtype=float)
     obs_mask = ~np.isnan(cum)
-
-    if not obs_mask[:, 0].all():
-        missing = [origins[i] for i in np.nonzero(~obs_mask[:, 0])[0]]
-        raise ValueError(f"origins {missing} have no observation at the first dev step")
-    latest_dev = obs_mask.shape[1] - 1 - np.argmax(obs_mask[:, ::-1], axis=1)  # (n_w,)
-    # K = the calendar diagonal, in (origin + dev) units, implied by the youngest
-    # origin; every other origin must sit on the same diagonal (or be capped by
-    # n_d, having already run off).
-    diagonal = int(latest_dev[-1]) + (n_w - 1)
-    expected = np.minimum(diagonal - np.arange(n_w), n_d - 1)  # (n_w,) staircase
-    reference = np.arange(n_d)[None, :] <= expected[:, None]
-    if not (obs_mask == reference).all():
-        rows = sorted(set(np.nonzero(obs_mask != reference)[0].tolist()))[:5]
-        bad = [(origins[i], int(obs_mask[i].sum()), int(expected[i]) + 1) for i in rows]
-        raise ValueError(
-            "observed cells are not a run-off triangle; the chain-ladder kernels need "
-            "each origin observed from dev step 1 up to one common calendar diagonal. "
-            f"(origin, observed cells, expected depth) mismatches: {bad}"
-        )
+    latest_dev = require_run_off(obs_mask, origins)
 
     # 1-based cell indices of the observed cells, row-major (sorted by (w, d)),
     # the same convention as stan_data's w/d. Derived from the mask rather than
@@ -640,6 +675,194 @@ def cohort_grid_frame(
         "w": (w_obs + 1).astype(int),
         "d": (d_obs + 1).astype(int),
     }
+
+
+def require_run_off(obs_mask: np.ndarray, origins: list) -> np.ndarray:
+    """Each origin's last observed dev index, or a refusal if the grid is not a run-off.
+
+    The observed cells must form the staircase :func:`cohort_grid` describes:
+    every origin observed from dev step 1 up to one common diagonal, or up to the
+    last dev step once it has run off. Shared by :func:`cohort_grid_frame` and by
+    :func:`check_grid`, which re-checks a grid it is handed because a grid is a
+    plain dict a caller can build or change by hand.
+    """
+    n_w, n_d = obs_mask.shape
+    if not obs_mask[:, 0].all():
+        missing = [origins[i] for i in np.nonzero(~obs_mask[:, 0])[0]]
+        raise ValueError(f"origins {missing} have no observation at the first dev step")
+    latest_dev = n_d - 1 - np.argmax(obs_mask[:, ::-1], axis=1)  # (n_w,)
+    # K = the calendar diagonal, in (origin + dev) units, implied by the youngest
+    # origin; every other origin must sit on the same diagonal (or be capped by
+    # n_d, having already run off).
+    diagonal = int(latest_dev[-1]) + (n_w - 1)
+    expected = np.minimum(diagonal - np.arange(n_w), n_d - 1)  # (n_w,) staircase
+    reference = np.arange(n_d)[None, :] <= expected[:, None]
+    if not (obs_mask == reference).all():
+        rows = sorted(set(np.nonzero(obs_mask != reference)[0].tolist()))[:5]
+        bad = [(origins[i], int(obs_mask[i].sum()), int(expected[i]) + 1) for i in rows]
+        raise ValueError(
+            "observed cells are not a run-off triangle; the chain-ladder kernels need "
+            "each origin observed from dev step 1 up to one common calendar diagonal. "
+            f"(origin, observed cells, expected depth) mismatches: {bad}"
+        )
+    return latest_dev
+
+
+#: The grid keys the array fits read. ``premium`` is read by BF and GCC only.
+_GRID_KEYS = (
+    "n_w",
+    "n_d",
+    "cum",
+    "obs_mask",
+    "latest_dev",
+    "origin_periods",
+    "dev_grain_months",
+    "measure",
+)
+
+
+def check_grid(grid: dict[str, Any]) -> tuple[list[dt.date], dt.date]:
+    """The grid's origins as dates and its information date, or a refusal by name.
+
+    The shared check of the two array fits, ``kernels.fit_conventional_grid``
+    and ``kernels.fit_mack_grid``. A grid is a plain dict that a caller can
+    build or change by hand, so neither fit trusts that it came from
+    :func:`cohort_grid_frame` unchanged. Each check costs microseconds.
+
+    Refused: a missing key; a measure other than ``"cumulative"``; ``n_w`` and
+    ``n_d`` that are not whole numbers, or a grid with no cells; ``cum`` that is
+    not a float array of shape ``(n_w, n_d)``; ``obs_mask`` that is not a
+    boolean array equal to ``~isnan(cum)``; a development step that is not a
+    positive whole number of months; origin periods of the wrong count, that are
+    not dates, that are not the first day of a month, or that are not in
+    increasing order; cells that are not a run-off triangle; ``latest_dev`` that
+    is not an integer array of each origin's last observed column; origin
+    periods not one development step apart (the smallest gap between
+    neighbouring origins must equal the step and every gap must be a whole
+    number of steps); and still-developing origins whose latest cells are on
+    different dates.
+
+    The information date is the evaluation date of the latest observed cell:
+    the day before ``origin_period`` plus ``dev_lag`` months, which is a month
+    end because origin periods start on the first. Origin 1988-01-01 at 12
+    months is 1988-12-31.
+    """
+    missing = [key for key in _GRID_KEYS if key not in grid]
+    if missing:
+        raise ValueError(
+            f"grid is missing {missing}; build it with kernels.cohort_grid_frame(), "
+            "or check the keys it documents"
+        )
+    if grid["measure"] != "cumulative":
+        raise ValueError(
+            f"grid measure is {grid['measure']!r}; the chain-ladder fits need cumulative "
+            "losses, so accumulate the increments before building the grid"
+        )
+    n_w, n_d, step = grid["n_w"], grid["n_d"], grid["dev_grain_months"]
+    if not (_is_whole_number(n_w) and _is_whole_number(n_d)):
+        raise ValueError(f"grid n_w and n_d must be whole numbers, got {n_w!r} and {n_d!r}")
+    if n_w < 1 or n_d < 1:
+        raise ValueError("grid has no cells")
+    cum, mask, latest_dev = grid["cum"], grid["obs_mask"], grid["latest_dev"]
+    if not isinstance(cum, np.ndarray) or cum.dtype.kind != "f" or cum.shape != (n_w, n_d):
+        raise ValueError(f"grid cum must be a float array of shape (n_w, n_d) = {(n_w, n_d)}")
+    if (
+        not isinstance(mask, np.ndarray)
+        or mask.dtype != bool
+        or not np.array_equal(mask, ~np.isnan(cum))
+    ):
+        raise ValueError("grid obs_mask must be a boolean array equal to ~isnan(cum)")
+    if not _is_whole_number(step) or step < 1:
+        raise ValueError(
+            f"grid dev_grain_months must be a positive whole number of months, got {step!r}"
+        )
+    if len(grid["origin_periods"]) != n_w:
+        raise ValueError(f"grid has {len(grid['origin_periods'])} origin periods for {n_w} rows")
+    try:
+        origins = [as_date(origin) for origin in grid["origin_periods"]]
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"grid origin_periods must be dates: {exc}") from exc
+    not_starts = [o for o in origins if o.day != 1]
+    if not_starts:
+        raise ValueError(
+            f"origin periods must be the first day of their period; {not_starts[:3]} are not. "
+            "An origin labelled by its period's end (2010-12-31 for accident year 2010) "
+            "would put every evaluation date in the wrong month"
+        )
+    expected_latest = require_run_off(mask, origins)
+    if (
+        not isinstance(latest_dev, np.ndarray)
+        or latest_dev.dtype.kind not in "iu"
+        or not np.array_equal(latest_dev, expected_latest)
+    ):
+        raise ValueError("grid latest_dev must be each origin's last observed dev index")
+    _require_matching_grains(origins, int(step))
+    ends = [
+        month_end(o, (int(j) + 1) * int(step)) for o, j in zip(origins, latest_dev, strict=True)
+    ]
+    valuation = max(ends)
+    stale = [
+        o
+        for o, j, end in zip(origins, latest_dev, ends, strict=True)
+        if j < n_d - 1 and end != valuation
+    ]
+    if stale:
+        raise ValueError(
+            f"origins {stale[:5]} are still developing but their latest cell is dated before "
+            f"{valuation}, the latest cell of the grid; every origin that has not reached the "
+            "last dev step must be observed up to the same date"
+        )
+    return origins, valuation
+
+
+def _is_whole_number(value) -> bool:
+    return isinstance(value, int | np.integer) and not isinstance(value, bool)
+
+
+def _require_matching_grains(origins: list[dt.date], step: int) -> None:
+    """Origins one development step apart, allowing gaps of whole steps."""
+    if len(origins) < 2:
+        return
+    months = np.array([o.year * 12 + o.month for o in origins])
+    gaps = np.diff(months)
+    if (gaps <= 0).any():
+        raise ValueError("grid origin_periods must be in increasing order, at most one per month")
+    if int(gaps.min()) != step or (gaps % step).any():
+        found = sorted({int(g) for g in gaps})
+        raise ValueError(
+            f"origin periods are {found} months apart but the development step is {step} "
+            "months; the chain-ladder fits need matching origin and development grains "
+            f"(neighbouring origins {step} months apart, with any gap a whole number of steps)"
+        )
+
+
+def month_end(origin: dt.date, months: int) -> dt.date:
+    """The last day of the month before the one that ``origin + months`` months reaches.
+
+    For an origin on the first of a month this is the day before ``origin +
+    months`` months, the package's evaluation-date convention: origin
+    1988-01-01 at 12 months is 1988-12-31.
+    """
+    year, month = divmod(origin.year * 12 + origin.month - 1 + months, 12)
+    return dt.date(year, month + 1, 1) - dt.timedelta(days=1)
+
+
+def as_date(value) -> dt.date:
+    """An ISO string, date, timestamp or numpy datetime64 as a plain date, or a refusal.
+
+    Shared by the conventional kernels (a caller's information date, premium
+    keys) and :func:`check_grid` (origin periods), so two dates that were typed
+    differently compare equal. A missing value (``NaT``) is refused.
+    """
+    if isinstance(value, str):
+        return dt.date.fromisoformat(value)
+    if isinstance(value, np.datetime64):
+        value = pd.Timestamp(value)
+    if isinstance(value, dt.datetime) and not pd.isna(value):
+        return value.date()
+    if isinstance(value, dt.date) and not pd.isna(value):
+        return value
+    raise ValueError(f"expected an ISO date or date object, got {value!r}")
 
 
 def realized_values(

@@ -60,7 +60,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ibnr.kernels.contract import cohort_grid, cohort_grid_frame
+from ibnr.kernels.contract import check_grid, cohort_grid, cohort_grid_frame
 from ibnr.kernels.holdout import CellIndex
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.triangle.core import GRAIN_MONTHS, Triangle
@@ -416,9 +416,44 @@ def fit_mack_many(
 
 
 def fit_mack_grid(grid: dict[str, Any], *, sigma_rule: str = "mack") -> MackFit:
-    """Fit from an already-built ``cohort_grid`` dict (the array entry point)."""
+    """Fit Mack's distribution-free chain ladder from a grid dict (the array entry point).
+
+    ``grid`` is the dense one-cohort dict that ``kernels.cohort_grid_frame``
+    builds from a plain pandas frame (``origin_period``, ``dev_lag``, ``value``);
+    its page lists the keys read here. It holds cumulative losses in ``cum``
+    (origins by development steps, NaN where unobserved), with ``obs_mask``,
+    ``latest_dev``, ``origin_periods`` and ``dev_grain_months`` beside it.
+    :func:`fit_mack` is the same fit starting from a Triangle.
+
+    The grid is checked before it is used, exactly as
+    ``kernels.fit_conventional_grid`` checks it: the keys and arrays must agree,
+    the measure must be ``"cumulative"``, origin periods must be the first day
+    of their period and one development step apart, the cells must form a
+    run-off triangle, and every still-developing origin must be observed up to
+    the same date.
+
+    This always estimates Mack's variance parameters as well as the factors, so
+    it refuses some triangles the point estimate alone would not need to refuse:
+    for example a development step with several origin pairs of which fewer
+    than two start from a positive amount, which leaves that step's variance
+    with nothing to be estimated from. For a point estimate on its own, use
+    ``kernels.fit_conventional_grid``.
+
+    ``sigma_rule`` picks how the variance is filled in for a development step
+    with too few pairs to estimate it directly (usually the last step):
+
+    - ``"mack"`` (the default here): Mack's 1993 rule, the smallest of the last
+      two estimated variances and the next value their ratio points to.
+    - ``"log_linear"``: extend a straight line through the logarithms of the
+      earlier standard deviations.
+
+    chainladder-python's ``MackChainladder`` uses the log-linear rule by
+    default, so pass ``sigma_rule="log_linear"`` to compare standard errors
+    with it. The factors and ultimates do not depend on this choice.
+    """
     if sigma_rule not in SIGMA_RULES:
         raise ValueError(f"sigma_rule must be one of {SIGMA_RULES}, got {sigma_rule!r}")
+    origins, _ = check_grid(grid)
     cum, mask = grid["cum"], grid["obs_mask"]
     n_d = grid["n_d"]
     if n_d < 2:
@@ -433,7 +468,7 @@ def fit_mack_grid(grid: dict[str, Any], *, sigma_rule: str = "mack") -> MackFit:
         s=s,
         n_obs=n_obs,
         n_pos=n_pos,
-        origin_periods=grid["origin_periods"],
+        origin_periods=origins,
         dev_grain_months=grid["dev_grain_months"],
         sigma_rule=sigma_rule,
         units=grid.get("units"),
