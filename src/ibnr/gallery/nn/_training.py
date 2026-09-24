@@ -87,7 +87,7 @@ importable without the ``[nn]`` extra (the subprocess test in
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import numpy as np
@@ -146,6 +146,7 @@ def train_ensemble(
     check_every: int = 1,
     cutoff_sampling: str = "per_example",
     keep: int | None = None,
+    members: Sequence[int] | None = None,
 ) -> tuple[list, list[list[dict]]]:
     """Train ``config.ensemble_size`` independently-seeded members.
 
@@ -196,6 +197,12 @@ def train_ensemble(
                  members with the lowest best validation score, in member
                  order. ``None`` returns them all, which is the old
                  behaviour.
+    members:     train only these member indices, each exactly as the whole
+                 loop would train it - its own seed, its own ``member`` label -
+                 and return them in the order given. ``None`` trains
+                 ``range(config.ensemble_size)``. This is what lets one ensemble
+                 be spread over several processes; it cannot be combined with
+                 ``keep``, which selects across the whole ensemble.
 
     Returns ``(models, histories)``: each model in eval mode with its
     best-validation weights restored, and per-member per-epoch
@@ -221,13 +228,35 @@ def train_ensemble(
             f"got {keep!r}"
         )
 
+    if members is not None:
+        indices = members if isinstance(members, list | tuple) else None
+        valid = (
+            indices is not None
+            and len(indices) > 0
+            and all(
+                isinstance(m, int) and not isinstance(m, bool) and 0 <= m < config.ensemble_size
+                for m in indices
+            )
+            and len(set(indices)) == len(indices)
+        )
+        if not valid:
+            raise ValueError(
+                f"members must be a non-empty list of distinct member indices in "
+                f"[0, ensemble_size={config.ensemble_size}), got {members!r}"
+            )
+        if keep is not None:
+            raise ValueError(
+                "members trains part of an ensemble and keep selects across all of it, so the "
+                "two cannot be combined: train every member, then select"
+            )
+
     models: list = []
     histories: list[list[dict]] = []
     # DEEP ENSEMBLE: train ensemble_size independent members, each with its
     # own seed (weights, batch order, and augmented cutoffs all differ).
     # Pooling their draws at predict time adds epistemic spread on top of the
     # head's aleatoric spread.
-    for member in range(config.ensemble_size):
+    for member in range(config.ensemble_size) if members is None else members:
         # widely-spaced per-member seed so members don't share an RNG stream
         member_seed = None if seed is None else seed + 1000 * member
         if member_seed is not None:

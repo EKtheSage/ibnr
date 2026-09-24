@@ -87,6 +87,143 @@ def _refuse_overlap(train_masks, val_masks) -> None:
         )
 
 
+def _training_parts(cfg, n_l, n_d, n_feat, dev, support, train_tensors, val_tensors):
+    """``make_model``, ``forward``, ``train_loss``, ``val_loss`` and ``param_groups``.
+
+    Module level rather than closures inside ``fit`` so that a worker process can
+    rebuild exactly what ``fit`` trains with from the arrays alone: a function defined
+    inside ``fit`` cannot be sent to a process started by ``spawn``, which is the only
+    start method Windows has. ``train_tensors`` maps each training cutoff to its
+    tensor set.
+    """
+    from ibnr.gallery.nn.tlrn import head as tlrn_head
+    from ibnr.gallery.nn.tlrn.network import TLRNNetwork
+
+    def make_model():
+        return TLRNNetwork(cfg, n_lines=n_l, n_lag=n_d, n_feat=n_feat).to(dev)
+
+    def forward(model, tset: dict, rows=None) -> dict:
+        take = (lambda t: t) if rows is None else (lambda t: t[rows])
+        return model(
+            take(tset["feat"]),
+            take(tset["c_lk"]),
+            take(tset["p_lk"]),
+            take(tset["lk"]),
+            tset["line_ix"],
+            tset["lag_ix"],
+            take(tset["written"]),
+            factor_support=support,
+            fallback_logf=tset["fallback_logf"],
+            anchor_logf=take(tset["anchor_logf"]),
+            anchor_start=take(tset["anchor_start"]),
+        )
+
+    def train_loss(model, idx, cutoffs):
+        k = int(cutoffs[0])
+        if not bool((cutoffs == cutoffs[0]).all()):
+            raise ValueError(
+                "tlrn needs one cutoff for the whole batch, because a batch is scored "
+                "against one feature set: set cutoff_sampling='per_epoch'"
+            )
+        tset = train_tensors[k]
+        mask = tset["target_mask"][idx]
+        if not float(mask.sum()):
+            return None  # this epoch's cutoff left this batch nothing to score
+        out = forward(model, tset, idx)
+        return tlrn_head.point_loss(
+            out["pred"],
+            tset["target"][idx],
+            mask,
+            tset["premium"][idx],
+            n_l,
+            n_d,
+            w_pe=cfg.w_pe,
+            w_mse=cfg.w_mse,
+            mse_scale=cfg.mse_scale,
+        )
+
+    def val_loss(model) -> float:
+        return TLRN._ay_line_ape(model, val_tensors, forward, n_l, n_d)
+
+    def param_groups(m):
+        return [
+            {"params": [m.phi], "lr": cfg.lr_phi},
+            {"params": [p for n, p in m.named_parameters() if n != "phi"]},
+        ]
+
+    return make_model, forward, train_loss, val_loss, param_groups
+
+
+#: what a worker process built once from its payload, reused for every member it trains
+_WORKER: dict[str, Any] = {}
+
+
+def _start_worker(payload_path: str, threads: int) -> None:
+    """Rebuild the training parts in a worker process, once, from plain arrays.
+
+    The payload is read from a file the caller wrote rather than sent with the worker:
+    a worker that dies while starting never reads what it was sent, and on Windows the
+    caller then waits forever writing several megabytes into that worker's pipe. It
+    carries numpy arrays rather than tensors, so nothing here depends on how torch
+    shares memory between processes; the tensors are made in the worker the same way
+    ``fit`` makes them. ``threads`` is the calling process's torch thread count,
+    because the arithmetic, and so the trained weights, depend on it.
+    """
+    import pickle
+
+    import torch
+
+    with open(payload_path, "rb") as handle:
+        payload = pickle.load(handle)  # written by this module's own caller, just now
+    torch.set_num_threads(threads)
+    dev = torch.device("cpu")
+    support = payload["support"]
+    parts = _training_parts(
+        payload["cfg"],
+        payload["n_l"],
+        payload["n_d"],
+        payload["n_feat"],
+        dev,
+        None if support is None else torch.tensor(support, device=dev),
+        {k: TLRN._to_tensors(s, torch, dev) for k, s in payload["train_sets"].items()},
+        [TLRN._to_tensors(s, torch, dev) for s in payload["val_sets"]],
+    )
+    _WORKER.update(parts=parts, payload=payload, dev=dev)
+
+
+def _train_member(member: int) -> tuple[int, dict, list[dict], int]:
+    """Train one member in a worker process, exactly as the whole ensemble would.
+
+    Returns the torch thread count it trained on as well, so the caller can check the
+    worker used the count it was sent: on a small problem the weights come out the same
+    either way, so nothing else would show a worker that ignored it.
+    """
+    import torch
+
+    make_model, _, train_loss, val_loss, param_groups = _WORKER["parts"]
+    payload = _WORKER["payload"]
+    cfg = payload["cfg"]
+    models, history = train_ensemble(
+        payload["n_ex"],
+        config=cfg,
+        seed=payload["seed"],
+        make_model=make_model,
+        train_loss=train_loss,
+        val_loss=val_loss,
+        min_cutoff=cfg.min_cutoff,
+        val_cutoff=payload["train_end"],
+        device=_WORKER["dev"],
+        schedule=warmup_cosine(cfg.max_epochs, cfg.warmup),
+        param_groups=param_groups,
+        min_epochs=cfg.min_epochs,
+        check_every=cfg.check_every,
+        cutoff_sampling=cfg.cutoff_sampling,
+        members=[member],
+    )
+    state = {k: v.detach().cpu().clone() for k, v in models[0].state_dict().items()}
+    return member, state, history[0], torch.get_num_threads()
+
+
 @register
 class TLRN(GalleryEntry):
     """The transformer loss reserving network (see card.md).
@@ -118,6 +255,8 @@ class TLRN(GalleryEntry):
         self.point_ultimates_: np.ndarray | None = None  # (n_c, L, n_w)
         self.point_reserves_: np.ndarray | None = None  # (n_c, L, n_w)
         self.point_cumulative_: np.ndarray | None = None  # (n_c, L, n_w, n_d)
+        # every TRAINED member's reserves, in selection_ row order
+        self.member_reserves_: np.ndarray | None = None  # (n_members, n_c, L, n_w)
         self.calibration_: Any = None
         self.company_size_: np.ndarray | None = None  # (n_c,) premium
         self.backtest_: pd.DataFrame | None = None
@@ -139,6 +278,7 @@ class TLRN(GalleryEntry):
         device: str | None = None,
         seed: int | None = None,
         show_progress: bool = False,
+        processes: int = 1,
     ) -> TLRN:
         """Pooled fit across every company in the triangle.
 
@@ -147,12 +287,21 @@ class TLRN(GalleryEntry):
         two channels by ROLE, and a channel list cannot say which is the
         incurred emergence and which the outstanding balance. The case reserve
         is an evaluation-date level, so it is declared as one to the contract.
+
+        ``processes`` trains the members in that many worker processes instead
+        of one after another. It changes where they train, never what they
+        learn: member ``m`` is seeded ``seed + 1000 * m`` wherever it runs, and
+        every worker uses the calling process's torch thread count, so the fit
+        is the one ``processes=1`` gives. Set the thread count first - a small
+        network trains fastest on a few threads, and ``processes`` times that
+        count should not exceed the cores. CPU only.
         """
         import torch
 
         from ibnr.gallery.nn.tlrn import head as tlrn_head
-        from ibnr.gallery.nn.tlrn.network import TLRNNetwork
 
+        if isinstance(processes, bool) or not isinstance(processes, int) or processes < 1:
+            raise ValueError(f"processes must be a positive int, got {processes!r}")
         cfg = config or TLRNConfig()
         train = triangle.as_of(as_of) if as_of is not None else triangle
         # BUILD FIRST, ASSIGN AFTER TRAINING SUCCEEDED - fit() must be atomic, so
@@ -166,6 +315,12 @@ class TLRN(GalleryEntry):
             premium_field=premium_field,
         )
         dev = torch.device(device or "cpu")
+        if processes > 1 and dev.type != "cpu":
+            raise ValueError(
+                f"processes={processes} trains in separate worker processes, which cannot "
+                f"share the {dev.type!r} device this fit was asked for; use processes=1 "
+                "on an accelerator"
+            )
         n_c, n_l, _, n_w, n_d = contract["x"].shape
         last_diagonal = n_w + n_d - 1
 
@@ -231,89 +386,84 @@ class TLRN(GalleryEntry):
         else:
             support_np = None
 
-        def make_model():
-            return TLRNNetwork(cfg, n_lines=n_l, n_lag=n_d, n_feat=n_feat).to(dev)
-
-        def forward(model, tset: dict, rows=None) -> dict:
-            take = (lambda t: t) if rows is None else (lambda t: t[rows])
-            return model(
-                take(tset["feat"]),
-                take(tset["c_lk"]),
-                take(tset["p_lk"]),
-                take(tset["lk"]),
-                tset["line_ix"],
-                tset["lag_ix"],
-                take(tset["written"]),
-                factor_support=support,
-                fallback_logf=tset["fallback_logf"],
-                anchor_logf=take(tset["anchor_logf"]),
-                anchor_start=take(tset["anchor_start"]),
-            )
-
-        def train_loss(model, idx, cutoffs):
-            k = int(cutoffs[0])
-            if not bool((cutoffs == cutoffs[0]).all()):
-                raise ValueError(
-                    "tlrn needs one cutoff for the whole batch, because a batch is scored "
-                    "against one feature set: set cutoff_sampling='per_epoch'"
-                )
-            tset = tensor_of[id(train_sets[k])]
-            mask = tset["target_mask"][idx]
-            if not float(mask.sum()):
-                return None  # this epoch's cutoff left this batch nothing to score
-            out = forward(model, tset, idx)
-            return tlrn_head.point_loss(
-                out["pred"],
-                tset["target"][idx],
-                mask,
-                tset["premium"][idx],
-                n_l,
-                n_d,
-                w_pe=cfg.w_pe,
-                w_mse=cfg.w_mse,
-                mse_scale=cfg.mse_scale,
-            )
-
-        def val_loss(model) -> float:
-            return self._ay_line_ape(model, [tensor_of[id(s)] for s in val_sets], forward, n_l, n_d)
+        val_tensors = [tensor_of[id(s)] for s in val_sets]
+        make_model, forward, train_loss, val_loss, param_groups = _training_parts(
+            cfg,
+            n_l,
+            n_d,
+            n_feat,
+            dev,
+            support,
+            {k: tensor_of[id(s)] for k, s in train_sets.items()},
+            val_tensors,
+        )
 
         def company_ape(model) -> float:
-            return self._company_ape(
-                model, [tensor_of[id(s)] for s in val_sets], forward, val_sets, n_c
-            )
+            return self._company_ape(model, val_tensors, forward, val_sets, n_c)
 
         # keep=None: every member is trained and reported, and the selection is
         # made here so the table can carry the members that were dropped
-        models, history = train_ensemble(
-            n_ex,
-            config=cfg,
-            seed=seed,
-            make_model=make_model,
-            train_loss=train_loss,
-            val_loss=val_loss,
-            min_cutoff=cfg.min_cutoff,
-            val_cutoff=train_end,
-            device=dev,
-            show_progress=show_progress,
-            schedule=warmup_cosine(cfg.max_epochs, cfg.warmup),
-            param_groups=lambda m: [
-                {"params": [m.phi], "lr": cfg.lr_phi},
-                {"params": [p for n, p in m.named_parameters() if n != "phi"]},
-            ],
-            min_epochs=cfg.min_epochs,
-            check_every=cfg.check_every,
-            cutoff_sampling=cfg.cutoff_sampling,
-            keep=None,
-        )
+        if processes == 1:
+            models, history = train_ensemble(
+                n_ex,
+                config=cfg,
+                seed=seed,
+                make_model=make_model,
+                train_loss=train_loss,
+                val_loss=val_loss,
+                min_cutoff=cfg.min_cutoff,
+                val_cutoff=train_end,
+                device=dev,
+                show_progress=show_progress,
+                schedule=warmup_cosine(cfg.max_epochs, cfg.warmup),
+                param_groups=param_groups,
+                min_epochs=cfg.min_epochs,
+                check_every=cfg.check_every,
+                cutoff_sampling=cfg.cutoff_sampling,
+                keep=None,
+            )
+        else:
+            payload = {
+                "cfg": cfg,
+                "n_l": n_l,
+                "n_d": n_d,
+                "n_feat": n_feat,
+                "n_ex": n_ex,
+                "train_end": train_end,
+                "seed": seed,
+                "support": support_np,
+                "train_sets": train_sets,
+                "val_sets": val_sets,
+            }
+            models, history = self._train_in_processes(
+                payload, processes, make_model, cfg.ensemble_size, torch
+            )
 
         selection = self._selection_table(models, history, cfg.keep, company_ape)
         kept_ix = selection.index[selection["kept"]].tolist()
         kept = [models[m] for m in kept_ix]
         kept_history = [history[m] for m in kept_ix]
 
-        point = self._ensemble_pred(kept, tensor_of[id(final_set)], forward)
+        final_tensors = tensor_of[id(final_set)]
+        point = self._ensemble_pred(kept, final_tensors, forward)
         ultimates, reserves, cumulative = self._assemble_point(
-            point, final_set, contract, kept, tensor_of[id(final_set)], forward
+            point, final_set, contract, kept, final_tensors, forward
+        )
+        # every trained member's own reserves, the dropped ones included: the kept
+        # ensemble is their mean over the kept rows, and any other group of members
+        # can be scored from them without refitting
+        member_reserves = np.stack(
+            [
+                self._assemble_point(
+                    self._ensemble_pred([m], final_tensors, forward),
+                    final_set,
+                    contract,
+                    [m],
+                    final_tensors,
+                    forward,
+                )[1]
+                for m in models
+            ]
         )
 
         size = np.array(
@@ -347,6 +497,7 @@ class TLRN(GalleryEntry):
         self.point_ultimates_ = ultimates
         self.point_reserves_ = reserves
         self.point_cumulative_ = cumulative
+        self.member_reserves_ = member_reserves
         self.calibration_ = calibration
         self.company_size_ = size
         self.backtest_ = residuals
@@ -484,6 +635,20 @@ class TLRN(GalleryEntry):
             raise RuntimeError("call fit() first")
         return np.nansum(self.point_reserves_, axis=(1, 2))
 
+    def member_company_reserves(self) -> np.ndarray:
+        """``(n_members, n_c)`` each TRAINED member's point reserve per company.
+
+        Rows follow ``selection_``, so the members the selection dropped are here
+        too. The kept ensemble averages its members' forecast cells and a reserve
+        is a sum of cells, so ``company_reserves()`` is exactly the mean of the kept
+        rows - and any other group of members, the best two of some other ten or all
+        of them, is the mean of its rows, scored without refitting. Averaging every
+        member is also available as a fit: ``keep = ensemble_size``.
+        """
+        if self.member_reserves_ is None:
+            raise RuntimeError("call fit() first")
+        return np.nansum(self.member_reserves_, axis=(2, 3))
+
     def company_anchors(self) -> np.ndarray:
         """``(n_c,)`` the cumulative paid to date of each company."""
         c = self.contract_
@@ -526,6 +691,60 @@ class TLRN(GalleryEntry):
             out[k] = torch.tensor(features[k], dtype=torch.long, device=dev)
         out["written"] = torch.tensor(features["written"], dtype=torch.bool, device=dev)
         return out
+
+    @staticmethod
+    def _train_in_processes(payload: dict, processes: int, make_model, n_members: int, torch):
+        """Train every member in a pool of ``spawn`` worker processes, in member order.
+
+        Each worker rebuilds the training parts once from ``payload`` and then trains
+        whole members; only a member index goes out and only its weights and history
+        come back. The models are rebuilt here from those weights, in eval mode, as
+        ``train_ensemble`` returns them.
+        """
+        import multiprocessing
+        import os
+        import pickle
+        import tempfile
+        from concurrent.futures import ProcessPoolExecutor
+        from concurrent.futures.process import BrokenProcessPool
+
+        threads = torch.get_num_threads()
+        with tempfile.TemporaryDirectory(prefix="ibnr-tlrn-") as scratch:
+            payload_path = os.path.join(scratch, "payload.pkl")
+            with open(payload_path, "wb") as handle:
+                pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            try:
+                with ProcessPoolExecutor(
+                    max_workers=min(processes, n_members),
+                    mp_context=multiprocessing.get_context("spawn"),
+                    initializer=_start_worker,
+                    initargs=(payload_path, threads),
+                ) as pool:
+                    trained = list(pool.map(_train_member, range(n_members)))
+            except BrokenProcessPool as err:
+                raise RuntimeError(
+                    "a tlrn worker process stopped before it finished training. The usual "
+                    "cause: every worker re-imports the script that started it, so a script "
+                    'that calls fit(processes=...) must do so under if __name__ == "__main__": '
+                    "- otherwise each worker tries to start workers of its own and Python "
+                    "stops it. A notebook needs no guard. The workers' own error is printed "
+                    "above this one"
+                ) from err
+        used = sorted({t for *_, t in trained})
+        if used != [threads]:
+            raise RuntimeError(
+                f"worker processes trained on {used} torch thread(s) where {threads} were "
+                "asked for; the weights depend on the thread count, so these members are "
+                "not the ones processes=1 would train"
+            )
+        models, history = [], []
+        for _, state, records, _ in trained:
+            model = make_model()
+            model.load_state_dict(state)
+            model.eval()
+            models.append(model)
+            history.append(records)
+        return models, history
 
     @staticmethod
     def _ay_line_ape(model, tsets: list[dict], forward, n_l: int, n_d: int) -> float:
