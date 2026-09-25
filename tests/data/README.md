@@ -11,7 +11,10 @@ observed increments of R ChainLadder's `GenIns`, `UKMotor`, `ABC` and `MW2014`,
 `glm.control(epsilon = 1e-12)`: the reserves by origin (the fitted future
 increments), every fitted increment, the coefficients and their standard
 errors, the deviance, Pearson chi-squared, dispersion and residual degrees of
-freedom. Also the identity link at p = 0 on `GenIns`, development factors with
+freedom. Also the identity link (`link.power = 1`) at p = 0 on `GenIns` and at
+p = 1, 1.5 and 2 on all four (for `MW2014` at 1 and 1.5, R's error: it finds no
+valid coefficients), a 4x4 triangle whose identity-link fit at p = 1 and 1.5
+has to halve a step, development factors with
 a calendar trend at p = 1 on `GenIns`, `ChainLadder::glmReserve`'s total IBNR
 and the chain ladder's IBNR by origin. Each triangle's cumulative cells are in
 the file too, so the tests need no other copy.

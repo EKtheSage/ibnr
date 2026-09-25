@@ -3,9 +3,11 @@
 # R's glm() with statmod::tweedie(var.power = p, link.power = 0) fitted to the
 # observed increments of four public triangles from R's ChainLadder package,
 # with value ~ factor(origin) + factor(dev), at p = 0, 1, 1.5 and 2. Also: the
-# identity link at p = 0 on GenIns, a calendar trend with development factors
-# (and no origin factors) on GenIns at p = 1, and ChainLadder::glmReserve as a
-# second R route to the same reserves.
+# identity link at p = 0 on GenIns and at p = 1, 1.5 and 2 on all four (R finds
+# no valid coefficients for MW2014 at 1 and 1.5, and the error is kept), a small
+# triangle whose identity fit halves a step, a calendar trend with development
+# factors (and no origin factors) on GenIns at p = 1, and ChainLadder::glmReserve
+# as a second R route to the same reserves.
 #
 # CI has no R, so the output is committed as tests/data/tweedie_glm_r.json and
 # tests/test_glm.py reads it. To regenerate, from the repository root:
@@ -93,9 +95,38 @@ for (nm in c("GenIns", "UKMotor", "ABC", "MW2014")) {
   ))
 }
 
+# The identity link at p = 1, 1.5 and 2 with origin and development factors.
+# R finds no valid coefficients for MW2014 at some powers; the error is kept.
+identity_fit <- function(tri, p) {
+  tryCatch(
+    fit_json(tri, value ~ factor(origin) + factor(dev), p, link_power = 1),
+    error = function(e) {
+      text <- gsub('["\r\n]', " ", conditionMessage(e))
+      obj(list(power = num(p), link = '"identity"', error = paste0('"', text, '"')))
+    }
+  )
+}
+identity <- list()
+for (nm in c("GenIns", "UKMotor", "ABC", "MW2014")) {
+  fits <- sapply(c(1, 1.5, 2), function(p) identity_fit(get(nm), p))
+  identity[[nm]] <- paste0("[", paste(fits, collapse = ", "), "]")
+}
+
+# A small triangle whose identity-link fit has to halve a step that leaves the
+# positive means (found by search).
+halving <- as.triangle(matrix(
+  c(7, 52, 86, 216, 70, 78, 239, NA, 9, 13, NA, NA, 13, NA, NA, NA),
+  nrow = 4, byrow = TRUE
+))
+
 extras <- obj(list(
   genins_identity_p0 = fit_json(GenIns, value ~ factor(origin) + factor(dev), 0, link_power = 1),
-  genins_calendar_p1 = fit_json(GenIns, value ~ factor(dev) + cal, 1)
+  genins_calendar_p1 = fit_json(GenIns, value ~ factor(dev) + cal, 1),
+  identity = obj(identity),
+  halving_triangle = cumulative_rows(halving),
+  halving_identity = paste0(
+    "[", paste(sapply(c(1, 1.5), function(p) identity_fit(halving, p)), collapse = ", "), "]"
+  )
 ))
 
 cat(obj(list(

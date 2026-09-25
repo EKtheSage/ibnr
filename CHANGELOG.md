@@ -472,6 +472,17 @@ returns a `ReserveResult`.
   more than 1e-10 of the largest increment, so the answer scales exactly with
   the units. A fit that has not settled within `max_iter` is refused
   (`did_not_converge`), never returned.
+- A fitted mean below 1e-8 of the largest increment, on a cell whose increment
+  is zero or less, means the fit exists only in the limit. It is refused, as
+  `degenerate_fit` under the log link and as `negative_fitted_mean` under the
+  identity link at a power above 0, so whether a triangle is answered does not
+  depend on its units either. A small mean fitted to a small positive
+  increment (GenIns with one increment of 0.01) is answered.
+- At power 0 the log link keeps every fitted increment above zero, so an age or
+  an origin whose increments sum to zero or less can leave it with no finite
+  fit. Such a refusal names the age or origin and points to `link="identity"`,
+  which answers it (417 of the 775 clrd incurred-less-bulk triangles at power 0,
+  against 128 under the log link).
 - Under the log link an origin or an age whose increments are all zero is
   fitted at exactly zero (its coefficient null, `fitted_zero` true), which is
   the limit of the fit and the chain ladder's answer.
@@ -481,7 +492,13 @@ zero_cells="observed")` to 1e-10 by both projections on GenIns, UKMotor, ABC
 and MW2014, and chainladder-python's chain ladder too. Powers 0, 1, 1.5 and 2
 match R's `glm` with `statmod::tweedie` on the same four triangles (reserves to
 at most 9.3e-8 of the largest origin's, plus the coefficients, standard errors,
-deviance and dispersion); the numbers are frozen in
+deviance and dispersion). The identity link matches R at power 0 on GenIns and
+at powers 1, 1.5 and 2 on GenIns, UKMotor and ABC (reserves and fitted
+increments to 2e-7 of the largest, standard errors to 1e-6), and on a small
+triangle whose fit has to halve a step.
+MW2014 under the identity link is refused (`negative_fitted_mean`) at powers 1,
+1.5 and 2: R finds no valid coefficients at 1 and 1.5, and at 2 returns
+negative future increments (a total reserve of -29,932). The numbers are frozen in
 `tests/data/tweedie_glm_r.json` by `scripts/r/tweedie_glm_reference.R`, because
 CI has no R. On the 775 clrd paid triangles, built from chainladder's raw
 `clrd.csv` so zeros stay zeros, the power-1 GLM equals `chain_ladder(cells,

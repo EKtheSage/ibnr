@@ -1067,7 +1067,10 @@ def tweedie_glm(
       above 2 the other Tweedie distributions. No Tweedie distribution has a
       power between 0 and 1, and those powers are refused. At power 1 and above
       every increment must be zero or more, and at power 2 and above more than
-      zero; power 0 accepts negative increments.
+      zero; power 0 accepts negative increments, but under the log link, which
+      keeps every fitted increment above zero, an age or origin whose
+      increments sum to zero or less can leave no finite fit (the refusal names
+      it; ``link="identity"`` fits it).
     - ``link``: ``"log"`` (the default), ``log(mu)`` is the sum of the terms, or
       ``"identity"``, ``mu`` is.
     - ``origin``: ``"factor"`` (the default) gives each origin its own level;
@@ -1152,9 +1155,13 @@ def tweedie_glm(
     increment at power 2 or above (``zero_increment``), no losses at all or
     more terms than the cells can tell apart (``not_identified``), a fit that
     did not settle (``did_not_converge``), a fit with no finite answer
-    (``degenerate_fit``), an identity-link fitted increment of zero or less at
-    a power above 0 (``negative_fitted_mean``), and an ultimate below zero
-    (``negative_projection``).
+    (``degenerate_fit``, including a fitted mean that falls below 1e-8 of the
+    largest increment on a cell whose increment is zero or less), an
+    identity-link fitted increment of zero or less at a power above 0, or one
+    that falls to 1e-8 of the largest increment where the increment is 0
+    (``negative_fitted_mean``), and an ultimate below zero
+    (``negative_projection``). Whether a triangle is refused does not depend
+    on its units.
     """
     with _CallersTerms("tweedie_glm") as terms:
         grid, labels = terms.read(cells, dev_grain_months)

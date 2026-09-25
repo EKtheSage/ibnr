@@ -382,7 +382,10 @@ Where the answers differ from chainladder-python 0.9.2, and why:
   origin: `development["factor"]` and `["cdf"]` are then null and each
   origin's factors are in `cells`. chainladder shows the first origin's
   pattern only, and its identity link fails at power 1. At a power above 0 a
-  fitted increment of zero or less is refused (`negative_fitted_mean`).
+  fitted increment of zero or less is refused (`negative_fitted_mean`), and so
+  is one that falls to 1e-8 of the largest increment on a cell whose increment
+  is 0, where the fit runs to a mean of exactly 0 and rounding alone would
+  decide the sign; the log link fits an age or origin of zeros at exactly 0.
 - **A calendar trend** is a straight line in the calendar period, and only
   beside `origin="none"`: with origin and development factors it cannot be
   estimated (R returns `NA` for it; chainladder's penalty hides that and
@@ -395,7 +398,11 @@ Where the answers differ from chainladder-python 0.9.2, and why:
 - **Negative increments** are refused at power 1 and above by the cell
   (`negative_increment`), zero increments at power 2 and above
   (`zero_increment`). Power 0 accepts negative increments; the cumulatives must
-  still be zero or more, as for every method.
+  still be zero or more, as for every method. Under the default log link every
+  fitted increment is above zero, so an age or an origin whose increments sum
+  to zero or less can leave the fit with no finite answer: it is refused
+  (`degenerate_fit`, or `did_not_converge` if the fit only ran out of
+  iterations) with the age or origin named. `link="identity"` fits it.
 
 ## When a method refuses
 

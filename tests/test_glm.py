@@ -225,6 +225,105 @@ def test_the_identity_link_matches_r_origin_by_origin():
         if projection == "pattern":
             np.testing.assert_allclose(column(result.origins, "ultimate"), latest * cdf, rtol=1e-12)
         assert len(set(np.round(column(cells, "factor")[:9], 12))) > 1
+        # the coefficients, their standard errors (in the units of the amounts)
+        # and the dispersion. Mutation: leave the standard errors in the fit's
+        # internal units (divided by the largest increment): this fails.
+        np.testing.assert_allclose(
+            column(result.coefficients, "estimate"), reference["coefficients"], rtol=1e-8
+        )
+        np.testing.assert_allclose(
+            column(result.coefficients, "std_error"), reference["std_errors"], rtol=1e-8
+        )
+        dispersion = result.totals["dispersion"][0].as_py()
+        assert dispersion == pytest.approx(reference["dispersion"], rel=1e-10)
+
+
+IDENTITY_POWERS = (1.0, 1.5, 2.0)
+
+
+@pytest.mark.tieout
+@pytest.mark.parametrize("name", ["GenIns", "UKMotor", "ABC"])
+@pytest.mark.parametrize("index", range(3), ids=[f"p{p:g}" for p in IDENTITY_POWERS])
+def test_the_identity_link_matches_r_at_every_positive_power(name, index):
+    """R's glm with statmod::tweedie(var.power = p, link.power = 1), origin and
+    development factors. Mutation: weights of 1 whatever the power (the normal
+    fit), or the standard errors left in the fit's internal units: this fails."""
+    fit_r = R["extras"]["identity"][name][index]
+    assert fit_r["power"] == IDENTITY_POWERS[index] and fit_r["converged"]
+    result = methods.tweedie_glm(
+        named(name), power=IDENTITY_POWERS[index], link="identity", projection="increments"
+    )
+    reserve = np.asarray(fit_r["reserve_by_origin"])
+    got = column(result.origins, "model_ibnr")
+    assert np.max(np.abs(got - reserve)) <= 1e-7 * np.max(np.abs(reserve))
+    estimate = column(result.coefficients, "estimate")
+    # R stops at a relative deviance change of 1e-12, before ibnr: measured
+    # at most 4e-8 of the largest estimate apart
+    np.testing.assert_allclose(
+        estimate, fit_r["coefficients"], rtol=1e-6, atol=1e-7 * np.max(np.abs(estimate))
+    )
+    np.testing.assert_allclose(
+        column(result.coefficients, "std_error"), fit_r["std_errors"], rtol=1e-6
+    )
+    totals = result.totals.to_pylist()[0]
+    assert totals["deviance"] == pytest.approx(fit_r["deviance"], rel=1e-8)
+    assert totals["dispersion"] == pytest.approx(fit_r["dispersion"], rel=1e-6)
+    fitted = column(result.cells, "fitted_increment")
+    assert np.max(np.abs(fitted - fit_r["fitted"])) <= 2e-7 * np.max(np.abs(fitted))
+
+
+@pytest.mark.tieout
+def test_mw2014_under_the_identity_link_is_refused_where_r_fails_or_goes_below_zero():
+    """R finds no valid coefficients at powers 1 and 1.5, and at power 2 returns
+    a fit whose future increments are negative (a total reserve of -29,932),
+    which a gamma mean cannot be. ibnr refuses all three by name."""
+    runs = R["extras"]["identity"]["MW2014"]
+    assert "no valid set of coefficients" in runs[0]["error"]
+    assert "no valid set of coefficients" in runs[1]["error"]
+    assert runs[2]["converged"] and sum(runs[2]["reserve_by_origin"]) < 0
+    for power in IDENTITY_POWERS:
+        refusal = refusal_of(
+            lambda power=power: methods.tweedie_glm(named("MW2014"), power=power, link="identity")
+        )
+        assert (refusal.reason, refusal.option) == ("negative_fitted_mean", "link"), power
+        assert "link='log'" in str(refusal)
+
+
+@pytest.mark.tieout
+@pytest.mark.parametrize("index", range(2), ids=["p1", "p1.5"])
+def test_a_step_that_leaves_the_positive_means_is_halved(index):
+    """A 4x4 triangle whose identity-link fit takes a Fisher step past zero and
+    has to halve it back towards the last valid one, as R's glm.fit does ("step
+    size truncated due to divergence"). The fit converges slowly and R stops at
+    a relative deviance change of 1e-12, before ibnr, so the fitted increments
+    agree to 5e-7 of the largest; ibnr's are the maximum-likelihood ones, whose
+    score (the derivative of the log-likelihood in each coefficient) is 0.
+    Mutation: no halving, or halving towards zero instead of towards the last
+    step: this fails."""
+    fit_r = R["extras"]["halving_identity"][index]
+    assert fit_r["converged"]
+    rows = R["extras"]["halving_triangle"]
+    power = fit_r["power"]
+    result = methods.tweedie_glm(
+        cells_of(rows), power=power, link="identity", projection="increments"
+    )
+    fitted = column(result.cells, "fitted_increment")
+    assert np.max(np.abs(fitted - fit_r["fitted"])) <= 5e-7 * np.max(fitted)
+    reserve = column(result.origins, "model_ibnr")
+    assert np.max(np.abs(reserve - fit_r["reserve_by_origin"])) <= 5e-7 * np.max(reserve)
+    # the score at ibnr's fit: sum over the observed cells of x * (y - mu) / mu ** p
+    n = len(rows)
+    observed = [(i, j) for i in range(n) for j in range(len(rows[i]))]
+    y = np.array([rows[i][j] - (rows[i][j - 1] if j else 0.0) for i, j in observed])
+    mu = fitted.reshape(n, n)[tuple(np.array(observed).T)]
+    x = np.array(
+        [
+            [1.0] + [float(i == k) for k in range(1, n)] + [float(j == k) for k in range(1, n)]
+            for i, j in observed
+        ]
+    )
+    score = x.T @ ((y - mu) / mu**power)
+    assert np.max(np.abs(score)) <= 1e-8
 
 
 @pytest.mark.tieout
@@ -409,6 +508,13 @@ def test_the_answer_scales_exactly_with_the_units(power, link):
         else:
             expected *= scale
         np.testing.assert_allclose(estimate, expected, rtol=1e-9, atol=1e-9)
+        # a standard error on the log scale does not depend on the units; on the
+        # identity scale it is in the units of the amounts
+        np.testing.assert_allclose(
+            column(scaled.coefficients, "std_error"),
+            column(base_coef, "std_error") * (1.0 if link == "log" else scale),
+            rtol=1e-8,
+        )
         totals, base_totals = scaled.totals.to_pylist()[0], base.totals.to_pylist()[0]
         assert totals["deviance"] == pytest.approx(
             base_totals["deviance"] * scale ** (2 - power), rel=1e-8
@@ -606,6 +712,128 @@ def test_an_identity_fit_below_zero_is_refused_at_a_positive_power():
     assert [(c.origin, c.dev_lag) for c in refusal.cells] == [(2002, 24)]
 
 
+FLAT_LAST_AGE = [[100, 150, 170, 170], [110, 160, 185], [120, 175], [130]]
+
+
+@pytest.mark.parametrize("power", [1.0, 1.5])
+@pytest.mark.parametrize("origin", ["factor", "none"])
+def test_the_identity_link_gives_one_verdict_at_every_scale(power, origin):
+    """The last age's only increment is 0, so the identity fit's mean there
+    runs to exactly 0, which rounding leaves a hair above or below zero
+    depending on the units. Before the fix the same triangle was answered at
+    one scale and refused at another (as ``negative_fitted_mean`` or
+    ``did_not_converge``). Mutation: test the fitted means against 0 instead of
+    ``BOUNDARY`` times the largest increment: this fails."""
+    seen = set()
+    for scale in (1.0, 1e-3, 0.7, 3.0, 7.0, 1e3):
+        refusal = refusal_of(
+            lambda scale=scale: methods.tweedie_glm(
+                cells_of(FLAT_LAST_AGE, scale=scale), power=power, link="identity", origin=origin
+            )
+        )
+        seen.add((refusal.reason, tuple((c.origin, c.dev_lag) for c in refusal.cells)))
+        assert "link='log'" in str(refusal)
+    assert seen == {("negative_fitted_mean", ((2001, 48),))}
+    # the log link fits the zero age at exactly 0 at every scale
+    for scale in (1.0, 0.7, 7.0):
+        result = methods.tweedie_glm(
+            cells_of(FLAT_LAST_AGE, scale=scale), power=power, origin=origin
+        )
+        assert column(result.cells, "fitted_increment")[3::4].tolist() == [0.0] * 4
+
+
+@pytest.mark.parametrize("power", [1.0, 1.5])
+def test_a_small_positive_increment_is_an_answer(power):
+    """GenIns with its one 120-month increment set to 0.01, 6.4e-9 of the
+    largest: the fitted mean there is small because the increment is, not
+    because the fit runs off to a limit, so it is answered (at power 1 the
+    chain ladder's answer). Mutation: test every observed cell against
+    ``BOUNDARY``, not only those whose increment is zero or less: this fails."""
+    rows = [list(row) for row in rows_of("GenIns")]
+    rows[0][-1] = rows[0][-2] + 0.01
+    result = methods.tweedie_glm(cells_of(rows), power=power)
+    fitted = column(result.cells, "fitted_increment")
+    assert fitted[9] == pytest.approx(0.01, rel=1e-3)
+    if power == 1.0:
+        chain = methods.chain_ladder(cells_of(rows), zero_cells="observed")
+        np.testing.assert_allclose(
+            column(result.origins, "ultimate"), column(chain.origins, "ultimate"), rtol=1e-10
+        )
+
+
+FALLS_AT_36 = [[100, 200, 190, 195], [110, 220, 200], [120, 250], [130]]
+
+
+def test_an_age_that_falls_on_balance_is_named_at_power_zero():
+    """At power 0 the increments at 36 months are -10 and -20. Under the log
+    link every fitted increment is above zero, so the fit has no finite
+    answer; the message names the age and the identity link, which answers."""
+    refusal = refusal_of(lambda: methods.tweedie_glm(cells_of(FALLS_AT_36), power=0))
+    assert refusal.reason == "degenerate_fit"
+    text = str(refusal)
+    assert "increments at 36 months sum to zero or less" in text
+    assert "link='identity'" in text
+    assert "only zeros" not in text
+    identity = methods.tweedie_glm(cells_of(FALLS_AT_36), power=0, link="identity")
+    assert identity.origins.num_rows == 4
+
+
+def test_an_age_that_falls_on_balance_can_still_have_a_log_link_fit():
+    """At 36 months +40 on a large origin and -60 on a small one sum to -20,
+    and the power-0 log-link fit still exists (12 iterations): a sum of zero or
+    less does not prove there is no fit, so a fit stopped by ``max_iter`` stays
+    ``did_not_converge``, with the age named as a possible cause."""
+    rows = [[1000, 1500, 1540, 1560], [100, 200, 140], [1100, 1600], [1200]]
+    result = methods.tweedie_glm(cells_of(rows), power=0)
+    assert result.totals["iterations"][0].as_py() == 12
+    refusal = refusal_of(lambda: methods.tweedie_glm(cells_of(rows), power=0, max_iter=2))
+    assert refusal.reason == "did_not_converge"
+    assert "Pass a larger max_iter" in str(refusal)
+    assert "increments at 36 months sum to zero or less" in str(refusal)
+
+
+@pytest.mark.parametrize("power", [0.0, 1.0, 1.5, 2.0])
+def test_the_pearson_residuals_sum_to_the_chi_squared(power):
+    """Each residual is ``(y - mu) / sqrt(mu ** power)``, so their squares over
+    the observed cells add up to ``totals.pearson_chi2``. Mutation: divide by
+    ``mu ** power`` rather than its square root: this fails at every power but
+    0."""
+    result = methods.tweedie_glm(named("GenIns"), power=power)
+    residual = np.asarray(result.cells["pearson_residual"].drop_null().to_pylist())
+    chi2 = result.totals["pearson_chi2"][0].as_py()
+    assert np.sum(residual**2) == pytest.approx(chi2, rel=1e-10)
+
+
+def test_tiny_amounts_at_power_two_give_the_same_residuals():
+    """At power 2 a residual does not depend on the units, but ``mu ** 2``
+    underflows to 0 near 1e-300. Mutation: raise the mean to the full power
+    and take the square root: this is refused as ``result_not_finite``."""
+    base = methods.tweedie_glm(named("GenIns"), power=2)
+    tiny = methods.tweedie_glm(named("GenIns", scale=1e-300), power=2)
+    np.testing.assert_allclose(
+        column(tiny.cells, "pearson_residual")[~np.isnan(column(base.cells, "pearson_residual"))],
+        column(base.cells, "pearson_residual")[~np.isnan(column(base.cells, "pearson_residual"))],
+        rtol=1e-9,
+        atol=1e-14,
+    )
+
+
+@pytest.mark.parametrize("power", [1.0, 1.5])
+def test_pct_reported_is_the_reciprocal_of_the_cdf(power):
+    """At power 1 it is the chain ladder's too. Mutation: report the cdf itself:
+    this fails."""
+    development = methods.tweedie_glm(named("GenIns"), power=power).development
+    np.testing.assert_allclose(
+        column(development, "pct_reported"), 1.0 / column(development, "cdf"), rtol=1e-14
+    )
+    assert column(development, "pct_reported")[-1] == 1.0
+    if power == 1.0:
+        chain = methods.chain_ladder(named("GenIns"), zero_cells="observed").development
+        np.testing.assert_allclose(
+            column(development, "pct_reported"), column(chain, "pct_reported"), rtol=1e-10
+        )
+
+
 @pytest.mark.parametrize("projection", ["pattern", "increments"])
 def test_an_ultimate_below_zero_is_refused(projection):
     refusal = refusal_of(
@@ -784,6 +1012,14 @@ def test_the_kernel_takes_a_spec_and_refuses_anything_else():
     assert fit.pattern.shape == (9,)
     with pytest.raises(TypeError, match="TweedieSpec"):
         fit_tweedie_grid(grid_of(rows_of("GenIns")), {"power": 1})
+
+
+def test_the_identity_link_has_no_common_pattern():
+    """Each origin's fitted factors differ under the identity link, so there is
+    no one pattern. Mutation: ``common_pattern`` always true: this fails."""
+    fit = fit_tweedie_grid(grid_of(rows_of("GenIns")), TweedieSpec(power=0, link="identity"))
+    assert not fit.common_pattern
+    assert fit.pattern is None
 
 
 def test_a_kernel_refusal_names_the_period_start():
