@@ -1904,7 +1904,15 @@ CASES = [
             [],
             {"given": value},
         )
-        for name, value in (("zero", 0), ("negative", -5), ("bool", True), ("float", 2.5))
+        for name, value in (
+            ("zero", 0),
+            ("negative", -5),
+            ("bool", True),
+            ("float", 2.5),
+            # four origins: 25,000,001 draws hold 100,000,004 numbers
+            ("past_the_limit", 25_000_001),
+            ("huge", 2**63),
+        )
     ],
     *[
         (
@@ -2599,6 +2607,34 @@ def test_no_message_uses_a_kernel_word_or_a_kernel_date(case):
         (lambda: cdr(T, quantiles=[50, 99.5]), "(divide a percentile by 100), got (50, 99.5)"),
         (lambda: cdr(T, n_draws=np.int64(0)), "n_draws must be a whole number of 1 or more, got 0"),
         (lambda: cdr(T, seed=-1), "seed must be None or a whole number of 0 or more, got -1"),
+        (
+            lambda: cdr(T, n_draws=2**63),
+            "n_draws times the number of origins must be at most 100,000,000",
+        ),
+        # the Mack checks the two share name the function that was called
+        (
+            lambda: cdr(tri([(2001, 12, 100.0)]), **FEW),
+            "one_year_cdr needs at least two development ages; this triangle has one",
+        ),
+        (
+            lambda: cdr(years({2001: [100, 150], 2002: [110]}), **FEW),
+            "one_year_cdr needs at least one development age with two or more link ratios",
+        ),
+        # amounts near the smallest double are too small, as methods.mack says, not
+        # too large: the one-year formula's NaN must not be read as an overflow
+        (
+            lambda: cdr(
+                years(
+                    {
+                        1981: [1e-300, 1.5e-300, 1.6e-300],
+                        1982: [0.9e-300, 1.4e-300],
+                        1983: [1.2e-300],
+                    }
+                ),
+                **FEW,
+            ),
+            "the amounts are too small for Mack's standard errors",
+        ),
     ],
 )
 def test_reworded_messages_say_what_is_wrong(call, phrase):
@@ -2710,6 +2746,16 @@ _EXTREMES = [
         )
         for name in ("raa", "mw2014")
         for scale in (1e160, 1e300, 1e-310)
+    ],
+    # only the check that Mack's squares did not fall to 0 refuses these: without
+    # it raa at 1e-166 gives a run-off standard error 17% too high, and finite
+    *[
+        (
+            f"cdr_raa_{scale:g}",
+            lambda scale=scale: cdr(tri(fixture_rows("raa", scale)), **FEW),
+            "result_not_finite",
+        )
+        for scale in (1e-165, 1e-166)
     ],
 ]
 
@@ -2975,7 +3021,7 @@ _CDR_POOL = {
     "sigma_rule": ["log_linear", "mack", "x", None],
     "zero_cells": ["observed", "observed", "missing", "x"],
     "dev_grain_months": [12, 12, 12, 3, 0],
-    "n_draws": [30, 30, 1, 2, 0, -1, 2.5, True],
+    "n_draws": [30, 30, 1, 2, 0, -1, 2.5, True, 2**63],
     "seed": [None, 0, 7, -1, True, "3"],
     "process": ["gamma", "gamma", "lognormal", "normal", "x", None],
     "parameter_risk": [True, True, False, 1, None],

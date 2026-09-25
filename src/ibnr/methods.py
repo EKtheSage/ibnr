@@ -1403,6 +1403,12 @@ _CDR_QUANTILES = (0.5, 0.75, 0.9, 0.95, 0.99, 0.995, 0.999)
 #: Reserving app's ``/cdr`` gave before it moved to this function.
 _CDR_STREAM = {"label": "cdr_distribution", "cohorts": [{"Total": "Total"}], "field": "values"}
 
+#: The most numbers :func:`one_year_cdr` draws: ``n_draws`` times the number of
+#: origins. Measured on raa, each takes about 70 bytes at the peak (the draws,
+#: their copies and the Arrow tables), so this is about 7 GB. The Reserving app
+#: caps its own requests at 50,000 draws.
+_MAX_DRAWN_NUMBERS = 100_000_000
+
 
 @dataclass(frozen=True)
 class OneYearCDRResult:
@@ -1544,14 +1550,17 @@ def one_year_cdr(
     - ``n_draws``: how many next years to simulate, a whole number of 1 or
       more (20,000 by default; the 99.5% quantile then rests on the top 100
       draws). ``n_draws`` times the number of origins numbers are held in
-      memory and returned in ``draws``.
+      memory and returned in ``draws``, about 70 bytes each at the peak, and
+      that product is refused above 100,000,000 (about 7 GB).
     - ``seed``: a whole number of 0 or more makes the draws repeatable;
       ``None`` (the default) draws from fresh entropy. The seed is turned into
       a stream the same way the gallery's ``mack`` entry does for a triangle
       with one segment ``Total`` and the field ``values``, so for the same
       seed, draw count and options the draws equal, bit for bit, the ones the
-      Reserving app's ``/cdr`` route gave through that entry. A seed passed
-      straight to ``kernels.simulate_one_year_cdr`` is a different stream.
+      Reserving app's ``/cdr`` route gave through that entry, except that an
+      origin at its last age has 0.0 where the app's negated draws have -0.0.
+      A seed passed straight to ``kernels.simulate_one_year_cdr`` is a
+      different stream.
     - ``process``: the shape of next year's noise, ``"gamma"`` (the default),
       ``"lognormal"`` or ``"normal"``. All three have Mack's mean and
       variance; only the first two keep the cumulative positive.
@@ -1617,6 +1626,16 @@ def _one_year_cdr(
     levels: tuple[float, ...],
 ) -> OneYearCDRResult:
     _, as_of = check_grid(grid)
+    if n_draws * grid["n_w"] > _MAX_DRAWN_NUMBERS:
+        raise Refusal(
+            "invalid_option",
+            f"n_draws times the number of origins must be at most {_MAX_DRAWN_NUMBERS:,}, and "
+            f"{{given}} draws of {grid['n_w']} origins is more: each number takes about 70 bytes "
+            "while the draws are summarised, so the limit is already about 7 GB. Ask for fewer "
+            "draws",
+            option="n_draws",
+            given=n_draws,
+        )
     step = grid["dev_grain_months"]
     if step != 12:
         # the kernels refuse this too, in words about Triangle methods
@@ -1683,8 +1702,10 @@ def _one_year_cdr(
             "cdr_se": _arrow.float64([np.sqrt(analytic.msep_total)]),
             "runoff_se": _arrow.float64([np.sqrt(analytic.runoff_msep_total)]),
         }
-    _require_finite(fit.origin_periods, per_origin, [], {**sums, **spread})
+    # Underflow first: amounts near the smallest double also leave a one-year msep
+    # NaN (0 / 0), which the finite check would call too large.
     _require_no_underflow(fit, analytic.runoff_msep)
+    _require_finite(fit.origin_periods, per_origin, [], {**sums, **spread})
 
     stream = cohort_stream(seed, **_CDR_STREAM)
     with np.errstate(all="ignore"):
@@ -1698,8 +1719,10 @@ def _one_year_cdr(
         )
         # Laid out as simulate_one_year_cdr's samples, the total last, and negated
         # once, so that every summary below is the float the gallery entry's draws
-        # give when summarised the same way.
-        delta = -np.hstack([cdr, cdr.sum(axis=1, keepdims=True)])
+        # give when summarised the same way. Adding 0.0 turns the -0.0 that negating
+        # a fully developed origin's 0.0 gives into 0.0 and leaves every other
+        # number as it is.
+        delta = -np.hstack([cdr, cdr.sum(axis=1, keepdims=True)]) + 0.0
     n_w = fit.n_w
     changes, total = delta[:, :n_w], delta[:, -1]
     # a draw that is not finite makes its origin's mean not finite, which

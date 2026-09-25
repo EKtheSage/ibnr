@@ -414,7 +414,13 @@ step) and returns two answers side by side:
 
 - `cdr_se`, the closed form of Merz and Wuthrich (2008), per origin and in
   total, with Mack's run-off standard error `runoff_se` beside it. These match
-  R's `CDR(MackChainLadder(MW2014, est.sigma="Mack"))` to 6 decimals.
+  R's `CDR(MackChainLadder(MW2014, est.sigma="Mack"))` to 6 decimals. Under
+  `sigma_rule="log_linear"` they match R's `est.sigma="log-linear"` only where
+  R keeps that rule: R switches to Mack's rule, with a warning, when the
+  regression's p-value is above 0.05, and ibnr, like chainladder-python, always
+  extrapolates. On R's `UKMotor`, for example, R's default gives a total
+  `CDR(1)S.E.` of 1024.36 (Mack's rule), while `one_year_cdr` gives 1030.17
+  and `sigma_rule="mack"` gives R's 1024.36.
 - A simulation of `n_draws` next years (20,000 by default): its mean and
   standard deviation per origin and in total, quantiles with the mean beyond
   each (`tvar`), and every draw.
@@ -446,7 +452,10 @@ one.
 
 For the same seed, draw count and options, the draws are the ones the
 Reserving app's `/cdr` gives today through the gallery's `mack` entry, bit for
-bit, and so is every number in the table above. Two defaults differ from that
+bit, and so is every number in the table above, with one difference: an
+origin at its last age never moves, and the app shows its `per_origin[].mean`
+as -0.0 where ibnr has 0.0 (the same number, without the sign bit that
+negating 0.0 gives). Two defaults differ from that
 route, so pass them to keep its numbers: `sigma_rule` is `"log_linear"` here
 (chainladder's default) and `"mack"` there; and the default quantiles are the
 app's default percentiles divided by 100, but 99.9 / 100 and 0.999 are not the
@@ -465,6 +474,9 @@ Where it is stricter:
   is refused (`variance_not_estimable`): Mack's variance divides by it.
 - **No development options and no tail.** The formulas are derived for the
   plain volume-weighted chain ladder, so `one_year_cdr` does not take them.
+- **A limit on the draws.** `n_draws` times the number of origins above
+  100,000,000 (about 7 GB while the draws are summarised) is refused
+  (`invalid_option`). The app caps its own requests at 50,000 draws.
 
 ## When a method refuses
 

@@ -448,7 +448,9 @@ def one_year_cdr(fit: MackFit) -> CDRResult:
     msep = ult**2 * (phi + delta)
     # aggregate: own-process terms, then every pair's shared estimation error
     own_process = np.zeros(n_w)
-    own_process[open_] = ult[open_] ** 2 * ratio[k[open_]] / fit.cum[open_, k[open_]]
+    # ratio / C first: ult**2 * ratio is an amount cubed, which reads 0 below
+    # about 1e-103 and infinite above about 1e103
+    own_process[open_] = ult[open_] ** 2 * (ratio[k[open_]] / fit.cum[open_, k[open_]])
     older = np.minimum(np.arange(n_w)[:, None], np.arange(n_w)[None, :])  # (n_w, n_w)
     cross = float((v[older] * np.outer(ult, ult)).sum())
 
