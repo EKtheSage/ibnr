@@ -1813,6 +1813,38 @@ CASES = [
         {},
     ),
     (
+        "glm_falls_on_balance_power_0",
+        lambda: tg(
+            years(
+                {2001: [100, 200, 190, 195], 2002: [110, 220, 200], 2003: [120, 250], 2004: [130]}
+            ),
+            power=0,
+        ),
+        "degenerate_fit",
+        "cells",
+        None,
+        [],
+        [],
+        [],
+        {},
+    ),
+    (
+        "glm_identity_zero_age",
+        lambda: tg(
+            years(
+                {2001: [100, 150, 170, 170], 2002: [110, 160, 185], 2003: [120, 175], 2004: [130]}
+            ),
+            link="identity",
+        ),
+        "negative_fitted_mean",
+        "link",
+        None,
+        [c(2001, 48, 170.0)],
+        [],
+        [],
+        {"given": "identity"},
+    ),
+    (
         "glm_identity_below_zero",
         lambda: tg(years({2001: [100, 101], 2002: [1]}), link="identity"),
         "negative_fitted_mean",
@@ -2414,6 +2446,12 @@ _EXTREMES = [
     (
         "subnormal_premium_cape_cod",
         lambda: cc(tri(fixture_rows("raa")), premium={y: 1e-320 for y in range(1981, 1991)}),
+        "result_not_finite",
+    ),
+    # the normal deviance is a sum of squared amounts, past the largest double
+    (
+        "glm_deviance_overflow_genins_1e200",
+        lambda: tg(tri(fixture_rows("genins", 1e200)), power=0),
         "result_not_finite",
     ),
 ]

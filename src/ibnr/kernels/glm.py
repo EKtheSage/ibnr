@@ -71,8 +71,10 @@ PROJECTIONS = ("pattern", "increments")
 #: The fit stops when no fitted mean on an observed cell moved by more than
 #: this share of the largest absolute increment in one step.
 TOLERANCE = 1e-10
-#: Under the log link, a fitted mean on an observed cell below this share of
-#: the largest absolute increment means the fit exists only in the limit.
+#: A fitted mean below this share of the largest absolute increment, on an
+#: observed cell whose increment is zero or less, means the fit exists only in
+#: the limit (under the log link) or has no answer (under the identity link at
+#: a power above 0). A small mean on a small positive increment is an answer.
 BOUNDARY = 1e-8
 #: How many times a step is halved back towards the last valid one before the
 #: fit gives up, as R's glm.fit does when a step leaves the valid means.
@@ -329,10 +331,12 @@ class TweedieFit:
     @property
     def pearson_residuals(self) -> np.ndarray:
         """``(y - mu) / sqrt(mu ** power)``, unscaled by the dispersion; NaN where
-        unobserved or where the fitted mean is 0."""
+        unobserved or where the fitted mean is 0. Written ``mu ** (power / 2)``,
+        so a mean near the smallest double does not underflow to 0 when raised
+        to the full power."""
         mu, y = self.fitted, self.increments
         with np.errstate(all="ignore"):
-            out = (y - mu) / np.sqrt(np.abs(mu) ** self.spec.power)
+            out = (y - mu) / np.abs(mu) ** (self.spec.power / 2.0)
         return np.where(np.isnan(y) | (mu == 0), np.nan, out)
 
 
@@ -364,11 +368,15 @@ def fit_tweedie_grid(grid: dict, spec: TweedieSpec | None = None) -> TweedieFit:
     observed cells cannot tell apart (``not_identified``); a fit that did not
     settle within ``spec.max_iter`` steps (``did_not_converge``); a fit that
     exists only in the limit, where a log-link fitted mean on an observed cell
-    falls to ``BOUNDARY`` times the largest increment or the weighted design
-    loses rank while iterating (``degenerate_fit``); an identity-link fitted
-    mean of zero or below, observed or future, at a power above 0
-    (``negative_fitted_mean``); and an ultimate below zero for an origin whose
-    cumulatives are zero or more (``negative_projection``).
+    whose increment is zero or less falls to ``BOUNDARY`` times the largest
+    increment or the weighted design loses rank while iterating
+    (``degenerate_fit``; at power 0 the message names the ages and origins whose
+    increments sum to zero or less, which the log link cannot fit); an
+    identity-link fitted mean of zero or below, observed or future, at a power
+    above 0, including one that falls to ``BOUNDARY`` times the largest
+    increment on an observed zero increment, so the verdict does not depend on
+    the units (``negative_fitted_mean``); and an ultimate below zero for an
+    origin whose cumulatives are zero or more (``negative_projection``).
     """
     spec = TweedieSpec() if spec is None else spec
     if not isinstance(spec, TweedieSpec):
@@ -472,20 +480,18 @@ def fit_tweedie_grid(grid: dict, spec: TweedieSpec | None = None) -> TweedieFit:
     # -- Fisher scoring, on the amounts divided by the largest increment -------------
     scale = float(np.max(np.abs(inc[observed])))
     y = inc[fit_i, fit_j] / scale
-    beta, mu, iterations = _irls(
-        x, y, spec, scale=scale, cells=(fit_i, fit_j), origins=origins, step=step
-    )
-
-    if log:
-        small = mu < BOUNDARY
-        if small.any():
-            where = np.zeros_like(observed)
-            where[fit_i[small], fit_j[small]] = True
-            raise _boundary(
-                f"the fitted mean at {{cells}} falls to {float(mu.min()):.3g} times the largest "
-                "increment",
-                cells_at(where),
-            )
+    stop = _Stopped(spec, y, (fit_i, fit_j), cells_at, origins, step, scale, (n_w, n_d))
+    try:
+        beta, mu, iterations = _irls(x, y, spec)
+    except _Stalled as stalled:
+        raise stop.refusal(stalled) from None
+    # A fitted mean falling to zero where the increment is zero or less is the
+    # sign that the fit exists only in the limit; a small mean fitted to a
+    # small positive increment is not. The test is relative to the largest
+    # increment, so the verdict does not depend on the units.
+    limit = stop.falling(mu)
+    if limit.any() and (log or power > 0):
+        raise stop.limit_refusal(mu, limit)
 
     # -- the fitted rectangle -----------------------------------------------------------
     all_i, all_j = np.nonzero(~zero_row[:, None] & ~zero_col[None, :])
@@ -522,7 +528,7 @@ def fit_tweedie_grid(grid: dict, spec: TweedieSpec | None = None) -> TweedieFit:
     dispersion_scaled = pearson / dof if dof > 0 else math.nan
     dispersion = pearson_chi2 / dof if dof > 0 else math.nan
     if not np.isfinite(a).all() or np.linalg.matrix_rank(a) < n_params:
-        raise _boundary(_RANK_LOST)
+        raise stop.refusal(_Stalled("rank", mu))
     r_inv = np.linalg.inv(np.linalg.qr(a, mode="r"))
     variance = np.sum(r_inv**2, axis=1) * dispersion_scaled
     se_live = np.sqrt(variance)
@@ -582,14 +588,34 @@ def _valid(mu: np.ndarray, power: float, log: bool) -> np.ndarray:
     return ok
 
 
-def _irls(x, y, spec: TweedieSpec, *, scale: float, cells, origins, step):
-    """Fisher scoring; (coefficients, fitted means, steps).
+class _Stalled(Exception):
+    """Fisher scoring could not go on. Private: :func:`fit_tweedie_grid` turns it
+    into a :class:`Refusal` once it can say why in the triangle's terms.
 
-    ``y`` is the increments divided by ``scale``, the largest absolute one. The
-    start is halfway between each increment (a zero or negative one replaced by
-    the mean of the positive ones) and their mean, which is positive for every
-    triangle this was tried on, where R's own start fails on a negative
-    increment under the log link.
+    ``why`` is ``"rank"`` (the weighted design lost rank or stopped being
+    finite), ``"no_step"`` (no step, halved or not, keeps every mean valid;
+    ``bad`` marks the means that were not) or ``"max_iter"`` (``change`` is the
+    last step's largest move). ``mu`` is the fitted means when it stopped, on
+    the scale of ``y``.
+    """
+
+    def __init__(self, why: str, mu: np.ndarray, *, bad=None, change: float = math.nan):
+        super().__init__(why)
+        self.why = why
+        self.mu = mu
+        self.bad = np.zeros(mu.shape, dtype=bool) if bad is None else bad
+        self.change = change
+
+
+def _irls(x, y, spec: TweedieSpec):
+    """Fisher scoring; (coefficients, fitted means, steps), or :class:`_Stalled`.
+
+    ``y`` is the increments divided by the largest absolute one. The start is
+    halfway between each increment (a zero or negative one replaced by the mean
+    of the positive ones) and their mean, which is positive for every triangle
+    this was tried on, where R's own start fails on a negative increment under
+    the log link. A step that leaves the valid means is halved back towards the
+    last one, up to ``_HALVINGS`` times, as R's ``glm.fit`` does.
     """
     power, log = spec.power, spec.link == "log"
     positive = y[y > 0]
@@ -607,15 +633,14 @@ def _irls(x, y, spec: TweedieSpec, *, scale: float, cells, origins, step):
         root = np.sqrt(weights)
         a = x * root[:, None]
         if not np.isfinite(a).all() or np.linalg.matrix_rank(a) < x.shape[1]:
-            raise _boundary(_RANK_LOST)
+            raise _Stalled("rank", mu)
         q, r = np.linalg.qr(a)
         proposal = np.linalg.solve(r, q.T @ (root * z))
         new_eta, new_mu = _means(x, proposal, log)
         halvings = 0
         while not _valid(new_mu, power, log).all():
             if beta is None or halvings == _HALVINGS:
-                bad = ~_valid(new_mu, power, log)
-                raise _no_valid_step(spec, bad, cells, origins, step)
+                raise _Stalled("no_step", mu, bad=~_valid(new_mu, power, log))
             proposal = (proposal + beta) / 2.0
             new_eta, new_mu = _means(x, proposal, log)
             halvings += 1
@@ -623,14 +648,7 @@ def _irls(x, y, spec: TweedieSpec, *, scale: float, cells, origins, step):
         beta, eta, mu = proposal, new_eta, new_mu
         if change <= TOLERANCE:
             return beta, mu, iteration
-    raise Refusal(
-        "did_not_converge",
-        f"the fit did not settle within max_iter={spec.max_iter} iterations: the last step "
-        f"moved a fitted increment by {change * scale:.6g}, {change * 100:.3g}% of the largest "
-        "increment. Pass a larger max_iter",
-        option="max_iter",
-        given=spec.max_iter,
-    )
+    raise _Stalled("max_iter", mu, change=change)
 
 
 def _means(x, beta, log: bool):
@@ -639,39 +657,156 @@ def _means(x, beta, log: bool):
         return eta, (np.exp(eta) if log else eta)
 
 
-def _no_valid_step(spec: TweedieSpec, bad, cells, origins, step) -> Refusal:
-    fit_i, fit_j = cells
-    where = [
-        RefusedCell(None, origins[i], int(j + 1) * step)
-        for i, j in zip(fit_i[bad], fit_j[bad], strict=True)
-    ]
-    if spec.link == "identity":
-        return Refusal(
-            "negative_fitted_mean",
-            "the identity link gives a fitted increment of zero or less at {cells}, which "
-            f"power {_show_power(spec.power)} cannot have, and no step of the fit avoids it; "
-            "use link='log'",
-            option="link",
-            given=spec.link,
-            cells=where,
-        )
-    return _boundary("no step of the fit keeps the fitted mean at {cells} a finite number", where)
-
-
 _RANK_LOST = (
-    "while fitting, fitted means fell so close to zero that the terms could no longer be estimated"
+    "while fitting, fitted means fell so close to zero, or grew so large, that the terms could "
+    "no longer be estimated"
 )
 
+_ZEROS = "An origin or an age has only zeros where the model needs a positive level. "
+_CHAIN_LADDER = "chain_ladder(cells, unsupported_factor='unity') answers it"
 
-def _boundary(detail: str, cells: list[RefusedCell] = ()) -> Refusal:
+
+def _boundary(detail: str, cells: list[RefusedCell] = (), *, why: str = _ZEROS) -> Refusal:
     return Refusal(
         "degenerate_fit",
-        f"this triangle's losses leave the model without a finite fit: {detail}. An origin or "
-        "an age has only zeros where the model needs a positive level. "
-        "chain_ladder(cells, unsupported_factor='unity') answers it",
+        f"this triangle's losses leave the model without a finite fit: {detail}. {why}"
+        + _CHAIN_LADDER,
         option="cells",
         cells=cells,
     )
+
+
+class _Stopped:
+    """Why a fit stopped short, or reached a limit, as a :class:`Refusal` in the
+    triangle's terms: cells, ages and origins, never regression rows."""
+
+    def __init__(self, spec: TweedieSpec, y, cells, cells_at, origins, step, scale, shape):
+        self.spec = spec
+        self.log = spec.link == "log"
+        self.y = y
+        self.fit_i, self.fit_j = cells
+        self.cells_at = cells_at
+        self.origins = origins
+        self.step = step
+        self.scale = scale
+        self.shape = shape
+
+    def falling(self, mu: np.ndarray) -> np.ndarray:
+        """Bool per regression cell: a mean below ``BOUNDARY`` where the increment
+        is zero or less, the sign that the fit exists only in the limit."""
+        return (self.y <= 0) & (mu < BOUNDARY)
+
+    def _grid(self, flags: np.ndarray) -> np.ndarray:
+        where = np.zeros(self.shape, dtype=bool)
+        where[self.fit_i[flags], self.fit_j[flags]] = True
+        return where
+
+    def refusal(self, stalled: _Stalled) -> Refusal:
+        power = self.spec.power
+        if not self.log and power > 0:
+            # the identity link reaches the boundary mu = 0 exactly; whether
+            # rounding leaves a mean just above or just below it depends on the
+            # units, so every route there gets the same refusal
+            limit = self.falling(stalled.mu) | (stalled.bad & (self.y <= 0))
+            if limit.any():
+                return self.limit_refusal(stalled.mu, limit)
+            if stalled.why == "no_step":
+                return Refusal(
+                    "negative_fitted_mean",
+                    "the identity link gives a fitted increment of zero or less at {cells}, "
+                    f"which power {_show_power(power)} cannot have, and no step of the fit "
+                    "avoids it; use link='log'",
+                    option="link",
+                    given=self.spec.link,
+                    cells=self._named(stalled.bad),
+                )
+        if stalled.why == "max_iter":
+            return self._not_settled(stalled.change)
+        if stalled.why == "no_step":
+            return self._degenerate(
+                "no step of the fit keeps the fitted mean at {cells} a finite number", stalled.bad
+            )
+        return self._degenerate(_RANK_LOST)
+
+    def limit_refusal(self, mu: np.ndarray, limit: np.ndarray) -> Refusal:
+        if self.log:
+            return self._degenerate(
+                f"the fitted mean at {{cells}} falls to {float(mu[limit].min()):.3g} times the "
+                "largest increment",
+                limit,
+            )
+        return Refusal(
+            "negative_fitted_mean",
+            "the identity link's fitted increment falls to zero at {cells}, where the increment "
+            f"is 0, and power {_show_power(self.spec.power)} needs every fitted increment above "
+            "zero, so the fit has no answer. link='log' fits an origin or an age whose "
+            "increments are all 0 at exactly 0",
+            option="link",
+            given=self.spec.link,
+            cells=self.cells_at(self._grid(limit)),
+        )
+
+    def _named(self, flags: np.ndarray) -> list[RefusedCell]:
+        return [
+            RefusedCell(None, self.origins[i], int(j + 1) * self.step)
+            for i, j in zip(self.fit_i[flags], self.fit_j[flags], strict=True)
+        ]
+
+    def _falling_groups(self) -> tuple[list[int], list[int]]:
+        """The ages, and (with origin factors) the origins, whose increments in the
+        regression sum to zero or less. Only power 0 takes negative increments,
+        and at a higher power an origin or age of zeros is out of the regression."""
+        if not self.log or self.spec.power != 0:
+            return [], []
+        ages = [int(j) for j in np.unique(self.fit_j) if self.y[self.fit_j == j].sum() <= 0]
+        rows = []
+        if self.spec.origin == "factor":
+            rows = [int(i) for i in np.unique(self.fit_i) if self.y[self.fit_i == i].sum() <= 0]
+        return ages, rows
+
+    def _groups_text(self, ages: list[int], rows: list[int]) -> str:
+        parts = []
+        if ages:
+            parts.append(f"at {_and([str((j + 1) * self.step) for j in ages])} months")
+        if rows:
+            parts.append("of {origins}")
+        return (
+            f"The observed increments {' and those '.join(parts)} sum to zero or less, and "
+            "under the log link every fitted increment is above zero"
+        )
+
+    def _degenerate(self, detail: str, flags: np.ndarray | None = None) -> Refusal:
+        ages, rows = self._falling_groups()
+        if not ages and not rows:
+            named = [] if flags is None else self.cells_at(self._grid(flags))
+            return _boundary(detail, named)
+        # name the ages and origins that fall on balance; the cells the detail
+        # would name are among theirs
+        return _boundary(
+            detail.replace(" at {cells}", ""),
+            [RefusedCell(None, self.origins[i]) for i in rows],
+            why=f"{self._groups_text(ages, rows)}. link='identity' fits them at power 0, or ",
+        )
+
+    def _not_settled(self, change: float) -> Refusal:
+        text = (
+            f"the fit did not settle within max_iter={self.spec.max_iter} iterations: the last "
+            f"step moved a fitted increment by {change * self.scale:.6g}, {change * 100:.3g}% of "
+            "the largest increment. Pass a larger max_iter"
+        )
+        ages, rows = self._falling_groups()
+        if ages or rows:
+            text += (
+                f". {self._groups_text(ages, rows)}, which can leave the model without a finite "
+                "fit; link='identity' fits them at power 0"
+            )
+        return Refusal(
+            "did_not_converge",
+            text,
+            option="max_iter",
+            given=self.spec.max_iter,
+            cells=[RefusedCell(None, self.origins[i]) for i in rows],
+        )
 
 
 def _refuse_unidentified(x: np.ndarray, live_terms, origins, step) -> None:
