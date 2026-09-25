@@ -232,7 +232,11 @@ Coming from chainladder-python,
 attributes onto these functions. Import it with `from ibnr import methods`: a
 bare `import ibnr` does not load it. `ibnr.methods` loads numpy and pyarrow but
 not ibis, pandas or scipy, on import or when a method runs, which keeps the cold
-start of a service that calls it short.
+start of a service that calls it short. Input a method will not answer is
+refused with `methods.Refusal`, a `ValueError` with a reason code (such as
+`"negative_cumulative"`) and the cells at fault in your own labels;
+[the chainladder page](https://github.com/EKtheSage/ibnr/blob/main/docs/coming-from-chainladder.md#when-a-method-refuses)
+lists the codes.
 
 ## Building a Triangle from your own data
 

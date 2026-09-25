@@ -88,7 +88,8 @@ from typing import ClassVar
 import numpy as np
 import pandas as pd
 
-from ibnr.kernels.mack import PROCESS_LAWS, MackFit, _next_step_draws
+from ibnr.errors import Refusal, RefusedCell
+from ibnr.kernels.mack import PROCESS_LAWS, MackFit, _next_step_draws, _refuse_n_draws
 from ibnr.kernels.odp_bootstrap import ODP_PROCESS_LAWS, draw_next_increments, fit_odp_bootstrap
 from ibnr.kernels.predictive import PredictiveDistribution
 
@@ -206,7 +207,8 @@ def _require_annual_step(fit: MackFit) -> None:
     step = fit.dev_grain_months
     if step == 12:
         return
-    raise ValueError(
+    raise Refusal(
+        "not_supported",
         "the one-year claims development result needs an annual development grain, and "
         f"this fit has a {step}-month development grain. Every route here advances the "
         "triangle by exactly one development step (the Merz-Wuthrich closed form, every "
@@ -217,7 +219,9 @@ def _require_annual_step(fit: MackFit) -> None:
         'and then call Triangle.with_origin_grain("Y").with_dev_grain("Y"), since the '
         "annual buckets are anchored to the latest diagonal and a mid-year one gives "
         "development lags the annual grain rejects. Or read the run-off uncertainty from "
-        "MackFit.msep_runoff(), which does not depend on the development grain"
+        "MackFit.msep_runoff(), which does not depend on the development grain",
+        option="dev_grain_months",
+        given=step,
     )
 
 
@@ -242,7 +246,11 @@ def _require_zero_cells_unused(fit: MackFit) -> None:
         return
     open_ = fit.latest_dev < fit.n_d - 1
     zero_latest = [
-        str(o) for o, z in zip(fit.origin_periods, open_ & (fit.latest == 0), strict=True) if z
+        RefusedCell(None, o, (int(k) + 1) * fit.dev_grain_months, 0.0)
+        for o, k, z in zip(
+            fit.origin_periods, fit.latest_dev, open_ & (fit.latest == 0), strict=True
+        )
+        if z
     ]
     if not fit.zero_links and not zero_latest:
         return
@@ -250,7 +258,7 @@ def _require_zero_cells_unused(fit: MackFit) -> None:
     if fit.zero_links:
         found.append(f"left out {fit.zero_links} link ratio(s) with a zero cell at either end")
     if zero_latest:
-        found.append(f"kept a latest amount of zero for open origin(s) {', '.join(zero_latest)}")
+        found.append("kept a latest amount of zero for open origin(s) {origins}")
     if zero_latest:
         # "observed" refuses a zero latest amount too (every formula here divides
         # by it), so refitting that way would only move the refusal
@@ -264,11 +272,14 @@ def _require_zero_cells_unused(fit: MackFit) -> None:
             "Refit with zero_cells='observed' (fit_mack's default), which keeps zeros as data, "
             "or read the run-off uncertainty from MackFit.msep_runoff(), which covers this rule"
         )
-    raise ValueError(
+    raise Refusal(
+        "not_supported",
         "the one-year claims development result is not available for a fit made with "
         f"zero_cells='missing' that {' and '.join(found)}: the Merz-Wuthrich formulas, and "
         "the re-reserving that simulate_one_year_cdr and rereserve do, have not been checked "
-        f"under that rule. {way_out}"
+        f"under that rule. {way_out}",
+        option="zero_cells",
+        cells=zero_latest,
     )
 
 
@@ -473,9 +484,11 @@ def rereserve(fit: MackFit, next_diagonal: np.ndarray) -> np.ndarray:
     """
     x = np.asarray(next_diagonal, dtype=float)
     if x.ndim != 2 or x.shape[1] != fit.n_w:
-        raise ValueError(
+        raise Refusal(
+            "invalid_option",
             f"next_diagonal must be (n_draws, n_w={fit.n_w}) cumulative values, got "
-            f"{x.shape}. One column per origin of the fit, in its origin order"
+            f"{x.shape}. One column per origin of the fit, in its origin order",
+            option="next_diagonal",
         )
     # the shape says how many origins the diagonal covers; the grain says how
     # far forward it is, and one step forward is one year only on an annual fit.
@@ -604,7 +617,12 @@ class MackDiagonal(DiagonalGenerator):
 
     def __post_init__(self) -> None:
         if self.process not in PROCESS_LAWS:
-            raise ValueError(f"process must be one of {PROCESS_LAWS}, got {self.process!r}")
+            raise Refusal(
+                "invalid_option",
+                f"process must be one of {PROCESS_LAWS}, got {{given}}",
+                option="process",
+                given=self.process,
+            )
 
     def check(self, fit: MackFit) -> None:
         """``Var = sigma_{k_i}^2 C_{i,k_i}`` is non-positive off a non-positive
@@ -668,12 +686,20 @@ class ODPBootstrapDiagonal(DiagonalGenerator):
 
     def __post_init__(self) -> None:
         if self.process not in ODP_PROCESS_LAWS:
-            raise ValueError(f"process must be one of {ODP_PROCESS_LAWS}, got {self.process!r}")
+            raise Refusal(
+                "invalid_option",
+                f"process must be one of {ODP_PROCESS_LAWS}, got {{given}}",
+                option="process",
+                given=self.process,
+            )
         if not (self.process_noise or self.resample_residuals):
-            raise ValueError(
+            raise Refusal(
+                "invalid_option",
                 "process_noise and resample_residuals are both off, so the bootstrap has no "
                 "risk source left and every draw would be identical. Turn one back on, or "
-                "read the point estimate off MackFit.reserve"
+                "read the point estimate off MackFit.reserve",
+                option="process_noise",
+                options=("process_noise", "resample_residuals"),
             )
 
     def check(self, fit: MackFit) -> None:
@@ -681,10 +707,24 @@ class ODPBootstrapDiagonal(DiagonalGenerator):
         where the negative-increment refusal and the degrees-of-freedom check
         live, and both are cheap enough to pay twice."""
         _require_zero_cells_unused(fit)
-        fit_odp_bootstrap(fit.cum, fit.obs_mask, fit.latest_dev, fit.f)
+        fit_odp_bootstrap(
+            fit.cum,
+            fit.obs_mask,
+            fit.latest_dev,
+            fit.f,
+            origins=fit.origin_periods,
+            dev_grain_months=fit.dev_grain_months,
+        )
 
     def draw(self, fit: MackFit, *, n_draws: int, rng: np.random.Generator) -> np.ndarray:
-        boot = fit_odp_bootstrap(fit.cum, fit.obs_mask, fit.latest_dev, fit.f)
+        boot = fit_odp_bootstrap(
+            fit.cum,
+            fit.obs_mask,
+            fit.latest_dev,
+            fit.f,
+            origins=fit.origin_periods,
+            dev_grain_months=fit.dev_grain_months,
+        )
         payments = draw_next_increments(
             boot,
             n_draws=n_draws,
@@ -911,25 +951,43 @@ def _resolve_generator(
     ]
     if inert:
         given = getattr(generator, "name", generator)
-        raise ValueError(
+        raise Refusal(
+            "invalid_option",
             f"{', '.join(inert)} is a MackDiagonal setting and cannot be combined with "
             f"generator={given!r}; every generator carries its own knobs, so pass them to "
             f"the generator itself (e.g. MackDiagonal(process=...)). Accepting them here "
-            "would leave the argument inert whenever the generator is not mack"
+            "would leave the argument inert whenever the generator is not mack",
+            option="generator",
+            options=("generator", *inert),
         )
     if isinstance(generator, DiagonalGenerator):
         return generator
     if isinstance(generator, str):
+        if generator not in CDR_METHODS:
+            # get_cdr_method answers a KeyError, as a lookup does; an argument
+            # that names no method is a refused option
+            raise Refusal(
+                "invalid_option",
+                f"no CDR method named {{given}}; known: {sorted(CDR_METHODS)}. "
+                "cdr_methods() lists what each one requires and returns",
+                option="generator",
+                given=generator,
+            )
         method = get_cdr_method(generator)
         if method.generator is None:
-            raise ValueError(
+            raise Refusal(
+                "invalid_option",
                 f"{generator!r} cannot be named as a generator: {method.why_not_by_name}. "
-                f"Use: {method.entry_point}"
+                f"Use: {method.entry_point}",
+                option="generator",
+                given=generator,
             )
         return method.generator()
-    raise TypeError(
+    raise Refusal(
+        "invalid_option",
         "generator must be a DiagonalGenerator, a method name from cdr_methods(), or None; "
-        f"got {type(generator).__name__}"
+        f"got {type(generator).__name__}",
+        option="generator",
     )
 
 
@@ -983,7 +1041,7 @@ def simulate_one_year_cdr(
     """
     gen = _resolve_generator(generator, process=process, parameter_risk=parameter_risk)
     if n_draws is not None and n_draws < 1:
-        raise ValueError("n_draws must be positive")
+        raise _refuse_n_draws(n_draws)
     # before the generator is consulted and before any draw: the grain is a
     # property of the fit, so no generator can make a non-annual step a year.
     _require_annual_step(fit)
@@ -1045,7 +1103,12 @@ def cdr_risk_measures(
     form gives a second moment, and no second moment implies a quantile.
     """
     if not all(0.0 < level < 1.0 for level in levels):
-        raise ValueError(f"levels must lie strictly inside (0, 1), got {levels}")
+        raise Refusal(
+            "invalid_option",
+            "levels must lie strictly inside (0, 1), got {given}",
+            option="levels",
+            given=tuple(levels),
+        )
     loss = -pred.samples  # adverse = the ultimate revised UP
     out = pred.targets.copy()
     out["mean_cdr"] = pred.samples.mean(axis=0)

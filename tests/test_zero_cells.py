@@ -776,7 +776,7 @@ def test_mack_rule_fills_a_middle_gap_from_the_two_steps_before_and_refuses_the_
     assert fit.sigma2[3] == min(last**2 / prev, last, prev)
     with pytest.raises(
         ValueError,
-        match=r"dev step 1 \(the link from 12 to 24 months\) kept at most one link ratio",
+        match=r"the link ratios from 12 to 24 months kept at most one ratio once",
     ) as refused:
         fit_mack_grid(grid(SINGLE_FIRST), sigma_rule="mack", zero_cells="missing")
     assert "sigma_rule='log_linear'" in str(refused.value)
@@ -834,7 +834,7 @@ def test_a_sigma_gap_with_too_little_to_regress_on_is_refused_by_name():
         dev_grain_months=12,
         measure="cumulative",
     )
-    with pytest.raises(ValueError, match="needs at least two other steps with a positive sigma"):
+    with pytest.raises(ValueError, match="needs at least two other ages with a positive sigma"):
         fit_mack_grid(g, sigma_rule="log_linear", zero_cells="missing")
 
 
@@ -923,13 +923,15 @@ def test_history_window_with_zeros_matches_chainladder(cl, case, n, average):
 
 def test_an_age_the_rule_empties_names_the_rule_and_the_ways_out():
     rows = zeroed((0, 9))  # 1981 at 120 months: the only link from 108 months ends at 0
-    with pytest.raises(ValueError, match="no estimable positive factor at dev lag 108") as refused:
+    with pytest.raises(ValueError, match="no link ratio is left from 108 to 120 months") as refused:
         methods.chain_ladder(cells(rows))
     for part in ("zero_cells='missing'", "unsupported_factor='unity'", "zero_cells='observed'"):
         assert part in str(refused.value), part
     # under "observed" the link into the zero is used, its factor is 0, and the
     # refusal is the one it always was
-    with pytest.raises(ValueError, match="no estimable positive factor at dev lag 108$"):
+    with pytest.raises(
+        ValueError, match=r"from 108 to 120 months give a factor of 0.0, which is not"
+    ):
         methods.chain_ladder(cells(rows), zero_cells="observed")
 
 
@@ -976,10 +978,10 @@ def test_a_step_the_rule_leaves_empty_is_refused_by_name():
     fit_mack_grid(g)  # kept as data, the step has its one pair
     with pytest.raises(
         ValueError,
-        match=r"both ends of dev step 2 \(the link from 24 to 36 months\) has a zero cumulative",
+        match=r"every origin with a link ratio from 24 to 36 months has a zero cumulative",
     ):
         fit_mack_grid(g, zero_cells="missing")
-    with pytest.raises(ValueError, match="no estimable positive factor at dev lag 24"):
+    with pytest.raises(ValueError, match="no link ratio is left from 24 to 36 months"):
         fit_conventional_grid(g, ConventionalCandidate(zero_cells="missing"))
     unity = fit_conventional_grid(
         g, ConventionalCandidate(zero_cells="missing", unsupported_factor="unity")
@@ -1002,7 +1004,7 @@ def test_leaving_a_pair_out_never_hides_a_negative_cumulative():
         dev_grain_months=12,
         measure="cumulative",
     )
-    with pytest.raises(ValueError, match="negative cumulative loss at dev step 2"):
+    with pytest.raises(ValueError, match=r"negative cumulative loss in \(1981-01-01, 24 months\)"):
         fit_mack_grid(g, zero_cells="missing")
 
 

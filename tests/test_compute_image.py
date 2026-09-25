@@ -109,6 +109,11 @@ NOT_PROMISED = {
         "a portfolio generator with no command line, imported by the "
         "conventional benchmark driver rather than run on its own."
     ),
+    "refusal_triangles.py": (
+        "rewrites a test fixture (tests/data/refusal_triangles.json) from "
+        "chainladder's samples. It is a development tool that needs chainladder, "
+        "which the image does not install, and it computes no result."
+    ),
 }
 
 #: (script file, top-level module) pairs the static scan may find outside the

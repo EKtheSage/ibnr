@@ -21,6 +21,7 @@ import pandas as pd
 import pytest
 
 from ibnr import Triangle
+from ibnr.errors import Refusal
 from ibnr.kernels.contract import cohort_grid, cohort_grid_frame
 from ibnr.kernels.mack import _tail_sigma2, fit_mack, fit_mack_many, simulate_ultimates
 
@@ -217,7 +218,7 @@ def test_rejects_zero_volume_step(backend_name):
     nan and carry on, so it is checked rather than divided."""
     bad = SMALL.copy()
     bad[0, 0] = bad[1, 0] = bad[2, 0] = 0.0
-    with pytest.raises(ValueError, match="zero volume at dev step 1"):
+    with pytest.raises(Refusal, match=r"every link ratio from 12 to 24 months starts from zero"):
         fit_mack(make_cohort_triangle(backend_name, bad), loss_field="paid_loss")
 
 
@@ -232,7 +233,7 @@ def test_rejects_step_with_too_few_positive_origins(backend_name):
     """
     bad = SMALL.copy()
     bad[1, 0] = bad[2, 0] = 0.0  # leaves exactly one positive origin at step 0
-    with pytest.raises(ValueError, match="only 1 with a positive cumulative"):
+    with pytest.raises(Refusal, match=r"only 1 of the 3 link ratios from 12 to 24 months starts"):
         fit_mack(make_cohort_triangle(backend_name, bad), loss_field="paid_loss")
 
 
@@ -561,6 +562,7 @@ def test_fit_mack_many_on_error(backend_name):
     assert set(panel.fits) == {("0001", "good")}
     assert ("0001", "holed") in panel.errors
     assert "run-off" in panel.errors[("0001", "holed")]
+    assert panel.reasons == {("0001", "holed"): "not_run_off"}
 
 
 def test_fit_mack_many_summary(backend_name):

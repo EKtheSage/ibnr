@@ -156,6 +156,69 @@ published numbers do not move.)
   nothing to measure. ibnr refuses it rather than report a standard error of
   0 that would read as no uncertainty; `methods.chain_ladder` still gives the
   ultimates.
+- **Infinite amounts are refused.** chainladder-python fits a triangle with an
+  infinite cumulative and reports a finite, wrong total. ibnr refuses it and
+  names the cells.
+
+## When a method refuses
+
+chainladder-python has no error class of its own: bad input raises whatever
+the numpy, pandas or scikit-learn line underneath raises (`KeyError` for an
+unknown `average`, `IndexError` for a `drop` pair the triangle does not have,
+pandas' `DateParseError` for an origin it cannot read), or is answered.
+
+Every input an `ibnr.methods` function will not answer is refused with
+`methods.Refusal` (the class lives in `ibnr.errors`), a `ValueError`. Any other
+exception from these functions, a plain `ValueError` included, is a defect in
+ibnr and worth reporting; a `TypeError` from a missing or misspelled keyword is
+Python's own. So a service can answer a `Refusal` as bad input and anything
+else as its own failure:
+
+```python
+from ibnr import methods
+
+try:
+    result = methods.chain_ladder(cells)
+except methods.Refusal as refusal:
+    body = refusal.to_dict()  # JSON: reason, kind, option, column, cells, ...
+```
+
+The fields:
+
+| Field | What it holds |
+|---|---|
+| `reason` | one code from `ibnr.errors.REASONS`, such as `"negative_cumulative"` |
+| `kind` | `"input"`: the request must change; `"model"`: another option or method can answer |
+| `method` | the function that refused, such as `"mack"` |
+| `option`, `column` | the argument at fault in the function's own terms (`"cells"`, `"premium"`, `"exclude"`), and the column of a table argument (`"origin_period"`, `"dev_lag"`, `"value"`) |
+| `cells` | the cells or origins at fault: `origin` as you wrote it (value and type), `origin_period` (the period's first day), `dev_lag`, `value` |
+| `links` | `(from_dev_lag, to_dev_lag)` in months, for a refusal about a development age |
+| `rows` | 0-based rows of the table, where a cell cannot be named (a missing origin) |
+| `count` | how many are at fault in all; `cells` and `rows` keep at most 100 |
+
+The codes of kind `"input"`: `invalid_option`, `invalid_table`,
+`missing_value`, `not_finite`, `unreadable_label`, `invalid_age`,
+`grain_mismatch`, `duplicate`, `negative_cumulative`, `origin_gap`,
+`not_run_off`, `not_in_triangle`, `origin_not_covered`. Of kind `"model"`:
+`no_link_ratio`, `exclusions_exhausted`, `variance_not_estimable`,
+`negative_increment`, `zero_increment`, `negative_fitted_mean`,
+`not_identified`, `degenerate_fit`, `did_not_converge`, `tail_not_decaying`,
+`empty_residual_pool`, `result_not_finite`, `not_supported`,
+`negative_projection`. The `ibnr.errors` module lists what each means. Codes
+are never renamed or removed; a new one may be added in a patch release, so
+handle a code you do not know by its `kind`.
+
+What some of chainladder-python's answers become:
+
+| chainladder-python | ibnr |
+|---|---|
+| `Development(average=1.0)`: `KeyError` | `invalid_option`, `option="average"` |
+| `Development(drop=("1850", 12))`: `IndexError` | `not_in_triangle`, `option="exclude"`, the pair in `cells` |
+| an origin `"abc"`: pandas `DateParseError` | `unreadable_label`, `column="origin_period"`, the rows in `rows` |
+| a negative cumulative: answered | `negative_cumulative`, the cells in `cells` |
+| a cell sent twice: summed | `duplicate`, one entry in `cells` per row |
+| `dev_lag` 18 on an annual triangle: regridded | `grain_mismatch`, `column="dev_lag"` |
+| `MackChainladder` on two origins: NaN standard error | `variance_not_estimable` |
 
 ## Origin labels
 

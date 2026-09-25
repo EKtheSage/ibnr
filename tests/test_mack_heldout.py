@@ -31,6 +31,7 @@ import numpy as np
 import pytest
 
 from ibnr import gallery
+from ibnr.errors import Refusal
 from ibnr.gallery.deterministic.mack.model import Mack
 from ibnr.gallery.entry import PredictsHeldout, ScoresHeldout
 from ibnr.kernels.holdout import CellIndex, index_into, next_diagonal
@@ -346,7 +347,7 @@ def test_failed_refit_leaves_the_previous_fit_intact(triangle, heldout):
     bad = full_square()
     bad[:, 0] = 0.0
     tri_b = make_cohort_triangle(None, bad, start_year=2010, segment={"lob": "comauto"})
-    with pytest.raises(ValueError, match="zero volume at dev step 1"):
+    with pytest.raises(Refusal, match=r"every link ratio from 12 to 24 months starts from zero"):
         entry.fit(tri_b, loss_field="paid_loss", as_of=AS_OF)
 
     # (a) the previous fitted state survives, fully consistent: same draws

@@ -157,7 +157,8 @@ def test_negative_increment_is_refused_by_name(backend_name):
     try:
         simulate_one_year_cdr(fit, n_draws=10, seed=1, generator="odp_bootstrap")
     except ValueError as exc:
-        assert "dev step 3" in str(exc)
+        assert exc.reason == "negative_increment"
+        assert "36 months" in str(exc)  # the cell, by its age
         assert "mack" in str(exc)  # the route that still answers here
     # ... and the mack generator does still answer, on the same fit
     assert simulate_one_year_cdr(fit, n_draws=10, seed=1).samples.shape == (10, cum.shape[0] + 1)

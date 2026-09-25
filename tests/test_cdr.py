@@ -31,6 +31,7 @@ import pandas as pd
 import pytest
 
 from ibnr import Triangle, gallery
+from ibnr.errors import Refusal
 from ibnr.kernels.cdr import (
     CDR_METHODS,
     DiagonalGenerator,
@@ -499,9 +500,11 @@ def test_unknown_generator_is_refused_by_name(backend_name):
         make_cohort_triangle(backend_name, synthetic_triangle(backend_name)),
         loss_field="paid_loss",
     )
-    with pytest.raises(KeyError, match="no CDR method named"):
+    # an argument naming no method is a refused option; the lookup itself is a KeyError
+    with pytest.raises(Refusal, match="no CDR method named") as named:
         simulate_one_year_cdr(fit, n_draws=10, generator="bootstrap")
-    with pytest.raises(TypeError, match="must be a DiagonalGenerator"):
+    assert named.value.reason == "invalid_option" and named.value.option == "generator"
+    with pytest.raises(Refusal, match="must be a DiagonalGenerator"):
         simulate_one_year_cdr(fit, n_draws=10, generator=object())
     with pytest.raises(KeyError, match="no CDR method named"):
         get_cdr_method("odp")

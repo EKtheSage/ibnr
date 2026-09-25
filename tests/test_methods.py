@@ -24,6 +24,7 @@ import pyarrow.compute as pc
 import pytest
 
 from ibnr import methods
+from ibnr.errors import Refusal
 from ibnr.kernels.contract import cohort_grid_frame, grid_from_columns
 from ibnr.kernels.conventional import ConventionalCandidate, fit_conventional_grid
 from ibnr.kernels.mack import fit_mack_grid
@@ -438,6 +439,7 @@ def test_a_bare_import_of_ibnr_does_not_load_methods():
 
 def test_the_public_names_are_pinned():
     assert sorted(methods.__all__) == [
+        "Refusal",
         "ReserveResult",
         "bornhuetter_ferguson",
         "cape_cod",
@@ -729,7 +731,7 @@ def test_a_bad_column_is_refused_by_name(cells, match):
 
 def test_two_cohorts_rows_are_refused_one_cohort_at_a_time():
     both = pa.concat_tables([arrow_cells(), arrow_cells()])
-    with pytest.raises(ValueError, match="one cohort at a time.*refused rather than added"):
+    with pytest.raises(ValueError, match="one triangle at a time.*refused rather than added"):
         methods.chain_ladder(both)
 
 
@@ -738,9 +740,10 @@ def years(*first_years: int) -> list:
 
 
 #: raa's origins written three ways, with how a message names the 1985 origin in each
+#: (a text label is shown without quotes, as the caller's text)
 ORIGIN_SPELLINGS = pytest.mark.parametrize(
     ("spell", "shown"),
-    [(lambda o: o, "1985-01-01"), (lambda o: o.year, "1985"), (lambda o: str(o.year), "'1985'")],
+    [(lambda o: o, "1985-01-01"), (lambda o: o.year, "1985"), (lambda o: str(o.year), "1985")],
     ids=["date", "int_year", "text_year"],
 )
 
@@ -757,11 +760,14 @@ def test_a_negative_cumulative_is_refused_naming_the_cells(method, spell, shown)
     rows = [list(row) for row in RAA]
     rows[4][1], rows[4][2] = -50, -80
     with pytest.raises(
-        ValueError,
-        match=r"value is negative in 2 cell\(s\), \(origin_period, dev_lag\) "
-        rf"\[\({shown}, 24\), \({shown}, 36\)\]\.",
-    ):
+        Refusal,
+        match=rf"value is negative in 2 cell\(s\): \({shown}, 24 months\) and "
+        rf"\({shown}, 36 months\)\.",
+    ) as refused:
         getattr(methods, method)(relabelled(arrow_cells(rows), spell))
+    assert refused.value.reason == "negative_cumulative"
+    assert [cell.origin for cell in refused.value.cells] == [spell(dt.date(1985, 1, 1))] * 2
+    assert [cell.value for cell in refused.value.cells] == [-50.0, -80.0]
 
 
 @ORIGIN_SPELLINGS
@@ -773,11 +779,12 @@ def test_two_rows_for_one_cell_are_named_in_the_callers_labels(spell, shown):
     )
     doubled = pa.concat_tables([cells, cells.slice(at, 1)])
     with pytest.raises(
-        ValueError,
-        match=r"more than one row for the \(origin_period, dev_lag\) cell\(s\) "
-        rf"\[\({shown}, 24\)\]",
-    ):
+        Refusal,
+        match=rf"more than one row for the same cell: \({shown}, 24 months\) and "
+        rf"\({shown}, 24 months\)",
+    ) as refused:
         methods.chain_ladder(relabelled(doubled, spell))
+    assert refused.value.reason == "duplicate"
 
 
 @pytest.mark.parametrize(
@@ -908,15 +915,19 @@ def test_bad_premium_is_refused_by_name(premium, match):
         # named as the caller wrote it, not as the date it was read as
         (1990, "1990"),
         (dt.date(1990, 12, 31), "1990-12-31"),
-        ("1990", "'1990'"),
+        ("1990", "1990"),
     ],
     ids=["date", "int_year", "year_end", "text_year"],
 )
 def test_an_exclusion_the_triangle_does_not_have_is_refused(origin, shown):
     with pytest.raises(
-        ValueError, match=rf"exclude names link ratio\(s\) \[\({shown}, 12\)\] that the triangle"
-    ):
+        Refusal,
+        match=rf"exclude names link ratio\(s\) \({shown}, 12 months\) that the triangle",
+    ) as refused:
         methods.chain_ladder(arrow_cells(), exclude=[(origin, 12)])
+    assert refused.value.reason == "not_in_triangle"
+    assert refused.value.cells[0].origin == origin  # as written in exclude, value and type
+    assert type(refused.value.cells[0].origin) is type(origin)
 
 
 def test_every_link_ratio_of_raa_can_be_excluded():
@@ -953,8 +964,10 @@ def test_a_forecast_that_overflows_is_refused():
             "value": pa.array([1e308, 1.5e308, 1.2e308], pa.float64()),
         }
     )
-    with pytest.raises(ValueError, match="conventional forecast is not finite"):
+    with pytest.raises(Refusal, match="the ultimate for 2001 is not a finite number") as refused:
         methods.chain_ladder(cells)
+    assert refused.value.reason == "result_not_finite"
+    assert [cell.origin for cell in refused.value.cells] == [2001]
 
 
 @pytest.mark.parametrize(
@@ -962,17 +975,17 @@ def test_a_forecast_that_overflows_is_refused():
     [
         (
             [(1982, 12), ("1982-12-31", 12)],
-            r"exclude names one link ratio twice, as \(1982, 12\) and \('1982-12-31', 12\); "
-            r"list each \(origin_period, dev_lag\) pair once",
+            r"exclude names one link ratio twice, as \(1982, 12 months\) and "
+            r"\('1982-12-31', 12 months\); list each \(origin_period, dev_lag\) pair once",
         ),
         (
             [(1982, 12), (dt.date(1983, 1, 1), 24), (1982, np.int64(12))],
-            r"twice, as \(1982, 12\) and \(1982, 12\)",
+            r"twice, as \(1982, 12 months\) and \(1982, 12 months\)",
         ),
         (
             # two equal literal tuples, which Python may hand over as one object
             [(1982, 12), (1982, 12)],
-            r"twice, as \(1982, 12\) and \(1982, 12\)",
+            r"twice, as \(1982, 12 months\) and \(1982, 12 months\)",
         ),
     ],
     ids=["two_spellings", "the_same_pair_again", "the_same_literal_twice"],
@@ -1347,13 +1360,13 @@ NOT_FIRST_OR_LAST = "is neither the first nor the last day of a month"
         ),
         (
             spelled(lambda o: str(o.year), bad="1984-12-31"),
-            "origin_period writes the origin period starting 1984-01-01 in 2 ways: "
-            "'1984-12-31', '1984'. Write each period one way throughout the column, because "
+            "origin_period writes one origin period in more than one way: "
+            "'1984-12-31' and '1984'. Write each period one way throughout the column, because "
             "the results echo its label back",
         ),
         (
             spelled(lambda o: o, pa.date32(), bad=dt.date(1984, 12, 31)),
-            "starting 1984-01-01 in 2 ways: 1984-12-31, 1984-01-01",
+            "in more than one way: 1984-12-31 and 1984-01-01",
         ),
         (
             spelled(
@@ -1361,7 +1374,7 @@ NOT_FIRST_OR_LAST = "is neither the first nor the last day of a month"
                 pa.timestamp("s"),
                 bad=dt.datetime(1984, 1, 1, 6),
             ),
-            "starting 1984-01-01 in 2 ways: 1984-01-01 06:00:00, 1984-01-01 00:00:00",
+            "in more than one way: 1984-01-01 06:00:00 and 1984-01-01 00:00:00",
         ),
         (
             spelled(lambda o: f"{o.year}Q1"),
@@ -1457,11 +1470,11 @@ YEAR_PREMIUM = {o.year: p for o, p in RAA_PREMIUM.items()}
         ),
         (
             {y: p for y, p in YEAR_PREMIUM.items() if y not in (1981, 1985)},
-            r"premium has no amount for origin\(s\) 1981, 1985$",
+            r"premium has no amount for origin\(s\) 1981 and 1985$",
         ),
         (
             {**{str(y): p for y, p in YEAR_PREMIUM.items()}, "1991-12-31": 1.0},
-            r"premium has amounts for origin\(s\) '1991-12-31' that are not in the triangle",
+            r"premium has amounts for origin\(s\) 1991-12-31 that are not in the triangle",
         ),
         (
             pa.table({"origin_period": [1981.0] * 10, "premium": list(RAA_PREMIUM.values())}),
@@ -1593,8 +1606,10 @@ def test_unsupported_factor_is_delivered(method):
     fit = point_method(method)
     # Excluding the only link ratio at 108 months leaves that age with nothing.
     lonely = [(dt.date(1981, 1, 1), 108)]
-    with pytest.raises(ValueError, match="no estimable positive factor at dev lag 108"):
+    with pytest.raises(Refusal, match="no link ratio is left from 108 to 120 months") as refused:
         fit(arrow_cells(), exclude=lonely)
+    assert refused.value.reason == "no_link_ratio"
+    assert refused.value.links == ((108, 120),)
     unity = fit(arrow_cells(), exclude=lonely, unsupported_factor="unity")
     assert factors(unity)[8] == 1.0
     assert unity.development["unity_fallback"].to_pylist()[8] is True
@@ -1608,9 +1623,11 @@ def test_exhausted_exclusions_is_delivered(method):
     assert kept.development["extreme_trimming_skipped"].to_pylist()[-2] is True
     assert factors(kept)[-2] == pytest.approx(18834 / 18662)
     with pytest.raises(
-        ValueError, match="extreme exclusions exhaust paired origins at dev lag 108"
-    ):
+        Refusal, match="drop_high would leave no link ratio from 108 to 120 months"
+    ) as refused:
         fit(arrow_cells(), drop_high=True, exhausted_exclusions="raise")
+    assert refused.value.reason == "exclusions_exhausted"
+    assert refused.value.links == ((108, 120),)
 
 
 def test_an_exclusion_age_may_be_a_numpy_integer():
