@@ -153,10 +153,30 @@ def test_ties_are_broken_by_the_rule_asked_for(side, rule, removed):
     assert [origin for origin, why in at_12.items() if why == side] == [removed]
 
 
-def test_the_methods_default_to_chainladders_tie_rule_and_the_kernel_to_0_7_2s():
-    assert methods.chain_ladder(TIES, drop_high=1).link_ratios.equals(
-        methods.chain_ladder(TIES, drop_high=1, trim_ties="volume").link_ratios
-    )
+def _on_ties(method: str):
+    function = getattr(methods, method)
+    extra = {} if method == "chain_ladder" else {"premium": dict.fromkeys(range(2001, 2006), 1e3)}
+    if method in ("bornhuetter_ferguson", "benktander"):
+        extra["expected_loss_ratio"] = 0.7
+    return lambda **options: function(TIES, **extra, **options)
+
+
+@pytest.mark.parametrize("side", ["drop_high", "drop_low"])
+@pytest.mark.parametrize(
+    "method", ["chain_ladder", "bornhuetter_ferguson", "benktander", "cape_cod"]
+)
+def test_the_methods_default_to_chainladders_tie_rule(method, side):
+    fit = _on_ties(method)
+    default = fit(**{side: 1})
+    by_volume = fit(**{side: 1}, trim_ties="volume")
+    by_origin = fit(**{side: 1}, trim_ties="origin")
+    for name in methods.TABLES:
+        assert getattr(default, name).equals(getattr(by_volume, name)), name
+    assert not default.development.equals(by_origin.development)
+    assert not np.array_equal(ultimates(default), ultimates(by_origin))
+
+
+def test_the_kernel_keeps_0_7_2s_tie_rule():
     assert ConventionalCandidate().trim_ties == "origin"
 
 
@@ -371,6 +391,81 @@ def test_the_shared_selector_refuses_an_exhausted_rule_at_the_first_link_it_meet
     assert np.isfinite(factor).all()
 
 
+# The kernel's own refusals. ibnr.methods refuses these inputs itself before the
+# kernel sees them, so only a direct kernel caller reaches the kernel's checks.
+
+
+def raa_grid(through: int = 1990) -> dict:
+    """raa as a kernel grid, keeping the cells evaluated by the end of ``through``."""
+    rows = [(y, d, v) for y, d, v in PUBLIC["raa"] if y + d // 12 - 1 <= through]
+    return grid_from_columns(
+        np.array([dt.date(y, 1, 1) for y, _, _ in rows], dtype="datetime64[D]"),
+        np.array([d for _, d, _ in rows]),
+        np.array([v for _, _, v in rows], dtype=float),
+        dev_grain_months=12,
+        measure="cumulative",
+    )
+
+
+@pytest.mark.parametrize(
+    ("day", "reason", "phrase"),
+    [
+        (dt.date(1981, 12, 31), "not_in_triangle", "is before any link ratio"),
+        (dt.date(1983, 6, 30), "grain_mismatch", "is not a diagonal of this triangle"),
+    ],
+)
+def test_the_kernel_refuses_a_valuation_that_would_exclude_nothing(day, reason, phrase):
+    with pytest.raises(Refusal, match=phrase) as refused:
+        fit_conventional_grid(raa_grid(), ConventionalCandidate(exclude_valuations=(day,)))
+    assert refused.value.reason == reason
+    assert refused.value.option == "exclude_valuations"
+
+
+def test_the_kernel_accepts_a_valuation_after_the_fit_date_and_excludes_nothing_yet():
+    early = raa_grid(through=1987)
+    later = ConventionalCandidate(exclude_valuations=(dt.date(1989, 12, 31),))
+    plain = fit_conventional_grid(early, ConventionalCandidate())
+    ahead = fit_conventional_grid(early, later)
+    assert ahead.factors.tobytes() == plain.factors.tobytes()
+    # once the fit date reaches it, the same candidate leaves that diagonal out
+    full = fit_conventional_grid(raa_grid(), later)
+    assert not np.array_equal(
+        full.factors, fit_conventional_grid(raa_grid(), ConventionalCandidate()).factors
+    )
+
+
+@pytest.mark.parametrize(
+    ("settings", "option"),
+    [
+        ({"method": "cl", "n_iters": 2}, "n_iters"),
+        ({"method": "cl", "trend": 0.05}, "trend"),
+        ({"method": "bf", "expected_loss_ratio": 0.7, "trend": 0.05}, "trend"),
+    ],
+)
+def test_the_kernel_refuses_an_option_its_method_would_ignore(settings, option):
+    with pytest.raises(Refusal) as refused:
+        ConventionalCandidate(**settings)
+    assert refused.value.reason == "invalid_option"
+    assert refused.value.option == option
+    assert refused.value.options == (option, "method")
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda days: LinkRules(exclude_valuations=days),
+        lambda days: ConventionalCandidate(exclude_valuations=days),
+    ],
+    ids=["LinkRules", "ConventionalCandidate"],
+)
+def test_the_kernel_refuses_a_valuation_named_twice(build):
+    day = dt.date(1983, 12, 31)
+    with pytest.raises(Refusal, match="names 1983-12-31 more than once") as refused:
+        build((day, dt.date(1985, 12, 31), day))
+    assert refused.value.reason == "duplicate"
+    assert refused.value.option == "exclude_valuations"
+
+
 # Benktander and Cape Cod on a hand 4 x 4 triangle, the numbers written out
 
 HAND = {
@@ -422,6 +517,18 @@ def test_benktander_with_one_iteration_is_bornhuetter_ferguson_byte_for_byte():
 def test_many_benktander_iterations_reach_the_chain_ladder():
     many = methods.benktander(RAA, premium=RAA_PREMIUM, expected_loss_ratio=0.7, n_iters=1000)
     np.testing.assert_allclose(ultimates(many), ultimates(methods.chain_ladder(RAA)), rtol=1e-9)
+
+
+@pytest.mark.parametrize("method", ["benktander", "cape_cod"])
+def test_n_iters_stops_at_ten_thousand(method):
+    """Each iteration is a pass of the loop, so the count bounds the time one call
+    can take: 10,000 takes about 0.02 s on raa, and a billion would take minutes."""
+    fit = _point(method)
+    assert np.isfinite(ultimates(fit(RAA, n_iters=10_000))).all()
+    with pytest.raises(Refusal, match="n_iters must be at most 10000") as refused:
+        fit(RAA, n_iters=10_001)
+    assert refused.value.reason == "invalid_option"
+    assert refused.value.option == "n_iters"
 
 
 @pytest.mark.parametrize("decay", [1.0, 0.5])
@@ -687,7 +794,8 @@ def test_the_selection_grid_matches_chainladder(cl, samples, name):
 
 #: clrd paid cohorts where the tie rule decides a trimmed ratio, per option: 0.7.2's
 #: rule (trim_ties="origin") disagreed with chainladder on each, found by comparing
-#: all 681 cohorts both answer (tests/data/README.md says how).
+#: the 681 cohorts ibnr answers that are not zero in every cell (the other 50 of
+#: the 731 have no cells in chainladder; tests/data/README.md says how).
 TIES_IN_CLRD = json.loads((DATA / "clrd_tie_cohorts.json").read_text("utf-8"))
 
 

@@ -61,15 +61,17 @@ back to origin `i`'s level by `T_i`. The origins table carries `T_i` as
 `trend_factor` and `LR_i × T_i` as `trended_loss_ratio` (chainladder-python's
 `apriori_`; `expected_loss_ratio` is its `detrended_apriori_`). At trend 0 every
 `T_n` is exactly 1.0, and the loss ratios are the same numbers, bit for bit, as
-before the option existed. chainladder-python's `CapeCod` defaults to
-`trend=0.05`, so a comparison with it has to pass the same trend.
+before the option existed. chainladder-python 0.9.2's `CapeCod` also defaults
+to `trend=0`.
 
 `n_iters` (BF and GCC, default 1) iterates the method as Benktander does (Mack
 2000): with `q_i = 1 - beta_i`, `U_0 = A_i` and `U_k = C_i + q_i × U_(k-1)`, the
 ultimate is `U_n`. `n_iters=1` is the method itself; as `n_iters` grows the
 ultimate moves to CL's. The origins table's `prior_ultimate` is then `U_(n-1)`,
 so the forecast formula above holds for every `n`, and `expected_ultimate`
-carries `A_i`. `n_iters=0`, the expected loss method, is refused.
+carries `A_i`. `n_iters=0`, the expected loss method, is refused, and so is
+a count above 10,000 (`kernels.conventional.MAX_N_ITERS`), because the loop
+runs once per iteration.
 
 Factors below 1, proportions above 1, negative increments and negative reserves
 are permitted. Cumulative losses must be finite and non-negative. Premiums must

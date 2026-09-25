@@ -57,6 +57,8 @@ file. Read by `tests/test_development_options.py`.
 The clrd paid triangles (chainladder 0.9.2's `clrd.csv`, zeros kept) on which
 ibnr 0.7.2's tie rule, `trim_ties="origin"`, gives different factors from
 chainladder-python for `drop_high=1`, `drop_low=1`, both, and `drop_high=2` with
-`preserve=2`: 23, 124, 83 and 30 of the 681 triangles both answer. Found by
-running both on every triangle; `tests/test_development_options.py` requires
-the default rule to match chainladder on each, and 0.7.2's rule still not to.
+`preserve=2`: 23, 124, 83 and 30 of 681 triangles. ibnr answers 731 of the 775
+paid triangles, and 50 of those are zero in every cell; chainladder stores a
+zero as a missing cell, so it holds no cells for them, and the 681 are the
+rest. Found by running both on every triangle;
+`tests/test_development_options.py` requires the default rule to match chainladder on each, and 0.7.2's rule still not to.

@@ -1020,7 +1020,7 @@ CASES = [
             ("benktander", lambda **o: bk(T, premium=PREM, expected_loss_ratio=0.7, **o)),
             ("cape_cod", lambda **o: cc(T, premium=PREM, **o)),
         )
-        for value in (0, -1, 2.5, True, "2", None)
+        for value in (0, -1, 2.5, True, "2", None, 10_001, 10**9)
     ],
     *[
         (
@@ -1880,9 +1880,25 @@ def test_no_message_uses_a_kernel_word_or_a_kernel_date(case):
             "drop_above=1.2 would leave 0 of the 3 link ratio(s) from 12 to 24 months, fewer "
             "than preserve=1; pass exhausted_exclusions='keep' to apply neither bound",
         ),
+        # the trims still run once a bound is kept, and the count is of every ratio
+        # the bound saw, whether a trim then left it out or not
+        (
+            lambda: cl(T, drop_above=1.49, drop_high=1, preserve=2, exhausted_exclusions="raise"),
+            "drop_above=1.49 would leave 1 of the 3 link ratio(s) from 12 to 24 months, fewer "
+            "than preserve=2",
+        ),
+        (
+            lambda: cl(T, drop_below=1.51, drop_low=1, preserve=2, exhausted_exclusions="raise"),
+            "drop_below=1.51 would leave 1 of the 3 link ratio(s) from 12 to 24 months, fewer "
+            "than preserve=2",
+        ),
         (
             lambda: bk(T, premium=PREM, expected_loss_ratio=0.7, n_iters=0),
             "n_iters=0 would ignore the reported losses",
+        ),
+        (
+            lambda: cc(T, premium=PREM, n_iters=10**9),
+            "n_iters must be at most 10000, got 1000000000",
         ),
         (lambda: cc(T, premium=PREM, trend=-1.0), "trend is an annual rate above -1"),
         (

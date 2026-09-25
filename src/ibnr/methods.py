@@ -500,8 +500,9 @@ def benktander(
     after ``n`` iterations is ``U_n = L + q * U_(n-1)``, starting from
     ``U_0 = E``. ``n_iters=1`` is :func:`bornhuetter_ferguson` exactly, and as
     ``n_iters`` grows the ultimate moves to the chain ladder's. ``n_iters`` must
-    be a whole number of 1 or more; 0 would be the expected loss method, which
-    ignores the reported losses and is refused.
+    be a whole number from 1 to 10,000; 0 would be the expected loss method,
+    which ignores the reported losses, and each iteration is one more pass of a
+    loop, so the upper limit bounds the time one call can take.
 
     ``cells`` and the development options are as in :func:`chain_ladder`, and
     ``premium`` and ``expected_loss_ratio`` as in :func:`bornhuetter_ferguson`.
@@ -577,7 +578,8 @@ def cape_cod(
 
     ``n_iters`` iterates the result as :func:`benktander` does, with each
     origin's ``premium * expected_loss_ratio`` as the first a priori ultimate;
-    1 (the default) is Cape Cod itself, and 0 is refused.
+    1 (the default) is Cape Cod itself, and 0 and counts above 10,000 are
+    refused.
 
     ``cells`` and the development options are as in :func:`chain_ladder`, and
     ``premium`` as in :func:`bornhuetter_ferguson`. The loss ratios are in

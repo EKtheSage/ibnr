@@ -92,10 +92,12 @@ and 36 clrd triangles) are frozen as digests of their bytes in
 **What can change for a caller:**
 - In `ibnr.methods`, `drop_high` and `drop_low` now break ties as
   chainladder-python does, so on tied link ratios the factors move to
-  chainladder's. On the 681 clrd paid triangles both answer, the factors change
-  on 23 for `drop_high=True`, 124 for `drop_low=True` and 83 for both (on
-  incurred, 70, 51 and 40 of 726). Pass `trim_ties="origin"` for 0.7.2's
-  answer. The kernels keep 0.7.2's rule.
+  chainladder's. ibnr answers 731 of the 775 clrd paid triangles; 50 of those
+  are zero in every cell, and chainladder, which stores a zero as a missing
+  cell, holds no cells for them. On the other 681 the factors change on 23 for
+  `drop_high=True`, 124 for `drop_low=True` and 83 for both (on incurred, 70,
+  51 and 40 of 726: 752 answered, 26 of them all zero). Pass
+  `trim_ties="origin"` for 0.7.2's answer. The kernels keep 0.7.2's rule.
 - `average="regression"` and a whole-number `drop_high`/`drop_low` above 1 were
   refused and are answered now. The message refusing a bad `drop_high` or
   `drop_low` names counts instead of True or False, and the message refusing a
@@ -115,8 +117,9 @@ a link ratio (chainladder's `drop_valuation="1994"` is
 `exclude_valuations=[1995]`, and the latest valuation can be excluded); the
 rules act in order rather than independently, so two exclusion rules together
 cannot empty an age `preserve` protects; a ratio equal to a bound is kept;
-`n_iters=0`, per-age lists and `trend <= -1` are refused; and Cape Cod keeps
-fully developed origins that are not on the latest diagonal.
+`n_iters=0`, `n_iters` above 10,000, per-age lists and `trend <= -1` are
+refused; and Cape Cod keeps fully developed origins that are not on the latest
+diagonal.
 
 Speed: the conventional estimator (what `ibnr.methods` runs after reading the
 cells) takes about 0.3 ms on raa where 0.7.2 took 0.15 ms, and 1.2 to 1.7 ms on
