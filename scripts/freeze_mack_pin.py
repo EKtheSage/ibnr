@@ -8,7 +8,9 @@ compares. Two things are pinned:
   of every array on the fit (``f``, ``sigma2``, ``s``, ``n_obs``, ``n_pos``,
   the completed triangle), of ``msep_runoff``'s arrays and totals, and of the
   fit's ``to_arrow()`` payload; or to a refusal's reason and message. These
-  must not move by a single bit.
+  must not move by a single bit. The test compares only the Mack-rule digests:
+  the log-linear rule's ``log`` and ``exp`` differ in the last bits between
+  platforms, and ``methods`` below covers that rule as numbers.
 - ``methods``: ``methods.mack``'s numbers under its defaults, and with
   ``sigma_rule="mack"`` and ``zero_cells="observed"``, stored as numbers (or a
   refusal's reason), because ``methods.mack`` now reads its factors through

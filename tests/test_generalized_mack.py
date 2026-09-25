@@ -119,15 +119,31 @@ SETTINGS = [
 # -- 1. nothing that existed before moved --------------------------------------------
 
 
+def _byte_pinned(key: str) -> bool:
+    """Whether a kernel pin can be compared as bytes on every platform.
+
+    The pin was frozen on Windows. The log-linear sigma rule fits a line through
+    ``log(sigma)`` and takes ``exp`` of it, and the math libraries of Windows and
+    Linux differ in the last bits of ``log`` and ``exp``, so those digests do not
+    carry across. Mack's rule needs no ``log`` or ``exp``. The log-linear kernel
+    is still pinned, as numbers to 1e-14, by the ``methods`` half of the pin:
+    ``methods.mack``'s ``default`` and ``observed`` cases run it under both zero
+    rules.
+    """
+    return "|mack|" in key
+
+
 def test_the_default_kernel_fit_did_not_move_on_the_public_triangles():
-    """``fit_mack_grid`` with no ``average`` and no ``links``, under both sigma
-    rules and both zero rules, on the five public triangles, the same five with a
+    """``fit_mack_grid`` with no ``average`` and no ``links``, under Mack's sigma
+    rule and both zero rules, on the five public triangles, the same five with a
     zero cell, and a 30 x 30 one: every array of the fit, ``msep_runoff`` and the
     ``to_arrow`` payload have the bytes they had before this change."""
     triangles = {**frozen.public_triangles(), **frozen.with_zeros()}
     now = frozen.pin(triangles)
-    pinned = {k: v for k, v in PIN["kernel"].items() if not k.startswith("clrd|")}
-    assert len(pinned) == 11 * 4
+    pinned = {
+        k: v for k, v in PIN["kernel"].items() if not k.startswith("clrd|") and _byte_pinned(k)
+    }
+    assert len(pinned) == 11 * 2
     assert [key for key in sorted(pinned) if now["kernel"].get(key) != pinned[key]] == []
 
 
@@ -135,8 +151,8 @@ def test_the_default_kernel_fit_did_not_move_on_the_public_triangles():
 def test_the_default_kernel_fit_did_not_move_on_clrd():
     pytest.importorskip("chainladder")
     now = frozen.pin(frozen.clrd_triangles())
-    pinned = {k: v for k, v in PIN["kernel"].items() if k.startswith("clrd|")}
-    assert len(pinned) == 53 * 4
+    pinned = {k: v for k, v in PIN["kernel"].items() if k.startswith("clrd|") and _byte_pinned(k)}
+    assert len(pinned) == 53 * 2
     assert [key for key in sorted(pinned) if now["kernel"].get(key) != pinned[key]] == []
 
 
