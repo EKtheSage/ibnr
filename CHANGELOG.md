@@ -115,7 +115,7 @@ A refusal carries:
   fault, in the function's own terms;
 - `cells` (origin, first day of the period, `dev_lag`, value), `links`
   (`(from_dev_lag, to_dev_lag)` in months) and `rows` (0-based rows of a
-  table): at most 100 of each, with `count` holding the total;
+  table): at most 100 cells and 100 rows, with `count` holding the total;
 - each origin as the caller wrote it, value and type, the same value the
   result's `origin` column would show; the kernels name an origin by its
   period's first day and `ibnr.methods` puts the caller's label back.
@@ -158,9 +158,41 @@ cases, 230 of them refusals, all identical (the refusals in the same places).
   NaN, and a total or a link ratio of the other three methods that overflows
   although each ultimate is finite, which came back as infinity. Now
   `result_not_finite`, naming the origins where it can. A result's numbers are
-  all finite, and a missing one is a null.
+  all finite, and a missing one is a null;
+- `methods.mack(zero_cells="observed")` where the last age's link ratios give a
+  factor of 0 (every origin there closing at zero; raa with 1981 at 120 months
+  set to 0, say), or where a factor is below the smallest double. Every ultimate
+  came back 0 and `pct_reported` infinite. Now `no_link_ratio`, as
+  `chain_ladder` already refused a factor of 0;
+- a factor or a link ratio past the largest double. `unsupported_factor="unity"`
+  put 1.0 in place of an infinite factor, which gave a wrong answer with every
+  number finite (a total ultimate of 1.0 against a latest of 1e308), and without it
+  the refusal was `no_link_ratio` and suggested that option. In `mack` the
+  sigma came out NaN and was filled in as if the age had too few link ratios,
+  so the refusal was `variance_not_estimable`, blaming zero cells the triangle
+  did not have. Now `result_not_finite` naming the age, in
+  `kernels.fit_conventional_grid` and `kernels.fit_mack_grid` too;
+- `methods.mack` on amounts near the smallest double (raa times 1e-310), whose
+  squares are 0: the standard errors came back 0. Now `result_not_finite`;
+- a float `dev_lag` of 2**63 months or more, which numpy turned into
+  -9223372036854775808 with a warning and which was then refused as that
+  negative age. Now `invalid_age`, quoting the value sent.
 
 **Other changes a caller can see:**
+- Mack's rule for a sigma (`sigma_rule="mack"`) raised `OverflowError` once a
+  sigma passed about 1e154 (raa times 1e154, say), in `methods.mack` and in
+  `kernels.fit_mack_grid`. It now computes `last * (last / prev)` there; below
+  that nothing changes, bit for bit. Such a triangle's standard errors are then
+  refused as `result_not_finite`;
+- `ibnr.methods` gives no `RuntimeWarning` on amounts near the largest or the
+  smallest double; the answer is refused by name instead. The seeded fuzz now
+  scales whole triangles to 1e-300 and 1e300 and sends premiums of 1e-320 and
+  1e308, with a warning counted as a failure;
+- a `fractions.Fraction` `expected_loss_ratio` or `decay` raised a `TypeError`
+  from inside numpy; it is a number and is now used as its float;
+- messages show a numpy scalar as the number it holds (`got -0.1`, not
+  `got np.float64(-0.1)`), and a column name or label spelling a placeholder
+  such as `{given}` is shown as written;
 - a text `expected_loss_ratio` or `decay` raised a `TypeError` from inside
   numpy; now `invalid_option`;
 - `simulate_one_year_cdr(generator=...)` with a name that is no method raised a
@@ -178,9 +210,9 @@ cases, 230 of them refusals, all identical (the refusals in the same places).
   for `(2002, 24)`, and a text label without quotes except where two spellings
   of one period are compared. Code that matched message text should match the
   `reason` instead;
-- `kernels.require_run_off` takes `step=` and `cum=` (both optional) so a refusal
-  names cells in months with their amounts, and `kernels.fit_odp_bootstrap`
-  takes `origins=` and `dev_grain_months=` for the same reason. Where cells are
+- `kernels.grid.require_run_off` takes `step=` and `cum=` (both optional) so a
+  refusal names cells in months with their amounts, and
+  `kernels.odp_bootstrap.fit_odp_bootstrap` takes `origins=` and `dev_grain_months=` for the same reason. Where cells are
   not a run-off triangle, the message names the cells against the diagonal that
   leaves the fewest cells wrong; which triangles are refused is unchanged.
 

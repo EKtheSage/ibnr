@@ -83,7 +83,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 
 from ibnr import _arrow
-from ibnr.errors import Refusal, RefusedCell
+from ibnr.errors import Refusal, RefusedCell, _literal
 from ibnr.kernels.conventional import ConventionalCandidate, _estimate_grid
 from ibnr.kernels.grid import as_date, check_grid, grid_from_columns
 from ibnr.kernels.mack import fit_mack_grid
@@ -471,7 +471,9 @@ def mack(
     ratios: a triangle with at most one at every age (two origins, for example)
     is refused rather than given standard errors of 0. Input it will not answer
     is refused with :class:`Refusal`, and so is a triangle whose amounts are
-    so large that a standard error is not a finite number.
+    so large that a standard error is not a finite number, or so small that its
+    square reads as 0, and one where a factor is 0 (every origin at an age
+    closing at zero), since every ultimate after it would be 0.
     """
     with _CallersTerms("mack") as terms:
         grid, labels = terms.read(cells, dev_grain_months)
@@ -488,11 +490,27 @@ def _mack(grid, labels: _Origins, *, sigma_rule: str, zero_cells: str) -> Reserv
             "gives the latest amounts as the ultimates",
             option="cells",
         )
-    # Amounts near the largest double are finite but Mack's sums of squares are
-    # not. numpy says so with a warning, which is silenced here and below because
-    # _require_finite refuses the answer by name before anything is returned.
-    with np.errstate(over="ignore"):
+    # Amounts near the largest or the smallest double are finite but Mack's sums,
+    # ratios and squares are not. numpy says so with a warning, which is silenced
+    # here and below because the kernel and _require_finite refuse such an answer
+    # by name before anything is returned.
+    with np.errstate(all="ignore"):
         fit = fit_mack_grid(grid, sigma_rule=sigma_rule, zero_cells=zero_cells)
+    zero_factor = np.flatnonzero(fit.f == 0)
+    if zero_factor.size:
+        # Only the last age can get here with every link ratio 0 (the age after
+        # would have nothing to start from); any age can when a ratio is below
+        # the smallest double.
+        raise Refusal(
+            "no_link_ratio",
+            "the link ratios give a factor of 0.0 {links}, so every ultimate after that age "
+            "would be 0, and Mack's standard errors divide by the factor. Every origin with a "
+            "link ratio there closes at zero, or its amount is too small against the one before "
+            "for the ratio to be a number above 0. chain_ladder with unsupported_factor='unity' "
+            "uses a factor of 1.0 at that age instead",
+            option="cells",
+            links=[((j + 1) * step, (j + 2) * step) for j in zero_factor],
+        )
     if (fit.n_pos < 2).all():
         raise Refusal(
             "variance_not_estimable",
@@ -524,7 +542,7 @@ def _mack(grid, labels: _Origins, *, sigma_rule: str, zero_cells: str) -> Reserv
         )
     # a factor so small its square is 0, or a sum of squares past the largest double:
     # amounts too large (or small) to multiply out, refused by _require_finite
-    with np.errstate(over="ignore", under="ignore", divide="ignore", invalid="ignore"):
+    with np.errstate(all="ignore"):
         risk = fit.msep_runoff()
         latest, ultimate = fit.latest, fit.ultimate
         per_origin = {
@@ -536,13 +554,17 @@ def _mack(grid, labels: _Origins, *, sigma_rule: str, zero_cells: str) -> Reserv
         }
         sigma = np.sqrt(fit.sigma2)
         std_err = np.sqrt(fit.sigma2 / fit.s)
+        pattern = _pattern_numbers(fit.f, fit.n_d)
         total = {
             **_sums(latest, ultimate),
             "mack_se": _arrow.float64([np.sqrt(risk["msep_total"])]),
             "parameter_se": _arrow.float64([np.sqrt(risk["parameter_total"])]),
             "process_se": _arrow.float64([np.sqrt(risk["process_total"])]),
         }
-    _require_finite(fit.origin_periods, per_origin, np.r_[sigma, std_err], total)
+    _require_finite(
+        fit.origin_periods, per_origin, np.concatenate([sigma, std_err, *pattern]), total
+    )
+    _require_no_underflow(fit, risk["msep"])
     origins = pa.table(
         {
             "origin": labels.labels_for(fit.origin_periods),
@@ -554,7 +576,7 @@ def _mack(grid, labels: _Origins, *, sigma_rule: str, zero_cells: str) -> Reserv
     )
     development = pa.table(
         {
-            **_pattern(fit.f, fit.n_d, step),
+            **_pattern(pattern, step),
             "sigma": _with_last_null(sigma, pa.float64()),
             "std_err": _with_last_null(std_err, pa.float64()),
         }
@@ -562,15 +584,56 @@ def _mack(grid, labels: _Origins, *, sigma_rule: str, zero_cells: str) -> Reserv
     return ReserveResult("mack", as_of, step, origins, development, None, pa.table(total))
 
 
+def _require_no_underflow(fit, msep: np.ndarray) -> None:
+    """Refuse Mack's standard errors when a square fell below the smallest double.
+
+    Amounts near the smallest double (about 1e-308) have squares of exactly 0.
+    Mack's sigma and msep are sums of such squares, so they come out 0 and the
+    standard errors would read as no uncertainty at all. An msep or a sigma is 0
+    honestly only when every link ratio at the ages involved is the same (or the
+    origin's latest amount is 0 under ``zero_cells="missing"``); any other 0 is
+    an underflow.
+    """
+    cum, mask = fit.cum, fit.obs_mask
+    underflowed = []
+    for j in range(fit.n_d - 1):
+        # the link ratios behind sigma at this age, as the kernel picks them
+        pair = mask[:, j] & mask[:, j + 1] & (cum[:, j] > 0)
+        if fit.zero_cells == "missing":
+            pair &= cum[:, j + 1] != 0
+        with np.errstate(all="ignore"):
+            ratios = cum[pair, j + 1] / cum[pair, j]
+        if fit.sigma2[j] == 0 and ratios.size > 1 and np.ptp(ratios) > 0:
+            underflowed.append(j)
+    open_ = (fit.latest_dev < fit.n_d - 1) & (fit.latest > 0)
+    noisy = np.array([(fit.sigma2[int(k) :] > 0).any() for k in fit.latest_dev], dtype=bool)
+    zero_msep = np.flatnonzero(open_ & noisy & (msep == 0))
+    if underflowed or zero_msep.size:
+        raise Refusal(
+            "result_not_finite",
+            "the amounts are too small for Mack's standard errors: their squares fall below "
+            "the smallest double and read as 0, so the standard errors would say there is no "
+            "uncertainty at all. Scale them up (multiply by a power of ten) and scale the "
+            "answer back",
+            option="cells",
+            cells=[RefusedCell(None, fit.origin_periods[i]) for i in zero_msep],
+            links=[
+                ((j + 1) * fit.dev_grain_months, (j + 2) * fit.dev_grain_months)
+                for j in underflowed
+            ],
+        )
+
+
 def _require_finite(periods, per_origin: dict, others, total: dict) -> None:
     """Refuse an answer with a number that is not finite, naming the origins.
 
     The inputs were checked finite, so such a number comes from amounts so large
     that a sum, a square or a product passes the largest double (or so far
-    apart that a factor's square is 0). A result never carries NaN or infinity,
-    which Arrow would store as numbers, not nulls. ``per_origin`` holds the
-    per-origin columns, ``others`` any other numbers (Mack's sigmas), ``total``
-    the one-row totals.
+    apart, or so small, that a factor's product is 0). A result never carries
+    NaN or infinity, which Arrow would store as numbers, not nulls.
+    ``per_origin`` holds the per-origin columns, ``others`` any other numbers
+    (the factors, cdf and pct_reported, the link ratios, Mack's sigmas),
+    ``total`` the one-row totals.
     """
     bad = np.zeros(len(periods), dtype=bool)
     for values in per_origin.values():
@@ -588,9 +651,10 @@ def _require_finite(periods, per_origin: dict, others, total: dict) -> None:
     if not (np.isfinite(others).all() and all(math.isfinite(t) for t in totals)):
         raise Refusal(
             "result_not_finite",
-            "a total or a development age's sigma is not a finite number: the amounts are "
-            "too large (or too far apart) for their sums and squares to stay finite. Scale "
-            "them (work in thousands, say) and scale the answer back",
+            "a total, a link ratio, or a development age's factor, cdf, pct_reported or "
+            "sigma is not a finite number: the amounts are too large, or too far apart, for "
+            "their sums, ratios and squares to stay finite. Check them for a unit error, or "
+            "scale them (work in thousands, say) and scale the answer back",
             option="cells",
         )
 
@@ -628,7 +692,9 @@ class _CallersTerms:
             return False
         labels = self.labels
         label_of = labels.label_for_start if labels is not None else _no_label
-        raise error.relabeled(method=self.method, label_of=label_of).with_traceback(trace) from None
+        raise error._relabeled(method=self.method, label_of=label_of).with_traceback(
+            trace
+        ) from None
 
 
 def _no_label(_start: dt.date) -> None:
@@ -716,9 +782,11 @@ def _conventional_result(
     keyed = None if candidate.method == "cl" else _premium(premium, origins, name)
     # fit_conventional_grid without its three pandas tables: the same checks and
     # numbers, held in numpy arrays and lists, so a fit here never loads pandas.
-    # An overflow (amounts near the largest double) is not warned about, because
-    # the estimator refuses a pattern or an ultimate that is not finite by name.
-    with np.errstate(over="ignore"):
+    # An overflow or an underflow (amounts near the largest or the smallest
+    # double) is not warned about, because the estimator refuses a factor, a
+    # pattern or an ultimate that is not finite by name, and _require_finite
+    # below refuses the rest.
+    with np.errstate(all="ignore"):
         fit = _estimate_grid(grid, candidate, premium=keyed)
     selection = fit.selection
     seen = {(row["origin_period"], row["from_dev_lag"]) for row in selection}
@@ -740,13 +808,18 @@ def _conventional_result(
     table = fit.origins
     latest = np.asarray(table["latest"], dtype=float)
     ultimate = np.asarray(table["ultimate"], dtype=float)
+    with np.errstate(all="ignore"):
+        ibnr = ultimate - latest
+        pattern = _pattern_numbers(fit.factors, grid["n_d"])
+        # the kernel checks each origin; a sum of finite ultimates can still overflow
+        sums = _sums(latest, ultimate)
     columns = {
         "origin": origins.labels_for(table["origin_period"]),
         "origin_period": _arrow.date32(table["origin_period"]),
         "latest_dev_lag": _arrow.int64(table["latest_dev_lag"]),
         "latest": _arrow.float64(latest),
         "ultimate": _arrow.float64(ultimate),
-        "ibnr": _arrow.float64(ultimate - latest),
+        "ibnr": _arrow.float64(ibnr),
     }
     if candidate.method != "cl":
         columns["expected_loss_ratio"] = _arrow.float64(table["expected_loss_ratio"])
@@ -756,7 +829,7 @@ def _conventional_result(
 
     development = pa.table(
         {
-            **_pattern(fit.factors, grid["n_d"], step),
+            **_pattern(pattern, step),
             "n_selected": _with_last_null(summary("n_selected"), pa.int64()),
             "unity_fallback": _with_last_null(summary("unity_fallback"), pa.bool_()),
             "extreme_trimming_skipped": _with_last_null(
@@ -782,26 +855,36 @@ def _conventional_result(
             "reason": _arrow.string(link("reason")),
         }
     )
-    # the kernel checks each origin; a sum of finite ultimates can still overflow
-    with np.errstate(over="ignore"):
-        sums = _sums(latest, ultimate)
-    _require_finite(table["origin_period"], {}, np.r_[fit.factors, ratio[~np.isnan(ratio)]], sums)
+    _require_finite(
+        table["origin_period"],
+        {"ultimate": ultimate, "ibnr": ibnr},
+        np.concatenate([*pattern, ratio[~np.isnan(ratio)]]),
+        sums,
+    )
     totals = pa.table(sums)
     return ReserveResult(name, fit.as_of, step, pa.table(columns), development, link_ratios, totals)
 
 
-def _pattern(factors: np.ndarray, n_d: int, step: int) -> dict[str, pa.Array]:
-    """dev_lag, factor, cdf and pct_reported, one row per observed age.
+def _pattern_numbers(factors: np.ndarray, n_d: int) -> tuple[np.ndarray, ...]:
+    """(factor, cdf, pct_reported): a factor per link, the others per observed age.
 
     ``factors`` has one entry per link, ``n_d - 1`` of them; there is no tail.
+    Computed without warnings; the caller refuses a number that is not finite.
     """
     factors = np.asarray(factors, dtype=float)[: n_d - 1]
-    cdf = np.r_[np.cumprod(factors[::-1])[::-1], 1.0]
+    with np.errstate(all="ignore"):
+        cdf = np.r_[np.cumprod(factors[::-1])[::-1], 1.0]
+        return factors, cdf, 1.0 / cdf
+
+
+def _pattern(numbers: tuple[np.ndarray, ...], step: int) -> dict[str, pa.Array]:
+    """dev_lag, factor, cdf and pct_reported, one row per observed age."""
+    factors, cdf, pct_reported = numbers
     return {
-        "dev_lag": _arrow.int64(np.arange(1, n_d + 1, dtype=np.int64) * step),
+        "dev_lag": _arrow.int64(np.arange(1, cdf.size + 1, dtype=np.int64) * step),
         "factor": _with_last_null(factors, pa.float64()),
         "cdf": _arrow.float64(cdf),
-        "pct_reported": _arrow.float64(1.0 / cdf),
+        "pct_reported": _arrow.float64(pct_reported),
     }
 
 
@@ -924,10 +1007,14 @@ def _period_start(
 
 
 def _show(value) -> str:
-    """A label as a message prints it: text quoted, a year or a date as written."""
+    """A label as a message template holds it: text quoted, a year or a date as
+    written, a numpy scalar as the value it holds, and braces never read as a
+    placeholder."""
+    if isinstance(value, np.number | np.bool_ | np.str_):
+        value = value.item()
     if isinstance(value, dt.date):
         return value.isoformat()
-    return repr(value) if isinstance(value, str) else str(value)
+    return _literal(repr(value) if isinstance(value, str) else str(value))
 
 
 def _year(year: int, name: str, *, given: Any = None) -> dt.date:
@@ -1090,7 +1177,7 @@ def _read_origins(
         raise Refusal(
             "invalid_table",
             f"{name} must be a column of integer years, text labels, dates or timestamps, "
-            f"got {kind}; {_FORMS}",
+            f"got {_literal(kind)}; {_FORMS}",
             **where,
         )
     labels = pc.unique(column)
@@ -1177,7 +1264,7 @@ def _unreadable_table(data, name: str, exc: Exception) -> Refusal:
     return Refusal(
         "invalid_table",
         f"{name} must be a table Arrow can read, such as a polars DataFrame or a pyarrow "
-        f"Table, not {type(data).__name__}: {exc}.{also}",
+        f"Table, not {type(data).__name__}: {_literal(exc)}.{also}",
         option=name,
     )
 
@@ -1187,7 +1274,7 @@ def _require_columns(table: pa.Table, needed: tuple[str, ...], name: str, what: 
     if missing:
         raise Refusal(
             "invalid_table",
-            f"{name} is missing column(s) {missing}; it has {table.column_names}. {what}",
+            f"{name} is missing column(s) {missing}; it has {_literal(table.column_names)}. {what}",
             option=name,
             column=missing[0],
         )
@@ -1395,9 +1482,22 @@ def _whole_months(column: pa.ChunkedArray) -> np.ndarray:
                 rows=np.flatnonzero(fractional),
                 **where,
             )
+        # an age of 2**63 months or more has no whole-number type to go in, and
+        # numpy would turn it into -9223372036854775808 with only a warning
+        huge = np.flatnonzero(np.abs(months) >= 2.0**63)
+        if huge.size:
+            shown = ", ".join(repr(value) for value in sorted(set(months[huge].tolist()))[:5])
+            raise Refusal(
+                "invalid_age",
+                f"dev_lag {shown} is too large to be a number of months",
+                rows=huge,
+                **where,
+            )
         return months.astype(np.int64)
     raise Refusal(
-        "invalid_table", f"dev_lag must be a column of whole numbers of months, got {kind}", **where
+        "invalid_table",
+        f"dev_lag must be a column of whole numbers of months, got {_literal(kind)}",
+        **where,
     )
 
 
@@ -1410,7 +1510,9 @@ def _numbers(column: pa.ChunkedArray, name: str, why: str, *, option: str, cell_
     kind = column.type
     where = {"option": option, "column": name}
     if not (pa.types.is_integer(kind) or pa.types.is_floating(kind) or pa.types.is_decimal(kind)):
-        raise Refusal("invalid_table", f"{name} must be a numeric column, got {kind}", **where)
+        raise Refusal(
+            "invalid_table", f"{name} must be a numeric column, got {_literal(kind)}", **where
+        )
     if column.null_count:
         rows = _positions(column.is_null())
         raise Refusal(
@@ -1571,7 +1673,8 @@ def _require_premium_amount(label, start: dt.date, amount) -> None:
     if amount <= 0:
         raise Refusal(
             "invalid_option",
-            f"premium must be a positive finite number for every origin; it is {amount!r} for "
+            "premium must be a positive finite number for every origin; it is {given} for "
             "{origins}",
+            given=amount,
             **where,
         )

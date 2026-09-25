@@ -40,7 +40,8 @@ Kind ``"input"``:
 Kind ``"model"``:
 
 - ``no_link_ratio``: no link ratio is left at an age to estimate a factor from,
-  and the options ask to refuse rather than use 1.0.
+  or the ones left give a factor of 0 (every origin closing at zero), and the
+  options ask to refuse rather than use 1.0.
 - ``exclusions_exhausted``: the trimming options would leave too few link
   ratios at an age.
 - ``variance_not_estimable``: Mack's sigma (or a tail's) cannot be estimated.
@@ -56,7 +57,9 @@ Kind ``"model"``:
 - ``tail_not_decaying``: a fitted tail curve does not decay, so its product
   does not converge.
 - ``empty_residual_pool``: a bootstrap has no residual left to resample.
-- ``result_not_finite``: the inputs are finite and the answer is not.
+- ``result_not_finite``: the inputs are finite and the answer is not, such as a
+  link ratio, factor or sum past the largest double, or a standard error whose
+  square falls below the smallest double and reads as 0.
 - ``not_supported``: a combination ibnr deliberately does not answer.
 - ``negative_projection``: a projected cumulative or ultimate below zero from
   data that is zero or more.
@@ -70,6 +73,7 @@ from __future__ import annotations
 import datetime as dt
 import math
 import numbers
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -121,7 +125,19 @@ MAX_CELLS = 100
 _SHOWN = 5
 
 #: The placeholders a message template may use.
-_PLACEHOLDERS = ("{cells}", "{origins}", "{links}", "{given}")
+_PLACEHOLDERS = re.compile(r"\{(cells|origins|links|given)\}")
+
+#: What a brace in the caller's own text is held as inside a template, so that a
+#: column name or a label spelling ``{given}`` is printed as written. These are
+#: two characters from Unicode's private-use area, which no text of ibnr's uses.
+_OPEN, _CLOSE = chr(0xE000), chr(0xE001)
+_HOLD = str.maketrans({"{": _OPEN, "}": _CLOSE})
+_RELEASE = str.maketrans({_OPEN: "{", _CLOSE: "}"})
+
+
+def _literal(text: Any) -> str:
+    """The caller's text for a message template, with its braces never read as placeholders."""
+    return str(text).translate(_HOLD)
 
 
 @dataclass(frozen=True)
@@ -156,7 +172,11 @@ class Refusal(ValueError):
     """ibnr will not answer this input, and says why with a reason code.
 
     ``str(refusal)`` is the message, as for any ``ValueError``. The fields say
-    the same thing in a form a program can use:
+    the same thing in a form a program can use. (ibnr builds one as
+    ``Refusal(reason, template, **fields)``: ``template`` is the message with the
+    placeholders ``{cells}``, ``{origins}``, ``{links}`` and ``{given}``, filled
+    in from the fields, and ``quoted=True`` puts text labels in quotes. A caller
+    only reads refusals; the fields below and :meth:`to_dict` are the contract.)
 
     Attributes
     ----------
@@ -231,24 +251,22 @@ class Refusal(ValueError):
         self.links = links
         self.rows = rows[:MAX_CELLS]
         self.count = int(count)
-        self.template = template
-        self.quoted = quoted
+        self._template = template
+        self._quoted = quoted
         super().__init__(self._render())
 
     # -- the message -----------------------------------------------------------
 
     def _render(self) -> str:
-        message = self.template
         values = {
-            "{cells}": lambda: _cells_text(self.cells, self.count, self.quoted),
-            "{origins}": lambda: _origins_text(self.cells, self.quoted),
-            "{links}": lambda: "; ".join(f"from {a} to {b} months" for a, b in self.links),
-            "{given}": lambda: _given_text(self.given),
+            "cells": lambda: _cells_text(self.cells, self.count, self._quoted),
+            "origins": lambda: _origins_text(self.cells, self._quoted),
+            "links": lambda: "; ".join(f"from {a} to {b} months" for a, b in self.links),
+            "given": lambda: _given_text(self.given),
         }
-        for placeholder in _PLACEHOLDERS:
-            if placeholder in message:
-                message = message.replace(placeholder, values[placeholder]())
-        return message
+        # one pass: text put in for a placeholder is never read for another one
+        message = _PLACEHOLDERS.sub(lambda match: values[match.group(1)](), self._template)
+        return message.translate(_RELEASE)
 
     # -- copies ----------------------------------------------------------------
 
@@ -263,17 +281,17 @@ class Refusal(ValueError):
             "rows": self.rows,
             "count": self.count,
             "method": self.method,
-            "quoted": self.quoted,
+            "quoted": self._quoted,
         }
 
     def __reduce__(self):
         # Without this, pickling calls Refusal(message), which fails: a process
         # pool sends exceptions between processes by pickling them.
-        return (_rebuild, (self.reason, self.template, self._fields()))
+        return (_rebuild, (self.reason, self._template, self._fields()))
 
     def _replace(self, **changes: Any) -> Refusal:
         """A copy with some fields (or the template) changed and the message rendered again."""
-        template = changes.pop("template", self.template)
+        template = changes.pop("template", self._template)
         fields = self._fields()
         if self.count == max(len(self.cells), len(self.rows), len(self.links)):
             # the count was the number of items named, so it follows the new ones;
@@ -282,7 +300,7 @@ class Refusal(ValueError):
         fields.update(changes)
         return Refusal(self.reason, template, **fields)
 
-    def relabeled(self, *, method: str, label_of) -> Refusal:
+    def _relabeled(self, *, method: str, label_of) -> Refusal:
         """The same refusal, from ``method``, with the caller's origin labels.
 
         ``label_of(period_start)`` returns the caller's label for a period, or
@@ -361,8 +379,25 @@ def _label(cell: RefusedCell, quoted: bool) -> str:
     return str(origin)
 
 
+def _plain(value: Any) -> Any:
+    """A numpy scalar as the Python value it holds (``np.float64(-0.1)`` as ``-0.1``).
+
+    Found by its module rather than imported, so this module keeps to the
+    standard library.
+    """
+    kind = type(value)
+    # a datetime64 is left as it is: .item() gives nanoseconds as a bare int
+    if kind.__module__ == "numpy" and kind.__name__[:10] not in ("datetime64", "timedelta6"):
+        try:
+            return value.item()
+        except (TypeError, ValueError):  # an array, which has no one value
+            return value
+    return value
+
+
 def _given_text(value: Any) -> str:
     """A passed value as a message prints it: text quoted, a date as ISO, else its repr."""
+    value = _plain(value)
     if isinstance(value, dt.datetime):
         return value.isoformat(sep=" ")
     if isinstance(value, dt.date):

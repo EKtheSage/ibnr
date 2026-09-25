@@ -222,12 +222,43 @@ def test_the_payload_is_json_with_no_nan_or_infinity():
 def test_the_errors_module_imports_the_standard_library_only():
     source = Path(errors.__file__).read_text(encoding="utf-8")
     imported = set(re.findall(r"^(?:from|import) ([a-z_.]+)", source, flags=re.M))
-    assert imported <= {"__future__", "datetime", "math", "numbers", "dataclasses", "typing"}
+    assert imported <= {"__future__", "datetime", "math", "numbers", "re", "dataclasses", "typing"}
 
 
 def test_methods_exports_refusal():
     assert methods.Refusal is Refusal
     assert "Refusal" in methods.__all__
+
+
+def test_options_is_the_one_option_when_only_one_is_named():
+    assert Refusal("invalid_option", "x", option="average").options == ("average",)
+    assert Refusal("invalid_option", "x").options == ()
+    both = Refusal("invalid_option", "x", option="average", options=("average", "method"))
+    assert both.options == ("average", "method")
+
+
+def test_every_public_name_of_a_refusal_is_documented():
+    """The reference page lists a refusal's public names, so each one is part of
+    the contract and has to be in the class docstring; anything else is private."""
+    refusal = full_refusal()
+    inherited = set(dir(ValueError("x")))
+    public = {name for name in dir(refusal) if not name.startswith("_")} - inherited
+    fields = {"reason", "kind", "method", "option", "column", "options", "given"}
+    fields |= {"cells", "links", "rows", "count"}
+    assert public == fields | {"to_dict"}
+    for name in fields:
+        assert f"    {name} :" in Refusal.__doc__, name
+
+
+def test_a_placeholder_in_the_callers_text_is_not_filled_in():
+    """A label or value that spells a placeholder is printed as written, once."""
+    refusal = Refusal(
+        "duplicate",
+        "{cells} twice, given {given}",
+        cells=[RefusedCell("{given}", year(2001), 12, 1.0)],
+        given="{cells}",
+    )
+    assert str(refusal) == "({given}, 12 months) twice, given '{cells}'"
 
 
 # -- 2. every refusal reachable from ibnr.methods ------------------------------------
@@ -236,6 +267,16 @@ def test_methods_exports_refusal():
 def c(origin, lag=None, value=...):
     """An expected cell: (origin as written, dev_lag[, value])."""
     return (origin, lag, value)
+
+
+def fixture_rows(name: str, scale: float = 1.0) -> list[tuple]:
+    """One of the public triangles in ``data/refusal_triangles.json``, scaled."""
+    return [(o, d, v * scale) for o, d, v in _FUZZ[name]]
+
+
+def years(cells: dict, step: int = 12) -> pa.Table:
+    """A triangle from ``{origin: [cumulative at each age]}``."""
+    return tri([(o, (j + 1) * step, float(v)) for o, vs in cells.items() for j, v in enumerate(vs)])
 
 
 #: (id, call, reason, option, column, expected cells, links, rows, extra fields)
@@ -574,6 +615,27 @@ CASES = [
         {},
     ),
     (
+        # dates one step apart elsewhere in the axis, so the two years apart is a gap
+        "origin_gap_between_dates",
+        lambda: cl(
+            tri(
+                [
+                    (dt.date(2001, 1, 1), 12, 1.0),
+                    (dt.date(2001, 1, 1), 24, 2.0),
+                    (dt.date(2002, 1, 1), 12, 1.0),
+                    (dt.date(2004, 1, 1), 12, 1.0),
+                ]
+            )
+        ),
+        "origin_gap",
+        "cells",
+        "origin_period",
+        [c(dt.date(2002, 1, 1)), c(None), c(dt.date(2004, 1, 1))],
+        [],
+        [],
+        {},
+    ),
+    (
         # dates a year apart on a quarterly step: periods of another length, not
         # three quarters missing between every two years
         "annual_dates_on_a_quarterly_step",
@@ -789,7 +851,7 @@ CASES = [
         [],
         [(36, 48)],
         [],
-        {},
+        {"options": ("exhausted_exclusions", "drop_high")},
     ),
     (
         "exclusion_empties_an_age",
@@ -1122,7 +1184,7 @@ CASES = [
         [],
         [(24, 36)],
         [],
-        {},
+        {"options": ("sigma_rule", "zero_cells")},
     ),
     (
         "mack_sigma_gap_log_linear",
@@ -1133,7 +1195,7 @@ CASES = [
         [],
         [(24, 36), (36, 48)],
         [],
-        {},
+        {"options": ("sigma_rule", "zero_cells")},
     ),
     (
         "mack_overflow",
@@ -1180,8 +1242,83 @@ CASES = [
         "cells",
         None,
         [],
+        [(12, 24)],
+        [],
+        {},
+    ),
+    (
+        # each link ratio is finite, their sum is not: the factor itself overflows,
+        # and a factor of 1.0 in its place would be a wrong answer, not a fallback
+        "chain_ladder_factor_overflow",
+        lambda: cl(years({2020: [1.0, 1e308, 1.0], 2021: [1.0, 1e308], 2022: [1.0]})),
+        "result_not_finite",
+        "cells",
+        None,
+        [],
+        [(12, 24)],
+        [],
+        {},
+    ),
+    (
+        "chain_ladder_factor_overflow_unity",
+        lambda: cl(
+            years({2020: [1.0, 1e308, 1.0], 2021: [1.0, 1e308], 2022: [1.0]}),
+            unsupported_factor="unity",
+        ),
+        "result_not_finite",
+        "cells",
+        None,
+        [],
+        [(12, 24)],
+        [],
+        {},
+    ),
+    (
+        # the link ratio 1e10 / 1e-300 is past the largest double; no link has a zero
+        "mack_link_ratio_overflow",
+        lambda: mk(years({1981: [1e-300, 1e10, 1e10], 1982: [1e-300, 1e10], 1983: [0.0]})),
+        "result_not_finite",
+        "cells",
+        None,
+        [],
+        [(12, 24)],
+        [],
+        {},
+    ),
+    (
+        # every origin with a link ratio from 108 to 120 months closes at zero: the
+        # factor there is 0, so every ultimate would be 0
+        "mack_zero_last_factor_observed",
+        lambda: mk(tri(replace(fixture_rows("raa"), (1981, 120), 0.0)), zero_cells="observed"),
+        "no_link_ratio",
+        "cells",
+        None,
+        [],
+        [(108, 120)],
+        [],
+        {},
+    ),
+    (
+        # 5e-324 / 170 is below the smallest double, so the factor is 0 here too
+        "mack_factor_underflows_to_zero",
+        lambda: mk(tri(replace(BASE, (2001, 48), 5e-324))),
+        "no_link_ratio",
+        "cells",
+        None,
+        [],
+        [(36, 48)],
+        [],
+        {},
+    ),
+    (
+        "dev_lag_past_whole_numbers",
+        lambda: cl(pa.table({"origin_period": [2001], "dev_lag": [1e30], "value": [1.0]})),
+        "invalid_age",
+        "cells",
+        "dev_lag",
         [],
         [],
+        [0],
         {},
     ),
     # the result
@@ -1219,6 +1356,7 @@ _DATES_EXPECTED = {
     "origins_not_whole_steps",
     "annual_dates_on_a_quarterly_step",
     "origin_gap_between_two_years",
+    "origin_gap_between_dates",
 }
 
 _METHOD_OF = {cl: "chain_ladder", bf: "bornhuetter_ferguson", cc: "cape_cod", mk: "mack"}
@@ -1237,6 +1375,9 @@ def test_every_refusal_through_the_front_door(
     assert refusal.kind == KIND[reason]
     assert refusal.option == option
     assert refusal.column == column
+    if "options" not in extra:
+        # one argument at fault: options is that argument alone
+        assert refusal.options == ((option,) if option is not None else ())
     assert refusal.method in _METHOD_OF.values()
     got = [(cell.origin, cell.dev_lag) for cell in refusal.cells]
     assert got == [(o, lag) for o, lag, _ in cells]
@@ -1565,10 +1706,164 @@ def test_no_message_uses_a_kernel_word_or_a_kernel_date(case):
             "is not a finite number: the amounts are too large",
         ),
         (lambda: cl(T, exclude=[(2001, 36)]), "no link ratio is left from 36 to 48 months"),
+        (
+            lambda: cl(years({1981: [1e200, 1.0, 1e-200], 1982: [1e200, 1.0], 1983: [1e200]})),
+            "the link factors are too large or too small to multiply out",
+        ),
+        (
+            lambda: cl(years({2020: [1.0, 1e308, 1.0], 2021: [1.0, 1e308], 2022: [1.0]})),
+            "the factor from 12 to 24 months is not a finite number",
+        ),
+        (
+            lambda: mk(tri(replace(fixture_rows("raa"), (1981, 120), 0.0)), zero_cells="observed"),
+            "give a factor of 0.0 from 108 to 120 months",
+        ),
+        (
+            lambda: cl(pa.table({"origin_period": [2001], "dev_lag": [1e30], "value": [1.0]})),
+            "dev_lag 1e+30 is too large to be a number of months",
+        ),
+        # numpy scalars are shown as the numbers they hold, not as numpy's repr
+        (
+            lambda: bf(T, premium=PREM, expected_loss_ratio=np.float64(-0.1)),
+            "expected_loss_ratio must be a finite number of 0 or more, got -0.1",
+        ),
+        (
+            lambda: bf(T, premium=PREM, expected_loss_ratio=np.True_),
+            "expected_loss_ratio must be a finite number of 0 or more, got True",
+        ),
+        (lambda: cl(T, dev_grain_months=np.int64(0)), "got 0"),
+        (lambda: cl(T, average=np.str_("regression")), "got 'regression'"),
+        (
+            lambda: bf(T, premium={**PREM, 2003: np.float64(-5.0)}, expected_loss_ratio=0.7),
+            "it is -5.0 for 2003",
+        ),
+        (lambda: cl(T, exclude=[(2001, np.str_("12"))]), "names development age '12', which"),
+        # the caller's text is shown as written, never read as a placeholder
+        (
+            lambda: cl({"origin_period": [2001], "dev_lag": [12], "{given}": [1.0]}),
+            "it has ['origin_period', 'dev_lag', '{given}']",
+        ),
+        (lambda: cl(T, exclude=[(2001, "{cells}")]), "names development age '{cells}', which"),
     ],
 )
 def test_reworded_messages_say_what_is_wrong(call, phrase):
-    assert phrase in str(refusal_of(call))
+    text = str(refusal_of(call))
+    assert phrase in text, text
+    assert "np." not in text, text
+
+
+def test_a_fraction_is_a_number():
+    """A ``fractions.Fraction`` is a real number: it gives the answer its float gives."""
+    from fractions import Fraction
+
+    with_fraction = bf(T, premium=PREM, expected_loss_ratio=Fraction(7, 10))
+    assert with_fraction.totals.equals(bf(T, premium=PREM, expected_loss_ratio=0.7).totals)
+    half = cc(T, premium=PREM, decay=Fraction(1, 2))
+    assert half.totals.equals(cc(T, premium=PREM, decay=0.5).totals)
+    assert refusal_of(lambda: cc(T, premium=PREM, decay=Fraction(3, 2))).option == "decay"
+
+
+#: Amounts so large or so small that sums, squares or products leave the doubles.
+#: Each is refused with the reason given, never answered with a wrong number, and
+#: never with a RuntimeWarning on the way.
+_EXTREMES = [
+    *[
+        (
+            f"mack_rule_{name}_1e160",
+            lambda name=name: mk(tri(fixture_rows(name, 1e160)), sigma_rule="mack"),
+            "result_not_finite",
+        )
+        for name in ("raa", "genins", "ukmotor", "abc", "mw2014")
+    ],
+    (
+        "mack_log_linear_mw2014_1e303",
+        lambda: mk(tri(fixture_rows("mw2014", 1e303)), zero_cells="observed"),
+        "result_not_finite",
+    ),
+    ("mack_raa_1e300", lambda: mk(tri(fixture_rows("raa", 1e300))), "result_not_finite"),
+    # every number per origin is finite, but the cdf at 12 months is 1e-480, which
+    # is 0, so its pct_reported would be infinite
+    (
+        "mack_pattern_underflow",
+        lambda: mk(
+            years(
+                {
+                    1981: [1e200, 1e40, 1e-120, 1e-280],
+                    1982: [1e200, 1e40, 1e-120],
+                    1983: [1e200, 1e40],
+                    1984: [1e200],
+                }
+            )
+        ),
+        "result_not_finite",
+    ),
+    # the squares underflow, so every standard error would read as 0
+    ("mack_raa_1e-310", lambda: mk(tri(fixture_rows("raa", 1e-310))), "result_not_finite"),
+    (
+        "tiny_factors_chain_ladder",
+        lambda: cl(years({1981: [1e200, 1.0, 1e-200], 1982: [1e200, 1.0], 1983: [1e200]})),
+        "result_not_finite",
+    ),
+    (
+        "tiny_factors_bornhuetter_ferguson",
+        lambda: bf(
+            years({1981: [1e200, 1.0, 1e-200], 1982: [1e200, 1.0], 1983: [1e200]}),
+            premium={1981: 1.0, 1982: 1.0, 1983: 1.0},
+            expected_loss_ratio=0.5,
+        ),
+        "result_not_finite",
+    ),
+    (
+        "link_ratio_overflow_chain_ladder",
+        lambda: cl(years({1981: [1e-300, 1e10, 1e10], 1982: [1e-300, 1e10], 1983: [0.0]})),
+        "result_not_finite",
+    ),
+    (
+        "premium_1e308_elr_10",
+        lambda: bf(
+            tri(fixture_rows("raa")),
+            premium={y: 1e308 for y in range(1981, 1991)},
+            expected_loss_ratio=10.0,
+        ),
+        "result_not_finite",
+    ),
+    (
+        "premium_1e308_elr_1e10",
+        lambda: bf(
+            tri(fixture_rows("raa")),
+            premium={y: 1e308 for y in range(1981, 1991)},
+            expected_loss_ratio=1e10,
+        ),
+        "result_not_finite",
+    ),
+    (
+        "subnormal_premium_cape_cod",
+        lambda: cc(tri(fixture_rows("raa")), premium={y: 1e-320 for y in range(1981, 1991)}),
+        "result_not_finite",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("call", "reason"), [e[1:] for e in _EXTREMES], ids=[e[0] for e in _EXTREMES]
+)
+def test_amounts_too_large_or_too_small_are_refused_by_name(call, reason):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        refusal = refusal_of(call)
+    assert refusal.reason == reason, str(refusal)
+    json.dumps(refusal.to_dict(), allow_nan=False)
+
+
+def test_mack_rule_fills_a_huge_sigma_without_overflow():
+    """Mack's rule is min(last**2 / prev, last, prev). Where last**2 passes the
+    largest double the ratio is still a number when prev is larger than last."""
+    from ibnr.kernels.mack import _tail_sigma2
+
+    assert _tail_sigma2(np.array([1e250, 1e200, np.nan]), 2, rule="mack") == pytest.approx(1e150)
+    assert _tail_sigma2(np.array([1e200, 1e250, np.nan]), 2, rule="mack") == 1e200
+    # the ordinary case keeps its exact value
+    assert _tail_sigma2(np.array([4.0, 2.0, np.nan]), 2, rule="mack") == min(2.0**2 / 4.0, 2.0)
 
 
 # -- 4. nothing else escapes ---------------------------------------------------------
@@ -1612,11 +1907,16 @@ def _fuzz_case(rng, rows):
     triangle the methods answer, so the no-NaN half of the check is exercised too."""
     rows = [list(r) for r in rows]
     for _ in range(int(rng.integers(1, 4))):
-        edit = int(rng.integers(0, 10))
+        edit = int(rng.integers(0, 11))
         if not rows:
             break
         i = int(rng.integers(0, len(rows)))
-        if edit >= 7:
+        if edit == 10:
+            # the whole triangle near the edges of the doubles
+            scale = [1e-300, 1e-200, 1e200, 1e300][int(rng.integers(0, 4))]
+            for row in rows:
+                row[2] = row[2] * scale
+        elif edit >= 7:
             rows[i][2] = rows[i][2] * float(rng.uniform(0.5, 2.0))
         elif edit == 0:
             rows.pop(i)
@@ -1625,8 +1925,8 @@ def _fuzz_case(rng, rows):
         elif edit == 2:
             rows[i][2] = -rows[i][2]
         elif edit == 3:
-            rows[i][2] = [math.nan, math.inf, -math.inf, 0.0, 1e305, 1e-300][
-                int(rng.integers(0, 6))
+            rows[i][2] = [math.nan, math.inf, -math.inf, 0.0, 1e305, 1e-300, 5e-324][
+                int(rng.integers(0, 7))
             ]
         elif edit == 4:
             rows[i][0] = [rows[i][0] + 1, 97, "abc", str(rows[i][0]), 1850][int(rng.integers(0, 5))]
@@ -1670,8 +1970,10 @@ def _numbers_are_finite(result) -> None:
 
 def test_a_seeded_fuzz_meets_nothing_but_refusals():
     """2,000 cases from five public triangles with one to three random edits and
-    random options, valid and not. Every call returns a result whose numbers are
-    all finite (a missing one is a null) or raises exactly Refusal. A RuntimeWarning
+    random options, valid and not. An edit may scale the whole triangle to near
+    the smallest or the largest double, and a premium may be 1e-320 or 1e308.
+    Every call returns a result whose numbers are all finite (a missing one is
+    a null) or raises exactly Refusal. A RuntimeWarning
     is an error here, so a silent NaN path (an infinite amount subtracted from
     itself, say) fails the test."""
     rng = np.random.default_rng(20260924)
@@ -1699,7 +2001,9 @@ def test_a_seeded_fuzz_meets_nothing_but_refusals():
                     math.inf,
                     "x",
                     None,
-                ][int(rng.integers(0, 6))]
+                    1e-320,
+                    1e308,
+                ][int(rng.integers(0, 8))]
             options["premium"] = premium
         if method == "bornhuetter_ferguson":
             options.setdefault("expected_loss_ratio", 0.7)
@@ -1917,6 +2221,28 @@ def test_every_one_year_cdr_refusal_is_a_refusal_with_its_reason():
     assert [(c.origin_period, c.dev_lag, c.value) for c in odp.cells] == [
         (dt.date(2011, 1, 1), 36, -10.0)
     ]
+
+
+def test_a_non_positive_latest_amount_is_refused_by_the_variance_with_its_reason():
+    """The Mack kernels fit the point estimate from a triangle whose youngest
+    latest amount is negative or zero; the variance refuses it, and the code says
+    which: a negative amount is the input's fault, a zero is Mack's limit."""
+    from ibnr.kernels.cdr import one_year_cdr
+    from ibnr.kernels.mack import fit_mack_grid
+
+    negative = SMALL.copy()
+    negative[3, 0] = -5.0
+    fit = fit_mack_grid(_grid_of(negative))
+    for call in (fit.msep_runoff, lambda: one_year_cdr(fit)):
+        refusal = refusal_of(call)
+        assert (refusal.reason, refusal.option) == ("negative_cumulative", "cells")
+        assert [(c.origin_period, c.dev_lag, c.value) for c in refusal.cells] == [
+            (dt.date(2013, 1, 1), 12, -5.0)
+        ]
+    zero = SMALL.copy()
+    zero[3, 0] = 0.0
+    refusal = refusal_of(fit_mack_grid(_grid_of(zero)).msep_runoff)
+    assert (refusal.reason, refusal.option) == ("variance_not_estimable", "zero_cells")
 
 
 def test_every_reason_is_documented_for_a_caller():
