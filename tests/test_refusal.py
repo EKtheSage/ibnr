@@ -561,6 +561,19 @@ CASES = [
         {},
     ),
     (
+        # year labels say the periods are a year long, so two years apart is a gap
+        # even with no neighbours one step apart
+        "origin_gap_between_two_years",
+        lambda: cl(tri([(2001, 12, 1.0), (2001, 24, 2.0), (2003, 12, 1.0)])),
+        "origin_gap",
+        "cells",
+        "origin_period",
+        [c(2001), c(None), c(2003)],
+        [],
+        [],
+        {},
+    ),
+    (
         # dates a year apart on a quarterly step: periods of another length, not
         # three quarters missing between every two years
         "annual_dates_on_a_quarterly_step",
@@ -1205,6 +1218,7 @@ _DATES_EXPECTED = {
     "origin_two_spellings",
     "origins_not_whole_steps",
     "annual_dates_on_a_quarterly_step",
+    "origin_gap_between_two_years",
 }
 
 _METHOD_OF = {cl: "chain_ladder", bf: "bornhuetter_ferguson", cc: "cape_cod", mk: "mack"}

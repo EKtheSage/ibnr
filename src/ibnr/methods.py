@@ -976,7 +976,9 @@ class _Origins:
     ``labels`` holds each distinct label once, in the caller's Arrow type
     (int64, string, date32 or the input's timestamp type), ``shown`` each as a
     message prints it, ``label_starts`` the first day of the period each names,
-    and ``row_label`` each row's position in ``labels``.
+    and ``row_label`` each row's position in ``labels``. ``lengths_known`` is
+    whether every label names its period's length itself (a year, quarter or
+    month label, not a date).
     """
 
     name: str
@@ -985,6 +987,7 @@ class _Origins:
     shown: list[str]
     label_starts: list[dt.date]
     row_label: np.ndarray
+    lengths_known: bool = False
 
     @property
     def starts(self) -> np.ndarray:
@@ -1100,6 +1103,7 @@ def _read_origins(
     else:
         shown = [_show(value) for value in values]
     starts = []
+    lengths_known = True
     for index, value in enumerate(values):
         try:
             if pa.types.is_timestamp(labels.type):
@@ -1116,7 +1120,8 @@ def _read_origins(
         except Refusal as refusal:
             rows = np.flatnonzero(row_label == index)
             raise refusal._replace(rows=rows, **where) from None
-    return _Origins(name, step, labels, shown, starts, row_label)
+        lengths_known = lengths_known and months is not None
+    return _Origins(name, step, labels, shown, starts, row_label, lengths_known)
 
 
 def _positions(mask) -> list[int]:
@@ -1319,10 +1324,12 @@ def _require_consecutive_origins(labels: _Origins, step: int) -> None:
         (later.year - earlier.year) * 12 + later.month - earlier.month
         for earlier, later in zip(origins[:-1], origins[1:], strict=True)
     ]
-    # Periods missing from the middle (origin_gap) only where some neighbours are
-    # one step apart; origins that are never one step apart are periods of
-    # another length (grain_mismatch), such as annual origins on a quarterly step.
-    gapped = bool(gaps) and min(gaps) == step
+    # Periods missing from the middle (origin_gap) where the labels say their
+    # periods are one step long (a year label on an annual step: the labels were
+    # checked against the step), or where some neighbours are one step apart.
+    # Dates never one step apart are periods of another length (grain_mismatch),
+    # such as annual origins on a quarterly step.
+    gapped = bool(gaps) and (labels.lengths_known or min(gaps) == step)
     for earlier, later, gap in zip(origins[:-1], origins[1:], gaps, strict=True):
         if gap == step:
             continue
@@ -1427,7 +1434,7 @@ def _numbers(column: pa.ChunkedArray, name: str, why: str, *, option: str, cell_
     if infinite.size:
         raise Refusal(
             "not_finite",
-            f"{name} is infinite in {infinite.size} cell(s), {{cells}}. The methods need finite "
+            f"{name} is infinite in {infinite.size} cell(s): {{cells}}. The methods need finite "
             "amounts",
             cells=cell_at(infinite),
             **where,

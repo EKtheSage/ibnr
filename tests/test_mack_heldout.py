@@ -330,8 +330,9 @@ def test_failed_refit_leaves_the_previous_fit_intact(triangle, heldout):
     """fit() must be ATOMIC - a confirmed review defect, not a hypothetical.
 
     ``cohort_grid`` accepts cohorts that ``fit_mack_grid`` then refuses (here:
-    zero volume at dev step 1). Assigning ``contract_`` before that raise left
-    a TORN entry: the NEW cohort's contract over the OLD cohort's factors.
+    every link ratio from 12 to 24 months starts from zero). Assigning
+    ``contract_`` before that raise left a TORN entry: the NEW cohort's contract
+    over the OLD cohort's factors.
     ``index_into`` checks identity against the contract, so ``predict_at`` on
     the new cohort's cells passed every check and returned 10,000 x n_cells of
     plausible draws of cohort B's cells from cohort A's factors.
