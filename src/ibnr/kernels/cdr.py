@@ -317,6 +317,26 @@ def _require_all_history_volume(fit: MackFit) -> None:
     )
 
 
+def _require_untailed(fit: MackFit) -> None:
+    """Refuse a fit made with a tail.
+
+    Called beside :func:`_require_all_history_volume`, in the same places, and
+    by ``ibnr.gallery.GalleryDiagonal.check``, so no route to a one-year
+    result takes a tail, a third-party diagonal through :func:`rereserve`
+    included.
+    """
+    if fit.tail is None:
+        return
+    raise Refusal(
+        "not_supported",
+        "the one-year claims development result has no tail: its formulas (Merz and "
+        "Wuthrich 2008) and R's CDR.MackChainLadder cover the development inside the "
+        "triangle only, and R refuses a tailed fit too. Fit without tail= for the one-year "
+        "result, or read the tailed run-off uncertainty from MackFit.msep_runoff()",
+        option="tail",
+    )
+
+
 def _open_years(fit: MackFit) -> np.ndarray:
     """(n_w,) bool: origins that are not yet fully developed, i.e. the ones that
     still have a next diagonal cell to observe and therefore a CDR."""
@@ -404,6 +424,7 @@ def one_year_cdr(fit: MackFit) -> CDRResult:
     _require_annual_step(fit)
     _require_zero_cells_unused(fit)
     _require_all_history_volume(fit)
+    _require_untailed(fit)
     # Phi_i divides by C_{i,k_i} - the latest diagonal, the one cell class no
     # factor-side guard can see. Checked here as well as inside msep_runoff()
     # below so the failure is named before the loop builds a page of NaN.
@@ -530,6 +551,7 @@ def rereserve(fit: MackFit, next_diagonal: np.ndarray) -> np.ndarray:
     _require_annual_step(fit)
     _require_zero_cells_unused(fit)
     _require_all_history_volume(fit)
+    _require_untailed(fit)
     n_draws = x.shape[0]
     n_w, n_d = fit.n_w, fit.n_d
     k = fit.latest_dev
@@ -667,6 +689,7 @@ class MackDiagonal(DiagonalGenerator):
         cannot surface on its own."""
         _require_zero_cells_unused(fit)
         _require_all_history_volume(fit)
+        _require_untailed(fit)
         fit.require_positive_open_diagonals()
 
     def draw(self, fit: MackFit, *, n_draws: int, rng: np.random.Generator) -> np.ndarray:
@@ -745,6 +768,7 @@ class ODPBootstrapDiagonal(DiagonalGenerator):
         live, and both are cheap enough to pay twice."""
         _require_zero_cells_unused(fit)
         _require_all_history_volume(fit)
+        _require_untailed(fit)
         fit_odp_bootstrap(
             fit.cum,
             fit.obs_mask,
@@ -1091,6 +1115,7 @@ def simulate_one_year_cdr(
     _require_annual_step(fit)
     _require_zero_cells_unused(fit)
     _require_all_history_volume(fit)
+    _require_untailed(fit)
     gen.check(fit)
     rng = np.random.default_rng(seed)
     cdr = rereserve(fit, gen.draw(fit, n_draws=gen.resolve_n_draws(n_draws), rng=rng))
