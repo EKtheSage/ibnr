@@ -91,7 +91,8 @@ reference:
       (a polars DataFrame or a pyarrow Table). Import with
       `from ibnr import methods`. Results are pyarrow Tables, and
       ReserveResult.to_polars() gives any of them as a polars DataFrame.
-      Coming from chainladder-python, see
+      Input a method will not answer is refused with Refusal, a ValueError
+      with a reason code. Coming from chainladder-python, see
       [the lookup table](https://github.com/EKtheSage/ibnr/blob/main/docs/coming-from-chainladder.md).
     contents:
       - methods.chain_ladder
@@ -99,6 +100,8 @@ reference:
       - methods.bornhuetter_ferguson
       - methods.cape_cod
       - name: methods.ReserveResult
+        members: true
+      - name: methods.Refusal
         members: true
 
   - title: Triangle
