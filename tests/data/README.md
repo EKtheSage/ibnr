@@ -3,6 +3,24 @@
 Small reference tables that a test compares against. Each file records where it
 came from, so a number in it can be re-derived rather than trusted.
 
+## `tweedie_glm_r.json`
+
+R's `glm` with `statmod::tweedie(var.power = p, link.power = 0)` on the
+observed increments of R ChainLadder's `GenIns`, `UKMotor`, `ABC` and `MW2014`,
+`value ~ factor(origin) + factor(dev)`, at p = 0, 1, 1.5 and 2, with
+`glm.control(epsilon = 1e-12)`: the reserves by origin (the fitted future
+increments), every fitted increment, the coefficients and their standard
+errors, the deviance, Pearson chi-squared, dispersion and residual degrees of
+freedom. Also the identity link at p = 0 on `GenIns`, development factors with
+a calendar trend at p = 1 on `GenIns`, `ChainLadder::glmReserve`'s total IBNR
+and the chain ladder's IBNR by origin. Each triangle's cumulative cells are in
+the file too, so the tests need no other copy.
+
+Written on 2026-09-25 by `scripts/r/tweedie_glm_reference.R` (R 4.5.3,
+ChainLadder 0.2.21, statmod 1.5.2): from the repository root, `Rscript
+scripts/r/tweedie_glm_reference.R > tests/data/tweedie_glm_r.json`. CI has no
+R, so the output is committed. Read by `tests/test_glm.py`.
+
 ## `tlrn_study_company_reserves.csv`, `tlrn_study_pairs.csv`
 
 Produced on 2026-09-20 by replaying the companion study's R implementation of

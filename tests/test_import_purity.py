@@ -35,6 +35,7 @@ from __future__ import annotations
 import datetime as dt
 import subprocess
 import sys
+import textwrap
 
 import numpy as np
 import pyarrow as pa
@@ -212,6 +213,11 @@ calls = {{
         exclude=[(1982, 12)],
         exclude_valuations=[1989],
     ),
+    "tweedie_glm": lambda: methods.tweedie_glm(cells, power=0),
+    "tweedie_glm_options": lambda: methods.tweedie_glm(
+        cells, power=0, link="identity", origin="none", calendar="trend", max_iter=50
+    ),
+    "refused_tweedie_glm": lambda: methods.tweedie_glm(cells),
     "refused_grain": lambda: methods.chain_ladder(cells, dev_grain_months=5),
     "refused_exclusion": lambda: methods.chain_ladder(cells, exclude=[(1990, 12)]),
     "refused_valuation": lambda: methods.chain_ladder(cells, exclude_valuations=["1990Q4"]),
@@ -220,7 +226,7 @@ out = {{}}
 for name, call in calls.items():
     try:
         result = call()
-        tables = ("origins", "development", "link_ratios", "totals")
+        tables = ("origins", "development", "link_ratios", "totals", "cells", "coefficients")
         answer = {{
             t: getattr(result, t).to_pylist() for t in tables if getattr(result, t) is not None
         }}
@@ -287,9 +293,14 @@ def test_every_method_runs_without_loading_ibis_pandas_scipy_or_sklearn(tmp_path
     for name, got in answers.items():
         assert got["loaded"] == [], f"{name} loaded {got['loaded']}"
         assert got["answer"] == expected[name]["answer"], name
-    # the two refusals were refusals, and every other call answered
+    # the refusals were refusals, and every other call answered
     refused = {name for name, got in answers.items() if isinstance(got["answer"], str)}
-    assert refused == {"refused_grain", "refused_exclusion", "refused_valuation"}
+    assert refused == {
+        "refused_grain",
+        "refused_exclusion",
+        "refused_valuation",
+        "refused_tweedie_glm",
+    }
 
 
 def test_every_column_type_the_methods_read_loads_no_pandas(tmp_path):
@@ -624,6 +635,29 @@ def test_the_docs_build_finds_every_lazy_name_in_source():
         name: f"ibnr.kernels.{module}" for name, module in kernels._LAZY.items()
     }
     assert _type_checking_imports(Path(ibnr.__file__)) == dict(ibnr._LAZY)
+
+
+def test_the_glm_kernel_loads_numpy_only():
+    """``kernels.glm`` (``methods.tweedie_glm``'s fit) imports numpy and ibnr's own
+    numpy-only modules; a fit in the same process loads nothing more."""
+    script = textwrap.dedent(
+        f"""
+        import sys
+        import numpy as np
+        from ibnr.kernels.glm import fit_tweedie_grid
+        from ibnr.kernels.grid import grid_from_columns
+        origins = np.array(["2001-01-01"] * 3 + ["2002-01-01"] * 2 + ["2003-01-01"], "M8[D]")
+        lags = np.array([12, 24, 36, 12, 24, 12])
+        values = np.array([100.0, 150, 170, 110, 160, 120])
+        grid = grid_from_columns(origins, lags, values, dev_grain_months=12, measure="cumulative")
+        fit_tweedie_grid(grid)
+        print([m for m in {NOT_FOR_METHODS!r} if m in sys.modules])
+        """
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=True, timeout=300
+    ).stdout
+    assert out.strip() == "[]"
 
 
 def test_the_grid_module_and_contract_share_one_set_of_helpers():

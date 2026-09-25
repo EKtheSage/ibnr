@@ -78,9 +78,13 @@ def float64(values, *, mask: np.ndarray | None = None) -> pa.Array:
     )
 
 
-def int64(values) -> pa.Array:
+def int64(values, *, mask: np.ndarray | None = None) -> pa.Array:
+    """An int64 array; ``mask`` is True where a value is missing."""
     data = np.ascontiguousarray(values, dtype=np.int64)
-    return pa.Array.from_buffers(pa.int64(), len(data), [None, pa.py_buffer(data)])
+    bitmap, missing = (None, 0) if mask is None else _validity(~np.asarray(mask, dtype=bool))
+    return pa.Array.from_buffers(
+        pa.int64(), len(data), [bitmap, pa.py_buffer(data)], null_count=missing
+    )
 
 
 def bool_(values) -> pa.Array:
@@ -89,9 +93,13 @@ def bool_(values) -> pa.Array:
     return pa.Array.from_buffers(pa.bool_(), len(data), [None, bits])
 
 
-def date32(days: list[dt.date]) -> pa.Array:
-    data = np.array([day.toordinal() - _EPOCH for day in days], dtype=np.int32)
-    return pa.Array.from_buffers(pa.date32(), len(data), [None, pa.py_buffer(data)])
+def date32(days: list[dt.date | None]) -> pa.Array:
+    """A date32 array; a ``None`` in ``days`` is a missing value."""
+    data = np.array([0 if day is None else day.toordinal() - _EPOCH for day in days], np.int32)
+    bitmap, missing = _validity(np.array([day is not None for day in days], dtype=bool))
+    return pa.Array.from_buffers(
+        pa.date32(), len(data), [bitmap, pa.py_buffer(data)], null_count=missing
+    )
 
 
 def string(values: list[str]) -> pa.Array:

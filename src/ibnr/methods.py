@@ -9,6 +9,9 @@
   classic one)
 - :func:`mack` (the chain ladder with Mack's standard errors; it takes the same
   development options, and ``average`` is Mack's alpha)
+- :func:`tweedie_glm` (a Tweedie GLM fitted to the increments; power 1 with its
+  defaults is the over-dispersed Poisson model, which reproduces the chain
+  ladder)
 
 Each takes the cells of ONE triangle as a table with three columns, one row per
 observed cell:
@@ -117,6 +120,7 @@ import pyarrow.compute as pc
 from ibnr import _arrow
 from ibnr.errors import Refusal, RefusedCell, _literal
 from ibnr.kernels.conventional import ConventionalCandidate, _estimate_grid
+from ibnr.kernels.glm import TweedieFit, TweedieSpec, fit_tweedie_grid
 from ibnr.kernels.grid import as_date, check_grid, grid_from_columns, month_end
 from ibnr.kernels.links import REASONS as LINK_REASONS
 from ibnr.kernels.links import is_all_history
@@ -130,10 +134,11 @@ __all__ = [
     "cape_cod",
     "chain_ladder",
     "mack",
+    "tweedie_glm",
 ]
 
 #: The tables a result carries, in the order ``to_polars`` lists them.
-TABLES = ("origins", "development", "link_ratios", "totals")
+TABLES = ("origins", "development", "link_ratios", "totals", "cells", "coefficients")
 
 _CELL_COLUMNS = ("origin_period", "dev_lag", "value")
 
@@ -203,13 +208,22 @@ class ReserveResult:
         ``zero_cells="observed"`` with no development option every observed
         link ratio is ``included``, a ratio out of a zero too (null, with its
         following amount in the volume sum), as R's ``MackChainLadder`` reads
-        it. Every method returns this table; ``None`` is only for a result
-        built by hand.
+        it. Every link-ratio method returns this table; ``None`` for
+        :func:`tweedie_glm`, which fits the increments rather than link
+        ratios, and for a result built by hand.
     totals : pyarrow.Table
         One row with ``latest``, ``ultimate`` and ``ibnr`` summed over the
         origins. Mack adds ``mack_se``, ``parameter_se`` and ``process_se`` for
         the total, which is not the sum of the origins' standard errors: the
-        origins share the estimated factors.
+        origins share the estimated factors. :func:`tweedie_glm` adds the
+        columns its docstring lists.
+    cells : pyarrow.Table or None
+        One row per cell of the full rectangle, observed or not, from a method
+        that fits a model to the cells (:func:`tweedie_glm`); ``None`` for the
+        others. Its columns are listed in :func:`tweedie_glm`.
+    coefficients : pyarrow.Table or None
+        One row per term of a fitted model (:func:`tweedie_glm`); ``None`` for
+        the others.
     """
 
     method: str
@@ -219,13 +233,16 @@ class ReserveResult:
     development: pa.Table
     link_ratios: pa.Table | None
     totals: pa.Table
+    cells: pa.Table | None = None
+    coefficients: pa.Table | None = None
 
     def to_polars(self, table: str = "origins"):
         """One of the result's tables as a polars DataFrame.
 
         ``table`` is ``"origins"`` (the default), ``"development"``,
-        ``"link_ratios"`` or ``"totals"``. Needs polars, which the ``polars``
-        extra installs: ``pip install "ibnr[polars]"``.
+        ``"link_ratios"``, ``"totals"``, ``"cells"`` or ``"coefficients"``; a
+        table the result does not carry is refused. Needs polars, which the
+        ``polars`` extra installs: ``pip install "ibnr[polars]"``.
         """
         if table not in TABLES:
             raise Refusal(
@@ -237,10 +254,11 @@ class ReserveResult:
             )
         data = getattr(self, table)
         if data is None:
-            # every method carries all four tables now; a result built by hand may not
+            # tweedie_glm has no link_ratios, only tweedie_glm has cells and
+            # coefficients, and a result built by hand may lack any table
             raise Refusal(
                 "invalid_option",
-                f"a {self.method} result has no {table} table",
+                f"a {self.method} result has no {table} table. {_absent(self.method, table)}",
                 option="table",
                 given=table,
                 method=self.method,
@@ -252,6 +270,21 @@ class ReserveResult:
                 'to_polars needs polars; install it with pip install "ibnr[polars]"'
             ) from exc
         return pl.from_arrow(data)
+
+
+def _absent(method: str, table: str) -> str:
+    """Why a result has no such table, and where its numbers are instead."""
+    if table == "link_ratios" and method == "tweedie_glm":
+        return (
+            "The GLM is fitted to the increments, not to link ratios; its fitted factors are "
+            "in development (under the log link) and, origin by origin, in cells"
+        )
+    if table in ("cells", "coefficients"):
+        return (
+            "Only tweedie_glm fits a model to the cells, and its result carries the cells and "
+            "coefficients tables"
+        )
+    return "This result was built by hand without it"
 
 
 def chain_ladder(
@@ -1009,6 +1042,292 @@ def _require_finite(periods, per_origin: dict, others, total: dict) -> None:
         )
 
 
+def tweedie_glm(
+    cells,
+    *,
+    power: float = 1.0,
+    link: str = "log",
+    origin: str = "factor",
+    calendar: str = "none",
+    projection: str = "pattern",
+    dev_grain_months: int = 12,
+    max_iter: int = 100,
+    tail=None,
+) -> ReserveResult:
+    """A Tweedie GLM fitted to the triangle's increments, and each origin's ultimate.
+
+    ``cells`` is as in :func:`chain_ladder`: CUMULATIVE losses, one row per
+    observed cell, zero or more. The function takes the increments of those
+    cumulatives and fits, by iteratively reweighted least squares, a GLM in
+    which each increment has mean ``mu`` and variance ``dispersion * mu **
+    power``:
+
+    - ``power``: 0 is the normal distribution, 1 the over-dispersed Poisson (the
+      default), between 1 and 2 the compound Poisson-gamma, 2 the gamma, and
+      above 2 the other Tweedie distributions. No Tweedie distribution has a
+      power between 0 and 1, and those powers are refused. At power 1 and above
+      every increment must be zero or more, and at power 2 and above more than
+      zero; power 0 accepts negative increments.
+    - ``link``: ``"log"`` (the default), ``log(mu)`` is the sum of the terms, or
+      ``"identity"``, ``mu`` is.
+    - ``origin``: ``"factor"`` (the default) gives each origin its own level;
+      ``"none"`` gives every origin the same expected increments.
+    - ``calendar``: ``"none"`` (the default) or ``"trend"``, a straight line in
+      the calendar period on the link scale. Only with ``origin="none"``: beside
+      origin and development factors a calendar trend cannot be estimated,
+      because the calendar period is the origin index plus the development
+      index. Under the log link a calendar trend with development factors fits
+      the same means as a straight line across origins, so it is not an
+      inflation estimate.
+    - ``projection``: ``"pattern"`` (the default) takes each origin's latest
+      cumulative times its fitted development from the latest age to the last,
+      as chainladder-python's ``TweedieGLM`` with ``Chainladder`` does;
+      ``"increments"`` adds the fitted future increments to the latest
+      cumulative, as R's ``glmReserve`` does. The two agree at power 1 with a
+      log link and origin factors. ``"increments"`` needs origin factors.
+    - ``max_iter``: the most iterations (100 by default). A fit that has not
+      settled by then is refused, never returned. The fit stops when no fitted
+      increment moves by more than 1e-10 times the largest increment, a rule
+      that does not depend on the units, and there is no penalty, so the
+      answer scales exactly with the amounts.
+    - ``dev_grain_months``: as in :func:`chain_ladder`.
+    - ``tail``: not supported yet; anything but ``None`` is refused. Each origin
+      is projected to the last observed development age.
+
+    Power 1 with a log link and origin and development factors (the defaults)
+    is the over-dispersed Poisson model, whose ultimates equal the
+    volume-weighted chain ladder's, ``chain_ladder(cells, zero_cells="observed")``,
+    by either projection. The exception is an origin whose losses start from
+    zero (a cumulative of 0 followed by a positive one): the chain ladder keeps
+    it at 0 times its factors, and the GLM gives it a level from its later cells.
+    Under the log link an origin (with origin factors) or a development age
+    whose observed increments are all zero is fitted at exactly zero, the limit
+    of the fit: its coefficient is null in ``coefficients`` with
+    ``fitted_zero`` true, the zero origin's ultimate is 0 and the factor into a
+    zero age is 1. Where the losses leave the fit with no finite answer (an
+    origin whose only losses sit where the model needs a positive level from
+    cells that are all zero), it is refused as ``degenerate_fit``.
+
+    Unlike chainladder-python's ``TweedieGLM``, there is no penalty and no
+    ``alpha``: chainladder always applies scikit-learn's ridge penalty of 1.0,
+    whatever ``alpha`` it is given, so its answers depend on the units of the
+    amounts. ``docs/coming-from-chainladder.md`` lists the differences.
+
+    Returns a :class:`ReserveResult` whose ``link_ratios`` is ``None``:
+
+    - ``origins``: ``origin``, ``origin_period``, ``latest_dev_lag``,
+      ``latest``, ``ultimate`` and ``ibnr`` (by the chosen projection) and
+      ``model_ibnr`` (float64, the sum of the fitted future increments, which
+      is ``ibnr`` under ``projection="increments"``).
+    - ``development``: ``dev_lag``, ``factor``, ``cdf`` and ``pct_reported``,
+      the one fitted pattern every origin shares under the log link; null
+      under the identity link, whose pattern differs by origin (it is in
+      ``cells``), and null where the fitted cumulative is 0 (a first age with no
+      losses). ``n_observed`` (int64) counts the observed increments at the age.
+    - ``cells``: one row per cell of the full rectangle, observed or not:
+      ``origin``, ``origin_period``, ``dev_lag``, ``observed`` (bool),
+      ``increment`` (null when not observed), ``fitted_increment``,
+      ``fitted_cumulative``, ``factor`` (the origin's fitted factor to the next
+      age; null at the last age or where the fitted cumulative is 0), ``cdf``
+      (to the last age; null where the fitted cumulative is 0) and
+      ``pearson_residual`` (``(increment - fitted) / sqrt(fitted ** power)``,
+      not divided by the dispersion; null when not observed or the fitted
+      increment is 0).
+    - ``coefficients``: one row per term, with the first origin and the first
+      age with losses as the reference levels, as in R's ``glm``: ``term``
+      (``intercept``, ``origin``, ``development`` or ``calendar``),
+      ``origin`` and ``origin_period`` (null unless an origin term),
+      ``dev_lag`` (int64, null unless a development term), ``estimate`` (on
+      the link scale) and ``std_error`` (null when ``fitted_zero`` or when the
+      dispersion is undefined), and ``fitted_zero`` (bool).
+    - ``totals``: ``latest``, ``ultimate``, ``ibnr``, ``model_ibnr``, ``power``,
+      ``link`` (string), ``deviance``, ``pearson_chi2``, ``dispersion``
+      (``pearson_chi2 / (n_observed - n_parameters)``, null when they are
+      equal), ``n_observed``, ``n_parameters`` and ``iterations`` (int64).
+      ``n_observed`` and ``n_parameters`` count only the cells and terms in
+      the regression, not those fitted at zero.
+
+    Refused, besides the refusals of :func:`chain_ladder`'s ``cells``: a
+    negative increment at power 1 or above (``negative_increment``), a zero
+    increment at power 2 or above (``zero_increment``), no losses at all or
+    more terms than the cells can tell apart (``not_identified``), a fit that
+    did not settle (``did_not_converge``), a fit with no finite answer
+    (``degenerate_fit``), an identity-link fitted increment of zero or less at
+    a power above 0 (``negative_fitted_mean``), and an ultimate below zero
+    (``negative_projection``).
+    """
+    with _CallersTerms("tweedie_glm") as terms:
+        grid, labels = terms.read(cells, dev_grain_months)
+        spec = TweedieSpec(
+            power=power,
+            link=link,
+            origin=origin,
+            calendar=calendar,
+            projection=projection,
+            max_iter=max_iter,
+        )
+        if tail is not None:
+            raise Refusal(
+                "not_supported",
+                "tweedie_glm takes no tail yet: each origin is projected to the last observed "
+                "development age. Pass tail=None",
+                option="tail",
+                given=tail,
+            )
+        # Amounts near the largest or the smallest double: numpy's warnings are
+        # silenced because a number that is not finite is refused by name below.
+        with np.errstate(all="ignore"):
+            fit = fit_tweedie_grid(grid, spec)
+        return _tweedie_result(fit, labels)
+
+
+def _nullable(values, missing) -> pa.Array:
+    """A float64 array with a null where ``missing`` is true (never NaN)."""
+    values = np.asarray(values, dtype=float)
+    missing = np.asarray(missing, dtype=bool)
+    return _arrow.float64(np.where(missing, 0.0, values), mask=missing)
+
+
+def _tweedie_result(fit: TweedieFit, labels: _Origins) -> ReserveResult:
+    step = fit.dev_grain_months
+    n_w, n_d = fit.cumulative.shape
+    periods = fit.origin_periods
+    observed = fit.observed
+    with np.errstate(all="ignore"):
+        latest, ultimate, model_ibnr = fit.latest, fit.ultimate, fit.model_ibnr
+        ibnr = ultimate - latest
+        fitted, fitted_cum = fit.fitted, fit.fitted_cumulative
+        factors, cdf, residual = fit.factors, fit.cdf, fit.pearson_residuals
+        sums = {
+            **_sums(latest, ultimate),
+            "model_ibnr": _arrow.float64([float(model_ibnr.sum())]),
+        }
+    ages = np.arange(1, n_d + 1, dtype=np.int64) * step
+
+    # the development table: the shared pattern under the log link
+    if fit.spec.link == "log":
+        live = np.flatnonzero(fitted_cum[:, -1] > 0)
+        reference = fitted_cum[live[0]] if live.size else np.zeros(n_d)
+        with np.errstate(all="ignore"):
+            pattern_cdf = reference[-1] / reference
+            pattern_factor = np.r_[reference[1:] / reference[:-1], 0.0]
+        no_cdf = reference == 0
+        no_factor = np.r_[reference[:-1] == 0, True]
+    else:
+        pattern_cdf = pattern_factor = np.zeros(n_d)
+        no_cdf = no_factor = np.ones(n_d, dtype=bool)
+    with np.errstate(all="ignore"):
+        pattern_pct = 1.0 / pattern_cdf
+    development = pa.table(
+        {
+            "dev_lag": _arrow.int64(ages),
+            "factor": _nullable(pattern_factor, no_factor),
+            "cdf": _nullable(pattern_cdf, no_cdf),
+            "pct_reported": _nullable(pattern_pct, no_cdf),
+            "n_observed": _arrow.int64(observed.sum(axis=0)),
+        }
+    )
+
+    # the cells table: every cell of the rectangle, origin by origin
+    cell_periods = [periods[i] for i in range(n_w) for _ in range(n_d)]
+    cell_factor = np.c_[factors, np.zeros(n_w)]
+    no_cell_factor = np.c_[fitted_cum[:, :-1] == 0, np.ones(n_w, dtype=bool)]
+    no_residual = ~observed | (fitted == 0)
+    cells = pa.table(
+        {
+            "origin": labels.labels_for(cell_periods),
+            "origin_period": _arrow.date32(cell_periods),
+            "dev_lag": _arrow.int64(np.tile(ages, n_w)),
+            "observed": _arrow.bool_(observed.ravel()),
+            "increment": _nullable(fit.increments.ravel(), ~observed.ravel()),
+            "fitted_increment": _arrow.float64(fitted.ravel()),
+            "fitted_cumulative": _arrow.float64(fitted_cum.ravel()),
+            "factor": _nullable(cell_factor.ravel(), no_cell_factor.ravel()),
+            "cdf": _nullable(cdf.ravel(), (fitted_cum == 0).ravel()),
+            "pearson_residual": _nullable(residual.ravel(), no_residual.ravel()),
+        }
+    )
+
+    # the coefficients table
+    kinds = [kind for kind, _ in fit.terms]
+    term_period = [periods[i] if kind == "origin" else None for kind, i in fit.terms]
+    term_age = np.array([(j + 1) * step if kind == "development" else 0 for kind, j in fit.terms])
+    no_se = fit.fitted_zero | (fit.n_obs == fit.n_params)
+    coefficients = pa.table(
+        {
+            "term": _arrow.string(kinds),
+            "origin": labels.labels_or_null(term_period),
+            "origin_period": _arrow.date32(term_period),
+            "dev_lag": _arrow.int64(term_age, mask=np.array(kinds) != "development"),
+            "estimate": _nullable(fit.coef, fit.fitted_zero),
+            "std_error": _nullable(fit.coef_se, no_se),
+            "fitted_zero": _arrow.bool_(fit.fitted_zero),
+        }
+    )
+
+    no_dispersion = fit.n_obs == fit.n_params
+    totals = pa.table(
+        {
+            **sums,
+            "power": _arrow.float64([fit.spec.power]),
+            "link": _arrow.string([fit.spec.link]),
+            "deviance": _arrow.float64([fit.deviance]),
+            "pearson_chi2": _arrow.float64([fit.pearson_chi2]),
+            "dispersion": _nullable([fit.dispersion], [no_dispersion]),
+            "n_observed": _arrow.int64([fit.n_obs]),
+            "n_parameters": _arrow.int64([fit.n_params]),
+            "iterations": _arrow.int64([fit.iterations]),
+        }
+    )
+    origins = pa.table(
+        {
+            "origin": labels.labels_for(periods),
+            "origin_period": _arrow.date32(periods),
+            "latest_dev_lag": _arrow.int64((fit.latest_dev + 1) * step),
+            "latest": _arrow.float64(latest),
+            "ultimate": _arrow.float64(ultimate),
+            "ibnr": _arrow.float64(ibnr),
+            "model_ibnr": _arrow.float64(model_ibnr),
+        }
+    )
+    _require_finite(periods, {"ultimate": ultimate, "ibnr": ibnr, "model_ibnr": model_ibnr}, [], {})
+    _require_finite_tables(development, cells, coefficients, totals)
+    return ReserveResult(
+        "tweedie_glm",
+        fit.as_of,
+        step,
+        origins,
+        development,
+        None,
+        totals,
+        cells=cells,
+        coefficients=coefficients,
+    )
+
+
+def _require_finite_tables(*tables: pa.Table) -> None:
+    """Refuse a result whose float columns hold a number that is not finite.
+
+    Every missing number is a null by the time this runs, so a NaN or an
+    infinity here comes from amounts too large (or too small) for the fit's
+    squares and sums, such as the deviance of amounts near the largest double.
+    """
+    for table in tables:
+        for name, column in zip(table.column_names, table.columns, strict=True):
+            if not pa.types.is_floating(column.type):
+                continue
+            present = column.drop_null()
+            if len(present) and not pc.all(pc.is_finite(present)).as_py():
+                raise Refusal(
+                    "result_not_finite",
+                    f"the fit's {name} is not a finite number: the amounts are too large, or "
+                    "too far apart, for its squares and sums to stay finite. Check them for a "
+                    "unit error, or scale them (work in thousands, say) and scale the answer "
+                    "back",
+                    option="cells",
+                )
+
+
 # -- refusals in the caller's terms ------------------------------------------------
 
 
@@ -1621,6 +1940,13 @@ class _Origins:
         """The caller's label for each period start, in the caller's Arrow type."""
         position = {start: i for i, start in enumerate(self.label_starts)}
         return self.labels.take(_arrow.int64([position[start] for start in starts]))
+
+    def labels_or_null(self, starts) -> pa.Array:
+        """As :meth:`labels_for`, with a null where ``starts`` holds ``None``."""
+        position = {start: i for i, start in enumerate(self.label_starts)}
+        index = [0 if start is None else position[start] for start in starts]
+        missing = np.array([start is None for start in starts], dtype=bool)
+        return self.labels.take(_arrow.int64(index, mask=missing))
 
     def shown_for(self, starts) -> list[str]:
         """The caller's label for each period start, as a message prints it."""
