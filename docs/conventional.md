@@ -44,18 +44,32 @@ factors, ending at `beta_horizon = 1`.
 - **CL:** prior ultimate `A_i = C_i / beta_i`.
 - **BF:** `A_i = P_i × expected_loss_ratio`.
 - **GCC:** `A_i = P_i × LR_i`, where
-  `LR_i = sum_n(C_n × decay^distance(i,n)) / sum_n(P_n × beta_n × decay^distance(i,n))`.
+  `LR_i = sum_n(C_n × T_n × decay^distance(i,n)) / sum_n(P_n × beta_n × decay^distance(i,n)) / T_i`
+  and `T_n = (1 + trend)^(m_n / 12)`, with `m_n` the whole months from the end
+  of origin period `n` to the cutoff.
 
 All three have ultimate `C_i + A_i × (1 - beta_i)` and forecast cumulative
 loss at a later age `j` of `C_i + A_i × (beta_j - beta_i)`. GCC distances are
 calendar distances in origin periods; its loss-ratio estimate uses all origins
 available at the cutoff, independently of the factor history window. Decay 0
-uses only the same origin (and equals CL); decay 1 gives ordinary Cape Cod.
+uses only the same origin (and equals CL, whatever the trend); decay 1 gives
+ordinary Cape Cod.
 
-This generalized Cape Cod carries **no trend parameter**: origins are combined
-by decay alone, and no loss-ratio trend is applied across origin periods.
-chainladder-python's `CapeCod` defaults to `trend=0.05`, so a comparison with it
-has to pass `trend=0` or the two answers differ for that reason alone.
+`trend` (GCC only, default 0) is Gluck's: each origin's losses are moved to the
+cutoff's level by `T_n` before they are pooled, and the pooled ratio is brought
+back to origin `i`'s level by `T_i`. The origins table carries `T_i` as
+`trend_factor` and `LR_i × T_i` as `trended_loss_ratio` (chainladder-python's
+`apriori_`; `expected_loss_ratio` is its `detrended_apriori_`). At trend 0 every
+`T_n` is exactly 1.0, and the loss ratios are the same numbers, bit for bit, as
+before the option existed. chainladder-python's `CapeCod` defaults to
+`trend=0.05`, so a comparison with it has to pass the same trend.
+
+`n_iters` (BF and GCC, default 1) iterates the method as Benktander does (Mack
+2000): with `q_i = 1 - beta_i`, `U_0 = A_i` and `U_k = C_i + q_i × U_(k-1)`, the
+ultimate is `U_n`. `n_iters=1` is the method itself; as `n_iters` grows the
+ultimate moves to CL's. The origins table's `prior_ultimate` is then `U_(n-1)`,
+so the forecast formula above holds for every `n`, and `expected_ultimate`
+carries `A_i`. `n_iters=0`, the expected loss method, is refused.
 
 Factors below 1, proportions above 1, negative increments and negative reserves
 are permitted. Cumulative losses must be finite and non-negative. Premiums must
@@ -85,17 +99,36 @@ At each development age:
 2. Remove explicit `(origin_period, from_dev_lag)` exclusions. The lag is in
    months. Exclusions beyond the current information set remain fixed for later
    refits. Excluding a link does not delete that origin's observed losses.
-3. Remove one lowest and/or one highest ratio. Ties use the oldest low and
-   newest high origin; low is removed first, so both flags remove distinct
-   observations. The history window is not backfilled after exclusions.
-4. Calculate the volume (ratio of column sums), simple, or median factor on
-   the same selected pairs. Every removed observation is recorded.
+3. Remove every link whose LATER cell is valued on one of
+   `exclude_valuations` (month-end dates on the grid's diagonals), reason
+   `valuation_exclusion`: excluding a year removes the development during it.
+   A valuation the cutoff has not reached stays fixed for later refits.
+4. Remove ratios strictly above `drop_above` or strictly below `drop_below`; a
+   ratio equal to a bound is kept.
+5. Remove the `drop_low` lowest and the `drop_high` highest ratios (counts;
+   `True` is 1). `trim_ties="origin"` (the default here) breaks ties by origin,
+   the oldest low and the newest high; `"volume"` (the `ibnr.methods` default,
+   chainladder-python's rule) breaks them by the earlier cumulative first, the
+   smallest low and the largest high, then by origin. The two sides never pick
+   the same ratio. The history window is not backfilled after exclusions.
+6. Calculate the volume (ratio of column sums), simple, regression
+   (`sum(previous × following) / sum(previous²)`, least squares through the
+   origin) or median factor on the same selected pairs. Every removed
+   observation is recorded with the first rule that removed it.
 
-By default an unavailable/non-positive/non-finite factor raises an error.
-`unsupported_factor="unity"` explicitly substitutes 1 and marks the age in
-`factor_summary`. By default, extreme trimming that would exhaust the pairs
-raises an error. `exhausted_exclusions="keep"` skips both extreme removals and
-records that fact; it never reverses explicit exclusions.
+Steps 4 and 5 each obey `preserve` (default 1), the fewest ratios each may
+leave at an age, all or nothing. By default an unavailable/non-positive/
+non-finite factor raises an error. `unsupported_factor="unity"` explicitly
+substitutes 1 and marks the age in `factor_summary`. By default, a rule that
+would leave fewer than `preserve` ratios raises an error.
+`exhausted_exclusions="keep"` skips that rule at that age and records it
+(`extreme_trimming_skipped` for the trims, `bounds_skipped` for the bounds); it
+never reverses explicit or valuation exclusions. An age with no ratio left
+before step 4 or 5 is not an exhausted rule: `unsupported_factor` decides it.
+
+The selection lives in `ibnr.kernels.links` (`LinkRules`, `select_links`,
+`link_factors`, `ALPHA`), numpy only, written once so that the Mack fit and the
+bootstrap refit can use the same one.
 
 On any complete run-off triangle the deepest link has exactly **one** origin
 pair, so removing an extreme ratio there would leave nothing to average: under

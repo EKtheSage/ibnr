@@ -21,6 +21,106 @@ patch releases, and 0.8 comes when the roadmap's goals are done.
 
 ## Unreleased
 
+### Development options, Benktander, and Cape Cod's trend
+
+The chain ladder, Bornhuetter-Ferguson and Cape Cod take the development
+options chainladder-python users send, and there is a new method,
+`methods.benktander`.
+
+**New in `ibnr.methods`:**
+- `average="regression"`: least squares through the origin,
+  `sum(previous * following) / sum(previous ** 2)`. With `"volume"` and
+  `"simple"` it is R ChainLadder's `delta` 0, 1 and 2, which the tests check
+  on RAA and GenIns to a relative 1e-12 (the R script and its output are in
+  the repository, since CI has no R).
+- `drop_high` and `drop_low` are counts: `drop_high=2` leaves out the two
+  highest link ratios at each age. `True` still means 1.
+- `preserve`: the fewest link ratios the drops may leave at an age (1 by
+  default). At an age where they would leave fewer, neither drop is made, as in
+  chainladder-python.
+- `drop_above` and `drop_below`: leave out link ratios above or below a number.
+- `exclude_valuations`: leave out whole diagonals, written as dates
+  (`"2020-12-31"`) or as the period they end (`2020`, `"2020Q4"`, `"2020-12"`).
+- `trim_ties`: which of two equal link ratios the drops leave out. The default,
+  `"volume"`, is chainladder-python's rule; `"origin"` is 0.7.2's.
+- `methods.benktander(cells, premium=..., expected_loss_ratio=..., n_iters=...)`:
+  Bornhuetter-Ferguson repeated from its own ultimate (Mack 2000); `n_iters=1`
+  is `bornhuetter_ferguson` byte for byte.
+- `methods.cape_cod(..., trend=0.05, n_iters=2)`: Gluck's trend, and
+  Benktander's iteration. `origins` gains `trended_loss_ratio`
+  (chainladder-python's `apriori_`) and `trend_factor`; `expected_loss_ratio`
+  is `detrended_apriori_`.
+- `development` gains `bounds_skipped`, and `link_ratios.reason` gains
+  `valuation_exclusion`, `drop_above` and `drop_below`. The `ibnr.methods`
+  docstring has one table of every `development` column and the methods that
+  carry it.
+
+The rules that leave link ratios out run in one order, each on what the ones
+before left: zero cells, `history_periods`, `exclude`, `exclude_valuations`,
+the bounds, then the drops. They live once, in a new numpy-only module,
+`kernels/links.py` (`LinkRules`, `select_links`, `link_factors`, `ALPHA`),
+which the Mack fit and the bootstrap are to reuse. `ConventionalCandidate`
+gains `preserve`, `drop_above`, `drop_below`, `exclude_valuations`,
+`trim_ties`, `n_iters` and `trend`, and a `link_rules` property.
+
+**Checked against chainladder-python 0.9.2:** every combination of
+`history_periods`, `drop_high` (0 to 3), `drop_low` (0 to 2), `preserve` (1 to
+3) and the three averages on raa, and a sample of them on genins, ukmotor, abc,
+mw2014 and a 40 x 40 quarterly triangle (prism); bounds on raa and genins;
+every diagonal of raa, genins and ukmotor as an excluded valuation; Benktander
+with 1, 2, 5 and 10 iterations and Cape Cod with three trends, three decays and
+two iterations, on raa, genins, prism and 20 clrd triangles. A sweep outside
+the test suite compared 35,406 fits on every clrd paid and incurred triangle
+(the grid of `n_periods` -1, 3, 5, `drop_high` 0 to 2, `drop_low` 0, 1, 3,
+`preserve` 1, 2 and the three averages): none differ. The example workbook's
+totals come out to the cent from the Schedule P mart (New Jersey Manufacturers,
+workers' compensation paid, 1988-1997): Benktander with two iterations
+422,098.51, Cape Cod at a 5% trend 520,719.58, `history_periods=5` with one
+high ratio dropped 356,958.59, regression 373,469.10.
+
+**No kernel number moved.** The kernel defaults are 0.7.2's (`trim_ties="origin"`,
+`preserve=1`, no bounds, `n_iters=1`, `trend=0`). Compared as raw bytes with the
+code before this change: `fit_conventional_grid` under 13 sets of the options
+that existed before, the methods under the same sets with
+`trim_ties="origin"`, and `methods.mack`, on raa, genins, ukmotor, abc, mw2014
+and 122 clrd paid and incurred triangles, 10,414 cases (3,112 of them
+refusals, with the same messages), all identical. 1,722 of those cases are frozen as digests in
+`tests/data/conventional_selection_pin.json`, which the tests check.
+
+**What can change for a caller:**
+- In `ibnr.methods`, `drop_high` and `drop_low` now break ties as
+  chainladder-python does, so on tied link ratios the factors move to
+  chainladder's. On the 681 clrd paid triangles both answer, the factors change
+  on 23 for `drop_high=True`, 124 for `drop_low=True` and 83 for both (on
+  incurred, 70, 51 and 40 of 726). Pass `trim_ties="origin"` for 0.7.2's
+  answer. The kernels keep 0.7.2's rule.
+- `average="regression"` and a whole-number `drop_high`/`drop_low` above 1 were
+  refused and are answered now. The message refusing a bad `drop_high` or
+  `drop_low` names counts instead of True or False, and the message refusing a
+  bad `average` lists `"regression"`.
+- `ConventionalCandidate.drop_high` and `drop_low` are stored as whole
+  numbers, so `True` reads back as `1` (it compares and hashes the same), and
+  `dataclasses.asdict` of a candidate, as `scripts/benchmark_conventional.py`
+  writes into its results, has the seven new fields. `ConventionalFit.origins`
+  gains `expected_ultimate`, `trend_factor` and `trended_loss_ratio`, and
+  `factor_summary` gains `bounds_skipped`.
+- `exclusions_exhausted` now also covers bounds that would leave fewer than
+  `preserve` link ratios. No reason code was added.
+
+**Where ibnr differs from chainladder-python on purpose**, each in
+`docs/coming-from-chainladder.md`: `exclude_valuations` names the later end of
+a link ratio (chainladder's `drop_valuation="1994"` is
+`exclude_valuations=[1995]`, and the latest valuation can be excluded); the
+rules act in order rather than independently, so two exclusion rules together
+cannot empty an age `preserve` protects; a ratio equal to a bound is kept;
+`n_iters=0`, per-age lists and `trend <= -1` are refused; and Cape Cod keeps
+fully developed origins that are not on the latest diagonal.
+
+Speed: the conventional estimator (what `ibnr.methods` runs after reading the
+cells) takes about 0.3 ms on raa where 0.7.2 took 0.15 ms, and 1.2 to 1.7 ms on
+a 40 x 40 quarterly triangle where it took 1.1 to 1.3 ms (best of 7 runs of
+50, three alternating rounds on the dev box, with and without drops).
+
 ### `ibnr.methods` loads no ibis, pandas or scipy
 
 `from ibnr import methods` used to load ibis, pandas and scipy, although the four

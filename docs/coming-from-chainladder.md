@@ -7,7 +7,9 @@ agree: on chainladder's `raa` and `genins` samples the ultimates, factors, Mack
 standard errors (with their parameter and process parts), Bornhuetter-Ferguson
 and Cape Cod match chainladder-python to a relative 1e-9, which
 `tests/test_methods.py` checks, and `tests/test_zero_cells.py` checks the same
-on triangles with zero cells.
+on triangles with zero cells. `tests/test_development_options.py` checks the
+development options, Benktander and Cape Cod's trend against chainladder on
+raa, genins, ukmotor, abc, mw2014, a 40 x 40 quarterly triangle and clrd.
 
 ## The shape of a call
 
@@ -20,7 +22,7 @@ loss). A polars DataFrame works, and so does a pyarrow Table or anything else
 Arrow can read. Each call returns a `ReserveResult` whose tables are pyarrow
 Tables; `.to_polars(name)` gives any of them as a polars DataFrame
 (`pip install "ibnr[polars]"`). `from ibnr import methods` loads numpy and
-pyarrow only, not pandas, scipy or ibis, and the four methods do not load them
+pyarrow only, not pandas, scipy or ibis, and the methods do not load them
 when they run; `import chainladder` (0.9.2) loads pandas, scipy and
 scikit-learn.
 
@@ -52,9 +54,13 @@ mack.to_polars("totals")  # total_mack_std_err_, with its parameter and process 
 # cl.BornhuetterFerguson(apriori=0.6).fit(tri, sample_weight=premium_triangle)
 bf = methods.bornhuetter_ferguson(cells, premium=premium, expected_loss_ratio=0.6)
 
-# cl.CapeCod(decay=0.75, trend=0).fit(tri, sample_weight=premium_triangle)
-cape_cod = methods.cape_cod(cells, premium=premium, decay=0.75)
-cape_cod.to_polars()["expected_loss_ratio"]  # apriori_
+# cl.Benktander(apriori=0.6, n_iters=2).fit(tri, sample_weight=premium_triangle)
+benktander = methods.benktander(cells, premium=premium, expected_loss_ratio=0.6, n_iters=2)
+
+# cl.CapeCod(decay=0.75, trend=0.05).fit(tri, sample_weight=premium_triangle)
+cape_cod = methods.cape_cod(cells, premium=premium, decay=0.75, trend=0.05)
+cape_cod.to_polars()["trended_loss_ratio"]  # apriori_
+cape_cod.to_polars()["expected_loss_ratio"]  # detrended_apriori_
 ```
 
 ## Lookup table
@@ -64,11 +70,15 @@ cape_cod.to_polars()["expected_loss_ratio"]  # apriori_
 | `cl.Chainladder()` | `methods.chain_ladder(cells)` |
 | `cl.MackChainladder()` | `methods.mack(cells)` |
 | `cl.BornhuetterFerguson(apriori=r)` with `sample_weight=` a premium triangle | `methods.bornhuetter_ferguson(cells, premium=..., expected_loss_ratio=r)` |
-| `cl.CapeCod(decay=d, trend=0)` with `sample_weight=` | `methods.cape_cod(cells, premium=..., decay=d)` |
-| `cl.Development(n_periods=n)` | `history_periods=n` |
-| `cl.Development(average="volume" / "simple")` | `average="volume"` / `"simple"`, and also `"median"` |
-| `cl.Development(drop_high=True, drop_low=True)` | `drop_high=True, drop_low=True` |
+| `cl.Benktander(apriori=r, n_iters=n)` with `sample_weight=` | `methods.benktander(cells, premium=..., expected_loss_ratio=r, n_iters=n)` |
+| `cl.CapeCod(decay=d, trend=t, n_iters=n)` with `sample_weight=` | `methods.cape_cod(cells, premium=..., decay=d, trend=t, n_iters=n)` |
+| `cl.Development(n_periods=n)` (`-1` for all) | `history_periods=n` (`None` for all) |
+| `cl.Development(average="volume" / "simple" / "regression")` | `average="volume"` / `"simple"` / `"regression"`, and also `"median"` |
+| `cl.Development(drop_high=k, drop_low=k)` (`True` is 1) | `drop_high=k, drop_low=k` (`True` is 1) |
+| `cl.Development(preserve=p)` | `preserve=p` |
+| `cl.Development(drop_above=a, drop_below=b)` | `drop_above=a, drop_below=b` (a ratio equal to a bound is kept; below) |
 | `cl.Development(drop=("1982", 12))` | `exclude=[(1982, 12)]` |
+| `cl.Development(drop_valuation="1994")` | `exclude_valuations=[1995]` (the same link ratios; below) |
 | `cl.Development(sigma_interpolation="log-linear" / "mack")` | `methods.mack(cells, sigma_rule="log_linear" / "mack")` |
 | `.ultimate_` | `result.origins["ultimate"]` |
 | `.ibnr_` | `result.origins["ibnr"]` |
@@ -81,14 +91,17 @@ cape_cod.to_polars()["expected_loss_ratio"]  # apriori_
 | `.parameter_risk_`, `.process_risk_` (their ultimate columns) | `result.origins["parameter_se"]`, `["process_se"]` |
 | `.total_mack_std_err_` | `result.totals["mack_se"]` |
 | `.total_parameter_risk_`, `.total_process_risk_` (their ultimate columns) | `result.totals["parameter_se"]`, `["process_se"]` |
-| `.apriori_` (Cape Cod) | `result.origins["expected_loss_ratio"]` |
+| `.apriori_` (Cape Cod) | `result.origins["trended_loss_ratio"]` |
+| `.detrended_apriori_` (Cape Cod) | `result.origins["expected_loss_ratio"]` |
 
 Every link ratio, and whether the factor used it, is in `result.link_ratios`,
-with the reason for any that were left out (`history_window`, `drop_high`,
-`drop_low`, `explicit_exclusion`, `zero_cell` when either cumulative is zero,
-or, with `zero_cells="observed"`, `undefined_ratio` when the earlier one is).
+with the reason for any that were left out: `zero_cell` when either cumulative
+is zero (or, with `zero_cells="observed"`, `undefined_ratio` when the earlier
+one is), `history_window`, `explicit_exclusion`, `valuation_exclusion`,
+`drop_above`, `drop_below`, `drop_low` or `drop_high`. A ratio carries the
+first rule that left it out, in that order.
 
-Four details of the correspondence:
+Five details of the correspondence:
 
 - A zero cumulative is read as chainladder-python reads it, as a missing
   cell: a link ratio is used only when neither of its two cells is zero, so
@@ -106,7 +119,17 @@ Four details of the correspondence:
 - With `drop_high` or `drop_low` on a complete triangle, the last age has a
   single link ratio. chainladder-python keeps it; so does ibnr, and it marks
   that age in `development["extreme_trimming_skipped"]`. Pass
-  `exhausted_exclusions="raise"` to refuse instead.
+  `exhausted_exclusions="raise"` to refuse instead. `preserve` works as
+  chainladder's does for the trims: it counts the ratios both trims would
+  leave, and at an age where that is fewer, neither trim is made.
+- Equal link ratios are trimmed as chainladder-python trims them
+  (`trim_ties="volume"`, the default): among equal ratios `drop_high` leaves out
+  the one with the larger earlier cumulative and `drop_low` the smaller, and
+  equal amounts too go by origin, the newer for `drop_high` and the older for
+  `drop_low`. `trim_ties="origin"` ranks equal ratios by origin alone, the rule
+  of ibnr 0.7.2 and of `kernels.ConventionalCandidate`, which disagrees with
+  chainladder on 23 of the 681 clrd paid triangles both answer for
+  `drop_high=True`, on 124 for `drop_low=True` and on 83 for both.
 - chainladder-python reports a fully developed origin's IBNR and Mack standard
   error as NaN; ibnr reports 0.0, because nothing is left to develop.
 
@@ -116,6 +139,53 @@ published numbers do not move.)
 
 ## Behaviour that differs on purpose
 
+- **An excluded valuation names the later end of a link ratio.**
+  chainladder-python's `drop_valuation` leaves out every link ratio whose
+  EARLIER cell is valued on that date. ibnr's `exclude_valuations` leaves out
+  every link ratio that develops INTO that date, so excluding 2020 removes the
+  development that happened during 2020. The same link ratios are one year
+  apart: chainladder's `drop_valuation="1994"` is `exclude_valuations=[1995]`.
+  So passing chainladder's value through unchanged moves the answer (on the
+  example workbook's triangle, New Jersey Manufacturers' workers' compensation
+  paid, `"1994"` gives a total IBNR of 376,546.99 in chainladder and 375,199.78
+  here), and naming the latest valuation, which chainladder ignores without a
+  word, now leaves out the latest diagonal's link ratios. Shifting the value one
+  year keeps chainladder's numbers, except that chainladder's latest year then
+  names a date after the triangle, which ibnr refuses (`not_in_triangle`). A
+  valuation no link ratio develops into, and a year label on a quarterly or
+  monthly triangle (chainladder reads `"1994"` there as its first quarter), are
+  refused by name.
+- **The rules act one after another.** chainladder-python applies its drop
+  rules independently: `drop_high` ranks ratios that `drop`, `drop_valuation`
+  or a bound already left out, and each rule checks `preserve` on its own, so
+  two rules together can empty an age that `preserve` was set to protect. ibnr
+  runs them in order (the zero rule, `history_periods`, `exclude`,
+  `exclude_valuations`, `drop_above`/`drop_below`, `drop_high`/`drop_low`),
+  each on the ratios the ones before left, and `preserve` counts what is
+  really left. With `history_periods`, the trims and `average` alone the two
+  agree; they differ only when two exclusion rules are combined. On raa,
+  `exclude=[(1982, 12)]` with `drop_high=True` leaves out 1982's 40.4 and then
+  1985's 8.76 here, where chainladder leaves out only 1982's.
+- **A ratio equal to a bound is kept.** `drop_above` leaves out ratios strictly
+  above it and `drop_below` those strictly below it, as chainladder's docstring
+  describes them; chainladder itself leaves out a ratio equal to the bound too.
+  It matters for `drop_below=1.0`: 498 of the 725 clrd paid triangles have a
+  link ratio of exactly 1.0. The bounds' `preserve` also counts the ratios in
+  the `history_periods` window, where chainladder counts the whole column and
+  can empty the window.
+- **`n_iters` is a whole number of 1 or more.** chainladder-python reads
+  `n_iters=0` as the expected loss method (every ultimate is the a priori
+  one, a fully developed origin included) and accepts `2.5`; ibnr refuses both.
+- **One setting for every age.** chainladder-python takes a list per age for
+  the drop options, `preserve` and `average`; ibnr refuses a list, and applies
+  one setting at every age.
+- **`trend` must be above -1.** chainladder-python answers `trend=-1` with
+  missing loss ratios and `trend=-1.5` with negative ones.
+- **Cape Cod keeps every origin.** On a triangle with more origins than ages,
+  chainladder-python leaves the fully developed origins that are not on the
+  latest diagonal out of the ultimates and out of the Cape Cod pool. ibnr keeps
+  them: their ultimate is their latest amount, and their losses count in the
+  pooled loss ratio, trended from their own period's end.
 - **Zeros can be kept as data.** chainladder-python stores a zero cell as
   missing, so a zero cumulative at 12 months disappears from its triangle.
   `ibnr.methods` follows it by default (`zero_cells="missing"`, above). Pass
@@ -213,6 +283,10 @@ What some of chainladder-python's answers become:
 | chainladder-python | ibnr |
 |---|---|
 | `Development(average=1.0)`: `KeyError` | `invalid_option`, `option="average"` |
+| `Development(drop_high=np.int64(2))` or `2.0`: `TypeError` | `np.int64(2)` is answered as 2; `2.0` is `invalid_option` |
+| `Development(drop_high=-1)`: answered, nothing dropped | `invalid_option`, `option="drop_high"` |
+| `Benktander(n_iters=-1)`: `IndexError` | `invalid_option`, `option="n_iters"` |
+| `Development(drop_valuation="2005")` past the triangle: a warning, then answered | `not_in_triangle`, `option="exclude_valuations"` |
 | `Development(drop=("1850", 12))`: `IndexError` | `not_in_triangle`, `option="exclude"`, the pair in `cells` |
 | an origin `"abc"`: pandas `DateParseError` | `unreadable_label`, `column="origin_period"`, the rows in `rows` |
 | a negative cumulative: answered | `negative_cumulative`, the cells in `cells` |
@@ -280,14 +354,7 @@ year written `2020-12-31` has its first cell at `dev_lag` 12, valued
 
 - Tail factors (`cl.TailCurve`, `cl.TailConstant`): every method projects to
   the last observed development age.
-- Benktander (`cl.Benktander`).
-- Cape Cod's `trend`: amounts are compared as they are.
-- The `"regression"` average.
-- `drop_valuation`, and integer counts for `drop_high` / `drop_low` (ibnr drops
-  one ratio at each end).
-- `drop_above` / `drop_below` / `preserve` / `fillna`, and per-age lists for
-  `n_periods`, `average` and the drop options (ibnr applies one setting at
-  every age). chainladder's `drop_below` defaults to 0, which leaves out
+- `fillna`. chainladder's `drop_below` defaults to 0, which leaves out
   negative link ratios; ibnr has none to leave out, since it refuses negative
   cumulatives.
 - Origin periods longer than a development step, such as annual origins

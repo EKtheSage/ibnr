@@ -26,7 +26,16 @@ import numpy as np
 # Triangle path (fit_conventional) and the pandas tables of ConventionalFit
 # import what they need when they run.
 from ibnr.errors import Refusal, RefusedCell, _literal
-from ibnr.kernels.grid import ZERO_CELLS, as_date, check_grid
+from ibnr.kernels.grid import as_date, check_grid, month_end
+from ibnr.kernels.links import (
+    AVERAGES,
+    REASONS,
+    LinkRules,
+    _choose,
+    exhausted_refusal,
+    link_factors,
+    select_links,
+)
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -51,6 +60,7 @@ SUMMARY_COLUMNS = [
     "n_selected",
     "unity_fallback",
     "extreme_trimming_skipped",
+    "bounds_skipped",
 ]
 
 
@@ -75,13 +85,30 @@ class ConventionalCandidate:
     it are left out with reason ``"zero_cell"``. A zero on an origin's latest
     diagonal is still its latest amount under either rule, so its chain-ladder
     ultimate is 0 (chainladder-python leaves that ultimate missing instead).
+
+    The link-ratio options (``history_periods``, ``exclude``,
+    ``exclude_valuations``, ``drop_above``, ``drop_below``, ``drop_high``,
+    ``drop_low``, ``preserve``, ``trim_ties``, ``exhausted_exclusions`` and
+    ``zero_cells``) are checked and applied by ``kernels.links``, whose
+    docstring gives the order they run in; :attr:`link_rules` holds them as one
+    :class:`~ibnr.kernels.links.LinkRules`. ``drop_high`` and ``drop_low`` are
+    counts, and ``True`` is stored as 1. ``trim_ties`` defaults to ``"origin"``,
+    the tie rule of 0.7.2. ``average`` may also be ``"regression"``.
+
+    ``n_iters`` (``"bf"`` and ``"gcc"`` only) is the number of Benktander
+    iterations: 1 is the method itself, and each further one uses the last
+    ultimate as the a priori ultimate. ``trend`` (``"gcc"`` only) is an annual
+    rate: each origin's losses are moved to the valuation date's level by
+    ``(1 + trend)`` a year from the end of the origin period before the loss
+    ratios are pooled, and each pooled ratio is brought back to its origin's
+    level after.
     """
 
     method: str = "cl"
     history_periods: int | None = None
     average: str = "volume"
-    drop_high: bool = False
-    drop_low: bool = False
+    drop_high: int = 0
+    drop_low: int = 0
     exclude: tuple[tuple[dt.date, int], ...] = ()
     expected_loss_ratio: float | None = None
     decay: float | None = None
@@ -89,51 +116,40 @@ class ConventionalCandidate:
     unsupported_factor: str = "raise"
     exhausted_exclusions: str = "raise"
     zero_cells: str = "observed"
+    preserve: int = 1
+    drop_above: float | None = None
+    drop_below: float | None = None
+    exclude_valuations: tuple[dt.date, ...] = ()
+    trim_ties: str = "origin"
+    n_iters: int = 1
+    trend: float = 0.0
 
     def __post_init__(self) -> None:
         # Every refusal here is an ibnr.errors.Refusal with the reason
         # invalid_option (a label that cannot be read is unreadable_label, and an
         # exclusion named twice is duplicate), naming the setting and its value.
         _choose("method", self.method, ("cl", "bf", "gcc"))
-        _choose("average", self.average, ("volume", "simple", "median"))
+        _choose("average", self.average, AVERAGES)
         # numpy scalars are accepted and converted to the builtin type, the same
         # way the float settings below already accept a numpy float: a grid
         # built from numpy ranges hands these in, and two candidates that differ
         # only in how a count was spelled must stay equal and hash alike.
-        for name in ("history_periods", "horizon"):
-            value = getattr(self, name)
-            if value is None:
-                continue
+        if self.horizon is not None:
+            value = self.horizon
             counts = isinstance(value, int | np.integer) and not isinstance(value, bool | np.bool_)
             if not counts or value < 1:
                 raise Refusal(
                     "invalid_option",
-                    f"{name} must be a positive integer or None, got {{given}}",
-                    option=name,
+                    "horizon must be a positive integer or None, got {given}",
+                    option="horizon",
                     given=value,
                 )
-            object.__setattr__(self, name, int(value))
-        for name in ("drop_high", "drop_low"):
-            flag = getattr(self, name)
-            if not isinstance(flag, bool | np.bool_):
-                raise Refusal(
-                    "invalid_option",
-                    f"{name} must be True or False, got {{given}}",
-                    option=name,
-                    given=flag,
-                )
-            object.__setattr__(self, name, bool(flag))
+            object.__setattr__(self, "horizon", int(value))
+        # LinkRules checks the link-ratio options and stores them as builtin types
+        rules = LinkRules(**{name: getattr(self, name) for name in _LINK_FIELDS})
+        for name in _LINK_FIELDS:
+            object.__setattr__(self, name, getattr(rules, name))
         _choose("unsupported_factor", self.unsupported_factor, ("raise", "unity"))
-        _choose("exhausted_exclusions", self.exhausted_exclusions, ("raise", "keep"))
-        if self.zero_cells not in ZERO_CELLS:
-            raise Refusal(
-                "invalid_option",
-                "zero_cells must be 'observed' or 'missing', got {given}. "
-                "'observed' keeps a zero cumulative as data; 'missing' leaves out every link "
-                "ratio with a zero at either end, as chainladder-python does",
-                option="zero_cells",
-                given=self.zero_cells,
-            )
         if self.method == "bf":
             # A number, and not a bool: True used to be read as 1.0 and text raised a
             # TypeError from inside numpy.
@@ -170,58 +186,87 @@ class ConventionalCandidate:
                 options=("decay", "method"),
                 given=self.decay,
             )
-        exclusions = []
-        for origin, lag in self.exclude:
-            try:
-                exclusions.append((as_date(origin), lag))
-            except (TypeError, ValueError) as exc:
-                raise Refusal(
-                    "unreadable_label",
-                    f"exclude origin {{given}} is not a date: {_literal(exc)}",
-                    option="exclude",
-                    given=origin,
-                ) from exc
-        for _, lag in exclusions:
-            if type(lag) is not int or lag < 1:
-                raise Refusal(
-                    "invalid_option",
-                    "excluded development lags must be positive integer months, got {given}",
-                    option="exclude",
-                    given=lag,
-                )
-        if len(set(exclusions)) != len(exclusions):
-            twice = [key for key in dict.fromkeys(exclusions) if exclusions.count(key) > 1]
-            raise Refusal(
-                "duplicate",
-                "duplicate explicit exclusions: {cells}",
-                option="exclude",
-                cells=[RefusedCell(None, origin, lag) for origin, lag in twice],
-            )
-        if self.horizon is not None and any(lag >= self.horizon for _, lag in exclusions):
+        self._check_iterations_and_trend()
+        if self.horizon is not None and any(lag >= self.horizon for _, lag in self.exclude):
             raise Refusal(
                 "invalid_option",
                 "excluded FROM lags must be strictly before the fixed horizon",
                 option="exclude",
                 options=("exclude", "horizon"),
             )
-        object.__setattr__(self, "exclude", tuple(sorted(exclusions)))
+
+    def _check_iterations_and_trend(self) -> None:
+        iterations = self.n_iters
+        whole = isinstance(iterations, int | np.integer) and not isinstance(
+            iterations, bool | np.bool_
+        )
+        if whole and iterations == 0:
+            raise Refusal(
+                "invalid_option",
+                "n_iters=0 would ignore the reported losses and use the a priori ultimate "
+                "alone, which is the expected loss method; it is not offered. n_iters=1 is "
+                "Bornhuetter-Ferguson or Cape Cod itself",
+                option="n_iters",
+                given=iterations,
+            )
+        if not whole or iterations < 1:
+            raise Refusal(
+                "invalid_option",
+                "n_iters must be a whole number of 1 or more, got {given}",
+                option="n_iters",
+                given=iterations,
+            )
+        object.__setattr__(self, "n_iters", int(iterations))
+        if self.n_iters != 1 and self.method == "cl":
+            raise Refusal(
+                "invalid_option",
+                "n_iters is a Bornhuetter-Ferguson ('bf') and Cape Cod ('gcc') setting only",
+                option="n_iters",
+                options=("n_iters", "method"),
+                given=self.n_iters,
+            )
+        trend = self.trend
+        if not _is_number(trend) or not math.isfinite(trend) or not trend > -1:
+            raise Refusal(
+                "invalid_option",
+                "trend is an annual rate above -1, such as 0.05 for 5% a year, got {given}",
+                option="trend",
+                given=trend,
+            )
+        object.__setattr__(self, "trend", float(trend))
+        if self.trend != 0 and self.method != "gcc":
+            raise Refusal(
+                "invalid_option",
+                "trend applies to the generalized Cape Cod ('gcc') only",
+                option="trend",
+                options=("trend", "method"),
+                given=self.trend,
+            )
+
+    @property
+    def link_rules(self) -> LinkRules:
+        """The link-ratio options as one :class:`~ibnr.kernels.links.LinkRules`.
+
+        Built when read rather than stored, so ``vars(candidate)`` holds the
+        fields alone and ``ConventionalCandidate(**vars(candidate))`` works.
+        """
+        return LinkRules(**{name: getattr(self, name) for name in _LINK_FIELDS})
 
 
-def _choose(name: str, value, choices: tuple[str, ...]) -> None:
-    """Refuse a setting that is not one of its choices, naming it and its value."""
-    if value not in choices:
-        quoted = [repr(choice) for choice in choices]
-        listed = (
-            " or ".join(quoted)
-            if len(quoted) == 2
-            else f"{', '.join(quoted[:-1])}, or {quoted[-1]}"
-        )
-        raise Refusal(
-            "invalid_option",
-            f"{name} must be {listed}, got {{given}}",
-            option=name,
-            given=value,
-        )
+#: The candidate's fields that are link-ratio options, handed to LinkRules as they are.
+_LINK_FIELDS = (
+    "history_periods",
+    "exclude",
+    "exclude_valuations",
+    "drop_above",
+    "drop_below",
+    "drop_high",
+    "drop_low",
+    "preserve",
+    "trim_ties",
+    "exhausted_exclusions",
+    "zero_cells",
+)
 
 
 def _is_number(value) -> bool:
@@ -558,6 +603,7 @@ def _estimate(grid: dict[str, Any], candidate: ConventionalCandidate, cutoff: dt
             option="exclude",
             cells=[RefusedCell(None, origin, lag) for origin, lag in off_step],
         )
+    _check_valuations(candidate.exclude_valuations, grid["origin_periods"], step)
     cum, mask = grid["cum"], grid["obs_mask"]
     periods = grid["origin_periods"]
     if not np.isfinite(cum[mask]).all() or (cum[mask] < 0).any():
@@ -585,9 +631,13 @@ def _estimate(grid: dict[str, Any], candidate: ConventionalCandidate, cutoff: dt
             option="cells",
             links=[((j + 1) * step, (j + 2) * step) for j in bad],
         )
-    latest = cum[np.arange(grid["n_w"]), grid["latest_dev"]]
+    n_w = grid["n_w"]
+    latest = cum[np.arange(n_w), grid["latest_dev"]]
     developed = beta[grid["latest_dev"]]
-    elr = np.full(grid["n_w"], np.nan)
+    elr = np.full(n_w, np.nan)
+    expected = np.full(n_w, np.nan)
+    trended = np.full(n_w, np.nan)
+    trend_factor = np.ones(n_w)
     if candidate.method == "cl":
         prior = latest / developed
     else:
@@ -613,8 +663,19 @@ def _estimate(grid: dict[str, Any], candidate: ConventionalCandidate, cutoff: dt
             periods = np.array([o.year * 12 + o.month for o in grid["origin_periods"]])
             distance = np.abs(periods[:, None] - periods[None, :]) / step
             weights = float(candidate.decay) ** distance  # 0**0 = 1 gives GCC(0) = CL.
-            elr = (weights @ latest) / (weights @ (premium * developed))
-        prior = premium * elr
+            # Gluck's trend: origin k's losses at the valuation date's level, pooled,
+            # and each pooled ratio brought back to its own origin's level. At trend 0
+            # every factor is exactly 1.0, so the loss ratios are 0.7.2's, bit for bit.
+            trend_factor = (1 + candidate.trend) ** (_months_to(cutoff, grid, step) / 12)
+            trended = (weights @ (latest * trend_factor)) / (weights @ (premium * developed))
+            elr = trended / trend_factor
+        expected = premium * elr
+        # Benktander: U_0 is the a priori ultimate and U_k = latest + (1 - beta) * U_(k-1).
+        # The reserve is (1 - beta) * U_(n-1), so n_iters=1 is the method itself, and
+        # prior_ultimate is U_(n-1), which keeps predict_cumulative right for every n.
+        prior = expected
+        for _ in range(candidate.n_iters - 1):
+            prior = latest + (1 - developed) * prior
     reserve = prior * (1 - developed)
     ultimate = latest + reserve
     origins = {
@@ -626,6 +687,9 @@ def _estimate(grid: dict[str, Any], candidate: ConventionalCandidate, cutoff: dt
         "prior_ultimate": prior,
         "ultimate": ultimate,
         "reserve": reserve,
+        "expected_ultimate": expected,
+        "trend_factor": trend_factor,
+        "trended_loss_ratio": trended,
     }
     if not all(np.isfinite(values).all() for values in (prior, ultimate, reserve)):
         bad = ~(np.isfinite(prior) & np.isfinite(ultimate) & np.isfinite(reserve))
@@ -640,6 +704,46 @@ def _estimate(grid: dict[str, Any], candidate: ConventionalCandidate, cutoff: dt
     return _Estimate(candidate, cutoff, grid, factors, beta, origins, selection, summary)
 
 
+def _months_to(cutoff: dt.date, grid: dict[str, Any], step: int) -> np.ndarray:
+    """Whole months from the end of each origin period to ``cutoff``, the valuation date."""
+    ends = [month_end(origin, step) for origin in grid["origin_periods"]]
+    return np.array(
+        [(cutoff.year - end.year) * 12 + cutoff.month - end.month for end in ends], dtype=float
+    )
+
+
+def _check_valuations(valuations, origins, step: int) -> None:
+    """Refuse an excluded valuation that is off the grid's diagonals, or before any link.
+
+    A valuation the fit date has not reached yet is accepted, as an exclusion of
+    a link ratio not observed yet is: a replay refits one candidate at
+    successive dates, and a later fit will have those link ratios.
+    """
+    if not valuations:
+        return
+    first = origins[0]
+    for day in valuations:
+        following = day + dt.timedelta(days=1)
+        months = (following.year - first.year) * 12 + following.month - first.month
+        if months % step:
+            raise Refusal(
+                "grain_mismatch",
+                f"exclude_valuations {{given}} is not a diagonal of this triangle: the "
+                f"evaluation dates are {step} months apart, ending {month_end(first, step)}, "
+                f"{month_end(first, 2 * step)} and so on",
+                option="exclude_valuations",
+                given=day,
+            )
+        if months < 2 * step:
+            raise Refusal(
+                "not_in_triangle",
+                "exclude_valuations {given} is before any link ratio of this triangle; the "
+                f"first link ratios develop into {month_end(first, 2 * step)}",
+                option="exclude_valuations",
+                given=day,
+            )
+
+
 def _cell(origins, i: int, j: int, step: int, cum: np.ndarray) -> RefusedCell:
     """Cell ``(i, j)`` of a grid as a refused cell, with its amount when it is a number."""
     value = float(cum[i, j])
@@ -649,88 +753,39 @@ def _cell(origins, i: int, j: int, step: int, cum: np.ndarray) -> RefusedCell:
 def _factors(grid, candidate, n_dev):
     cum, mask = grid["cum"], grid["obs_mask"]
     step = grid["dev_grain_months"]
+    periods = grid["origin_periods"]
+    rules = candidate.link_rules
+    # kernels.links chooses the link ratios (the zero rule, the history window,
+    # the exclusions, the bounds and the trims, in that order) and averages them.
+    # The checks below then run link by link, so a refusal names the first link
+    # at fault whichever check finds it: an exhausted rule, a factor that is not
+    # finite, or a link left with nothing to estimate from.
+    chosen = select_links(cum, mask, periods, step, rules, n_dev - 1, raise_exhausted=False)
+    estimated, n_used = link_factors(chosen, candidate.average)
     factors = np.ones(n_dev - 1)
     selection, summary = [], []
-    explicit = set(candidate.exclude)
     for j in range(n_dev - 1):
-        pairs = np.flatnonzero(mask[:, j] & mask[:, j + 1]) if j + 1 < grid["n_d"] else []
-        rows = []
-        for i in pairs:
-            c0, c1 = cum[i, j], cum[i, j + 1]
-            rows.append(
-                {
-                    "from_dev_lag": (j + 1) * step,
-                    "origin_period": grid["origin_periods"][i],
-                    "previous": c0,
-                    "following": c1,
-                    "ratio": c1 / c0 if c0 > 0 else np.nan,
-                    "included": True,
-                    "reason": "included",
-                }
-            )
-        for row in rows:
-            if candidate.zero_cells == "missing":
-                # chainladder's rule: a zero cumulative is a missing cell, so the
-                # link into it and the link out of it both go
-                if row["previous"] == 0 or row["following"] == 0:
-                    row.update(included=False, reason="zero_cell")
-            elif not np.isfinite(row["ratio"]):
-                row.update(included=False, reason="undefined_ratio")
-        # The history window counts the most recent pairs. Under "observed" an
-        # undefined ratio gives up its place, so an older pair moves into the
-        # window. Under "missing" a zero cell is a missing cell and keeps its
-        # place, as chainladder-python's n_periods counts diagonals whether or not
-        # their link ratio is missing, so the window simply holds fewer ratios.
-        counted = rows if candidate.zero_cells == "missing" else [r for r in rows if r["included"]]
-        if candidate.history_periods is not None:
-            for row in counted[: max(0, len(counted) - candidate.history_periods)]:
-                if row["included"]:
-                    row.update(included=False, reason="history_window")
-        for row in rows:
-            if row["included"] and (row["origin_period"], row["from_dev_lag"]) in explicit:
-                row.update(included=False, reason="explicit_exclusion")
-        kept = [r for r in rows if r["included"]]
-        # Stable ordering breaks low ties by oldest, high ties by newest. Both
-        # refer to distinct observations, even when every ratio is tied.
-        ordered = sorted(kept, key=lambda r: (r["ratio"], r["origin_period"]))
-        drop = int(candidate.drop_low) + int(candidate.drop_high)
-        skipped = False
-        # An age with no usable pair at all is not an exhausted trim. It is an
-        # age the data never supported, which is what ``unsupported_factor``
-        # below decides. Trimming first answered that question with a refusal
-        # about exclusions, and only when a trim happened to be requested: an
-        # age beyond the observed development answered under 'unity' on its own
-        # and refused as soon as drop_high was added, although there was nothing
-        # for drop_high to remove either way.
-        if drop and ordered:
-            if len(ordered) <= drop:
-                if candidate.exhausted_exclusions == "raise":
-                    flags = [name for name in ("drop_high", "drop_low") if getattr(candidate, name)]
-                    raise Refusal(
-                        "exclusions_exhausted",
-                        f"{' and '.join(flags)} would leave no link ratio {{links}}; pass "
-                        "exhausted_exclusions='keep' to keep that age's ratios untrimmed",
-                        option="exhausted_exclusions",
-                        options=("exhausted_exclusions", *flags),
-                        links=[((j + 1) * step, (j + 2) * step)],
-                    )
-                skipped = True
-            else:
-                if candidate.drop_low:
-                    ordered.pop(0).update(included=False, reason="drop_low")
-                if candidate.drop_high:
-                    ordered.pop().update(included=False, reason="drop_high")
-        kept = [r for r in rows if r["included"]]
+        if rules.exhausted_exclusions == "raise":
+            refusal = exhausted_refusal(chosen, rules, j, step)
+            if refusal is not None:
+                raise refusal
+        pairs = np.flatnonzero(chosen.observed[:, j])
+        rows = [
+            {
+                "from_dev_lag": (j + 1) * step,
+                "origin_period": periods[i],
+                "previous": cum[i, j],
+                "following": cum[i, j + 1],
+                "ratio": chosen.ratio[i, j],
+                "included": bool(chosen.used[i, j]),
+                "reason": REASONS[chosen.reason[i, j]],
+            }
+            for i in pairs
+        ]
+        kept = int(n_used[j])
         fallback = not kept
         if kept:
-            if candidate.average == "volume":
-                denominator = sum(r["previous"] for r in kept)
-                factor = (
-                    sum(r["following"] for r in kept) / denominator if denominator > 0 else np.nan
-                )
-            else:
-                reducer = np.mean if candidate.average == "simple" else np.median
-                factor = float(reducer([r["ratio"] for r in kept]))
+            factor = estimated[j]
             if not math.isfinite(factor):
                 # Every kept ratio starts from a positive amount, so this is a sum or
                 # a ratio past the largest double. A factor of 1.0 in its place
@@ -743,13 +798,13 @@ def _factors(grid, candidate, n_dev):
                     option="cells",
                     links=[((j + 1) * step, (j + 2) * step)],
                 )
-            fallback = factor <= 0
+            fallback = bool(factor <= 0)
             if not fallback:
                 factors[j] = factor
         if fallback and candidate.unsupported_factor == "raise":
             if kept:
                 message = (
-                    f"the {len(kept)} link ratio(s) {{links}} give a factor of {float(factor)!r}, "
+                    f"the {kept} link ratio(s) {{links}} give a factor of {float(factor)!r}, "
                     "which is not a positive number"
                 )
             else:
@@ -773,9 +828,10 @@ def _factors(grid, candidate, n_dev):
             {
                 "from_dev_lag": (j + 1) * step,
                 "factor": factors[j],
-                "n_selected": len(kept),
+                "n_selected": kept,
                 "unity_fallback": fallback,
-                "extreme_trimming_skipped": skipped,
+                "extreme_trimming_skipped": bool(chosen.trimming_skipped[j]),
+                "bounds_skipped": bool(chosen.bounds_skipped[j]),
             }
         )
     return factors, selection, summary

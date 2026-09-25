@@ -30,3 +30,32 @@ usually has four in the mart.
 Read by `tests/test_mcl_tieout.py`, which refits the same companies through
 this package and compares. That test carries the `mart` marker and skips when
 the pinned publish is not cached.
+
+## `r_chainladder_delta.json`
+
+R ChainLadder 0.2.21's development factors on RAA and GenIns from
+`chainladder(Triangle, delta=...)` with delta 0, 1 and 2, and with delta 0 after
+the highest link ratio from 12 to 24 months is weighted out. Written by
+`scripts/r_chainladder_delta.R` (R 4.5.3), because CI has no R. Read by
+`tests/test_development_options.py`, which requires `average="regression"`,
+`"volume"` and `"simple"` to give them.
+
+## `conventional_selection_pin.json`
+
+A digest of every answer the conventional fit gave before `kernels/links.py`:
+14 option sets, chain ladder, Bornhuetter-Ferguson and Cape Cod, on the five
+public triangles in `refusal_triangles.json` and 36 clrd paid triangles, 1,722
+cases. Each digest covers the raw bytes of the factors, the pattern, the origin
+columns, every link-ratio row and the summary flags, or a refusal's reason and
+message. Written by `scripts/freeze_conventional_pin.py` run against commit
+01e5c2f's source; running it against the current source must write the same
+file. Read by `tests/test_development_options.py`.
+
+## `clrd_tie_cohorts.json`
+
+The clrd paid triangles (chainladder 0.9.2's `clrd.csv`, zeros kept) on which
+ibnr 0.7.2's tie rule, `trim_ties="origin"`, gives different factors from
+chainladder-python for `drop_high=1`, `drop_low=1`, both, and `drop_high=2` with
+`preserve=2`: 23, 124, 83 and 30 of the 681 triangles both answer. Found by
+running both on every triangle; `tests/test_development_options.py` requires
+the default rule to match chainladder on each, and 0.7.2's rule still not to.

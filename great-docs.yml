@@ -29,7 +29,8 @@ repo: https://github.com/EKtheSage/ibnr
 tagline: >
   Probabilistic loss reserving with mandatory evaluation - Bayesian MCMC,
   neural, and statistical methods over a long-format triangle data layer,
-  and the chain ladder, Bornhuetter-Ferguson, Cape Cod and Mack in ibnr.methods.
+  and the chain ladder, Bornhuetter-Ferguson, Benktander, Cape Cod and Mack in
+  ibnr.methods.
 
 # API Discovery Settings
 # ----------------------
@@ -98,6 +99,7 @@ reference:
       - methods.chain_ladder
       - methods.mack
       - methods.bornhuetter_ferguson
+      - methods.benktander
       - methods.cape_cod
       - name: methods.ReserveResult
         members: true

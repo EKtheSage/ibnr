@@ -7,7 +7,8 @@ triangle data layer backed by duckdb and polars (via ibis). A companion to
 
 **Coming from chainladder-python?** `from ibnr import methods`, then
 `methods.chain_ladder(cells)`, `methods.mack(cells)`,
-`methods.bornhuetter_ferguson(...)` or `methods.cape_cod(...)`: see [Run a chain
+`methods.bornhuetter_ferguson(...)`, `methods.benktander(...)` or
+`methods.cape_cod(...)`: see [Run a chain
 ladder](#run-a-chain-ladder) and [the lookup table from chainladder-python to
 ibnr](https://github.com/EKtheSage/ibnr/blob/main/docs/coming-from-chainladder.md).
 
@@ -183,7 +184,7 @@ stack the test suite actually runs. The bundled `Dockerfile` installs from
 ## Run a chain ladder
 
 `ibnr.methods` has one function per traditional method, named after it:
-`chain_ladder`, `bornhuetter_ferguson`, `cape_cod` and `mack`. Each takes one
+`chain_ladder`, `bornhuetter_ferguson`, `benktander`, `cape_cod` and `mack`. Each takes one
 triangle's cells as a table with the columns `origin_period` (the origin
 period: an accident year such as `2021` works), `dev_lag` (months from the
 start of the origin period) and `value` (cumulative loss), one row per observed
@@ -220,13 +221,16 @@ year 2021, whose first cell is still at `dev_lag` 12) work too, and so do labels
 triangles; [the chainladder page](https://github.com/EKtheSage/ibnr/blob/main/docs/coming-from-chainladder.md#origin-labels)
 lists every accepted form.
 
-`bornhuetter_ferguson` and `cape_cod` also take `premium=`, a table with columns
-`origin_period` and `premium` (or a dict keyed by origin period, such as
-`{2021: 2500.0, 2022: 2600.0, 2023: 2700.0}`). The development
-options (`average`, `history_periods`, `drop_high`, `drop_low`, `exclude`) are
-keyword arguments of all three point methods. So is `zero_cells`, which all
-four methods take: by default they read a cumulative of zero as a missing cell,
-as chainladder-python does, and `zero_cells="observed"` keeps it as data.
+`bornhuetter_ferguson`, `benktander` and `cape_cod` also take `premium=`, a
+table with columns `origin_period` and `premium` (or a dict keyed by origin
+period, such as `{2021: 2500.0, 2022: 2600.0, 2023: 2700.0}`); `benktander`
+takes `n_iters`, and `cape_cod` takes `decay`, `trend` and `n_iters`. The
+development options (`average`, `history_periods`, `drop_high`, `drop_low`,
+`preserve`, `drop_above`, `drop_below`, `exclude`, `exclude_valuations`,
+`trim_ties`) are keyword arguments of all four point methods. So is
+`zero_cells`, which all five methods take: by default they read a cumulative
+of zero as a missing cell, as chainladder-python does, and
+`zero_cells="observed"` keeps it as data.
 Coming from chainladder-python,
 [this lookup table](https://github.com/EKtheSage/ibnr/blob/main/docs/coming-from-chainladder.md) maps its classes and
 attributes onto these functions. Import it with `from ibnr import methods`: a
