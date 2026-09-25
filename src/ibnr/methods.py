@@ -30,16 +30,20 @@ day of the period. ``dev_lag`` still counts from the period's first day, so
 the accident year written 2020-12-31 has its first cell at ``dev_lag`` 12.
 
 Any table Arrow can read is accepted: a polars DataFrame, a pyarrow Table or
-RecordBatch, or anything else that offers the Arrow stream interface. Other
-columns are ignored. Each function returns a :class:`ReserveResult`, whose
-tables are pyarrow Tables, so a service needs no DataFrame library at all; for
-analysis, ``result.to_polars()`` turns any of them into a polars DataFrame
-(``pip install "ibnr[polars]"``).
+RecordBatch, anything else that offers the Arrow stream interface, or a dict
+of columns (Python lists or numpy arrays, as a service reading JSON has them).
+Other columns are ignored. Each function returns a :class:`ReserveResult`,
+whose tables are pyarrow Tables, so a service needs no DataFrame library at
+all; for analysis, ``result.to_polars()`` turns any of them into a polars
+DataFrame (``pip install "ibnr[polars]"``).
 
 Importing this module loads numpy and pyarrow, and not ibis, pandas or scipy,
 and none of the four methods loads them when it runs, so a service that starts
 a new process for a request does not pay for them (the CHANGELOG has the
-times).
+times). That holds for every input above except two, which make pyarrow load
+pandas: a pandas DataFrame, and a dict with a list that is not all strings,
+all bools, all dates or all numbers (one holding a null or a datetime, for
+example), which is left to ``pa.table``.
 
 This module is the front door. The functions here are thin wrappers over
 ``ibnr.kernels``, which is where the research tools live: refitting a fixed set
@@ -884,6 +888,20 @@ def _table(data, name: str) -> pa.Table:
         return data
     if isinstance(data, pa.RecordBatch):
         return pa.Table.from_batches([data])
+    if isinstance(data, Mapping) and data and all(isinstance(key, str) for key in data):
+        # pa.table on a dict of lists calls pa.array, which imports pandas, and a
+        # service reading JSON has exactly that. So the columns pa.table would build
+        # from lists and numpy arrays are built here without it; any other dict
+        # goes to pa.table below.
+        columns = [_arrow.column(values) for values in data.values()]
+        if all(column is not None for column in columns):
+            try:
+                return pa.Table.from_arrays(columns, names=list(data))
+            except (TypeError, ValueError, pa.ArrowException) as exc:
+                raise ValueError(
+                    f"{name} must be a table Arrow can read, such as a polars DataFrame or a "
+                    f"pyarrow Table, not {type(data).__name__}: {exc}"
+                ) from exc
     pandas = sys.modules.get("pandas")
     is_pandas = pandas is not None and isinstance(data, pandas.DataFrame)
     if hasattr(data, "__arrow_c_stream__") and not is_pandas:

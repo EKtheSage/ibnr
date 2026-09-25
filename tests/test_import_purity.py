@@ -32,9 +32,12 @@ absent.
 
 from __future__ import annotations
 
+import datetime as dt
 import subprocess
 import sys
 
+import numpy as np
+import pyarrow as pa
 import pytest
 
 #: Every optional dependency, direct or transitive, that must stay out of the
@@ -294,6 +297,9 @@ def test_every_column_type_the_methods_read_loads_no_pandas(tmp_path):
             pa.array(lags, pa.uint8()),
             pa.array(values),
         ),
+        "float16 ages": (pa.array(years), pa.array(np.array(lags, np.float16)), pa.array(values)),
+        "float32 ages": (pa.array(years), pa.array(lags, pa.float32()), pa.array(values)),
+        "uint64 ages": (pa.array(years), pa.array(lags, pa.uint64()), pa.array(values)),
         "dates that end the year": (
             pa.array([dt.date(year, 12, 31) for year in years], pa.date32()),
             pa.array(lags),
@@ -329,6 +335,30 @@ def test_every_column_type_the_methods_read_loads_no_pandas(tmp_path):
     assert proc.returncode == 0, f"{list(forms)}\n{proc.stderr}"
 
 
+def _number_types():
+    from ibnr import _arrow
+
+    return list(_arrow._NUMPY_TYPES)
+
+
+@pytest.mark.parametrize("kind", _number_types(), ids=str)
+def test_to_numpy_reads_every_number_type_as_pyarrow_does(kind):
+    """``_arrow.to_numpy`` gives the array ``to_numpy`` gives, type and values,
+    for every Arrow number type it reads, whole, sliced (a nonzero offset) and
+    in chunks. Mutation: map ``pa.float16()`` to ``np.float32``; the float16
+    case fails."""
+    from ibnr import _arrow
+
+    values = np.array([0, 1, 7, 12, 24, 100], dtype=_arrow._NUMPY_TYPES[kind])
+    whole = pa.array(values, kind)
+    for array in (whole, whole.slice(2, 3), pa.chunked_array([whole.slice(0, 2), whole[2:]])):
+        expected = array.to_numpy()
+        got = _arrow.to_numpy(array)
+        assert got.dtype == expected.dtype
+        assert got.tolist() == expected.tolist()
+    assert _arrow.to_numpy(whole.slice(0, 0)).dtype == values.dtype
+
+
 def test_a_polars_frame_goes_in_without_loading_pandas():
     """``pa.table()`` asks whether its argument is a pandas DataFrame, which
     imports pandas; ``methods`` reads a polars frame through the Arrow stream
@@ -356,6 +386,108 @@ def test_a_polars_frame_goes_in_without_loading_pandas():
     _run(code)
 
 
+def test_a_dict_of_lists_goes_in_without_loading_pandas():
+    """A service reading JSON has the columns as Python lists; ``pa.table`` on
+    such a dict calls ``pa.array``, which imports pandas (about 1 s on the dev
+    box). ``methods`` builds those columns itself. Lists of strings, ints,
+    floats and dates, and numpy arrays, each give raa's totals with no pandas.
+    Mutation: send a dict straight to ``pa.table`` in ``methods._table``; this
+    fails naming pandas."""
+    code = (
+        "import datetime as dt, sys\n"
+        "import numpy as np\n"
+        "from ibnr import methods\n"
+        f"RAA = {RAA!r}\n"
+        "rows = [(1981 + i, 12 * (j + 1), v) for i, r in enumerate(RAA) "
+        "for j, v in enumerate(r)]\n"
+        "years = [o for o, _, _ in rows]\n"
+        "lags = [lag for _, lag, _ in rows]\n"
+        "values = [v for _, _, v in rows]\n"
+        "forms = {\n"
+        "    'text labels, int ages, float amounts': {'origin_period': [str(y) for y in years],"
+        " 'dev_lag': lags, 'value': [float(v) for v in values]},\n"
+        "    'int years, float ages, int amounts': {'origin_period': years,"
+        " 'dev_lag': [float(g) for g in lags], 'value': values},\n"
+        "    'dates, mixed int and float amounts': {'origin_period':"
+        " [dt.date(y, 12, 31) for y in years], 'dev_lag': lags,"
+        " 'value': [float(v) if k % 2 else v for k, v in enumerate(values)]},\n"
+        "    'numpy arrays': {'origin_period': np.array([str(y) for y in years]),"
+        " 'dev_lag': np.array(lags, dtype=np.int32), 'value': np.array(values, dtype=float)},\n"
+        "}\n"
+        "premium = {'origin_period': list(range(1981, 1991)),"
+        " 'premium': [20000.0 + 2000.0 * i for i in range(10)]}\n"
+        "for name, cells in forms.items():\n"
+        "    total = methods.chain_ladder(cells).totals['ultimate'][0].as_py()\n"
+        "    se = methods.mack(cells).totals['mack_se'][0].as_py()\n"
+        f"    assert abs(total - {RAA_TOTAL_ULTIMATE!r}) < 1e-6, (name, total)\n"
+        f"    assert abs(se - {RAA_TOTAL_MACK_SE!r}) < 1e-6, (name, se)\n"
+        f"    loaded = [m for m in {NOT_FOR_METHODS!r} if m in sys.modules]\n"
+        "    assert not loaded, (name, loaded)\n"
+    )
+    _run(code)
+
+
+#: Dicts ``methods`` reads, each compared with what ``pa.table`` makes of it.
+#: The last five are ones it leaves to ``pa.table``: a null, a datetime, an
+#: integer too large for int64, and two lists of mixed types.
+_DICTS = [
+    {"a": ["1988", "1989"], "b": [12, 24], "c": [1.5, 2.0], "d": [True, False]},
+    {"a": [1988, 1989], "b": [12.0, 24.0], "c": [1, 2.5], "d": (3, 4)},
+    {"a": [dt.date(1988, 12, 31), dt.date(1989, 1, 1)], "b": ["é", "x"]},
+    {
+        "a": np.array([1, 2], dtype=np.uint16),
+        "b": np.array(["x", "yz"]),
+        "c": np.array([0.5, 1.5], dtype=np.float32),
+        "d": np.array([True, False]),
+        "e": np.array([2**63 + 1, 5], dtype=np.uint64),
+        "f": np.array(["1988-01-01", "1989-12-31"], dtype="datetime64[D]"),
+    },
+    {"a": pa.array([1, 2]), "b": pa.chunked_array([[1.0], [2.0]]), "c": [np.int64(1), 2]},
+    {"a": [None, 1]},
+    {"a": [dt.datetime(2020, 1, 1), dt.datetime(2020, 1, 2)]},
+    {"a": [2**70, 1]},
+    {"a": [1, "x"]},
+    {"a": [True, 1]},
+]
+
+
+@pytest.mark.parametrize("data", _DICTS)
+def test_a_dict_is_read_as_pa_table_reads_it(data):
+    """The columns built without pandas are the ones ``pa.table`` builds, type
+    and value, and a dict that cannot be built that way still reaches
+    ``pa.table``, which answers or refuses as it always has."""
+    from ibnr import methods
+
+    try:
+        expected = pa.table(data)
+    except (ValueError, OverflowError):
+        with pytest.raises((ValueError, OverflowError)):
+            methods._table(data, "cells")
+        return
+    got = methods._table(data, "cells")
+    assert got.schema == expected.schema
+    assert got.equals(expected)
+
+
+def test_a_dict_with_columns_of_different_lengths_is_refused():
+    from ibnr import methods
+
+    with pytest.raises(ValueError, match="must be a table Arrow can read"):
+        methods._table({"a": [1, 2], "b": [1.0]}, "cells")
+
+
+def test_a_nan_in_a_dict_stays_nan_as_in_pa_table():
+    """``pa.table`` keeps a NaN from a list or a numpy array as NaN, not null,
+    so ``methods`` refuses it by name as a NaN."""
+    from ibnr import methods
+
+    for column in ([1.0, float("nan")], np.array([1.0, np.nan])):
+        got = methods._table({"a": column}, "cells").column("a")
+        assert got.type == pa.float64()
+        assert got.null_count == 0
+        assert np.isnan(got[1].as_py())
+
+
 def test_a_bare_import_of_ibnr_loads_no_triangle_layer_and_keeps_its_attributes():
     """``import ibnr`` no longer loads ibis; ``ibnr.Triangle`` and
     ``ibnr.triangle`` still work, and ``ibnr.gallery`` is still an
@@ -366,6 +498,10 @@ def test_a_bare_import_of_ibnr_loads_no_triangle_layer_and_keeps_its_attributes(
         "import ibnr\n"
         f"loaded = [m for m in {NOT_FOR_METHODS!r} if m in sys.modules]\n"
         "assert not loaded, 'import ibnr loaded ' + repr(loaded)\n"
+        "# dir() before any name is read: a read caches the name in globals()\n"
+        "missing = set(ibnr.__all__) - set(dir(ibnr))\n"
+        "assert not missing, 'dir(ibnr) leaves out ' + repr(missing)\n"
+        "assert 'ibis' not in sys.modules, 'dir(ibnr) imported ibis'\n"
         "try:\n"
         "    ibnr.gallery\n"
         "except AttributeError:\n"
@@ -382,7 +518,6 @@ def test_a_bare_import_of_ibnr_loads_no_triangle_layer_and_keeps_its_attributes(
         "exec('from ibnr import *', namespace)\n"
         "assert {'Triangle', 'TriangleMeta', '__version__'} <= set(namespace)\n"
         "assert sorted(ibnr.__all__) == ['Triangle', 'TriangleMeta', '__version__']\n"
-        "assert set(ibnr.__all__) <= set(dir(ibnr))\n"
     )
     _run(code)
 
@@ -399,19 +534,26 @@ def test_every_kernels_name_is_the_object_its_module_defines():
     for name in kernels.__all__:
         module = importlib.import_module(f"ibnr.kernels.{kernels._LAZY[name]}")
         assert getattr(kernels, name) is getattr(module, name), name
-    assert set(kernels.__all__) <= set(dir(kernels))
     with pytest.raises(AttributeError, match="no attribute 'no_such_name'"):
         kernels.no_such_name  # noqa: B018
 
 
 def test_a_kernels_submodule_is_still_an_attribute_and_star_import_works():
     """Importing every name eagerly made each kernels submodule an attribute, so
-    ``kernels.codec`` answered; it still does, in a fresh process."""
+    ``kernels.codec`` answered; it still does, in a fresh process. ``dir()``
+    lists every ``__all__`` name before any is read, without importing it.
+    Mutation: have ``kernels.__dir__`` return ``sorted(globals())``; this fails
+    naming the names it leaves out."""
     code = (
         "import sys\n"
         "from ibnr import kernels\n"
         f"loaded = [m for m in {NOT_FOR_METHODS!r} if m in sys.modules]\n"
         "assert not loaded, 'from ibnr import kernels loaded ' + repr(loaded)\n"
+        "# dir() before any name is read: a read caches the name in globals()\n"
+        "missing = set(kernels.__all__) - set(dir(kernels))\n"
+        "assert not missing, 'dir(kernels) leaves out ' + repr(sorted(missing))\n"
+        f"loaded = [m for m in {NOT_FOR_METHODS!r} if m in sys.modules]\n"
+        "assert not loaded, 'dir(kernels) loaded ' + repr(loaded)\n"
         "assert 'ibnr.kernels.codec' not in sys.modules\n"
         "assert kernels.codec.to_arrow is kernels.to_arrow\n"
         "namespace = {}\n"

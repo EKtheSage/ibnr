@@ -919,6 +919,44 @@ def test_an_exclusion_the_triangle_does_not_have_is_refused(origin, shown):
         methods.chain_ladder(arrow_cells(), exclude=[(origin, 12)])
 
 
+def test_every_link_ratio_of_raa_can_be_excluded():
+    """Each of raa's 45 link ratios, the first and the last included, is accepted
+    as an exclusion and marked as excluded. Mutation: build the set of known
+    links from all but the first row of the selection; the first is refused."""
+    plain = methods.chain_ladder(arrow_cells())
+    links = plain.link_ratios.select(["origin_period", "from_dev_lag"]).to_pylist()
+    assert len(links) == 45
+    assert {"origin_period": dt.date(1981, 1, 1), "from_dev_lag": 12} in links
+    assert {"origin_period": dt.date(1981, 1, 1), "from_dev_lag": 108} in links
+    for link in links:
+        pair = (link["origin_period"], link["from_dev_lag"])
+        result = methods.chain_ladder(arrow_cells(), exclude=[pair], unsupported_factor="unity")
+        rows = [
+            row
+            for row in result.link_ratios.to_pylist()
+            if (row["origin_period"], row["from_dev_lag"]) == pair
+        ]
+        assert [(row["included"], row["reason"]) for row in rows] == [
+            (False, "explicit_exclusion")
+        ], pair
+
+
+def test_a_forecast_that_overflows_is_refused():
+    """Cumulatives near the largest double give a link ratio that is finite and
+    an ultimate that is not (1.2e308 x 1.5 overflows). Mutation: delete the
+    finiteness check at the end of ``conventional._estimate``; the chain ladder
+    then returns an infinite ultimate."""
+    cells = pa.table(
+        {
+            "origin_period": pa.array([2000, 2000, 2001], pa.int64()),
+            "dev_lag": pa.array([12, 24, 12], pa.int64()),
+            "value": pa.array([1e308, 1.5e308, 1.2e308], pa.float64()),
+        }
+    )
+    with pytest.raises(ValueError, match="conventional forecast is not finite"):
+        methods.chain_ladder(cells)
+
+
 @pytest.mark.parametrize(
     ("exclude", "match"),
     [
