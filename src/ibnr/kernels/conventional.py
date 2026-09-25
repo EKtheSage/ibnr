@@ -20,7 +20,7 @@ import pandas as pd
 
 # as_date lives in contract so the grid check can read origin periods with it;
 # it stays importable from here, where replay and selection read it.
-from ibnr.kernels.contract import as_date, check_grid, cohort_grid
+from ibnr.kernels.contract import ZERO_CELLS, as_date, check_grid, cohort_grid
 from ibnr.triangle import Triangle
 
 #: One row per observed link ratio, whether or not it was used.
@@ -48,11 +48,23 @@ SUMMARY_COLUMNS = [
 class ConventionalCandidate:
     """Settings held fixed when a candidate is refitted at successive dates.
 
-    ``history_periods`` selects the most recent usable paired origins at EACH age.
+    ``history_periods`` selects the most recent usable paired origins at EACH age
+    (under ``zero_cells="missing"``, the most recent paired origins, a pair left
+    out for a zero cell keeping its place, as chainladder-python counts them).
     ``exclude`` identifies link ratios by (origin, FROM development lag in
     months). ``horizon`` is the final development lag in months, with no tail
     beyond it; omitted, it is the deepest observed age of this particular fit.
     Replays require an explicit horizon to keep the target fixed through time.
+
+    ``zero_cells`` says what a cumulative of exactly zero is. ``"observed"``
+    (the default) keeps it as data: the link ratio INTO a zero is 0 and is
+    used, and the link ratio OUT of a zero is undefined and left out with
+    reason ``"undefined_ratio"``. ``"missing"`` follows chainladder-python,
+    which stores a zero cell as missing: a link ratio is used only when neither
+    of its two cells is zero, and both the link into a zero and the link out of
+    it are left out with reason ``"zero_cell"``. A zero on an origin's latest
+    diagonal is still its latest amount under either rule, so its chain-ladder
+    ultimate is 0 (chainladder-python leaves that ultimate missing instead).
     """
 
     method: str = "cl"
@@ -66,6 +78,7 @@ class ConventionalCandidate:
     horizon: int | None = None
     unsupported_factor: str = "raise"
     exhausted_exclusions: str = "raise"
+    zero_cells: str = "observed"
 
     def __post_init__(self) -> None:
         if self.method not in ("cl", "bf", "gcc"):
@@ -93,6 +106,12 @@ class ConventionalCandidate:
             raise ValueError("unsupported_factor must be 'raise' or 'unity'")
         if self.exhausted_exclusions not in ("raise", "keep"):
             raise ValueError("exhausted_exclusions must be 'raise' or 'keep'")
+        if self.zero_cells not in ZERO_CELLS:
+            raise ValueError(
+                f"zero_cells must be 'observed' or 'missing', got {self.zero_cells!r}. "
+                "'observed' keeps a zero cumulative as data; 'missing' leaves out every link "
+                "ratio with a zero at either end, as chainladder-python does"
+            )
         if self.method == "bf":
             if self.expected_loss_ratio is None or not np.isfinite(self.expected_loss_ratio):
                 raise ValueError("BF needs a finite expected_loss_ratio")
@@ -397,12 +416,23 @@ def _factors(grid, candidate, n_dev):
                 }
             )
         for row in rows:
-            if not np.isfinite(row["ratio"]):
+            if candidate.zero_cells == "missing":
+                # chainladder's rule: a zero cumulative is a missing cell, so the
+                # link into it and the link out of it both go
+                if row["previous"] == 0 or row["following"] == 0:
+                    row.update(included=False, reason="zero_cell")
+            elif not np.isfinite(row["ratio"]):
                 row.update(included=False, reason="undefined_ratio")
-        usable = [r for r in rows if r["included"]]
+        # The history window counts the most recent pairs. Under "observed" an
+        # undefined ratio gives up its place, so an older pair moves into the
+        # window. Under "missing" a zero cell is a missing cell and keeps its
+        # place, as chainladder-python's n_periods counts diagonals whether or not
+        # their link ratio is missing, so the window simply holds fewer ratios.
+        counted = rows if candidate.zero_cells == "missing" else [r for r in rows if r["included"]]
         if candidate.history_periods is not None:
-            for row in usable[: max(0, len(usable) - candidate.history_periods)]:
-                row.update(included=False, reason="history_window")
+            for row in counted[: max(0, len(counted) - candidate.history_periods)]:
+                if row["included"]:
+                    row.update(included=False, reason="history_window")
         for row in rows:
             if row["included"] and (row["origin_period"], row["from_dev_lag"]) in explicit:
                 row.update(included=False, reason="explicit_exclusion")
@@ -446,7 +476,15 @@ def _factors(grid, candidate, n_dev):
             if not fallback:
                 factors[j] = factor
         if fallback and candidate.unsupported_factor == "raise":
-            raise ValueError(f"no estimable positive factor at dev lag {(j + 1) * step}")
+            message = f"no estimable positive factor at dev lag {(j + 1) * step}"
+            if not kept and any(r["reason"] == "zero_cell" for r in rows):
+                message += (
+                    ": no link ratio is left there once zero_cells='missing' leaves out those "
+                    "with a zero cell. "
+                    "unsupported_factor='unity' uses a factor of 1.0 at that age, as "
+                    "chainladder-python does; zero_cells='observed' keeps the zeros as data"
+                )
+            raise ValueError(message)
         selection.extend(rows)
         summary.append(
             {

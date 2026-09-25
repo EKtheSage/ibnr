@@ -559,6 +559,11 @@ def _encode_mack_fit(obj: MackFit, compression: str | None) -> bytes:
         # rebuilding it at a hardcoded float64 would make it the one that comes
         # back as a different array from the one that was sent.
         "cum_dtype": str(obj.cum.dtype),
+        # What a zero cumulative was taken to be. The arrays already carry the
+        # factors it produced, but msep_runoff, zero_links and the one-year
+        # result's refusal all read the setting itself, so a fit decoded without
+        # it would answer differently from the fit that was sent.
+        "zero_cells": obj.zero_cells,
     }
     arrays = {name: getattr(obj, name) for name in _MACK_ARRAYS}
     return _pack("MackFit", body, header, arrays=arrays, compression=compression)
@@ -576,6 +581,8 @@ def _decode_mack_fit(body: pa.Table, header: dict, frames, arrays, nested) -> Ma
         sigma_rule=header["sigma_rule"],
         units=header["units"],
         loss_field=header["loss_field"],
+        # a payload written before the setting existed was always "observed"
+        zero_cells=header.get("zero_cells", "observed"),
         **{name: arrays[name] for name in _MACK_ARRAYS},
     )
 

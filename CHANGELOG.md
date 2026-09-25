@@ -18,6 +18,96 @@ corrected decision 8 - and, from the release after 0.7.1,
 
 ## Unreleased
 
+**`zero_cells`: a cumulative of zero can be read as missing, as chainladder-python
+reads it.** chainladder-python stores every zero cell as missing, so a link ratio
+is used only when neither of its two cells is zero. ibnr kept zeros as data, and
+not even the same way in its two kernels: the conventional kernel left out the
+link ratio out of a zero (undefined) but kept the one into it (a ratio of 0),
+while Mack's factor kept both in its volume sums, as R's `MackChainLadder` does.
+
+- New option `zero_cells`, `"observed"` or `"missing"`, on
+  `kernels.ConventionalCandidate` (so on `fit_conventional`,
+  `fit_conventional_grid`, `conventional_grid(zero_cells=...)`,
+  `replay_conventional` and `select_conventional`) and on `kernels.fit_mack`,
+  `fit_mack_grid` and `fit_mack_many`. **The kernels default to `"observed"`
+  and their answers do not change**: compared byte for byte against the code
+  before the option, on raa, genins and eight clrd paid triangles (factors,
+  sigmas, ultimates, run-off and one-year standard errors, simulations, replay
+  and selection, and every refusal message), nothing moved. Under
+  `"missing"` a link ratio with a zero at either end is left out, of the
+  factor, its volume, `n_obs` and Mack's sigma alike; the conventional kernel
+  reports it in `factor_selection` with the new reason `"zero_cell"`
+  (`"undefined_ratio"` stays the `"observed"` reason). `MackFit` records the
+  setting as `zero_cells` and counts the link ratios it left out as
+  `zero_links`, and the codec carries the setting.
+- **`ibnr.methods` defaults to `"missing"`**: `chain_ladder`,
+  `bornhuetter_ferguson`, `cape_cod` and `mack` take `zero_cells` and follow
+  chainladder-python unless told `zero_cells="observed"`. On a triangle with no
+  zero cumulative the two settings give the same answer, so raa, genins and
+  every earlier tie-out are unchanged.
+- A zero on a still-developing origin's latest diagonal, under `"missing"`, is
+  kept as that origin's latest amount: its chain-ladder ultimate is 0 and its
+  Mack standard error is 0, the limit of Mack's formula as the amount goes to
+  zero, set directly rather than divided through. chainladder-python leaves
+  that origin's ultimate and standard error missing and gives the same total:
+  on raa with 1990's 12-month cell set to 0, the total Mack standard error is
+  10,008.21 in both, and every other origin's ultimate and standard error
+  agree. Under `"observed"` the standard errors of such a triangle are still
+  refused, as before.
+- Tied out to chainladder-python 0.9.2 under `"missing"`, from a frame so that
+  chainladder itself turns the zeros into missing cells, on raa with a zero at
+  an origin's first age, an interior write-down to zero, and a zero on the
+  latest diagonal of the newest and of an older origin: chain-ladder ultimates
+  and factors, Bornhuetter-Ferguson, Cape Cod (`decay=1`, `trend=0`) and Mack's
+  per-origin and total standard errors with the parameter and process parts,
+  sigma and std_err (log-linear sigma), all to a relative 1e-9. On the clrd
+  paid triangles built from chainladder's `clrd.csv` (which still has its
+  zeros), 731 are answered by the conventional kernel with a factor of 1.0
+  where no link ratio is left, as chainladder does; under `"observed"` 720
+  agree with chainladder and 11 do not, and under `"missing"` all 731 agree.
+  Of those 11, Mack under `"missing"` gives chainladder's total standard error
+  on 7, and on the other 4, where chainladder's is missing, refuses by name a
+  development step with no link ratio left.
+- Two things `"missing"` has to do the way chainladder-python does, or it
+  would not match it with zeros present. The history window
+  (`history_periods`) counts the most recent origins, so a link ratio left out
+  for a zero keeps its place and the window holds fewer ratios; it does not
+  pull an older origin in (under `"observed"` an undefined ratio still gives up
+  its place, as before). And a development step before the last can be left
+  with a single link ratio, where sigma has nothing to be estimated from: the
+  log-linear rule then fills it from one regression over every step with a
+  positive estimate, before and after it, and Mack's rule from the two steps
+  just before it, refused by name when those have no estimate of their own.
+  Both are tied out to chainladder-python (a single link ratio at the first
+  step and at a middle step; windows of 2 to 5 with zeros inside and at the
+  edge).
+- Known differences from chainladder-python that remain under `"missing"`: an
+  origin whose latest amount is zero gets ultimate and standard error 0 where
+  chainladder leaves them missing; chainladder also stores a sigma of exactly 0
+  (every link ratio at an age equal) as missing and fills it, which ibnr does
+  not, so Mack's standard errors can differ there; and ibnr refuses a Mack step
+  with no link ratio left even when only origins at a latest amount of zero
+  cross it, where chainladder leaves that factor missing and still answers. On
+  the clrd paid triangles that contain a zero and that both libraries answer
+  (85), Mack's total standard error agrees on 79; each of the other 6 has an
+  estimated sigma of exactly 0.
+- The codec carries `zero_cells` in the `MackFit` header without a version
+  change, so a payload written before it decodes as `"observed"`, which is what
+  it was. The other direction is not guarded: a reader from 0.7.1 or earlier
+  drops the setting and would give a one-year result for a `"missing"` fit that
+  this version refuses.
+- `cdr_methods()` lists the `zero_cells` precondition in every row's
+  `requires`.
+- Refused by name: an unknown `zero_cells` value (by `fit_mack_many` before
+  any cohort, so `on_error="skip"` cannot record it against every cohort), a
+  Mack development step where `"missing"` leaves no link ratio, and the
+  one-year claims development result (`one_year_cdr`,
+  `simulate_one_year_cdr`, `rereserve`, and the `mack`, `odp_bootstrap` and
+  `GalleryDiagonal` generators' checks) on a `"missing"` fit that left out a
+  link ratio or kept a zero latest amount, because the Merz-Wuthrich formulas
+  have not been checked under that rule. A `"missing"` fit with no zero in it
+  is the same fit as an `"observed"` one and is accepted.
+
 **`ibnr.methods`, the front door for the traditional methods.** One function per
 method, named after it: `methods.chain_ladder`, `methods.bornhuetter_ferguson`,
 `methods.cape_cod` (Gluck's generalized Cape Cod; `decay=1` is the classic one)
