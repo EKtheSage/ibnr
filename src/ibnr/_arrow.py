@@ -173,15 +173,35 @@ def _kind(value) -> str | None:
 
 def with_last_null(values, kind: pa.DataType) -> pa.Array:
     """The values followed by one null, as a float64, int64 or bool array."""
+    return with_nulls(values, kind, 1)
+
+
+def with_nulls(values, kind: pa.DataType, count: int) -> pa.Array:
+    """The values followed by ``count`` nulls, as a float64, int64 or bool array."""
     values = np.asarray(values)
-    valid = np.r_[np.ones(len(values), dtype=bool), False]
+    valid = np.r_[np.ones(len(values), dtype=bool), np.zeros(count, dtype=bool)]
     if kind == pa.float64():
-        data = np.r_[values.astype(np.float64), 0.0]
+        data = np.r_[values.astype(np.float64), np.zeros(count)]
     elif kind == pa.int64():
-        data = np.r_[values.astype(np.int64), 0]
+        data = np.r_[values.astype(np.int64), np.zeros(count, dtype=np.int64)]
     elif kind == pa.bool_():
-        data = np.packbits(np.r_[values.astype(bool), False], bitorder="little")
+        data = np.packbits(np.r_[values.astype(bool), valid[len(values) :]], bitorder="little")
     else:
-        raise TypeError(f"with_last_null builds float64, int64 or bool arrays, not {kind}")
+        raise TypeError(f"with_nulls builds float64, int64 or bool arrays, not {kind}")
     bitmap, missing = _validity(valid)
     return pa.Array.from_buffers(kind, len(valid), [bitmap, pa.py_buffer(data)], null_count=missing)
+
+
+def strings_or_nulls(values: list[str | None]) -> pa.Array:
+    """A string array with a null wherever a value is None."""
+    valid = np.array([value is not None for value in values], dtype=bool)
+    encoded = [b"" if value is None else value.encode("utf-8") for value in values]
+    offsets = np.zeros(len(encoded) + 1, dtype=np.int32)
+    offsets[1:] = np.cumsum(np.array([len(value) for value in encoded], dtype=np.int32))
+    bitmap, missing = _validity(valid)
+    return pa.Array.from_buffers(
+        pa.string(),
+        len(encoded),
+        [bitmap, pa.py_buffer(offsets), pa.py_buffer(b"".join(encoded))],
+        null_count=missing,
+    )
