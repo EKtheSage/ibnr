@@ -46,6 +46,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ibnr.errors import Refusal, RefusedCell
 from ibnr.kernels.densities import odp_draw
 
 #: process laws for the simulated increment. Both match the over-dispersed
@@ -91,12 +92,18 @@ def fit_odp_bootstrap(
     obs_mask: np.ndarray,
     latest_dev: np.ndarray,
     f: np.ndarray,
+    *,
+    origins: list | None = None,
+    dev_grain_months: int | None = None,
 ) -> ODPBootstrapFit:
     """Fitted incrementals, Pearson scale and adjusted residuals of one cohort.
 
     ``f`` is supplied rather than re-estimated so the bootstrap and everything
     else built on the same cohort share one set of volume-weighted development
     factors; passing ``MackFit.f`` is what the CDR does.
+
+    ``origins`` (the origin periods) and ``dev_grain_months`` only let a
+    refusal name its cells; every refusal here is an ``ibnr.errors.Refusal``.
 
     Fitted values come from R's backwards recursion (``getExpected``): project
     each origin's ultimate off its own diagonal, divide back down the ultimate
@@ -122,8 +129,25 @@ def fit_odp_bootstrap(
     latest_dev = np.asarray(latest_dev, dtype=int)
     f = np.asarray(f, dtype=float)
     n_w, n_d = cum.shape
+    months = 1 if dev_grain_months is None else int(dev_grain_months)
+
+    def cells(where: np.ndarray, amounts: np.ndarray) -> list[RefusedCell]:
+        return [
+            RefusedCell(
+                None,
+                None if origins is None else origins[i],
+                (int(j) + 1) * months,
+                float(amounts[i, j]),
+            )
+            for i, j in zip(*np.nonzero(where), strict=True)
+        ]
+
     if n_d < 2:
-        raise ValueError("the ODP bootstrap needs at least two development steps")
+        raise Refusal(
+            "not_identified",
+            "the ODP bootstrap needs at least two development steps",
+            option="cells",
+        )
 
     inc = np.full((n_w, n_d), np.nan)
     inc[:, 0] = np.where(obs_mask[:, 0], cum[:, 0], np.nan)
@@ -131,18 +155,17 @@ def fit_odp_bootstrap(
     inc[:, 1:] = np.where(obs_mask[:, 1:], cum[:, 1:] - prev, np.nan)
     negative = obs_mask & (inc < 0)
     if negative.any():
-        where = ", ".join(
-            f"(origin index {i}, dev step {j + 1})"
-            for i, j in zip(*np.nonzero(negative), strict=True)
-        )
-        raise ValueError(
-            f"{int(negative.sum())} negative incremental cell(s) at {where}. The "
+        raise Refusal(
+            "negative_increment",
+            f"{int(negative.sum())} negative incremental cell(s) at {{cells}}. The "
             "over-dispersed Poisson family is defined on non-negative increments - its "
             "Pearson residual divides by a fitted mean that a negative increment can drive "
             "below zero, and its process draw has no negative mean - so the ODP bootstrap "
             "refuses this cohort outright rather than reflecting it through sign(). Mack's "
             "conditional moments carry no such restriction: the mack diagonal generator "
-            "(and one_year_cdr) still answer here"
+            "(and one_year_cdr) still answer here",
+            option="cells",
+            cells=cells(negative, inc),
         )
 
     # backwards recursion from each origin's own diagonal (R: getExpected)
@@ -158,20 +181,29 @@ def fit_odp_bootstrap(
     pool_mask = obs_mask & (fitted > 0)
     dead = obs_mask & ~pool_mask
     if (inc[dead] != 0).any():
-        raise ValueError(
+        raise Refusal(
+            "degenerate_fit",
             f"{int((inc[dead] != 0).sum())} cell(s) have a non-positive chain-ladder fitted "
             "mean against a non-zero observed increment, so their Pearson residual is "
-            "undefined; the cohort's chain-ladder fit is degenerate"
+            "undefined; the cohort's chain-ladder fit is degenerate: {cells}",
+            option="cells",
+            cells=cells(dead & (np.nan_to_num(inc) != 0), inc),
         )
     if not pool_mask.any():
-        raise ValueError("no cell has a positive fitted mean; nothing to resample residuals from")
+        raise Refusal(
+            "empty_residual_pool",
+            "no cell has a positive fitted mean; nothing to resample residuals from",
+            option="cells",
+        )
 
     n_cells = int(obs_mask.sum())
     n_params = n_w + n_d - 1
     if n_cells <= n_params:
-        raise ValueError(
+        raise Refusal(
+            "not_identified",
             f"triangle has {n_cells} observed cells but the ODP model has {n_params} "
-            "parameters, so the Pearson scale has no residual degrees of freedom"
+            "parameters, so the Pearson scale has no residual degrees of freedom",
+            option="cells",
         )
     unscaled = np.full((n_w, n_d), np.nan)
     unscaled[pool_mask] = (inc[pool_mask] - fitted[pool_mask]) / np.sqrt(fitted[pool_mask])
@@ -236,9 +268,19 @@ def draw_next_increments(
     (46 MB at 20,000 draws on a 17x17 triangle), then reduced away.
     """
     if process not in ODP_PROCESS_LAWS:
-        raise ValueError(f"process must be one of {ODP_PROCESS_LAWS}, got {process!r}")
+        raise Refusal(
+            "invalid_option",
+            f"process must be one of {ODP_PROCESS_LAWS}, got {{given}}",
+            option="process",
+            given=process,
+        )
     if n_draws < 1:
-        raise ValueError("n_draws must be positive")
+        raise Refusal(
+            "invalid_option",
+            "n_draws must be positive, got {given}",
+            option="n_draws",
+            given=n_draws,
+        )
     n_w, n_d = boot.n_w, boot.n_d
     mask, k = boot.obs_mask, boot.latest_dev
 

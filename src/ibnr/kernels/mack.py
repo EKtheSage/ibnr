@@ -60,7 +60,7 @@ Cross-refs: ``kernels/contract.py::cohort_grid`` (the data contract),
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -69,6 +69,7 @@ import numpy as np
 # ibnr.methods imports this module and must not load ibis, pandas or scipy. The
 # Triangle paths (fit_mack, fit_mack_many), the pandas summaries and the
 # simulation import what they need when they run.
+from ibnr.errors import Refusal, RefusedCell
 from ibnr.kernels.grid import ZERO_CELLS, check_grid
 
 if TYPE_CHECKING:
@@ -226,12 +227,24 @@ class MackFit:
         diag = self.cum[np.arange(self.n_w), self.latest_dev]
         bad = np.nonzero(open_ & ~(diag > 0) & ~self._zero_latest)[0]
         if bad.size:
-            cells = ", ".join(f"{self.origin_periods[i]}={diag[i]:g}" for i in bad)
-            raise ValueError(
-                f"non-positive cumulative on the latest diagonal of open origin(s) {cells}. "
+            step = self.dev_grain_months
+            negative = (diag[bad] < 0).any()
+            raise Refusal(
+                "negative_cumulative" if negative else "variance_not_estimable",
+                "non-positive cumulative on the latest diagonal of open origin(s) {cells}. "
                 "Mack's conditional variance is proportional to that cell, so every msep "
                 "rolling forward from it is undefined. The point estimate does not depend "
-                "on it and is still available as .ultimate / .reserve"
+                "on it and is still available as .ultimate / .reserve",
+                option="cells" if negative else "zero_cells",
+                cells=[
+                    RefusedCell(
+                        None,
+                        self.origin_periods[i],
+                        (int(self.latest_dev[i]) + 1) * step,
+                        float(diag[i]),
+                    )
+                    for i in bad
+                ],
             )
 
     # -- run-off (total) uncertainty -------------------------------------------
@@ -380,13 +393,16 @@ class MackFitPanel:
     """Batch of per-cohort :class:`MackFit`\\ s from :func:`fit_mack_many`.
 
     ``fits`` is keyed by the cohort's segment-value tuple, in ``by`` order
-    (``()`` for a segment-less triangle). ``errors`` holds cohorts that failed
-    the contract or estimator guards, only populated under ``on_error="skip"``.
+    (``()`` for a segment-less triangle). ``errors`` holds the message for each
+    cohort that was refused, and ``reasons`` its ``ibnr.errors.Refusal``
+    reason code (such as ``"not_run_off"``), both populated under
+    ``on_error="skip"`` only.
     """
 
     fits: dict[tuple, MackFit]
     errors: dict[tuple, str]
     by: tuple[str, ...]
+    reasons: dict[tuple, str] = field(default_factory=dict)
 
     def __len__(self) -> int:
         return len(self.fits)
@@ -449,9 +465,12 @@ def fit_mack_many(
     batch-fit API that closes it.
 
     ``on_error="raise"`` (default) fails fast naming the offending cohort;
-    ``"skip"`` records the reason in ``MackFitPanel.errors`` and keeps going -
-    real multi-company panels (e.g. clrd) routinely contain cohorts that are
-    not run-off staircases or have zero-volume steps.
+    ``"skip"`` records the refusal's message in ``MackFitPanel.errors``, and its
+    reason code in ``MackFitPanel.reasons``, and keeps going - real
+    multi-company panels (e.g. clrd) routinely contain cohorts that are not
+    run-off staircases or have zero-volume steps. Only an
+    ``ibnr.errors.Refusal`` is skipped: any other exception is a defect, not a
+    cohort the data rules out, and is raised whatever ``on_error`` says.
 
     ``zero_cells`` is as in :func:`fit_mack_grid` and applies to every cohort.
     """
@@ -459,24 +478,41 @@ def fit_mack_many(
     from ibnr.triangle.core import GRAIN_MONTHS
 
     if on_error not in ("raise", "skip"):
-        raise ValueError(f"on_error must be 'raise' or 'skip', got {on_error!r}")
+        raise Refusal(
+            "invalid_option",
+            "on_error must be 'raise' or 'skip', got {given}",
+            option="on_error",
+            given=on_error,
+        )
     # checked before any cohort, so that on_error="skip" cannot turn a bad
     # setting into one identical error recorded against every cohort
     _require_zero_cells(zero_cells)
+    _require_sigma_rule(sigma_rule)
     if triangle.meta.measure != "cumulative":
-        raise ValueError("fit_mack_many requires a cumulative triangle")
+        raise Refusal(
+            "invalid_option",
+            "fit_mack_many requires a cumulative triangle",
+            option="triangle",
+        )
     train = triangle.as_of(as_of) if as_of is not None else triangle
     df = train.select_fields(loss_field).execute()
     if df.empty:
-        raise ValueError(f"no rows for loss field {loss_field!r}")
+        raise Refusal(
+            "invalid_option",
+            "no rows for loss field {given}",
+            option="loss_field",
+            given=loss_field,
+        )
     by = tuple(triangle.segments)
     step = GRAIN_MONTHS[triangle.meta.dev_grain]
 
     groups = df.groupby(list(by), dropna=False, sort=True) if by else [((), df)]
     fits: dict[tuple, MackFit] = {}
     errors: dict[tuple, str] = {}
+    reasons: dict[tuple, str] = {}
     for key, group in groups:
         key = key if isinstance(key, tuple) else (key,)
+        cohort = f"cohort {dict(zip(by, key, strict=True))}: "
         try:
             grid = cohort_grid_frame(
                 group,
@@ -489,11 +525,16 @@ def fit_mack_many(
                 measure=triangle.meta.measure,
             )
             fits[key] = fit_mack_grid(grid, sigma_rule=sigma_rule, zero_cells=zero_cells)
-        except ValueError as exc:
+        except Refusal as refusal:
             if on_error == "raise":
-                raise ValueError(f"cohort {dict(zip(by, key, strict=True))}: {exc}") from exc
-            errors[key] = str(exc)
-    return MackFitPanel(fits=fits, errors=errors, by=by)
+                # the same refusal, its message led by the cohort it came from
+                raise refusal._replace(template=cohort + refusal.template) from refusal
+            errors[key] = str(refusal)
+            reasons[key] = refusal.reason
+        except ValueError as exc:
+            # not a refusal, so a defect: raised under either setting, named by cohort
+            raise ValueError(f"{cohort}{exc}") from exc
+    return MackFitPanel(fits=fits, errors=errors, by=by, reasons=reasons)
 
 
 def fit_mack_grid(
@@ -553,20 +594,24 @@ def fit_mack_grid(
 
     On a triangle with no zero cumulative the two give the identical fit.
     """
-    if sigma_rule not in SIGMA_RULES:
-        raise ValueError(f"sigma_rule must be one of {SIGMA_RULES}, got {sigma_rule!r}")
+    _require_sigma_rule(sigma_rule)
     _require_zero_cells(zero_cells)
     origins, _ = check_grid(grid)
     cum, mask = grid["cum"], grid["obs_mask"]
     n_d = grid["n_d"]
     if n_d < 2:
-        raise ValueError("a chain ladder needs at least two development steps")
+        raise Refusal(
+            "variance_not_estimable",
+            "Mack's chain ladder needs at least two development ages; this triangle has one",
+            option="cells",
+        )
     f, sigma2, s, n_obs, n_pos = _estimate_factors(
         cum,
         mask,
         sigma_rule=sigma_rule,
         zero_cells=zero_cells,
         lag_months=grid["dev_grain_months"],
+        origins=origins,
     )
     return MackFit(
         cum=cum,
@@ -588,10 +633,23 @@ def fit_mack_grid(
 
 def _require_zero_cells(zero_cells: str) -> None:
     if zero_cells not in ZERO_CELLS:
-        raise ValueError(
-            f"zero_cells must be 'observed' or 'missing', got {zero_cells!r}. 'observed' keeps "
+        raise Refusal(
+            "invalid_option",
+            "zero_cells must be 'observed' or 'missing', got {given}. 'observed' keeps "
             "a zero cumulative as data; 'missing' leaves out every link ratio with a zero at "
-            "either end, as chainladder-python does"
+            "either end, as chainladder-python does",
+            option="zero_cells",
+            given=zero_cells,
+        )
+
+
+def _require_sigma_rule(sigma_rule: str) -> None:
+    if sigma_rule not in SIGMA_RULES:
+        raise Refusal(
+            "invalid_option",
+            f"sigma_rule must be one of {SIGMA_RULES}, got {{given}}",
+            option="sigma_rule",
+            given=sigma_rule,
         )
 
 
@@ -602,6 +660,7 @@ def _estimate_factors(
     sigma_rule: str,
     zero_cells: str = "observed",
     lag_months: int | None = None,
+    origins: list | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Volume-weighted factors and Mack's variance parameters, step by step.
 
@@ -643,6 +702,10 @@ def _estimate_factors(
     cell check still runs over every observed pair first, so leaving a pair out
     can never hide a negative cumulative.
 
+    ``origins`` (the grid's origin periods) and ``lag_months`` let a refusal
+    name its cells and development ages; every refusal here is an
+    ``ibnr.errors.Refusal``.
+
     Returns (f, sigma2, s, n_obs, n_pos), each of length ``n_d - 1``.
     """
     n_d = cum.shape[1]
@@ -651,36 +714,60 @@ def _estimate_factors(
     s = np.zeros(n_d - 1)
     n_obs = np.zeros(n_d - 1, dtype=int)
     n_pos = np.zeros(n_d - 1, dtype=int)
+    months = 1 if lag_months is None else int(lag_months)
+
+    def cells(rows, j):
+        return [
+            RefusedCell(
+                None,
+                None if origins is None else origins[i],
+                (j + 1) * months,
+                float(cum[i, j]),
+            )
+            for i in rows
+        ]
+
     for j in range(n_d - 1):
+        link = [((j + 1) * months, (j + 2) * months)]
         pair = mask[:, j] & mask[:, j + 1]
         c0 = cum[pair, j]
         if c0.size == 0:
-            raise ValueError(
-                f"no origin observes both dev steps {j + 1} and {j + 2}; "
-                "the triangle cannot support a chain-ladder factor there"
+            raise Refusal(
+                "no_link_ratio",
+                "no origin has a link ratio {links}; the triangle cannot support a "
+                "chain-ladder factor there",
+                links=link,
             )
         if (c0 < 0).any():
-            bad = [f"{o}" for o in np.nonzero(pair)[0][c0 < 0]]
-            raise ValueError(
-                f"negative cumulative loss at dev step {j + 1} (origin index {', '.join(bad)}); "
-                "Mack's variance is proportional to C_{i,j}, so a negative cell drives "
-                "sigma_j^2 itself negative and every msep built on it with it"
+            raise Refusal(
+                "negative_cumulative",
+                "negative cumulative loss in {cells}; Mack's variance is proportional to the "
+                "cumulative a link ratio starts from, so a negative one drives the variance "
+                "itself negative and every standard error built on it with it",
+                option="cells",
+                cells=cells(np.nonzero(pair)[0][c0 < 0], j),
             )
         if zero_cells == "missing":
             pair = pair & (cum[:, j] != 0) & (cum[:, j + 1] != 0)
             if not pair.any():
-                raise ValueError(
-                    f"every origin observing both ends of {_step_name(j, lag_months)} has a "
-                    "zero cumulative at one end or the other, and zero_cells='missing' leaves "
-                    "those link ratios out, so no factor can be estimated there. "
-                    "zero_cells='observed' keeps the zeros as data"
+                raise Refusal(
+                    "no_link_ratio",
+                    "every origin with a link ratio {links} has a zero cumulative at one end "
+                    "or the other, and zero_cells='missing' leaves those link ratios out, so "
+                    "no factor can be estimated there. zero_cells='observed' keeps the zeros "
+                    "as data",
+                    option="zero_cells",
+                    links=link,
                 )
         c0, c1 = cum[pair, j], cum[pair, j + 1]
         s[j] = c0.sum()
         if s[j] <= 0:
-            raise ValueError(
-                f"zero volume at dev step {j + 1}: every origin observing both ends of "
-                "the step sits at zero, so the volume-weighted factor is 0/0"
+            raise Refusal(
+                "no_link_ratio",
+                "every link ratio {links} starts from zero, so the volume-weighted factor "
+                "there is 0/0",
+                option="zero_cells",
+                links=link,
             )
         n_obs[j] = c0.size
         f[j] = c1.sum() / s[j]
@@ -691,12 +778,16 @@ def _estimate_factors(
         pos = c0 > 0
         n_pos[j] = int(pos.sum())
         if n_obs[j] > 1 and n_pos[j] < 2:
-            raise ValueError(
-                f"dev step {j + 1} has {n_obs[j]} origins but only {n_pos[j]} with a "
-                "positive cumulative, so sigma_j^2 has nothing to be estimated from. "
-                "This is not the last step's missing-degrees-of-freedom case and is not "
-                "extrapolated into - at an early step that would silently declare the "
-                "most volatile part of the development noiseless"
+            raise Refusal(
+                "variance_not_estimable",
+                f"only {n_pos[j]} of the {n_obs[j]} link ratios {{links}} starts from a "
+                "positive amount, so Mack's sigma there cannot be estimated. The cells at "
+                "zero are {cells}. This is not the last age's missing-degrees-of-freedom "
+                "case and is not extrapolated into: at an early age that would silently "
+                "declare the most volatile part of the development noiseless",
+                option="zero_cells",
+                links=link,
+                cells=cells(np.nonzero(pair)[0][~pos], j),
             )
         if n_pos[j] > 1:
             p0, p1 = c0[pos], c1[pos]
@@ -704,23 +795,15 @@ def _estimate_factors(
     missing = np.nonzero(np.isnan(sigma2))[0]
     if zero_cells == "missing" and (missing < n_d - 2).any():
         # only this rule can leave a step BEFORE the last with one link ratio
-        _fill_sigma_gaps(sigma2, missing, rule=sigma_rule, lag_months=lag_months)
+        _fill_sigma_gaps(sigma2, missing, rule=sigma_rule, lag_months=months)
     else:
         for j in missing:
             sigma2[j] = _tail_sigma2(sigma2, j, rule=sigma_rule)
     return f, sigma2, s, n_obs, n_pos
 
 
-def _step_name(j: int, lag_months: int | None) -> str:
-    """Development step ``j`` (0-based) in words, with its ages in months when known."""
-    text = f"dev step {j + 1}"
-    if lag_months is not None:
-        text += f" (the link from {(j + 1) * lag_months} to {(j + 2) * lag_months} months)"
-    return text
-
-
 def _fill_sigma_gaps(
-    sigma2: np.ndarray, missing: np.ndarray, *, rule: str, lag_months: int | None
+    sigma2: np.ndarray, missing: np.ndarray, *, rule: str, lag_months: int
 ) -> None:
     """Fill sigma at steps left with one link ratio when one of them is not the last.
 
@@ -739,20 +822,28 @@ def _fill_sigma_gaps(
     - ``mack``: Mack's rule from the two steps just before, which both need an
       estimate of their own.
 
-    Anything else is refused by name rather than filled with a guess.
+    Anything else is refused by name rather than filled with a guess, as an
+    ``ibnr.errors.Refusal`` with the reason ``variance_not_estimable``.
     """
+
+    def links(steps) -> list[tuple[int, int]]:
+        return [((int(j) + 1) * lag_months, (int(j) + 2) * lag_months) for j in steps]
+
     known = sigma2.copy()
     if rule == "log_linear":
         # A sigma of exactly 0 (every link ratio at that step equal) is an
         # estimate and stays as it is, but it has no logarithm to regress on.
         estimated = np.flatnonzero(np.isfinite(known) & (known > 0))
         if estimated.size < 2:
-            steps = ", ".join(_step_name(int(j), lag_months) for j in missing)
-            raise ValueError(
-                f"{steps} kept at most one link ratio once zero_cells='missing' left out those "
-                "with a zero cell, so sigma there has to be filled in from the other steps, and "
-                "the log-linear rule needs at least two other steps with a positive sigma to do "
-                "it. zero_cells='observed' keeps the zeros as data"
+            raise Refusal(
+                "variance_not_estimable",
+                "the link ratios {links} kept at most one ratio each once zero_cells='missing' "
+                "left out those with a zero cell, so Mack's sigma there has to be filled in "
+                "from the other ages, and the log-linear rule needs at least two other ages "
+                "with a positive sigma to do it. zero_cells='observed' keeps the zeros as data",
+                option="sigma_rule",
+                options=("sigma_rule", "zero_cells"),
+                links=links(missing),
             )
         slope, intercept = np.polyfit(estimated.astype(float), np.log(np.sqrt(known[estimated])), 1)
         for j in missing:
@@ -760,12 +851,16 @@ def _fill_sigma_gaps(
         return
     for j in missing:
         if j < 2 or not (np.isfinite(known[j - 1]) and np.isfinite(known[j - 2])):
-            raise ValueError(
-                f"{_step_name(int(j), lag_months)} kept at most one link ratio once "
-                "zero_cells='missing' left out those with a zero cell, and Mack's rule fills its "
-                "sigma from the two steps just before it, which do not both have an estimate. "
-                "sigma_rule='log_linear' fills it from every estimated step instead; "
-                "zero_cells='observed' keeps the zeros as data"
+            raise Refusal(
+                "variance_not_estimable",
+                "the link ratios {links} kept at most one ratio once zero_cells='missing' left "
+                "out those with a zero cell, and Mack's rule fills that sigma from the two "
+                "ages just before it, which do not both have an estimate. "
+                "sigma_rule='log_linear' fills it from every estimated age instead; "
+                "zero_cells='observed' keeps the zeros as data",
+                option="sigma_rule",
+                options=("sigma_rule", "zero_cells"),
+                links=links([j]),
             )
         last, prev = float(known[j - 1]), float(known[j - 2])
         ratio = last**2 / prev if prev > 0 else last
@@ -916,9 +1011,9 @@ def draw_next_cells(
     ``prev_value`` is training data, so no rollout and no leakage.
     """
     if process not in PROCESS_LAWS:
-        raise ValueError(f"process must be one of {PROCESS_LAWS}, got {process!r}")
+        raise _refuse_process(process)
     if n_draws < 1:
-        raise ValueError("n_draws must be positive")
+        raise _refuse_n_draws(n_draws)
     # Var = sigma2 * prev is non-positive off a non-positive diagonal, and
     # draw_step then returns the mean exactly - an invisible point mass rather
     # than an error. Same guard, same reason as every other variance path.
@@ -948,6 +1043,24 @@ def draw_next_cells(
     )
 
 
+def _refuse_process(process) -> Refusal:
+    return Refusal(
+        "invalid_option",
+        f"process must be one of {PROCESS_LAWS}, got {{given}}",
+        option="process",
+        given=process,
+    )
+
+
+def _refuse_n_draws(n_draws) -> Refusal:
+    return Refusal(
+        "invalid_option",
+        "n_draws must be positive, got {given}",
+        option="n_draws",
+        given=n_draws,
+    )
+
+
 def draw_step(
     rng: np.random.Generator, mean: np.ndarray, var: np.ndarray, *, law: str
 ) -> np.ndarray:
@@ -964,7 +1077,7 @@ def draw_step(
     keep the simulated cumulative positive and need a positive mean.
     """
     if law not in PROCESS_LAWS:
-        raise ValueError(f"process must be one of {PROCESS_LAWS}, got {law!r}")
+        raise _refuse_process(law)
     out = np.array(mean, dtype=float, copy=True)
     live = var > 0
     if not live.any():
@@ -974,7 +1087,13 @@ def draw_step(
         out[live] = m + np.sqrt(v) * rng.standard_normal(m.shape)
         return out
     if (m <= 0).any():
-        raise ValueError(f"{law} process noise needs positive conditional means")
+        raise Refusal(
+            "negative_fitted_mean",
+            f"{law} process noise needs positive conditional means; "
+            f"{int((m <= 0).sum())} are zero or below",
+            option="process",
+            given=law,
+        )
     if law == "gamma":
         out[live] = rng.gamma(shape=m**2 / v, scale=v / m)
     else:  # lognormal, moment-matched

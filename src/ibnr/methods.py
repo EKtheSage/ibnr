@@ -45,6 +45,19 @@ pandas: a pandas DataFrame, and a dict with a list that is not all strings,
 all bools, all dates or all numbers (one holding a null or a datetime, for
 example), which is left to ``pa.table``.
 
+Every input a function in this module will not answer is refused with
+:class:`Refusal`, a ``ValueError`` from ``ibnr.errors``. Its ``reason`` is a
+code from a closed list (``ibnr.errors.REASONS``), such as
+``"negative_cumulative"`` or ``"no_link_ratio"``, and its ``kind`` says whether
+the input must change (``"input"``) or another option or method can answer
+(``"model"``). It names the argument (``option``, and ``column`` for a table),
+the cells, development ages or rows at fault, and each origin exactly as the
+caller wrote it, the same value the result's ``origin`` column would show.
+``refusal.to_dict()`` gives all of it as JSON. Any other exception from these
+functions, including a plain ``ValueError``, is a defect in ibnr and should be
+reported. A ``TypeError`` from a missing or misspelled keyword is Python's, and
+means the calling code is wrong.
+
 This module is the front door. The functions here are thin wrappers over
 ``ibnr.kernels``, which is where the research tools live: refitting a fixed set
 of options at successive dates (``kernels.replay_conventional``), choosing
@@ -56,11 +69,13 @@ path to all of these (``kernels.fit_conventional``, ``kernels.fit_mack``).
 from __future__ import annotations
 
 import datetime as dt
+import math
 import numbers
 import re
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Any
 
 import numpy as np
@@ -68,11 +83,13 @@ import pyarrow as pa
 import pyarrow.compute as pc
 
 from ibnr import _arrow
+from ibnr.errors import Refusal, RefusedCell
 from ibnr.kernels.conventional import ConventionalCandidate, _estimate_grid
 from ibnr.kernels.grid import as_date, check_grid, grid_from_columns
 from ibnr.kernels.mack import fit_mack_grid
 
 __all__ = [
+    "Refusal",
     "ReserveResult",
     "bornhuetter_ferguson",
     "cape_cod",
@@ -165,15 +182,25 @@ class ReserveResult:
         extra installs: ``pip install "ibnr[polars]"``.
         """
         if table not in TABLES:
-            raise ValueError(f"table must be one of {TABLES}, got {table!r}")
+            raise Refusal(
+                "invalid_option",
+                f"table must be one of {TABLES}, got {{given}}",
+                option="table",
+                given=table,
+                method=self.method,
+            )
         data = getattr(self, table)
         if data is None:
-            raise ValueError(
+            raise Refusal(
+                "invalid_option",
                 f"a {self.method} result has no link_ratios table. Under "
                 "zero_cells='missing' (the default) Mack's factors use every link ratio "
                 "except those with a zero cell at either end, and "
                 "methods.chain_ladder(cells).link_ratios lists the same ones with reason "
-                "'zero_cell'; under zero_cells='observed' they use every observed link ratio"
+                "'zero_cell'; under zero_cells='observed' they use every observed link ratio",
+                option="table",
+                given=table,
+                method=self.method,
             )
         try:
             import polars as pl
@@ -277,22 +304,25 @@ def chain_ladder(
       leaves that ultimate missing.
 
     Returns a :class:`ReserveResult`. There is no tail factor: each origin is
-    projected to the last observed development age.
+    projected to the last observed development age. Input it will not answer is
+    refused with :class:`Refusal`, whose reason codes the module docstring
+    describes.
     """
-    grid, origins = _grid(cells, dev_grain_months)
-    candidate = _candidate(
-        "cl",
-        origins,
-        average=average,
-        history_periods=history_periods,
-        drop_high=drop_high,
-        drop_low=drop_low,
-        exclude=exclude,
-        unsupported_factor=unsupported_factor,
-        exhausted_exclusions=exhausted_exclusions,
-        zero_cells=zero_cells,
-    )
-    return _conventional_result("chain_ladder", grid, origins, candidate, premium=None)
+    with _CallersTerms("chain_ladder") as terms:
+        grid, origins = terms.read(cells, dev_grain_months)
+        candidate = _candidate(
+            "cl",
+            origins,
+            average=average,
+            history_periods=history_periods,
+            drop_high=drop_high,
+            drop_low=drop_low,
+            exclude=exclude,
+            unsupported_factor=unsupported_factor,
+            exhausted_exclusions=exhausted_exclusions,
+            zero_cells=zero_cells,
+        )
+        return _conventional_result("chain_ladder", grid, origins, candidate, premium=None)
 
 
 def bornhuetter_ferguson(
@@ -329,21 +359,24 @@ def bornhuetter_ferguson(
     ``expected_loss_ratio`` is the a priori loss ratio, one number for every
     origin, applied to premium.
     """
-    grid, origins = _grid(cells, dev_grain_months)
-    candidate = _candidate(
-        "bf",
-        origins,
-        expected_loss_ratio=expected_loss_ratio,
-        average=average,
-        history_periods=history_periods,
-        drop_high=drop_high,
-        drop_low=drop_low,
-        exclude=exclude,
-        unsupported_factor=unsupported_factor,
-        exhausted_exclusions=exhausted_exclusions,
-        zero_cells=zero_cells,
-    )
-    return _conventional_result("bornhuetter_ferguson", grid, origins, candidate, premium=premium)
+    with _CallersTerms("bornhuetter_ferguson") as terms:
+        grid, origins = terms.read(cells, dev_grain_months)
+        candidate = _candidate(
+            "bf",
+            origins,
+            expected_loss_ratio=expected_loss_ratio,
+            average=average,
+            history_periods=history_periods,
+            drop_high=drop_high,
+            drop_low=drop_low,
+            exclude=exclude,
+            unsupported_factor=unsupported_factor,
+            exhausted_exclusions=exhausted_exclusions,
+            zero_cells=zero_cells,
+        )
+        return _conventional_result(
+            "bornhuetter_ferguson", grid, origins, candidate, premium=premium
+        )
 
 
 def cape_cod(
@@ -375,21 +408,22 @@ def cape_cod(
     ``premium`` as in :func:`bornhuetter_ferguson`. The estimated loss ratios
     are in ``origins.expected_loss_ratio``.
     """
-    grid, origins = _grid(cells, dev_grain_months)
-    candidate = _candidate(
-        "gcc",
-        origins,
-        decay=decay,
-        average=average,
-        history_periods=history_periods,
-        drop_high=drop_high,
-        drop_low=drop_low,
-        exclude=exclude,
-        unsupported_factor=unsupported_factor,
-        exhausted_exclusions=exhausted_exclusions,
-        zero_cells=zero_cells,
-    )
-    return _conventional_result("cape_cod", grid, origins, candidate, premium=premium)
+    with _CallersTerms("cape_cod") as terms:
+        grid, origins = terms.read(cells, dev_grain_months)
+        candidate = _candidate(
+            "gcc",
+            origins,
+            decay=decay,
+            average=average,
+            history_periods=history_periods,
+            drop_high=drop_high,
+            drop_low=drop_low,
+            exclude=exclude,
+            unsupported_factor=unsupported_factor,
+            exhausted_exclusions=exhausted_exclusions,
+            zero_cells=zero_cells,
+        )
+        return _conventional_result("cape_cod", grid, origins, candidate, premium=premium)
 
 
 def mack(
@@ -435,64 +469,204 @@ def mack(
     and are refused otherwise. They also need at least one development age with
     two or more link ratios, since a sigma is estimated from the spread of link
     ratios: a triangle with at most one at every age (two origins, for example)
-    is refused rather than given standard errors of 0.
+    is refused rather than given standard errors of 0. Input it will not answer
+    is refused with :class:`Refusal`, and so is a triangle whose amounts are
+    so large that a standard error is not a finite number.
     """
-    grid, labels = _grid(cells, dev_grain_months)
+    with _CallersTerms("mack") as terms:
+        grid, labels = terms.read(cells, dev_grain_months)
+        return _mack(grid, labels, sigma_rule=sigma_rule, zero_cells=zero_cells)
+
+
+def _mack(grid, labels: _Origins, *, sigma_rule: str, zero_cells: str) -> ReserveResult:
     _, as_of = check_grid(grid)
-    fit = fit_mack_grid(grid, sigma_rule=sigma_rule, zero_cells=zero_cells)
+    step = grid["dev_grain_months"]
+    if grid["n_d"] < 2:
+        raise Refusal(
+            "variance_not_estimable",
+            "mack needs at least two development ages; this triangle has one. chain_ladder "
+            "gives the latest amounts as the ultimates",
+            option="cells",
+        )
+    # Amounts near the largest double are finite but Mack's sums of squares are
+    # not. numpy says so with a warning, which is silenced here and below because
+    # _require_finite refuses the answer by name before anything is returned.
+    with np.errstate(over="ignore"):
+        fit = fit_mack_grid(grid, sigma_rule=sigma_rule, zero_cells=zero_cells)
     if (fit.n_pos < 2).all():
-        raise ValueError(
+        raise Refusal(
+            "variance_not_estimable",
             "mack needs at least one development age with two or more link ratios to estimate "
-            "Mack's sigma; this triangle has at most one at every age, so every sigma would be "
-            "set to 0 and the standard errors would read as no uncertainty at all. "
-            "chain_ladder gives the same ultimates without standard errors"
+            "Mack's sigma; this triangle has at most one at every age ({links}), so every "
+            "sigma would be set to 0 and the standard errors would read as no uncertainty at "
+            "all. chain_ladder gives the same ultimates without standard errors",
+            option="cells",
+            links=[((j + 1) * step, (j + 2) * step) for j in range(fit.n_d - 1)],
         )
     # Negative cells never get here (the cells are checked first), so the one
     # latest amount msep_runoff refuses is a zero under "observed". Its own
     # message names MackFit attributes a ReserveResult does not have.
     zero_latest = np.flatnonzero((fit.latest_dev < fit.n_d - 1) & (fit.latest == 0))
     if zero_cells == "observed" and zero_latest.size:
-        names = labels.shown_for(fit.origin_periods)
-        raise ValueError(
+        raise Refusal(
+            "variance_not_estimable",
             "mack cannot give standard errors under zero_cells='observed' while a "
-            "still-developing origin's latest cumulative is zero: "
-            f"{', '.join(names[i] for i in zero_latest)}. Mack's variance divides by that "
-            "amount. zero_cells='missing' (this function's default) gives such an origin an "
-            "ultimate and a standard error of 0, and methods.chain_ladder(cells, "
-            "zero_cells='observed') gives the ultimates without standard errors"
+            "still-developing origin's latest cumulative is zero: {origins}. Mack's variance "
+            "divides by that amount. zero_cells='missing' (this function's default) gives "
+            "such an origin an ultimate and a standard error of 0, and "
+            "methods.chain_ladder(cells, zero_cells='observed') gives the ultimates without "
+            "standard errors",
+            option="zero_cells",
+            cells=[
+                RefusedCell(None, fit.origin_periods[i], (int(fit.latest_dev[i]) + 1) * step, 0.0)
+                for i in zero_latest
+            ],
         )
-    risk = fit.msep_runoff()
-    step = fit.dev_grain_months
-    latest, ultimate = fit.latest, fit.ultimate
+    _require_nonzero_projection(fit, zero_cells)
+    # a factor so small its square is 0, or a sum of squares past the largest double:
+    # amounts too large (or small) to multiply out, refused by _require_finite
+    with np.errstate(over="ignore", under="ignore", divide="ignore", invalid="ignore"):
+        risk = fit.msep_runoff()
+        latest, ultimate = fit.latest, fit.ultimate
+        per_origin = {
+            "ultimate": ultimate,
+            "ibnr": ultimate - latest,
+            "mack_se": np.sqrt(risk["msep"]),
+            "parameter_se": np.sqrt(risk["parameter"]),
+            "process_se": np.sqrt(risk["process"]),
+        }
+        sigma = np.sqrt(fit.sigma2)
+        std_err = np.sqrt(fit.sigma2 / fit.s)
+        total = {
+            **_sums(latest, ultimate),
+            "mack_se": _arrow.float64([np.sqrt(risk["msep_total"])]),
+            "parameter_se": _arrow.float64([np.sqrt(risk["parameter_total"])]),
+            "process_se": _arrow.float64([np.sqrt(risk["process_total"])]),
+        }
+    _require_finite(fit.origin_periods, per_origin, sigma, std_err, total)
     origins = pa.table(
         {
             "origin": labels.labels_for(fit.origin_periods),
             "origin_period": _arrow.date32(fit.origin_periods),
             "latest_dev_lag": _arrow.int64((fit.latest_dev + 1) * step),
             "latest": _arrow.float64(latest),
-            "ultimate": _arrow.float64(ultimate),
-            "ibnr": _arrow.float64(ultimate - latest),
-            "mack_se": _arrow.float64(np.sqrt(risk["msep"])),
-            "parameter_se": _arrow.float64(np.sqrt(risk["parameter"])),
-            "process_se": _arrow.float64(np.sqrt(risk["process"])),
+            **{name: _arrow.float64(values) for name, values in per_origin.items()},
         }
     )
     development = pa.table(
         {
             **_pattern(fit.f, fit.n_d, step),
-            "sigma": _with_last_null(np.sqrt(fit.sigma2), pa.float64()),
-            "std_err": _with_last_null(np.sqrt(fit.sigma2 / fit.s), pa.float64()),
+            "sigma": _with_last_null(sigma, pa.float64()),
+            "std_err": _with_last_null(std_err, pa.float64()),
         }
     )
-    totals = pa.table(
-        {
-            **_sums(latest, ultimate),
-            "mack_se": _arrow.float64([np.sqrt(risk["msep_total"])]),
-            "parameter_se": _arrow.float64([np.sqrt(risk["parameter_total"])]),
-            "process_se": _arrow.float64([np.sqrt(risk["process_total"])]),
-        }
-    )
-    return ReserveResult("mack", as_of, step, origins, development, None, totals)
+    return ReserveResult("mack", as_of, step, origins, development, None, pa.table(total))
+
+
+def _require_nonzero_projection(fit, zero_cells: str) -> None:
+    """Refuse Mack's standard errors when a projected cumulative is zero.
+
+    Under ``zero_cells="observed"`` a factor of 0 (every link ratio into an age
+    of zeros is 0) projects each origin still to develop through it to 0, and
+    Mack's process term divides by every projected cumulative, so its standard
+    error would be NaN. The factors and ultimates are fine; the variance is not.
+    """
+    with np.errstate(over="ignore"):
+        full = fit.full
+    at_zero = fit._zero_latest  # an origin at zero under "missing" gets 0, by its limit
+    steps = set()
+    for i in range(fit.n_w):
+        if at_zero[i]:
+            continue
+        for j in range(int(fit.latest_dev[i]), fit.n_d - 1):
+            if full[i, j] == 0:
+                steps.add(j - 1)
+    if steps:
+        step = fit.dev_grain_months
+        raise Refusal(
+            "variance_not_estimable",
+            "the factor {links} is 0, so every origin still to develop through it projects "
+            "to 0 there, and Mack's standard error divides by each projected amount. "
+            "chain_ladder gives the ultimates without standard errors"
+            + (
+                "; zero_cells='missing' leaves out the link ratios into a zero"
+                if zero_cells == "observed"
+                else ""
+            ),
+            option="zero_cells",
+            links=[((j + 1) * step, (j + 2) * step) for j in sorted(steps)],
+        )
+
+
+def _require_finite(periods, per_origin: dict, sigma, std_err, total: dict) -> None:
+    """Refuse a Mack answer with a number that is not finite, naming the origins.
+
+    The inputs were checked finite, so such a number is an overflow: amounts so
+    large that a square or a product passes the largest double. A result never
+    carries NaN or infinity, which Arrow would store as numbers, not nulls.
+    """
+    bad = np.zeros(len(periods), dtype=bool)
+    for values in per_origin.values():
+        bad |= ~np.isfinite(values)
+    if bad.any():
+        raise Refusal(
+            "result_not_finite",
+            "the ultimate or the standard error for {origins} is not a finite number: the "
+            "amounts are too large to multiply out. Divide them by a power of ten (work in "
+            "thousands, say) and multiply the answer back",
+            option="cells",
+            cells=[RefusedCell(None, periods[i]) for i in np.flatnonzero(bad)],
+        )
+    totals = [column[0].as_py() for column in total.values()]
+    others = np.r_[sigma, std_err]
+    if not (np.isfinite(others).all() and all(math.isfinite(t) for t in totals)):
+        raise Refusal(
+            "result_not_finite",
+            "a total or a development age's sigma is not a finite number: the amounts are "
+            "too large to add up. Divide them by a power of ten (work in thousands, say) and "
+            "multiply the answer back",
+            option="cells",
+        )
+
+
+# -- refusals in the caller's terms ------------------------------------------------
+
+
+class _CallersTerms:
+    """Re-raise a kernel's :class:`Refusal` as the caller's.
+
+    The kernels name an origin by the first day of its period, because they
+    never see the caller's labels. Inside this block a refusal comes out with
+    the method named and each cell labelled as the caller wrote its origin
+    (found by the period's first day, never by position), and the message is
+    rendered again from its template. Only a ``Refusal`` is touched: any other
+    exception from underneath is an ibnr defect and passes through as it was
+    raised. The kernel's line stays the last frame of the traceback.
+    """
+
+    def __init__(self, method: str) -> None:
+        self.method = method
+        self.labels: _Origins | None = None
+
+    def __enter__(self) -> _CallersTerms:
+        return self
+
+    def read(self, cells, dev_grain_months) -> tuple[dict[str, Any], _Origins]:
+        """The grid and the labels, which later refusals are labelled with."""
+        grid, labels = _grid(cells, dev_grain_months, terms=self)
+        self.labels = labels
+        return grid, labels
+
+    def __exit__(self, kind, error, trace) -> bool:
+        if not isinstance(error, Refusal):
+            return False
+        labels = self.labels
+        label_of = labels.label_for_start if labels is not None else _no_label
+        raise error.relabeled(method=self.method, label_of=label_of).with_traceback(trace) from None
+
+
+def _no_label(_start: dt.date) -> None:
+    return None
 
 
 # -- the conventional methods' result ---------------------------------------------
@@ -509,61 +683,92 @@ class _Candidate:
 
 def _candidate(method: str, origins: _Origins, *, exclude, **settings) -> _Candidate:
     if isinstance(exclude, str | bytes) or not hasattr(exclude, "__iter__"):
-        raise ValueError(
-            "exclude must be a sequence of (origin_period, dev_lag) pairs, such as [(2010, 12)]"
+        raise Refusal(
+            "invalid_option",
+            "exclude must be a sequence of (origin_period, dev_lag) pairs, such as "
+            "[(2010, 12)], got {given}",
+            option="exclude",
+            given=exclude,
         )
+    step = origins.step
     exclusions = []
     for pair in exclude:
         if not isinstance(pair, tuple | list) or len(pair) != 2:
-            raise ValueError(
-                f"each exclusion must be an (origin_period, dev_lag) pair, got {pair!r}"
+            raise Refusal(
+                "invalid_option",
+                "each exclusion must be an (origin_period, dev_lag) pair, got {given}",
+                option="exclude",
+                given=tuple(pair) if isinstance(pair, list) else pair,
             )
         origin, lag = pair
-        start = _scalar_start(origin, "exclude origin", origins.step)
+        try:
+            start = _scalar_start(origin, "exclude origin", step)
+        except Refusal as refusal:
+            raise refusal._replace(option="exclude") from None
         # a numpy integer, as iterating a numpy or polars column gives, is a whole number
-        if isinstance(lag, numbers.Integral) and not isinstance(lag, bool):
-            lag = int(lag)
+        if not isinstance(lag, numbers.Integral) or isinstance(lag, bool) or lag < 1:
+            raise Refusal(
+                "invalid_option",
+                f"exclude {{given}} names development age {_show(lag)}, which is not a "
+                "positive whole number of months",
+                option="exclude",
+                given=(origin, lag),
+            )
+        lag = int(lag)
+        if lag % step:
+            raise Refusal(
+                "grain_mismatch",
+                f"exclude names {{cells}}, but {lag} months is not a development age of this "
+                f"triangle (dev_grain_months={step})",
+                option="exclude",
+                cells=[RefusedCell(origin, start, lag)],
+            )
         exclusions.append((pair, (start, lag)))
     # Compared by position, not by identity: Python can hand two equal literal
     # pairs such as [(1982, 12), (1982, 12)] over as one and the same tuple.
     first_written: dict[tuple[dt.date, Any], int] = {}
     for index, (pair, key) in enumerate(exclusions):
-        try:
-            first = first_written.setdefault(key, index)
-        except TypeError:
-            continue  # an age that is not a number: the kernel refuses it by name
+        first = first_written.setdefault(key, index)
         if first != index:
-            raise ValueError(
-                f"exclude names one link ratio twice, as {_pair_shown(exclusions[first][0])} "
-                f"and {_pair_shown(pair)}; list each (origin_period, dev_lag) pair once"
+            (start, lag), earlier = key, exclusions[first][0]
+            raise Refusal(
+                "duplicate",
+                "exclude names one link ratio twice, as {cells}; list each "
+                "(origin_period, dev_lag) pair once",
+                option="exclude",
+                cells=[RefusedCell(earlier[0], start, lag), RefusedCell(pair[0], start, lag)],
+                quoted=True,
             )
     kernel = ConventionalCandidate(method, exclude=tuple(key for _, key in exclusions), **settings)
     return _Candidate(kernel, tuple(exclusions))
-
-
-def _pair_shown(pair) -> str:
-    """An exclusion as a message prints it, the origin as the caller wrote it."""
-    origin, lag = pair
-    return f"({_show(origin)}, {_show(lag)})"
 
 
 def _conventional_result(
     name: str, grid, origins: _Origins, wrapped: _Candidate, *, premium
 ) -> ReserveResult:
     candidate = wrapped.kernel
-    keyed = None if premium is None else _premium(premium, origins)
+    keyed = None if candidate.method == "cl" else _premium(premium, origins, name)
     # fit_conventional_grid without its three pandas tables: the same checks and
-    # numbers, held in numpy arrays and lists, so a fit here never loads pandas
-    fit = _estimate_grid(grid, candidate, premium=keyed)
+    # numbers, held in numpy arrays and lists, so a fit here never loads pandas.
+    # An overflow (amounts near the largest double) is not warned about, because
+    # the estimator refuses a pattern or an ultimate that is not finite by name.
+    with np.errstate(over="ignore"):
+        fit = _estimate_grid(grid, candidate, premium=keyed)
     selection = fit.selection
     seen = {(row["origin_period"], row["from_dev_lag"]) for row in selection}
-    unknown = [_pair_shown(pair) for pair, key in wrapped.exclusions if key not in seen]
+    unknown = [
+        RefusedCell(pair[0], start, lag)
+        for pair, (start, lag) in wrapped.exclusions
+        if (start, lag) not in seen
+    ]
     if unknown:
-        raise ValueError(
-            f"exclude names link ratio(s) [{', '.join(unknown)}] that the triangle does not "
-            "have; each "
+        raise Refusal(
+            "not_in_triangle",
+            "exclude names link ratio(s) {cells} that the triangle does not have; each "
             "exclusion is (origin_period, dev_lag) with dev_lag the age the ratio develops "
-            "FROM, and the origin must have cells at that age and the next"
+            "FROM, and the origin must have cells at that age and the next",
+            option="exclude",
+            cells=unknown,
         )
     step = grid["dev_grain_months"]
     table = fit.origins
@@ -667,7 +872,7 @@ def _label_period(text: str, name: str) -> tuple[dt.date, int | None]:
     """
     try:
         if match := _YEAR.fullmatch(text):
-            return _year(int(match[1]), name), 12
+            return _year(int(match[1]), name, given=text), 12
         if match := _QUARTER.fullmatch(text):
             return dt.date(int(match[1]), 3 * int(match[2]) - 2, 1), 3
         if match := _MONTH.fullmatch(text):
@@ -676,11 +881,20 @@ def _label_period(text: str, name: str) -> tuple[dt.date, int | None]:
             return dt.date.fromisoformat(text), None
     except ValueError:
         pass  # a year 0, a month 13 or a 30 February: refused below, by the same message
-    raise ValueError(f"{name} {text!r} is not an origin period: {_FORMS}")
+    raise Refusal(
+        "unreadable_label", f"{name} {{given}} is not an origin period: {_FORMS}", given=text
+    )
 
 
 def _period_start(
-    day: dt.date, months: int | None, step: int, name: str, shown: str, *, cells: bool
+    day: dt.date,
+    months: int | None,
+    step: int,
+    name: str,
+    shown: str,
+    *,
+    cells: bool,
+    given: Any,
 ) -> dt.date:
     """The first day of the period a label names, or a refusal.
 
@@ -688,24 +902,29 @@ def _period_start(
     or ``None`` for a date, which is read against ``step``: the first day of a
     month starts a period and the last day of a month ends one. ``cells`` says
     whether the label is in the cells, whose origins set the period length, or
-    in premium or ``exclude``, which have to follow the cells.
+    in premium or ``exclude``, which have to follow the cells. ``given`` is the
+    label as the caller wrote it, for the refusal.
     """
     if months is not None:
         if months != step:
             length = "1 month" if months == 1 else f"{months} months"
             if not cells:
-                raise ValueError(
+                raise Refusal(
+                    "grain_mismatch",
                     f"{name} {shown} is {_PERIOD_WORD[months]}, {length} long, but the "
                     f"triangle's origin periods are {step} months long "
                     f"(dev_grain_months={step}). Write it as one of the triangle's origin "
-                    "periods, as a label of that length or as the period's first or last day"
+                    "periods, as a label of that length or as the period's first or last day",
+                    given=given,
                 )
-            raise ValueError(
+            raise Refusal(
+                "grain_mismatch",
                 f"{name} {shown} is {_PERIOD_WORD[months]}, {length} long, but "
                 f"dev_grain_months={step}. The methods need origin periods one development "
                 f"step long: pass dev_grain_months={months} if the triangle develops "
                 f"{length} at a time. Origin periods longer than a development step "
-                "(annual origins developed quarterly, for example) are not supported yet."
+                "(annual origins developed quarterly, for example) are not supported yet.",
+                given=given,
             )
         return day
     if day.day == 1:
@@ -715,18 +934,22 @@ def _period_start(
         # the last day of a month ends a period that began step months earlier
         start = _add_months(following, -step) if following.day == 1 else None
     except (OverflowError, ValueError):
-        raise ValueError(
+        raise Refusal(
+            "unreadable_label",
             f"{name} {shown} would end an origin period of {step} months that starts or "
-            "ends outside the years 1 to 9999"
+            "ends outside the years 1 to 9999",
+            given=given,
         ) from None
     if start is not None:
         return start
     # a timestamp's label shows its time of day too, so the date read is named
     on = "" if shown in (day.isoformat(), repr(day.isoformat())) else f" falls on {day}, which"
-    raise ValueError(
+    raise Refusal(
+        "unreadable_label",
         f"{name} {shown}{on} is neither the first nor the last day of a month. "
         "A date must be an origin period's first day (2020-01-01) or its last day "
-        f"(2020-12-31), read with dev_grain_months={step} as the period's length"
+        f"(2020-12-31), read with dev_grain_months={step} as the period's length",
+        given=given,
     )
 
 
@@ -737,12 +960,14 @@ def _show(value) -> str:
     return repr(value) if isinstance(value, str) else str(value)
 
 
-def _year(year: int, name: str) -> dt.date:
+def _year(year: int, name: str, *, given: Any = None) -> dt.date:
     # A year needs its century: 97 read as the year 97 would be accepted without a word.
     if not 1000 <= year <= 9999:
-        raise ValueError(
+        raise Refusal(
+            "unreadable_label",
             f"{name} {year} is not a four-digit year: write a year with its century "
-            f"(1997, not 97). {_FORMS[0].upper()}{_FORMS[1:]}"
+            f"(1997, not 97). {_FORMS[0].upper()}{_FORMS[1:]}",
+            given=year if given is None else given,
         )
     return dt.date(year, 1, 1)
 
@@ -756,17 +981,22 @@ def _scalar_start(value, name: str, step: int) -> dt.date:
     """
     shown = _show(value)
     if isinstance(value, bool):
-        raise ValueError(f"{name} {shown} is not an origin period: {_FORMS}")
+        raise Refusal(
+            "unreadable_label", f"{name} {shown} is not an origin period: {_FORMS}", given=value
+        )
     if isinstance(value, numbers.Integral):
-        return _period_start(_year(int(value), name), 12, step, name, shown, cells=False)
+        day = _year(int(value), name, given=value)
+        return _period_start(day, 12, step, name, shown, cells=False, given=value)
     if isinstance(value, str):
         day, months = _label_period(value, name)
-        return _period_start(day, months, step, name, shown, cells=False)
+        return _period_start(day, months, step, name, shown, cells=False, given=value)
     try:
         day = as_date(value)  # a date, a datetime (its date part) or a numpy datetime64
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} {shown} is not an origin period: {_FORMS}") from exc
-    return _period_start(day, None, step, name, shown, cells=False)
+        raise Refusal(
+            "unreadable_label", f"{name} {shown} is not an origin period: {_FORMS}", given=value
+        ) from exc
+    return _period_start(day, None, step, name, shown, cells=False, given=value)
 
 
 @dataclass(frozen=True)
@@ -791,19 +1021,43 @@ class _Origins:
         """Each row's period start, as numpy ``datetime64[D]``."""
         return np.array(self.label_starts, dtype="datetime64[D]")[self.row_label]
 
+    @cached_property
+    def values(self) -> list:
+        """Each distinct label as a Python value (int, str, date or datetime)."""
+        return self.labels.to_pylist()
+
     def require_one_label_per_period(self) -> None:
         """Refuse a period written two ways: the results echo one label per period."""
-        by_start: dict[dt.date, list[str]] = {}
-        for start, shown in zip(self.label_starts, self.shown, strict=True):
-            by_start.setdefault(start, []).append(shown)
-        doubled = sorted((start, shown) for start, shown in by_start.items() if len(shown) > 1)
+        by_start: dict[dt.date, list[int]] = {}
+        for index, start in enumerate(self.label_starts):
+            by_start.setdefault(start, []).append(index)
+        doubled = sorted((start, ways) for start, ways in by_start.items() if len(ways) > 1)
         if doubled:
-            start, shown = doubled[0]
-            raise ValueError(
-                f"{self.name} writes the origin period starting {start} in {len(shown)} ways: "
-                f"{', '.join(shown)}. Write each period one way throughout the column, "
-                "because the results echo its label back"
+            values = self.values
+            raise Refusal(
+                "duplicate",
+                f"{self.name} writes one origin period in more than one way: {{cells}}. Write "
+                "each period one way throughout the column, because the results echo its "
+                "label back",
+                option="cells",
+                column="origin_period",
+                cells=[
+                    RefusedCell(values[index], start) for start, ways in doubled for index in ways
+                ],
+                quoted=True,
             )
+
+    def label_for_start(self, start: dt.date):
+        """The caller's label for the period starting ``start``, or ``None``."""
+        for index, label_start in enumerate(self.label_starts):
+            if label_start == start:
+                return self.values[index]
+        return None
+
+    def cell(self, row: int, dev_lag=None, value=None) -> RefusedCell:
+        """Row ``row`` of the column as a refused cell, its origin as the caller wrote it."""
+        index = int(self.row_label[row])
+        return RefusedCell(self.values[index], self.label_starts[index], dev_lag, value)
 
     def labels_for(self, starts) -> pa.Array:
         """The caller's label for each period start, in the caller's Arrow type."""
@@ -816,18 +1070,26 @@ class _Origins:
         return [self.shown[position[start]] for start in starts]
 
 
-def _read_origins(column: pa.ChunkedArray, name: str, step: int, *, cells: bool) -> _Origins:
+def _read_origins(
+    column: pa.ChunkedArray, name: str, step: int, *, cells: bool, option: str
+) -> _Origins:
     """An origin column read into periods, keeping the caller's labels, or a refusal.
 
     A dictionary-encoded column (a polars Categorical or Enum, for example) is
     decoded first. A timestamp is read as its date, in its own time zone when it
     has one, so a time of day is dropped, as the grid builder does for a
-    ``datetime``. ``cells`` is as in :func:`_period_start`.
+    ``datetime``. ``cells`` is as in :func:`_period_start`; ``option`` is the
+    argument the column belongs to, for a refusal, which names the rows of a
+    label it cannot read.
     """
     kind = column.type
+    where = {"option": option, "column": "origin_period"}
     if column.null_count:
-        raise ValueError(
-            f"{name} has {column.null_count} missing value(s); every row needs its origin period"
+        raise Refusal(
+            "missing_value",
+            f"{name} has {column.null_count} missing value(s); every row needs its origin period",
+            rows=_positions(column.is_null()),
+            **where,
         )
     if pa.types.is_dictionary(kind):
         # Decoded by hand, chunk by chunk: pyarrow can neither cast nor take from the
@@ -841,37 +1103,57 @@ def _read_origins(column: pa.ChunkedArray, name: str, step: int, *, cells: bool)
         # checked before the cast, which a uint64 above the int64 range would fail
         bounds = pc.min_max(column)
         for year in (bounds["min"].as_py(), bounds["max"].as_py()):
-            _year(year, name)
+            try:
+                _year(year, name)
+            except Refusal as refusal:
+                rows = np.flatnonzero(_arrow.to_numpy(column) == year)
+                raise refusal._replace(rows=rows, **where) from None
         column = column.cast(pa.int64())
     elif _string_kind(kind):
         column = column.cast(pa.string())
     elif pa.types.is_date(kind):
         column = column.cast(pa.date32())
     elif not pa.types.is_timestamp(kind):
-        raise ValueError(
+        raise Refusal(
+            "invalid_table",
             f"{name} must be a column of integer years, text labels, dates or timestamps, "
-            f"got {kind}; {_FORMS}"
+            f"got {kind}; {_FORMS}",
+            **where,
         )
     labels = pc.unique(column)
     row_label = _arrow.to_numpy(pc.index_in(column, value_set=labels)).astype(np.int64)
+    values = labels.to_pylist()
     if pa.types.is_timestamp(labels.type):
         shown = labels.cast(pa.string()).to_pylist()
         # a timestamp with a time zone is read as the date in that zone
-        periods = [(day, None) for day in labels.cast(pa.date32(), safe=False).to_pylist()]
+        days = labels.cast(pa.date32(), safe=False).to_pylist()
     else:
-        values = labels.to_pylist()
         shown = [_show(value) for value in values]
-        if pa.types.is_integer(labels.type):
-            periods = [(_year(value, name), 12) for value in values]
-        elif pa.types.is_string(labels.type):
-            periods = [_label_period(value, name) for value in values]
-        else:
-            periods = [(value, None) for value in values]
-    starts = [
-        _period_start(day, months, step, name, text, cells=cells)
-        for (day, months), text in zip(periods, shown, strict=True)
-    ]
+    starts = []
+    for index, value in enumerate(values):
+        try:
+            if pa.types.is_timestamp(labels.type):
+                day, months = days[index], None
+            elif pa.types.is_integer(labels.type):
+                day, months = _year(value, name), 12
+            elif pa.types.is_string(labels.type):
+                day, months = _label_period(value, name)
+            else:
+                day, months = value, None
+            starts.append(
+                _period_start(day, months, step, name, shown[index], cells=cells, given=value)
+            )
+        except Refusal as refusal:
+            rows = np.flatnonzero(row_label == index)
+            raise refusal._replace(rows=rows, **where) from None
     return _Origins(name, step, labels, shown, starts, row_label)
+
+
+def _positions(mask) -> list[int]:
+    """The row positions where a boolean Arrow column is true."""
+    if isinstance(mask, pa.ChunkedArray):
+        mask = mask.combine_chunks()
+    return pc.indices_nonzero(mask).to_pylist()
 
 
 def _string_kind(kind: pa.DataType) -> bool:
@@ -898,10 +1180,7 @@ def _table(data, name: str) -> pa.Table:
             try:
                 return pa.Table.from_arrays(columns, names=list(data))
             except (TypeError, ValueError, pa.ArrowException) as exc:
-                raise ValueError(
-                    f"{name} must be a table Arrow can read, such as a polars DataFrame or a "
-                    f"pyarrow Table, not {type(data).__name__}: {exc}"
-                ) from exc
+                raise _unreadable_table(data, name, exc) from exc
     pandas = sys.modules.get("pandas")
     is_pandas = pandas is not None and isinstance(data, pandas.DataFrame)
     if hasattr(data, "__arrow_c_stream__") and not is_pandas:
@@ -911,37 +1190,49 @@ def _table(data, name: str) -> pa.Table:
         try:
             return pa.RecordBatchReader.from_stream(data).read_all()
         except (TypeError, ValueError, pa.ArrowException) as exc:
-            raise ValueError(
-                f"{name} must be a table Arrow can read, such as a polars DataFrame or a "
-                f"pyarrow Table, not {type(data).__name__}: {exc}"
-            ) from exc
+            raise _unreadable_table(data, name, exc) from exc
     try:
         return pa.table(data)
     except (TypeError, ValueError, pa.ArrowException) as exc:
-        raise ValueError(
-            f"{name} must be a table Arrow can read, such as a polars DataFrame or a pyarrow "
-            f"Table, not {type(data).__name__}: {exc}"
-        ) from exc
+        raise _unreadable_table(data, name, exc) from exc
+
+
+def _unreadable_table(data, name: str, exc: Exception) -> Refusal:
+    also = " A dict from origin period to amount is accepted too." if name == "premium" else ""
+    return Refusal(
+        "invalid_table",
+        f"{name} must be a table Arrow can read, such as a polars DataFrame or a pyarrow "
+        f"Table, not {type(data).__name__}: {exc}.{also}",
+        option=name,
+    )
 
 
 def _require_columns(table: pa.Table, needed: tuple[str, ...], name: str, what: str) -> None:
     missing = [column for column in needed if column not in table.column_names]
     if missing:
-        raise ValueError(
-            f"{name} is missing column(s) {missing}; it has {table.column_names}. {what}"
+        raise Refusal(
+            "invalid_table",
+            f"{name} is missing column(s) {missing}; it has {table.column_names}. {what}",
+            option=name,
+            column=missing[0],
         )
 
 
-def _grid(cells, dev_grain_months) -> tuple[dict[str, Any], _Origins]:
+def _grid(
+    cells, dev_grain_months, terms: _CallersTerms | None = None
+) -> tuple[dict[str, Any], _Origins]:
     """The kernel grid from the cells, and the caller's origin labels."""
     if (
         not isinstance(dev_grain_months, int | np.integer)
         or isinstance(dev_grain_months, bool)
         or dev_grain_months < 1
     ):
-        raise ValueError(
+        raise Refusal(
+            "invalid_option",
             "dev_grain_months must be a positive whole number of months (12 for an annual "
-            f"triangle, 3 for a quarterly one), got {dev_grain_months!r}"
+            "triangle, 3 for a quarterly one), got {given}",
+            option="dev_grain_months",
+            given=dev_grain_months,
         )
     step = int(dev_grain_months)
     table = _table(cells, "cells")
@@ -953,19 +1244,43 @@ def _grid(cells, dev_grain_months) -> tuple[dict[str, Any], _Origins]:
         "value (cumulative loss), one row per observed cell.",
     )
     if table.num_rows == 0:
-        raise ValueError("cells has no rows")
-    labels = _read_origins(table.column("origin_period"), "origin_period", step, cells=True)
+        raise Refusal("invalid_table", "cells has no rows", option="cells")
+    labels = _read_origins(
+        table.column("origin_period"), "origin_period", step, cells=True, option="cells"
+    )
+    if terms is not None:
+        terms.labels = labels  # a refusal from here on names the caller's labels
     labels.require_one_label_per_period()
     origins = labels.starts
     lags = _whole_months(table.column("dev_lag"))
+
+    def cells_at(rows: np.ndarray, amounts=None) -> list[RefusedCell]:
+        return [
+            labels.cell(int(r), int(lags[r]), None if amounts is None else _amount(amounts[r]))
+            for r in rows
+        ]
+
     values = _numbers(
         table.column("value"),
         "value",
         "an unobserved cell is left out of cells, not given a null value",
+        option="cells",
+        cell_at=lambda rows: cells_at(rows),
     )
-    # A non-positive age is left to the grid builder, which names it as such.
-    off_step = (lags > 0) & (lags % step != 0)
-    if off_step.any():
+    where = {"option": "cells", "column": "dev_lag"}
+    non_positive = np.flatnonzero(lags <= 0)
+    if non_positive.size:
+        ages = sorted(set(lags[non_positive].tolist()))
+        raise Refusal(
+            "invalid_age",
+            f"dev_lag must be positive, got {ages[:5]}, in {{cells}}; dev_lag is months from "
+            f"the start of the origin period, so the first cell of a {step}-month step is at "
+            f"{step}",
+            cells=cells_at(non_positive, values),
+            **where,
+        )
+    off_step = np.flatnonzero(lags % step != 0)
+    if off_step.size:
         ages = sorted(set(lags[off_step].tolist()))
         hint = (
             "; for a quarterly triangle pass dev_grain_months=3, for a monthly one "
@@ -973,27 +1288,36 @@ def _grid(cells, dev_grain_months) -> tuple[dict[str, Any], _Origins]:
             if step == 12
             else ""
         )
-        raise ValueError(
-            f"dev_lag values {ages[:5]} are not multiples of dev_grain_months={step}. "
-            f"dev_grain_months is the months per development step{hint}"
+        raise Refusal(
+            "grain_mismatch",
+            f"dev_lag values {ages[:5]} are not multiples of dev_grain_months={step}, in "
+            f"{{cells}}. dev_grain_months is the months per development step{hint}",
+            cells=cells_at(off_step, values),
+            **where,
         )
     days = origins.astype(np.int64)
     keys = np.stack([days, lags], axis=1)
-    distinct, counts = np.unique(keys, axis=0, return_counts=True)
-    if (counts > 1).any():
-        repeated = _cells_shown(labels, distinct[counts > 1][:5])
-        raise ValueError(
-            f"cells has more than one row for the (origin_period, dev_lag) cell(s) {repeated}. "
-            "The methods fit one cohort at a time, so filter to one company and line first; "
-            "rows for the same cell are refused rather than added together"
+    _, inverse, counts = np.unique(keys, axis=0, return_inverse=True, return_counts=True)
+    repeated = np.flatnonzero(counts.reshape(-1)[inverse.reshape(-1)] > 1)
+    if repeated.size:
+        raise Refusal(
+            "duplicate",
+            "cells has more than one row for the same cell: {cells}. The methods fit one "
+            "triangle at a time, so filter to one company and line first; rows for the same "
+            "cell are refused rather than added together",
+            option="cells",
+            cells=cells_at(repeated, values),
         )
-    negative = values < 0
-    if negative.any():
-        where = _cells_shown(labels, keys[negative][:5])
-        raise ValueError(
-            f"value is negative in {int(negative.sum())} cell(s), (origin_period, dev_lag) "
-            f"{where}. The methods need cumulative losses of zero or more: a chain-ladder "
-            "factor is a ratio of cumulatives and Mack's variance is weighted by them"
+    negative = np.flatnonzero(values < 0)
+    if negative.size:
+        raise Refusal(
+            "negative_cumulative",
+            f"value is negative in {negative.size} cell(s): {{cells}}. The methods need "
+            "cumulative losses of zero or more: a chain-ladder factor is a ratio of "
+            "cumulatives and Mack's variance is weighted by them",
+            option="cells",
+            column="value",
+            cells=cells_at(negative, values),
         )
     _require_consecutive_origins(labels, step)
     grid = grid_from_columns(
@@ -1006,15 +1330,10 @@ def _grid(cells, dev_grain_months) -> tuple[dict[str, Any], _Origins]:
     return grid, labels
 
 
-def _day(days_since_epoch) -> dt.date:
-    return dt.date(1970, 1, 1) + dt.timedelta(days=int(days_since_epoch))
-
-
-def _cells_shown(labels: _Origins, keys: np.ndarray) -> str:
-    """(origin, dev_lag) cells as a message prints them, each origin as the caller wrote it."""
-    origins = labels.shown_for([_day(day) for day, _ in keys])
-    shown = [f"({o}, {int(lag)})" for o, (_, lag) in zip(origins, keys, strict=True)]
-    return f"[{', '.join(shown)}]"
+def _amount(value) -> float | None:
+    """An amount for a refusal: the number, or None when it is not a finite number."""
+    number = float(value)
+    return number if math.isfinite(number) else None
 
 
 def _require_consecutive_origins(labels: _Origins, step: int) -> None:
@@ -1026,8 +1345,15 @@ def _require_consecutive_origins(labels: _Origins, step: int) -> None:
     message about depths rather than about the missing period.
     """
     origins = sorted(set(labels.label_starts))
-    for earlier, later in zip(origins[:-1], origins[1:], strict=True):
-        gap = (later.year - earlier.year) * 12 + later.month - earlier.month
+    gaps = [
+        (later.year - earlier.year) * 12 + later.month - earlier.month
+        for earlier, later in zip(origins[:-1], origins[1:], strict=True)
+    ]
+    # Periods missing from the middle (origin_gap) only where some neighbours are
+    # one step apart; origins that are never one step apart are periods of
+    # another length (grain_mismatch), such as annual origins on a quarterly step.
+    gapped = bool(gaps) and min(gaps) == step
+    for earlier, later, gap in zip(origins[:-1], origins[1:], gaps, strict=True):
         if gap == step:
             continue
         first, second = labels.shown_for([earlier, later])
@@ -1036,18 +1362,29 @@ def _require_consecutive_origins(labels: _Origins, step: int) -> None:
             f"dev_grain_months={step}. The methods need every origin period from the first "
             "to the last, one development step apart."
         )
+        # the two neighbours, as the caller wrote them
+        cells = [RefusedCell(labels.label_for_start(start), start) for start in (earlier, later)]
+        reason = "grain_mismatch"
         if gap > step and gap % step == 0:
             # the data cannot say whether a period is missing or the periods are longer;
             # a missing period has no label, so it is named by its first day
-            missing = [_add_months(earlier, step * k).isoformat() for k in range(1, gap // step)]
+            missing = [_add_months(earlier, step * k) for k in range(1, gap // step)]
             message += (
                 f" If the origin periods are {step} months long, cells has no rows for the "
-                f"period(s) starting {', '.join(missing[:5])}: give a period with no business "
-                "its cells as zeros, or fit the origins on each side of the gap separately."
+                f"period(s) starting {', '.join(day.isoformat() for day in missing[:5])}: "
+                "give a period with no business its cells as zeros, or fit the origins on "
+                "each side of the gap separately."
             )
-        raise ValueError(
+            if gapped:
+                cells += [RefusedCell(None, day) for day in missing]
+                reason = "origin_gap"
+        raise Refusal(
+            reason,
             message + " Origin periods longer than a development step (annual origins "
-            "developed quarterly, for example) are not supported yet."
+            "developed quarterly, for example) are not supported yet.",
+            option="cells",
+            column="origin_period",
+            cells=cells,
         )
 
 
@@ -1060,47 +1397,100 @@ def _add_months(day: dt.date, months: int) -> dt.date:
 def _whole_months(column: pa.ChunkedArray) -> np.ndarray:
     """dev_lag as int64, or a refusal of missing, fractional or non-numeric ages."""
     kind = column.type
+    where = {"option": "cells", "column": "dev_lag"}
     if column.null_count:
-        raise ValueError(f"dev_lag has {column.null_count} missing value(s)")
+        raise Refusal(
+            "missing_value",
+            f"dev_lag has {column.null_count} missing value(s)",
+            rows=_positions(column.is_null()),
+            **where,
+        )
     if pa.types.is_integer(kind):
         return _arrow.to_numpy(column).astype(np.int64)
     if pa.types.is_floating(kind):
         months = _arrow.to_numpy(column).astype(float)
         fractional = ~np.isfinite(months) | (months != np.round(months))
         if fractional.any():
-            raise ValueError(
+            raise Refusal(
+                "invalid_age",
                 "dev_lag must be whole numbers of months, got "
-                f"{sorted(set(months[fractional].tolist()))[:5]}"
+                f"{sorted(set(months[fractional].tolist()))[:5]}",
+                rows=np.flatnonzero(fractional),
+                **where,
             )
         return months.astype(np.int64)
-    raise ValueError(f"dev_lag must be a column of whole numbers of months, got {kind}")
+    raise Refusal(
+        "invalid_table", f"dev_lag must be a column of whole numbers of months, got {kind}", **where
+    )
 
 
-def _numbers(column: pa.ChunkedArray, name: str, why: str) -> np.ndarray:
-    """A numeric column as float64 with nothing missing, or a refusal."""
+def _numbers(column: pa.ChunkedArray, name: str, why: str, *, option: str, cell_at) -> np.ndarray:
+    """A numeric column as float64 with every value a finite number, or a refusal.
+
+    ``cell_at(rows)`` turns row positions into the refused cells, so a missing
+    or infinite amount is named by its cell.
+    """
     kind = column.type
+    where = {"option": option, "column": name}
     if not (pa.types.is_integer(kind) or pa.types.is_floating(kind) or pa.types.is_decimal(kind)):
-        raise ValueError(f"{name} must be a numeric column, got {kind}")
+        raise Refusal("invalid_table", f"{name} must be a numeric column, got {kind}", **where)
     if column.null_count:
-        raise ValueError(f"{name} has {column.null_count} null value(s); {why}")
+        rows = _positions(column.is_null())
+        raise Refusal(
+            "missing_value",
+            f"{name} has {column.null_count} null value(s), in {{cells}}; {why}",
+            cells=cell_at(rows),
+            **where,
+        )
     amounts = _arrow.to_numpy(column.cast(pa.float64()))
-    if np.isnan(amounts).any():
-        raise ValueError(f"{name} has {int(np.isnan(amounts).sum())} NaN value(s); {why}")
+    nan = np.flatnonzero(np.isnan(amounts))
+    if nan.size:
+        raise Refusal(
+            "missing_value",
+            f"{name} has {nan.size} NaN value(s), in {{cells}}; {why}",
+            cells=cell_at(nan),
+            **where,
+        )
+    # before any arithmetic: an infinite amount made the chain ladder refuse
+    # without naming a cell, and Mack answer NaN or refuse for the wrong reason
+    infinite = np.flatnonzero(np.isinf(amounts))
+    if infinite.size:
+        raise Refusal(
+            "not_finite",
+            f"{name} is infinite in {infinite.size} cell(s), {{cells}}. The methods need finite "
+            "amounts",
+            cells=cell_at(infinite),
+            **where,
+        )
     return amounts
 
 
-def _premium(premium, origins: _Origins) -> dict[dt.date, Any]:
+def _premium(premium, origins: _Origins, method: str) -> dict[dt.date, Any]:
     """Premium keyed by period start, for ``kernels.fit_conventional_grid``.
 
     Its origins are read with the cells' rules and ``dev_grain_months``, so they
-    may be written differently from the cells'. Repeated, missing and extra
-    origins are refused here, in the caller's own labels.
+    may be written differently from the cells'. Every refusal of premium is
+    made here, in the caller's own labels: repeated, missing and extra origins,
+    and an amount that is not a positive finite number. An origin premium wrote
+    is named as premium wrote it; one it lacks, as the cells wrote it.
     """
+    if premium is None:
+        raise Refusal(
+            "invalid_option",
+            f"{method} needs premium: a table with origin_period and premium, or a dict from "
+            "origin period to amount",
+            option="premium",
+        )
     step = origins.step
     if isinstance(premium, Mapping):
         keys = list(premium)
-        starts = [_scalar_start(key, "premium origin", step) for key in keys]
-        shown = [_show(key) for key in keys]
+        starts = []
+        for key in keys:
+            try:
+                starts.append(_scalar_start(key, "premium origin", step))
+            except Refusal as refusal:
+                raise refusal._replace(option="premium") from None
+        labels = keys
         amounts = list(premium.values())
         repeat_what = "amount"
     else:
@@ -1112,36 +1502,99 @@ def _premium(premium, origins: _Origins) -> dict[dt.date, Any]:
             "It needs origin_period and premium, one row per origin period.",
         )
         read = _read_origins(
-            table.column("origin_period"), "premium origin_period", step, cells=False
+            table.column("origin_period"),
+            "premium origin_period",
+            step,
+            cells=False,
+            option="premium",
         )
         starts = [read.label_starts[i] for i in read.row_label]
-        shown = [read.shown[i] for i in read.row_label]
+        labels = [read.values[i] for i in read.row_label]
         amounts = _numbers(
-            table.column("premium"), "premium", "every origin needs an amount"
+            table.column("premium"),
+            "premium",
+            "every origin needs an amount",
+            option="premium",
+            cell_at=lambda rows: [read.cell(int(r)) for r in rows],
         ).tolist()
         repeat_what = "row"
     by_start: dict[dt.date, Any] = {}
-    written: dict[dt.date, list[str]] = {}
-    for start, text, amount in zip(starts, shown, amounts, strict=True):
+    label_of: dict[dt.date, Any] = {}
+    written: dict[dt.date, list[int]] = {}
+    for index, (start, amount) in enumerate(zip(starts, amounts, strict=True)):
         by_start[start] = amount
-        written.setdefault(start, []).append(text)
-    # each repeated period, named by the distinct ways premium writes it
-    repeated = [" and ".join(dict.fromkeys(texts)) for texts in written.values() if len(texts) > 1]
+        label_of.setdefault(start, labels[index])
+        written.setdefault(start, []).append(index)
+    repeated = [rows for rows in written.values() if len(rows) > 1]
     if repeated:
-        raise ValueError(
-            f"premium has more than one {repeat_what} for origin period(s) "
-            f"{', '.join(repeated[:5])}"
+        raise Refusal(
+            "duplicate",
+            f"premium has more than one {repeat_what} for origin period(s) {{origins}}",
+            option="premium",
+            cells=[
+                RefusedCell(labels[i], starts[i], None, _premium_amount(amounts[i]))
+                for rows in repeated
+                for i in rows
+            ],
+            quoted=True,
         )
     periods = sorted(set(origins.label_starts))
     absent = [start for start in periods if start not in by_start]
     if absent:
-        raise ValueError(
-            f"premium has no amount for origin(s) {', '.join(origins.shown_for(absent[:5]))}"
+        raise Refusal(
+            "origin_not_covered",
+            "premium has no amount for origin(s) {origins}",
+            option="premium",
+            cells=[RefusedCell(origins.label_for_start(start), start) for start in absent],
         )
     extra = sorted(set(by_start) - set(periods))
     if extra:
-        raise ValueError(
-            f"premium has amounts for origin(s) {', '.join(written[s][0] for s in extra[:5])} "
-            "that are not in the triangle; pass premium for the triangle's origins only"
+        raise Refusal(
+            "not_in_triangle",
+            "premium has amounts for origin(s) {origins} that are not in the triangle; pass "
+            "premium for the triangle's origins only",
+            option="premium",
+            cells=[RefusedCell(label_of[s], s, None, _premium_amount(by_start[s])) for s in extra],
         )
+    for start in periods:
+        _require_premium_amount(label_of[start], start, by_start[start])
     return by_start
+
+
+def _premium_amount(amount) -> float | None:
+    """A premium amount for a refusal: the number when it is a finite one."""
+    if isinstance(amount, bool) or not isinstance(amount, numbers.Real):
+        return None
+    return _amount(amount)
+
+
+def _require_premium_amount(label, start: dt.date, amount) -> None:
+    """Refuse one origin's premium unless it is a positive finite number, naming it."""
+    cell = [RefusedCell(label, start, None, _premium_amount(amount))]
+    where = {"option": "premium", "cells": cell}
+    # a number, not something float() happens to accept: the text "220" would convert
+    if isinstance(amount, bool) or not isinstance(amount, numbers.Real) and amount is not None:
+        raise Refusal(
+            "invalid_option",
+            "premium for origin {origins} is {given}, which is not a number",
+            given=amount,
+            **where,
+        )
+    if amount is None or math.isnan(amount):
+        raise Refusal(
+            "missing_value", "premium has no amount for origin {origins}; it is missing", **where
+        )
+    if math.isinf(amount):
+        raise Refusal(
+            "not_finite",
+            "premium must be a positive finite number for every origin; it is infinite for "
+            "{origins}",
+            **where,
+        )
+    if amount <= 0:
+        raise Refusal(
+            "invalid_option",
+            f"premium must be a positive finite number for every origin; it is {amount!r} for "
+            "{origins}",
+            **where,
+        )

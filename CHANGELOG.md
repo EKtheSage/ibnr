@@ -97,6 +97,93 @@ having loaded something as a side effect. `vars(ibnr.kernels)` lists a name only
 once it has been read, and `sys.modules` no longer holds ibis after a bare
 `import ibnr`. Reading the names works as before.
 
+### Refusals carry a reason code: `ibnr.errors.Refusal`
+
+Every input `ibnr.methods` will not answer is now refused with
+`ibnr.errors.Refusal`, a `ValueError`, so `except ValueError` still catches it.
+Before, the refusals were plain `ValueError`s whose text was partly in the
+kernels' own terms (`dev step 1`, `sigma_j^2`, `datetime.date(2003, 1, 1)`), so a
+service could tell one from another only by matching text, and could not tell
+bad input from a defect in ibnr.
+
+A refusal carries:
+- `reason`, one code from a closed list of 27 (`ibnr.errors.REASONS`), such as
+  `negative_cumulative`, `not_run_off` or `no_link_ratio`;
+- `kind`, `"input"` (13 codes: the request must change) or `"model"` (14 codes:
+  another option or method can answer);
+- `method`, `option` and `column`: the function, the argument and the column at
+  fault, in the function's own terms;
+- `cells` (origin, first day of the period, `dev_lag`, value), `links`
+  (`(from_dev_lag, to_dev_lag)` in months) and `rows` (0-based rows of a
+  table): at most 100 of each, with `count` holding the total;
+- each origin as the caller wrote it, value and type, the same value the
+  result's `origin` column would show; the kernels name an origin by its
+  period's first day and `ibnr.methods` puts the caller's label back.
+
+`refusal.to_dict()` is JSON with no NaN or infinity, and a refusal pickles with
+every field, so it crosses a process pool. `ibnr.methods.__all__` gains
+`Refusal`. The contract, in the `ibnr.methods` docstring: a `Refusal` is ibnr
+declining the input; any other exception from these functions, a plain
+`ValueError` included, is a defect in ibnr. A seeded fuzz of 2,000 edited
+triangles and every clrd company and line (paid and incurred, all four methods)
+meet nothing but `Refusal`.
+
+Codes are never renamed or removed; a new one may be added in a patch release
+and will be named here. Handle a code you do not know by its `kind`.
+
+The one-year claims development result in `ibnr.kernels` (`one_year_cdr`,
+`simulate_one_year_cdr`, `rereserve`, the diagonal generators, the ODP
+bootstrap and `cdr_risk_measures`) raises `Refusal` too, and so do the kernel
+checks of data and options in `kernels/grid.py`, `kernels/conventional.py` and
+`kernels/mack.py`. A grid dict with the wrong keys, shapes or types, which only
+a grid built by hand can have, is still refused with a plain `ValueError`.
+
+**No number moved.** Every result was compared with the code before this change
+as raw bytes: the four methods (Arrow tables) and the kernels
+(`fit_conventional_grid` for chain ladder, Bornhuetter-Ferguson and Cape Cod
+under seven sets of options, `fit_mack_grid` and `msep_runoff` under both sigma
+rules and both zero rules, `one_year_cdr`, and seeded `simulate_one_year_cdr`
+draws from the Mack and ODP bootstrap generators) on raa, genins, ukmotor, abc,
+mw2014 and 62 clrd triangles, and `fit_mack_many` over 120 clrd cohorts: 2,153
+cases, 230 of them refusals, all identical (the refusals in the same places).
+
+**Refused now, answered before** (each gave a wrong or meaningless answer):
+- an infinite amount in the cells. The chain ladder refused it without naming
+  the cell, and `mack` either refused it for a wrong reason (zero cells, on a
+  triangle with none) or answered NaN. Now `not_finite`, naming the cells;
+- `expected_loss_ratio=True` and `decay=True`, which were read as 1. Now
+  `invalid_option`, in `ibnr.methods` and in `kernels.ConventionalCandidate`;
+- a `methods.mack` answer that is not a finite number (amounts near the largest
+  double, whose squares overflow), which came back as NaN in a float column.
+  Now `result_not_finite`, naming the origins;
+- `methods.mack` under `zero_cells="observed"` where a factor of 0 projects an
+  origin to 0, which gave NaN standard errors. Now `variance_not_estimable`,
+  naming the link.
+
+**Other changes a caller can see:**
+- a text `expected_loss_ratio` or `decay` raised a `TypeError` from inside
+  numpy; now `invalid_option`;
+- `simulate_one_year_cdr(generator=...)` with a name that is no method raised a
+  `KeyError`, and with a value of the wrong type a `TypeError`; both are now
+  `invalid_option`. `get_cdr_method` still raises `KeyError`, as a lookup does;
+- `fit_mack_many(on_error="skip")` records only a `Refusal` and raises anything
+  else, since that is a defect rather than a cohort the data rules out. The
+  panel gains `reasons`, each skipped cohort's code beside its message in
+  `errors`, and the codec carries it. An unknown `sigma_rule` is refused before
+  any cohort instead of being recorded against every one. Under
+  `on_error="raise"` a cohort's refusal stays a `Refusal`, its message led by the
+  cohort;
+- many messages are reworded to name ages in months and origins as written:
+  `from 36 to 48 months` for `dev step 3` or `dev lag 36`, `(2002, 24 months)`
+  for `(2002, 24)`, and a text label without quotes except where two spellings
+  of one period are compared. Code that matched message text should match the
+  `reason` instead;
+- `kernels.require_run_off` takes `step=` and `cum=` (both optional) so a refusal
+  names cells in months with their amounts, and `kernels.fit_odp_bootstrap`
+  takes `origins=` and `dev_grain_months=` for the same reason. Where cells are
+  not a run-off triangle, the message names the cells against the diagonal that
+  leaves the fewest cells wrong; which triangles are refused is unchanged.
+
 ## 0.7.2 - 2026-09-24
 
 Three pull requests (#149, #152, #153) for moving a reserving service off

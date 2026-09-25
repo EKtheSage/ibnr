@@ -650,6 +650,9 @@ def test_mack_panel_carries_the_cohorts_that_failed(backend_name):
     assert back.by == panel.by
     assert list(back.fits) == list(panel.fits)
     assert back.errors == panel.errors
+    # each skipped cohort's reason code crosses the wire beside its message
+    assert panel.reasons == {("CO_B",): "no_link_ratio"}
+    assert back.reasons == panel.reasons
     assert np.array_equal(back[("CO_A",)].f, panel[("CO_A",)].f)
 
 

@@ -24,6 +24,7 @@ import numpy as np
 # ibnr.methods imports this module and must not load ibis, pandas or scipy. The
 # Triangle path (fit_conventional) and the pandas tables of ConventionalFit
 # import what they need when they run.
+from ibnr.errors import Refusal, RefusedCell
 from ibnr.kernels.grid import ZERO_CELLS, as_date, check_grid
 
 if TYPE_CHECKING:
@@ -89,10 +90,11 @@ class ConventionalCandidate:
     zero_cells: str = "observed"
 
     def __post_init__(self) -> None:
-        if self.method not in ("cl", "bf", "gcc"):
-            raise ValueError("method must be 'cl', 'bf', or 'gcc'")
-        if self.average not in ("volume", "simple", "median"):
-            raise ValueError("average must be 'volume', 'simple', or 'median'")
+        # Every refusal here is an ibnr.errors.Refusal with the reason
+        # invalid_option (a label that cannot be read is unreadable_label, and an
+        # exclusion named twice is duplicate), naming the setting and its value.
+        _choose("method", self.method, ("cl", "bf", "gcc"))
+        _choose("average", self.average, ("volume", "simple", "median"))
         # numpy scalars are accepted and converted to the builtin type, the same
         # way the float settings below already accept a numpy float: a grid
         # built from numpy ranges hands these in, and two candidates that differ
@@ -103,43 +105,126 @@ class ConventionalCandidate:
                 continue
             counts = isinstance(value, int | np.integer) and not isinstance(value, bool | np.bool_)
             if not counts or value < 1:
-                raise ValueError(f"{name} must be a positive integer or None")
+                raise Refusal(
+                    "invalid_option",
+                    f"{name} must be a positive integer or None, got {{given}}",
+                    option=name,
+                    given=value,
+                )
             object.__setattr__(self, name, int(value))
         for name in ("drop_high", "drop_low"):
             flag = getattr(self, name)
             if not isinstance(flag, bool | np.bool_):
-                raise ValueError("drop_high and drop_low must be booleans")
+                raise Refusal(
+                    "invalid_option",
+                    f"{name} must be True or False, got {{given}}",
+                    option=name,
+                    given=flag,
+                )
             object.__setattr__(self, name, bool(flag))
-        if self.unsupported_factor not in ("raise", "unity"):
-            raise ValueError("unsupported_factor must be 'raise' or 'unity'")
-        if self.exhausted_exclusions not in ("raise", "keep"):
-            raise ValueError("exhausted_exclusions must be 'raise' or 'keep'")
+        _choose("unsupported_factor", self.unsupported_factor, ("raise", "unity"))
+        _choose("exhausted_exclusions", self.exhausted_exclusions, ("raise", "keep"))
         if self.zero_cells not in ZERO_CELLS:
-            raise ValueError(
-                f"zero_cells must be 'observed' or 'missing', got {self.zero_cells!r}. "
+            raise Refusal(
+                "invalid_option",
+                "zero_cells must be 'observed' or 'missing', got {given}. "
                 "'observed' keeps a zero cumulative as data; 'missing' leaves out every link "
-                "ratio with a zero at either end, as chainladder-python does"
+                "ratio with a zero at either end, as chainladder-python does",
+                option="zero_cells",
+                given=self.zero_cells,
             )
         if self.method == "bf":
-            if self.expected_loss_ratio is None or not np.isfinite(self.expected_loss_ratio):
-                raise ValueError("BF needs a finite expected_loss_ratio")
-            if self.expected_loss_ratio < 0:
-                raise ValueError("expected_loss_ratio must be non-negative")
+            # A number, and not a bool: True used to be read as 1.0 and text raised a
+            # TypeError from inside numpy.
+            ratio = self.expected_loss_ratio
+            if not _is_number(ratio) or not np.isfinite(ratio) or ratio < 0:
+                raise Refusal(
+                    "invalid_option",
+                    "expected_loss_ratio must be a finite number of 0 or more, got {given}",
+                    option="expected_loss_ratio",
+                    given=ratio,
+                )
         elif self.expected_loss_ratio is not None:
-            raise ValueError("expected_loss_ratio is a BF setting only")
+            raise Refusal(
+                "invalid_option",
+                "expected_loss_ratio applies to Bornhuetter-Ferguson ('bf') only",
+                option="expected_loss_ratio",
+                options=("expected_loss_ratio", "method"),
+                given=self.expected_loss_ratio,
+            )
         if self.method == "gcc":
-            if self.decay is None or not np.isfinite(self.decay) or not 0 <= self.decay <= 1:
-                raise ValueError("GCC needs decay between 0 and 1")
+            decay = self.decay
+            if not _is_number(decay) or not np.isfinite(decay) or not 0 <= decay <= 1:
+                raise Refusal(
+                    "invalid_option",
+                    "decay must be a number from 0 to 1, got {given}",
+                    option="decay",
+                    given=decay,
+                )
         elif self.decay is not None:
-            raise ValueError("decay is a GCC setting only")
-        exclusions = tuple((as_date(origin), lag) for origin, lag in self.exclude)
-        if any(type(lag) is not int or lag < 1 for _, lag in exclusions):
-            raise ValueError("excluded development lags must be positive integer months")
+            raise Refusal(
+                "invalid_option",
+                "decay applies to the generalized Cape Cod ('gcc') only",
+                option="decay",
+                options=("decay", "method"),
+                given=self.decay,
+            )
+        exclusions = []
+        for origin, lag in self.exclude:
+            try:
+                exclusions.append((as_date(origin), lag))
+            except (TypeError, ValueError) as exc:
+                raise Refusal(
+                    "unreadable_label",
+                    f"exclude origin {{given}} is not a date: {exc}",
+                    option="exclude",
+                    given=origin,
+                ) from exc
+        for _, lag in exclusions:
+            if type(lag) is not int or lag < 1:
+                raise Refusal(
+                    "invalid_option",
+                    "excluded development lags must be positive integer months, got {given}",
+                    option="exclude",
+                    given=lag,
+                )
         if len(set(exclusions)) != len(exclusions):
-            raise ValueError("duplicate explicit exclusions")
+            twice = [key for key in dict.fromkeys(exclusions) if exclusions.count(key) > 1]
+            raise Refusal(
+                "duplicate",
+                "duplicate explicit exclusions: {cells}",
+                option="exclude",
+                cells=[RefusedCell(None, origin, lag) for origin, lag in twice],
+            )
         if self.horizon is not None and any(lag >= self.horizon for _, lag in exclusions):
-            raise ValueError("excluded FROM lags must be strictly before the fixed horizon")
+            raise Refusal(
+                "invalid_option",
+                "excluded FROM lags must be strictly before the fixed horizon",
+                option="exclude",
+                options=("exclude", "horizon"),
+            )
         object.__setattr__(self, "exclude", tuple(sorted(exclusions)))
+
+
+def _choose(name: str, value, choices: tuple[str, ...]) -> None:
+    """Refuse a setting that is not one of its choices, naming it and its value."""
+    if value not in choices:
+        quoted = [repr(choice) for choice in choices]
+        listed = (
+            " or ".join(quoted)
+            if len(quoted) == 2
+            else f"{', '.join(quoted[:-1])}, or {quoted[-1]}"
+        )
+        raise Refusal(
+            "invalid_option",
+            f"{name} must be {listed}, got {{given}}",
+            option=name,
+            given=value,
+        )
+
+
+def _is_number(value) -> bool:
+    return isinstance(value, numbers.Real) and not isinstance(value, bool | np.bool_)
 
 
 @dataclass(frozen=True)
@@ -200,7 +285,10 @@ def fit_conventional(
     cutoff = as_date(as_of)
     train = triangle.as_of(cutoff)
     if triangle.meta.origin_grain != triangle.meta.dev_grain:
-        raise ValueError("conventional candidates require matching origin and development grains")
+        raise Refusal(
+            "grain_mismatch",
+            "conventional candidates require matching origin and development grains",
+        )
     grid = cohort_grid(
         train,
         loss_field=loss_field,
@@ -298,21 +386,27 @@ def _estimate_grid(
     fitted = dict(grid, origin_periods=origins)
     if candidate.method == "cl":
         if premium is not None:
-            raise ValueError(
+            raise Refusal(
+                "invalid_option",
                 "premium was passed for a 'cl' candidate, which never reads it; pass premium "
-                "only for 'bf' or 'gcc'"
+                "only for 'bf' or 'gcc'",
+                option="premium",
             )
     elif premium is not None:
         if grid.get("premium") is not None:
-            raise ValueError(
+            raise Refusal(
+                "invalid_option",
                 "premium was given twice: as premium= and already on the grid (from "
-                "cohort_grid(premium_field=...)); pass it one way only"
+                "cohort_grid(premium_field=...)); pass it one way only",
+                option="premium",
             )
         fitted["premium"] = _premium_by_origin(premium, origins)
     elif grid.get("premium") is None:
-        raise ValueError(
+        raise Refusal(
+            "invalid_option",
             f"a {candidate.method!r} candidate needs premium; pass premium= keyed by origin "
-            "period, or build the grid with cohort_grid(premium_field=...)"
+            "period, or build the grid with cohort_grid(premium_field=...)",
+            option="premium",
         )
     else:
         carried = grid["premium"]
@@ -340,10 +434,12 @@ def _is_series(value) -> bool:
 def _premium_by_origin(premium, origins: list[dt.date]) -> np.ndarray:
     """Premium keyed by origin period as an array in grid order, or a refusal."""
     if not (isinstance(premium, Mapping) or _is_series(premium)):
-        raise ValueError(
+        raise Refusal(
+            "invalid_option",
             "premium must be keyed by origin period (a dict, or a pandas Series indexed by "
             f"origin period), not {type(premium).__name__}; a plain sequence is refused "
-            "because nothing in it says which origin each amount belongs to"
+            "because nothing in it says which origin each amount belongs to",
+            option="premium",
         )
     by_origin: dict[dt.date, Any] = {}
     repeated = set()
@@ -351,27 +447,49 @@ def _premium_by_origin(premium, origins: list[dt.date]) -> np.ndarray:
         try:
             origin = as_date(key)
         except (TypeError, ValueError) as exc:
-            raise ValueError(f"premium key {key!r} is not an origin period: {exc}") from exc
+            raise Refusal(
+                "unreadable_label",
+                f"premium key {{given}} is not an origin period: {exc}",
+                option="premium",
+                given=key,
+            ) from exc
         # A number, not something float() happens to accept: the string "500"
         # would convert, and pd.NA would raise a TypeError that names no premium.
         if isinstance(amount, bool) or not isinstance(amount, numbers.Real):
-            raise ValueError(f"premium for origin {origin} is {amount!r}, which is not a number")
+            raise Refusal(
+                "invalid_option",
+                "premium for origin {origins} is {given}, which is not a number",
+                option="premium",
+                given=amount,
+                cells=[RefusedCell(None, origin)],
+            )
         if origin in by_origin:
             repeated.add(origin)
         by_origin[origin] = amount
     if repeated:
-        raise ValueError(
-            f"premium has more than one amount for origin(s) {sorted(repeated)} once its keys "
-            "are read as dates"
+        raise Refusal(
+            "duplicate",
+            "premium has more than one amount for origin(s) {origins} once its keys are read "
+            "as dates",
+            option="premium",
+            cells=[RefusedCell(None, origin) for origin in sorted(repeated)],
         )
     absent = [o for o in origins if o not in by_origin]
     if absent:
-        raise ValueError(f"premium has no amount for origin(s) {absent}")
+        raise Refusal(
+            "origin_not_covered",
+            "premium has no amount for origin(s) {origins}",
+            option="premium",
+            cells=[RefusedCell(None, origin) for origin in absent],
+        )
     extra = sorted(set(by_origin) - set(origins))
     if extra:
-        raise ValueError(
-            f"premium has amounts for origin(s) {extra} that are not in the grid; "
-            "pass premium for the grid's origins only"
+        raise Refusal(
+            "not_in_triangle",
+            "premium has amounts for origin(s) {origins} that are not in the grid; "
+            "pass premium for the grid's origins only",
+            option="premium",
+            cells=[RefusedCell(None, origin, None, by_origin[origin]) for origin in extra],
         )
     return np.array([by_origin[o] for o in origins], dtype=float)
 
@@ -425,16 +543,45 @@ def _estimate(grid: dict[str, Any], candidate: ConventionalCandidate, cutoff: dt
     step = grid["dev_grain_months"]
     horizon = candidate.horizon or grid["n_d"] * step
     if horizon % step or horizon < grid["n_d"] * step:
-        raise ValueError("horizon must be a grain multiple covering all observed development")
-    if any(lag % step for _, lag in candidate.exclude):
-        raise ValueError("excluded development lags must be grain multiples")
+        raise Refusal(
+            "invalid_option",
+            "horizon must be a grain multiple covering all observed development, got {given}",
+            option="horizon",
+            given=candidate.horizon,
+        )
+    off_step = [(origin, lag) for origin, lag in candidate.exclude if lag % step]
+    if off_step:
+        raise Refusal(
+            "grain_mismatch",
+            f"excluded development lags must be grain multiples ({step} months): {{cells}}",
+            option="exclude",
+            cells=[RefusedCell(None, origin, lag) for origin, lag in off_step],
+        )
     cum, mask = grid["cum"], grid["obs_mask"]
+    periods = grid["origin_periods"]
     if not np.isfinite(cum[mask]).all() or (cum[mask] < 0).any():
-        raise ValueError("cumulative losses must be finite and non-negative")
+        infinite = mask & ~np.isfinite(cum)
+        reason, bad = (
+            ("not_finite", infinite)
+            if infinite.any()
+            else ("negative_cumulative", mask & (cum < 0))
+        )
+        raise Refusal(
+            reason,
+            "cumulative losses must be finite and non-negative: {cells}",
+            option="cells",
+            cells=[_cell(periods, i, j, step, cum) for i, j in np.argwhere(bad)],
+        )
     factors, selection, summary = _factors(grid, candidate, horizon // step)
     beta = np.r_[1 / np.cumprod(factors[::-1])[::-1], 1.0]
     if not np.isfinite(beta).all() or (beta <= 0).any():
-        raise ValueError("development pattern is not finite and positive")
+        bad = np.flatnonzero(~np.isfinite(beta[:-1]) | (beta[:-1] <= 0))
+        raise Refusal(
+            "result_not_finite",
+            "the development pattern is not a finite positive number {links}: the link "
+            "factors are too large to multiply out",
+            links=[((j + 1) * step, (j + 2) * step) for j in bad],
+        )
     latest = cum[np.arange(grid["n_w"]), grid["latest_dev"]]
     developed = beta[grid["latest_dev"]]
     elr = np.full(grid["n_w"], np.nan)
@@ -443,7 +590,19 @@ def _estimate(grid: dict[str, Any], candidate: ConventionalCandidate, cutoff: dt
     else:
         premium = grid["premium"]
         if not np.isfinite(premium).all() or (premium <= 0).any():
-            raise ValueError("premium must be finite and positive")
+            reason = "missing_value" if np.isnan(premium).any() else "not_finite"
+            bad = np.isnan(premium) if reason == "missing_value" else ~np.isfinite(premium)
+            if not bad.any():
+                reason, bad = "invalid_option", premium <= 0
+            raise Refusal(
+                reason,
+                "premium must be finite and positive; it is not for {origins}",
+                option="premium",
+                cells=[
+                    RefusedCell(None, periods[i], None, float(premium[i]))
+                    for i in np.flatnonzero(bad)
+                ],
+            )
         if candidate.method == "bf":
             elr[:] = candidate.expected_loss_ratio
         else:
@@ -466,8 +625,21 @@ def _estimate(grid: dict[str, Any], candidate: ConventionalCandidate, cutoff: dt
         "reserve": reserve,
     }
     if not all(np.isfinite(values).all() for values in (prior, ultimate, reserve)):
-        raise ValueError("conventional forecast is not finite")
+        bad = ~(np.isfinite(prior) & np.isfinite(ultimate) & np.isfinite(reserve))
+        raise Refusal(
+            "result_not_finite",
+            "the ultimate for {origins} is not a "
+            "finite number: the amounts are too large to multiply out",
+            option="cells",
+            cells=[RefusedCell(None, grid["origin_periods"][i]) for i in np.flatnonzero(bad)],
+        )
     return _Estimate(candidate, cutoff, grid, factors, beta, origins, selection, summary)
+
+
+def _cell(origins, i: int, j: int, step: int, cum: np.ndarray) -> RefusedCell:
+    """Cell ``(i, j)`` of a grid as a refused cell, with its amount when it is a number."""
+    value = float(cum[i, j])
+    return RefusedCell(None, origins[i], (j + 1) * step, value if np.isfinite(value) else None)
 
 
 def _factors(grid, candidate, n_dev):
@@ -529,8 +701,14 @@ def _factors(grid, candidate, n_dev):
         if drop and ordered:
             if len(ordered) <= drop:
                 if candidate.exhausted_exclusions == "raise":
-                    raise ValueError(
-                        f"extreme exclusions exhaust paired origins at dev lag {(j + 1) * step}"
+                    flags = [name for name in ("drop_high", "drop_low") if getattr(candidate, name)]
+                    raise Refusal(
+                        "exclusions_exhausted",
+                        f"{' and '.join(flags)} would leave no link ratio {{links}}; pass "
+                        "exhausted_exclusions='keep' to keep that age's ratios untrimmed",
+                        option="exhausted_exclusions",
+                        options=("exhausted_exclusions", *flags),
+                        links=[((j + 1) * step, (j + 2) * step)],
                     )
                 skipped = True
             else:
@@ -553,15 +731,27 @@ def _factors(grid, candidate, n_dev):
             if not fallback:
                 factors[j] = factor
         if fallback and candidate.unsupported_factor == "raise":
-            message = f"no estimable positive factor at dev lag {(j + 1) * step}"
+            if kept:
+                message = (
+                    f"the {len(kept)} link ratio(s) {{links}} give a factor of {float(factor)!r}, "
+                    "which is not a positive number"
+                )
+            else:
+                message = "no link ratio is left {links} to estimate a factor from"
             if not kept and any(r["reason"] == "zero_cell" for r in rows):
                 message += (
-                    ": no link ratio is left there once zero_cells='missing' leaves out those "
-                    "with a zero cell. "
+                    ": zero_cells='missing' leaves out those with a zero cell. "
                     "unsupported_factor='unity' uses a factor of 1.0 at that age, as "
                     "chainladder-python does; zero_cells='observed' keeps the zeros as data"
                 )
-            raise ValueError(message)
+            else:
+                message += "; unsupported_factor='unity' uses a factor of 1.0 at that age"
+            raise Refusal(
+                "no_link_ratio",
+                message,
+                option="unsupported_factor",
+                links=[((j + 1) * step, (j + 2) * step)],
+            )
         selection.extend(rows)
         summary.append(
             {

@@ -21,6 +21,8 @@ from typing import Any
 
 import numpy as np
 
+from ibnr.errors import Refusal, RefusedCell
+
 #: A triangle's measure. The same two values as ``ibnr.triangle.core.Measure``,
 #: which this module cannot import without loading ibis;
 #: ``tests/test_import_purity.py`` checks that the two agree.
@@ -56,22 +58,27 @@ def dev_step_index(dev_lag, *, step: int) -> np.ndarray:
     positivity message could never be reached for it.
 
     Returns an ``int64`` array aligned with the input, so a caller can assign it
-    straight into its frame.
+    straight into its frame. Both refusals are ``ibnr.errors.Refusal``s, with
+    the reasons ``invalid_age`` and ``grain_mismatch``.
     """
     months = np.asarray(dev_lag, dtype=np.int64)
     non_positive = months <= 0
     if non_positive.any():
         ages = sorted({int(a) for a in np.unique(months[non_positive])})
-        raise ValueError(
+        raise Refusal(
+            "invalid_age",
             f"dev_lag must be positive, got {ages[:5]}; dev_lag is months from the origin "
-            f"period start, so the first cell of a {step}-month dev grain is at {step}"
+            f"period start, so the first cell of a {step}-month dev grain is at {step}",
+            column="dev_lag",
+            count=int(non_positive.sum()),
         )
     offsets = months % step
     off_grain = offsets != 0
     if off_grain.any():
         ages = sorted({int(a) for a in np.unique(months[off_grain])})
         found = sorted({int(o) for o in np.unique(offsets)})
-        raise ValueError(
+        raise Refusal(
+            "grain_mismatch",
             f"{int(off_grain.sum())} dev_lag value(s) are not on a {step}-month grain "
             f"boundary: ages {ages[:5]} leave offsets {found} against the declared dev "
             f"grain. Every contract indexes a cell by d = dev_lag // {step}, so an age off "
@@ -80,7 +87,9 @@ def dev_step_index(dev_lag, *, step: int) -> np.ndarray:
             "anchoring produces: a March 31 valuation regrained to an annual dev grain "
             "gives ages 3, 15, 27 rather than 12, 24, 36. Slice with as_of() to a "
             "valuation on a grain boundary before with_dev_grain(), or keep the finer dev "
-            "grain."
+            "grain.",
+            column="dev_lag",
+            count=int(off_grain.sum()),
         )
     return months // step
 
@@ -115,7 +124,12 @@ def grid_from_columns(
     # loop, so per-row work here would put the loop's cost right back after the
     # engine round-trips were removed.
     if measure not in TRIANGLE_MEASURES:
-        raise ValueError(f"measure must be one of {TRIANGLE_MEASURES}, got {measure!r}")
+        raise Refusal(
+            "invalid_option",
+            f"measure must be one of {TRIANGLE_MEASURES}, got {{given}}",
+            option="measure",
+            given=measure,
+        )
     step = dev_grain_months
     d = dev_step_index(dev_lag, step=step)
     # Factorize the raw values, then read each DISTINCT value as a date: two
@@ -127,18 +141,34 @@ def grid_from_columns(
             f"origin_period has {len(codes)} values and dev_lag has {len(d)}; "
             "the columns must have one value per cell"
         )
-    try:
-        as_dates = [as_date(value) for value in uniques]
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"origin_period values must be dates: {exc}") from exc
+    as_dates = []
+    for unique in uniques:
+        try:
+            as_dates.append(as_date(unique))
+        except (TypeError, ValueError) as exc:
+            raise Refusal(
+                "unreadable_label",
+                f"origin_period values must be dates: {exc}",
+                column="origin_period",
+                given=unique,
+            ) from exc
     origins = sorted(set(as_dates))
     position = {origin: i for i, origin in enumerate(origins)}
     w_idx = np.array([position[o] for o in as_dates], dtype=np.int64)[codes]
     n_w, n_d = len(origins), int(d.max())
     flat = w_idx.astype(np.int64) * n_d + (d - 1)
-    if np.unique(flat).size != flat.size:
-        raise ValueError(
-            "multiple rows per (origin, dev) cell; slice with as_of()/latest_diagonal() first"
+    _, first, counts = np.unique(flat, return_index=True, return_counts=True)
+    if (counts > 1).any():
+        repeated = np.isin(flat, flat[first[counts > 1]])
+        raise Refusal(
+            "duplicate",
+            "multiple rows per (origin, dev) cell; slice with as_of()/latest_diagonal() first. "
+            "Repeated: {cells}",
+            column="origin_period",
+            cells=[
+                RefusedCell(None, origins[w_idx[k]], int(d[k]) * step, None)
+                for k in np.flatnonzero(repeated)
+            ],
         )
     amounts = np.asarray(value, dtype=float)
     if amounts.shape != d.shape:
@@ -149,7 +179,7 @@ def grid_from_columns(
     cum = np.full((n_w, n_d), np.nan)
     cum[w_idx, d - 1] = amounts
     obs_mask = ~np.isnan(cum)
-    latest_dev = require_run_off(obs_mask, origins)
+    latest_dev = require_run_off(obs_mask, origins, step=step, cum=cum)
 
     # 1-based cell indices of the observed cells, row-major (sorted by (w, d)),
     # the same convention as stan_data's w/d. Derived from the mask rather than
@@ -178,6 +208,10 @@ def grid_from_columns(
 _MISSING_ORIGIN = "origin_period has missing values; every row needs its origin period"
 
 
+def _missing_origin() -> Refusal:
+    return Refusal("missing_value", _MISSING_ORIGIN, column="origin_period")
+
+
 def _factorize(values) -> tuple[np.ndarray, list]:
     """Codes into the distinct values, and the distinct values, or a refusal of a missing one.
 
@@ -195,9 +229,9 @@ def _factorize(values) -> tuple[np.ndarray, list]:
         arr = arr.reshape(-1)
     kind = arr.dtype.kind
     if kind == "M" and np.isnat(arr).any():
-        raise ValueError(_MISSING_ORIGIN)
+        raise _missing_origin()
     if kind == "f" and np.isnan(arr).any():
-        raise ValueError(_MISSING_ORIGIN)
+        raise _missing_origin()
     if kind != "O":
         uniques, first, inverse = np.unique(arr, return_index=True, return_inverse=True)
         order = np.argsort(first, kind="stable")  # first appearance, not sorted order
@@ -208,7 +242,7 @@ def _factorize(values) -> tuple[np.ndarray, list]:
         distinct = list(uniques) if kind == "M" else uniques.tolist()
         return rank[inverse.reshape(-1)].astype(np.int64), distinct
     if any(_is_missing(v) for v in arr):
-        raise ValueError(_MISSING_ORIGIN)
+        raise _missing_origin()
     index: dict = {}
     codes = np.fromiter(
         (index.setdefault(v, len(index)) for v in arr), dtype=np.int64, count=arr.size
@@ -227,7 +261,15 @@ def _is_missing(value) -> bool:
         return True
 
 
-def require_run_off(obs_mask: np.ndarray, origins: list) -> np.ndarray:
+_RUN_OFF = (
+    "Every origin needs cells from its first development age up to one common "
+    "evaluation date, or up to the last development age once it has run off"
+)
+
+
+def require_run_off(
+    obs_mask: np.ndarray, origins: list, *, step: int | None = None, cum: np.ndarray | None = None
+) -> np.ndarray:
     """Each origin's last observed dev index, or a refusal if the grid is not a run-off.
 
     The observed cells must form the staircase ``kernels.contract.cohort_grid`` describes:
@@ -235,27 +277,66 @@ def require_run_off(obs_mask: np.ndarray, origins: list) -> np.ndarray:
     last dev step once it has run off. Shared by :func:`grid_from_columns` and by
     :func:`check_grid`, which re-checks a grid it is handed because a grid is a
     plain dict a caller can build or change by hand.
+
+    The refusal is an ``ibnr.errors.Refusal`` with the reason ``not_run_off``,
+    naming the cells that are missing, or else the cells past the latest
+    diagonal. ``step`` (months per development step) puts the cells' ages in
+    months, and ``cum`` gives a cell past the diagonal its amount; without
+    ``step`` an age is its 1-based step index.
+
+    The diagonal the cells are compared with is the youngest origin's, as it
+    always was, so the check accepts and refuses the same grids. Only the
+    message looks further: it names the cells against whichever origin's
+    diagonal leaves the fewest cells wrong, so one cell too many on the
+    youngest origin is named as that cell, not as every older origin one cell
+    short.
     """
     n_w, n_d = obs_mask.shape
+    months = 1 if step is None else int(step)
+
+    def cell(i: int, j: int, present: bool) -> RefusedCell:
+        value = float(cum[i, j]) if present and cum is not None else None
+        return RefusedCell(None, origins[i], (j + 1) * months, value)
+
     if not obs_mask[:, 0].all():
-        missing = [origins[i] for i in np.nonzero(~obs_mask[:, 0])[0]]
-        raise ValueError(f"origins {missing} have no observation at the first dev step")
+        missing = np.nonzero(~obs_mask[:, 0])[0]
+        raise Refusal(
+            "not_run_off",
+            "the cells are not a run-off triangle: {cells} "
+            + ("is" if missing.size == 1 else "are")
+            + f" missing. {_RUN_OFF}",
+            option="cells",
+            cells=[cell(int(i), 0, False) for i in missing],
+        )
     latest_dev = n_d - 1 - np.argmax(obs_mask[:, ::-1], axis=1)  # (n_w,)
     # K = the calendar diagonal, in (origin + dev) units, implied by the youngest
     # origin; every other origin must sit on the same diagonal (or be capped by
     # n_d, having already run off).
     diagonal = int(latest_dev[-1]) + (n_w - 1)
+    if (obs_mask == _staircase(diagonal, n_w, n_d)).all():
+        return latest_dev
+    # the diagonal that leaves the fewest cells wrong, the youngest origin's on a tie
+    candidates = [diagonal, *sorted({int(k) + i for i, k in enumerate(latest_dev)} - {diagonal})]
+    wrong = [int((obs_mask != _staircase(k, n_w, n_d)).sum()) for k in candidates]
+    reference = _staircase(candidates[int(np.argmin(wrong))], n_w, n_d)
+    missing = np.argwhere(reference & ~obs_mask)
+    extra = np.argwhere(obs_mask & ~reference)
+    if missing.size:
+        cells = [cell(int(i), int(j), False) for i, j in missing]
+        verb = "is" if len(cells) == 1 else "are"
+        also = f" ({len(extra)} more cell(s) are past the latest diagonal)" if len(extra) else ""
+        template = f"the cells are not a run-off triangle: {{cells}} {verb} missing{also}. "
+    else:
+        cells = [cell(int(i), int(j), True) for i, j in extra]
+        verb = "is" if len(cells) == 1 else "are"
+        template = f"the cells are not a run-off triangle: {{cells}} {verb} past the latest "
+        template += "diagonal. "
+    raise Refusal("not_run_off", template + _RUN_OFF, option="cells", cells=cells)
+
+
+def _staircase(diagonal: int, n_w: int, n_d: int) -> np.ndarray:
     expected = np.minimum(diagonal - np.arange(n_w), n_d - 1)  # (n_w,) staircase
-    reference = np.arange(n_d)[None, :] <= expected[:, None]
-    if not (obs_mask == reference).all():
-        rows = sorted(set(np.nonzero(obs_mask != reference)[0].tolist()))[:5]
-        bad = [(origins[i], int(obs_mask[i].sum()), int(expected[i]) + 1) for i in rows]
-        raise ValueError(
-            "observed cells are not a run-off triangle; the chain-ladder kernels need "
-            "each origin observed from dev step 1 up to one common calendar diagonal. "
-            f"(origin, observed cells, expected depth) mismatches: {bad}"
-        )
-    return latest_dev
+    return np.arange(n_d)[None, :] <= expected[:, None]
 
 
 #: What the chain-ladder fits (``kernels.fit_conventional`` and
@@ -300,6 +381,13 @@ def check_grid(grid: dict[str, Any]) -> tuple[list[dt.date], dt.date]:
     number of steps); and still-developing origins whose latest cells are on
     different dates.
 
+    The checks of the data (origin periods that are not first days, cells that
+    are not a run-off triangle, origins not one step apart, a stale diagonal)
+    raise ``ibnr.errors.Refusal``. The checks of the dict's own structure (keys,
+    array types and shapes, ``obs_mask``, ``latest_dev``, the measure, the
+    counts) raise a plain ``ValueError``: only a grid built or changed by hand
+    can fail them, so ``ibnr.methods``, which builds its own, never meets one.
+
     The information date is the evaluation date of the latest observed cell:
     the day before ``origin_period`` plus ``dev_lag`` months, which is a month
     end because origin periods start on the first. Origin 1988-01-01 at 12
@@ -342,12 +430,15 @@ def check_grid(grid: dict[str, Any]) -> tuple[list[dt.date], dt.date]:
         raise ValueError(f"grid origin_periods must be dates: {exc}") from exc
     not_starts = [o for o in origins if o.day != 1]
     if not_starts:
-        raise ValueError(
+        raise Refusal(
+            "unreadable_label",
             f"origin periods must be the first day of their period; {not_starts[:3]} are not. "
             "An origin labelled by its period's end (2010-12-31 for accident year 2010) "
-            "would put every evaluation date in the wrong month"
+            "would put every evaluation date in the wrong month",
+            column="origin_period",
+            cells=[RefusedCell(None, o) for o in not_starts],
         )
-    expected_latest = require_run_off(mask, origins)
+    expected_latest = require_run_off(mask, origins, step=int(step), cum=cum)
     if (
         not isinstance(latest_dev, np.ndarray)
         or latest_dev.dtype.kind not in "iu"
@@ -365,10 +456,13 @@ def check_grid(grid: dict[str, Any]) -> tuple[list[dt.date], dt.date]:
         if j < n_d - 1 and end != valuation
     ]
     if stale:
-        raise ValueError(
+        raise Refusal(
+            "not_run_off",
             f"origins {stale[:5]} are still developing but their latest cell is dated before "
             f"{valuation}, the latest cell of the grid; every origin that has not reached the "
-            "last dev step must be observed up to the same date"
+            "last dev step must be observed up to the same date",
+            option="cells",
+            cells=[RefusedCell(None, o) for o in stale],
         )
     return origins, valuation
 
@@ -387,10 +481,12 @@ def _require_matching_grains(origins: list[dt.date], step: int) -> None:
         raise ValueError("grid origin_periods must be in increasing order, at most one per month")
     if int(gaps.min()) != step or (gaps % step).any():
         found = sorted({int(g) for g in gaps})
-        raise ValueError(
+        raise Refusal(
+            "grain_mismatch",
             f"origin periods are {found} months apart but the development step is {step} "
             "months; the chain-ladder fits need matching origin and development grains "
-            f"(neighbouring origins {step} months apart, with any gap a whole number of steps)"
+            f"(neighbouring origins {step} months apart, with any gap a whole number of steps)",
+            column="origin_period",
         )
 
 

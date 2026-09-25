@@ -18,6 +18,7 @@ import pandas as pd
 import pytest
 
 from ibnr import Triangle, kernels
+from ibnr.errors import Refusal
 from ibnr.kernels.contract import cohort_grid, cohort_grid_frame
 from ibnr.kernels.conventional import (
     ConventionalCandidate,
@@ -305,20 +306,22 @@ def test_premium_follows_its_origin_not_its_position(six_grid):
 def test_premium_refusals(six_grid):
     premium = six_premium()
     colliding = {**premium, SIX_ORIGINS[0].isoformat(): 1.0}
-    with pytest.raises(
-        ValueError, match=r"more than one amount for origin\(s\) \[datetime.date\(2010"
-    ):
+    # each refusal names the origin by its first day and carries it as a cell
+    with pytest.raises(Refusal, match=r"more than one amount for origin\(s\) 2010-01-01") as got:
         fit_conventional_grid(six_grid, BF, premium=colliding)
+    assert got.value.reason == "duplicate"
+    assert [c.origin_period for c in got.value.cells] == [dt.date(2010, 1, 1)]
 
     short = {o: v for o, v in premium.items() if o != SIX_ORIGINS[3]}
-    with pytest.raises(
-        ValueError, match=r"no amount for origin\(s\) \[datetime.date\(2013, 1, 1\)\]"
-    ):
+    with pytest.raises(Refusal, match=r"no amount for origin\(s\) 2013-01-01$") as got:
         fit_conventional_grid(six_grid, BF, premium=short)
+    assert got.value.reason == "origin_not_covered"
 
     extra = {**premium, dt.date(2016, 1, 1): 800.0}
-    with pytest.raises(ValueError, match=r"2016, 1, 1\)\] that are not in the grid"):
+    with pytest.raises(Refusal, match=r"2016-01-01 that are not in the grid") as got:
         fit_conventional_grid(six_grid, BF, premium=extra)
+    assert got.value.reason == "not_in_triangle"
+    assert [c.value for c in got.value.cells] == [800.0]
 
     with pytest.raises(ValueError, match="keyed by origin period"):
         fit_conventional_grid(six_grid, BF, premium=list(SIX_PREMIUM))
