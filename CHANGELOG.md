@@ -13,10 +13,36 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 (As built that surface is `Triangle` plus
 `gallery.list/get/fit/stack/leaderboard/next_diagonal/CohortForecast/Absence/align_panel/SCORE_DIRECTION/GalleryDiagonal/reserve_rows`
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
-corrected decision 8 - and, from the release after 0.7.1,
+corrected decision 8 - and, from 0.7.2,
 `methods.chain_ladder/bornhuetter_ferguson/cape_cod/mack/ReserveResult`.)
 
-## Unreleased
+From 0.7.2 the minor number is kept for milestones: additions and fixes ship as
+patch releases, and 0.8 comes when the roadmap's goals are done.
+
+## 0.7.2 - 2026-09-24
+
+Three pull requests (#149, #152, #153) for moving a reserving service off
+chainladder-python:
+- a fast array path for the conventional point fits;
+- a front door named after the traditional methods (`ibnr.methods`, with Arrow
+  tables in and out);
+- a setting that reads a zero cumulative as missing, as chainladder does.
+
+This is a patch release although it adds a public module. From this release the
+minor number is kept for when the roadmap's goals are done, and additions and
+fixes ship as patch releases.
+
+**Changes that can break existing code.** All of them refuse input that used to
+be accepted:
+- `fit_mack`, `fit_mack_grid` and `fit_mack_many` now check their grid. They
+  refuse an incremental grid, origin periods that are not the first day of their
+  period, and origins whose spacing does not match the development step.
+- `cohort_grid_frame` reads ISO date strings as dates; it used to keep them as
+  text and sort them as text. It refuses an unknown measure, a row with no
+  origin period, and origin periods that are not dates.
+
+No number changes for input that is still accepted: with default settings the
+kernels' results were compared byte for byte against 0.7.1's code.
 
 **`zero_cells`: a cumulative of zero can be read as missing, as chainladder-python
 reads it.** chainladder-python stores every zero cell as missing, so a link ratio
