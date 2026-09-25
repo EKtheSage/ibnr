@@ -102,13 +102,14 @@ PIN = json.loads((DATA / "conventional_selection_pin.json").read_text("utf-8"))
 
 
 def test_nothing_that_existed_before_moved_on_the_public_triangles():
-    """14 option sets x chain ladder, BF and Cape Cod x raa, genins, ukmotor, abc and
-    mw2014, each digested down to the bytes of every factor, pattern value, origin
-    column, link-ratio row and summary flag, or to a refusal's reason and message,
-    and compared with the code before ``kernels/links.py`` (commit 01e5c2f)."""
+    """14 option sets x chain ladder, BF and Cape Cod x raa, genins, ukmotor, abc,
+    mw2014 and a 30 x 30 triangle, each digested down to the bytes of every factor,
+    pattern value, origin column, link-ratio row and summary flag, or to a
+    refusal's reason and message, and compared with the code before
+    ``kernels/links.py`` (commit 01e5c2f)."""
     pinned = {key: value for key, value in PIN.items() if not key.startswith("clrd|")}
-    assert len(pinned) == 5 * 14 * 3
-    now = frozen.pin(PUBLIC)
+    assert len(pinned) == 6 * 14 * 3
+    now = frozen.pin(frozen.public_triangles())
     assert [key for key in sorted(pinned) if now.get(key) != pinned[key]] == []
 
 
@@ -327,6 +328,21 @@ def test_the_regression_average_is_least_squares_through_the_origin():
 def test_alpha_is_macks_exponent_for_each_average():
     assert ALPHA == {"simple": 0, "volume": 1, "regression": 2}
     assert AVERAGES == ("volume", "simple", "regression", "median")
+
+
+def test_the_first_link_at_fault_is_named_whichever_check_finds_it():
+    # 12-24 has no ratio left (all three excluded by name); 36-48 has one, which
+    # drop_high would remove. The earlier link is the one refused, as in 0.7.2.
+    four = table({2001: [100, 150, 170, 175], 2002: [110, 168, 190], 2003: [120, 175], 2004: [130]})
+    with pytest.raises(Refusal) as refused:
+        methods.chain_ladder(
+            four,
+            exclude=[(2001, 12), (2002, 12), (2003, 12)],
+            drop_high=1,
+            exhausted_exclusions="raise",
+        )
+    assert refused.value.reason == "no_link_ratio"
+    assert refused.value.links == ((12, 24),)
 
 
 def test_the_shared_selector_refuses_an_exhausted_rule_at_the_first_link_it_meets():
