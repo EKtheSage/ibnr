@@ -44,8 +44,9 @@ the highest link ratio from 12 to 24 months is weighted out. Written by
 
 A digest of every answer the conventional fit gave before `kernels/links.py`:
 14 option sets, chain ladder, Bornhuetter-Ferguson and Cape Cod, on the five
-public triangles in `refusal_triangles.json` and 36 clrd paid triangles, 1,722
-cases. Each digest covers the raw bytes of the factors, the pattern, the origin
+public triangles in `refusal_triangles.json`, a 30 x 30 triangle built from a
+formula (big enough that a change in the order of a sum shows in its bits) and
+36 clrd paid triangles, 1,764 cases. Each digest covers the raw bytes of the factors, the pattern, the origin
 columns, every link-ratio row and the summary flags, or a refusal's reason and
 message. Written by `scripts/freeze_conventional_pin.py` run against commit
 01e5c2f's source; running it against the current source must write the same

@@ -8,15 +8,17 @@ origin table's columns, every link ratio's row and reason, the per-age summary,
 and each refusal's reason and message.
 
 The file was frozen from commit 01e5c2f (the last commit before
-``kernels/links.py``) by running this script against that commit's source:
+``kernels/links.py``) by running this version of the script against that
+commit's source:
 
     git archive 01e5c2f src | tar -x -C <somewhere>
     uv run python scripts/freeze_conventional_pin.py <somewhere>/src
 
 Rerunning it against the current source must write the same file. The
-triangles are the five public ones in ``tests/data/refusal_triangles.json`` and
-every fourteenth clrd paid-loss cohort that is a run-off triangle (needs
-chainladder-python). The digest is ``digest`` below, which the test repeats.
+triangles are the five public ones in ``tests/data/refusal_triangles.json``, a
+30 x 30 one built from a formula, and every fourteenth clrd paid-loss cohort
+that is a run-off triangle (needs chainladder-python). The test imports
+``digest`` and ``pin`` from here.
 """
 
 from __future__ import annotations
@@ -99,7 +101,21 @@ def digest(fit) -> str:
 
 
 def public_triangles() -> dict[str, list]:
-    return json.loads((ROOT / "tests" / "data" / "refusal_triangles.json").read_text("utf-8"))
+    """The five public triangles, and one 30 x 30 built from a formula.
+
+    The large one has up to 29 link ratios at an age, where numpy's own sums add
+    in a different order from a loop over the origins, so a change of summation
+    order shows in its bits; the public triangles have at most 16.
+    """
+    triangles = json.loads((ROOT / "tests" / "data" / "refusal_triangles.json").read_text("utf-8"))
+    rows = []
+    for i in range(30):
+        amount = 1000.0 + 37.0 * i
+        for j in range(30 - i):
+            rows.append([1990 + i, 12 * (j + 1), amount])
+            amount *= 1.0 + 1.0 / (j + 1) ** 1.5 + 0.013 * ((7 * i + 3 * j) % 11)
+    triangles["formula_30"] = rows
+    return triangles
 
 
 def clrd_triangles() -> dict[str, list]:

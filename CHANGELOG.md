@@ -84,7 +84,9 @@ code before this change: `fit_conventional_grid` under 13 sets of the options
 that existed before, the methods under the same sets with
 `trim_ties="origin"`, and `methods.mack`, on raa, genins, ukmotor, abc, mw2014
 and 122 clrd paid and incurred triangles, 10,414 cases (3,112 of them
-refusals, with the same messages), all identical. 1,722 of those cases are frozen as digests in
+refusals, with the same messages), all identical. 1,764 kernel cases of the
+same kind (14 sets, the three methods, the five public triangles, a 30 x 30 one
+and 36 clrd triangles) are frozen as digests of their bytes in
 `tests/data/conventional_selection_pin.json`, which the tests check.
 
 **What can change for a caller:**
