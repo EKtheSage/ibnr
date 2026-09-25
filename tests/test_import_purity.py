@@ -58,6 +58,7 @@ HEAVY = (
     "jax",
     "pytensor",
     "matplotlib",
+    "sklearn",
 )
 
 #: The modules a user reaches for. ``ibnr.kernels.stacking`` and
@@ -290,6 +291,27 @@ calls = {{
     "refused_one_year_cdr": lambda: methods.one_year_cdr(cells, zero_cells="x"),
     "refused_bootstrap": lambda: methods.odp_bootstrap(cells, n_draws=10),
 }}
+# ml_development last, and only where scikit-learn is installed: a fit imports
+# it, with the scipy and pandas it loads, so every call after it would see them.
+# Its refusal comes first, since options are checked before the import.
+import importlib.util
+if importlib.util.find_spec("sklearn") is not None:
+    calls["refused_ml_development"] = lambda: methods.ml_development(
+        cells, estimator="random_forest", seed=None
+    )
+    calls["ml_development"] = lambda: methods.ml_development(
+        cells, estimator="gradient_boosting", seed=42
+    )
+    calls["ml_development_options"] = lambda: methods.ml_development(
+        cells,
+        estimator="random_forest",
+        seed=7,
+        n_estimators=20,
+        min_samples_leaf=2,
+        origin="none",
+        calendar="trend",
+        zero_cells="missing",
+    )
 out = {{}}
 for name, call in calls.items():
     try:
@@ -352,7 +374,15 @@ def test_every_method_runs_without_loading_ibis_pandas_scipy_or_sklearn(tmp_path
     Mutations: build one output column with ``pa.array`` in ``methods.py``
     (pyarrow then imports pandas), or have ``_conventional_result`` read
     ``fit_conventional_grid``'s pandas tables; each fails naming pandas.
+
+    ``ml_development`` is the one exception, and only when it fits: scikit-learn
+    is what it runs, and importing it loads scipy and pandas. It must still
+    leave ibis out, and its refusal of an option, which comes before the
+    import, must load nothing. Where scikit-learn is not installed (the core
+    CI leg) its calls are left out.
     """
+    import importlib.util
+
     paths = _raa_files(tmp_path)
     answers = _answers(_METHOD_CALLS.format(not_for=NOT_FOR_METHODS), *paths)
     expected = _answers(
@@ -360,11 +390,16 @@ def test_every_method_runs_without_loading_ibis_pandas_scipy_or_sklearn(tmp_path
     )
 
     assert set(answers) == set(expected)
+    fits = {"ml_development", "ml_development_options"}
     for name, got in answers.items():
-        assert got["loaded"] == [], f"{name} loaded {got['loaded']}"
+        if name in fits:
+            assert got["loaded"] == ["pandas", "scipy", "sklearn"], f"{name} {got['loaded']}"
+        else:
+            assert got["loaded"] == [], f"{name} loaded {got['loaded']}"
         assert got["answer"] == expected[name]["answer"], name
     # the refusals were refusals, and every other call answered
     refused = {name for name, got in answers.items() if isinstance(got["answer"], str)}
+    has_sklearn = importlib.util.find_spec("sklearn") is not None
     assert refused == {
         "refused_grain",
         "refused_exclusion",
@@ -372,7 +407,9 @@ def test_every_method_runs_without_loading_ibis_pandas_scipy_or_sklearn(tmp_path
         "refused_tweedie_glm",
         "refused_one_year_cdr",
         "refused_bootstrap",
+        *(("refused_ml_development",) if has_sklearn else ()),
     }
+    assert fits <= set(answers) if has_sklearn else not fits & set(answers)
 
 
 def test_every_column_type_the_methods_read_loads_no_pandas(tmp_path):
