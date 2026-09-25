@@ -191,6 +191,7 @@ def fit_odp_bootstrap(
     pool: str = "all",
     negative_increments: str = "refuse",
     excluded: np.ndarray | None = None,
+    exact: np.ndarray | None = None,
 ) -> ODPBootstrapFit:
     """Fitted incrementals, Pearson scale and adjusted residuals of one cohort.
 
@@ -225,7 +226,8 @@ def fit_odp_bootstrap(
       up to rounding.
     - ``pool``: one of :data:`RESIDUAL_POOLS`. Cells of leverage one are found
       by their leverage (above :data:`LEVERAGE_ONE`), never by testing a
-      residual for zero, which rounding defeats. An observed increment of zero
+      residual for zero, which rounding defeats; ``exact`` replaces that rule
+      (below). An observed increment of zero
       is data and stays in the pool (its residual is ``-sqrt(m)``).
     - ``negative_increments``: ``"refuse"`` refuses a negative observed
       increment (``negative_increment``) and a negative fitted mean, which only
@@ -236,6 +238,13 @@ def fit_odp_bootstrap(
       option left out; they leave the pool and the scale's numerator but still
       count as observed cells in its degrees of freedom (as in R and
       chainladder-python).
+    - ``exact``: ``(n_w, n_d)`` bool, the cells the factors ``f`` reproduce
+      exactly, from how they were estimated; ``None`` finds them by leverage.
+      Without development options the two agree (the first origin's last
+      cell and the last origin's first cell). With them, a cell whose link
+      ratios are each the only one left at their age is reproduced exactly
+      too, and :func:`prepare_runoff` passes those; chainladder-python finds
+      the same cells by their residual of zero.
 
     The scale is ``phi = sum(r^2) / (n_cells - n_params)`` over the unscaled
     residuals of every observed cell with a non-zero fitted mean that is not
@@ -367,7 +376,7 @@ def fit_odp_bootstrap(
     phi = float(np.nansum(in_scale**2) / dof)
 
     leverage = _leverage(nonzero, np.abs(np.nan_to_num(fitted)))
-    needs_leverage = adjustment == "hat" or pool == "centred"
+    needs_leverage = adjustment == "hat" or (pool == "centred" and exact is None)
     if needs_leverage:
         h = leverage[nonzero]
         if not (np.isfinite(h).all() and (h >= -_LEVERAGE_SLACK).all()):
@@ -384,7 +393,9 @@ def fit_odp_bootstrap(
                 options=("residual_adjustment", "residual_pool"),
                 given=adjustment,
             )
-    exact = nonzero & (np.nan_to_num(leverage, nan=0.0) > LEVERAGE_ONE)
+    if exact is None:
+        exact = np.nan_to_num(leverage, nan=0.0) > LEVERAGE_ONE
+    exact = candidates & np.asarray(exact, dtype=bool)
 
     if adjustment == "dof":
         adjusted = in_scale * np.sqrt(n_cells / dof)
@@ -761,6 +772,7 @@ def prepare_runoff(
         pool=pool,
         negative_increments=negative_increments,
         excluded=excluded,
+        exact=_reproduced(selection.used, fitted["latest_dev"], estimate, mask),
     )
     keep = select_links(
         cum, mask, periods, step, position_rules(rules), n_links, raise_exhausted=False
@@ -784,6 +796,32 @@ def prepare_runoff(
         central_tail=estimate.tail,
     )
     return RunoffSetup(estimate, boot, projection, excluded, excluded_by)
+
+
+def _reproduced(used: np.ndarray, latest_dev, estimate: _Estimate, mask: np.ndarray) -> np.ndarray:
+    """``(n_w, n_d)`` bool: the observed cells the central factors reproduce exactly.
+
+    The fitted cumulative at age ``j`` is the latest amount divided back by the
+    factors from ``j`` to the latest age, so it equals the observed cumulative
+    whenever each of those factors is the origin's own link ratio: the only
+    ratio left at that age (an average of one ratio is that ratio, for every
+    average). A fitted increment is exact when the fitted cumulatives at both
+    of its ends are. A factor that came from a tail is never the origin's
+    ratio.
+    """
+    n_w, n_d = mask.shape
+    sole = used & (used.sum(axis=0) == 1)[None, :]
+    if estimate.tail is not None:
+        sole[:, estimate.tail.attach_index :] = False
+    reproduced = np.zeros((n_w, n_d), dtype=bool)
+    for i, k in enumerate(np.asarray(latest_dev, dtype=int)):
+        reproduced[i, k] = True
+        for j in range(k - 1, -1, -1):
+            reproduced[i, j] = reproduced[i, j + 1] and sole[i, j]
+    exact = np.zeros((n_w, n_d), dtype=bool)
+    exact[:, 0] = reproduced[:, 0]
+    exact[:, 1:] = reproduced[:, :-1]
+    return exact & mask
 
 
 @dataclass(frozen=True)
