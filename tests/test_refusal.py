@@ -561,6 +561,22 @@ CASES = [
         {},
     ),
     (
+        # dates a year apart on a quarterly step: periods of another length, not
+        # three quarters missing between every two years
+        "annual_dates_on_a_quarterly_step",
+        lambda: cl(
+            tri([(dt.date(2001, 1, 1), 3, 1.0), (dt.date(2002, 1, 1), 3, 1.0)]),
+            dev_grain_months=3,
+        ),
+        "grain_mismatch",
+        "cells",
+        "origin_period",
+        [c(dt.date(2001, 1, 1)), c(dt.date(2002, 1, 1))],
+        [],
+        [],
+        {},
+    ),
+    (
         "no_first_age_cell",
         lambda: cl(tri(drop(BASE, (2003, 12)))),
         "not_run_off",
@@ -1128,6 +1144,33 @@ CASES = [
         [],
         {},
     ),
+    (
+        # each ultimate is finite, their sum is not
+        "chain_ladder_total_overflow",
+        lambda: cl(tri([(2000, 12, 1e308), (2000, 24, 1e308), (2001, 12, 1.5e308)])),
+        "result_not_finite",
+        "cells",
+        None,
+        [],
+        [],
+        [],
+        {},
+    ),
+    (
+        # a link ratio past the largest double, with its age given a factor of 1.0
+        "chain_ladder_ratio_overflow",
+        lambda: cl(
+            tri([(2000, 12, 1e-300), (2000, 24, 1e10), (2001, 12, 1.0)]),
+            unsupported_factor="unity",
+        ),
+        "result_not_finite",
+        "cells",
+        None,
+        [],
+        [],
+        [],
+        {},
+    ),
     # the result
     (
         "to_polars_unknown",
@@ -1161,6 +1204,7 @@ _DATES_EXPECTED = {
     "origin_before_year_1",
     "origin_two_spellings",
     "origins_not_whole_steps",
+    "annual_dates_on_a_quarterly_step",
 }
 
 _METHOD_OF = {cl: "chain_ladder", bf: "bornhuetter_ferguson", cc: "cape_cod", mk: "mack"}
@@ -1598,7 +1642,7 @@ def _as_table(rows):
     )
 
 
-def _numbers_have_no_nan(result) -> None:
+def _numbers_are_finite(result) -> None:
     for name in methods.TABLES:
         table = getattr(result, name)
         if table is None:
@@ -1606,14 +1650,16 @@ def _numbers_have_no_nan(result) -> None:
         for column in table.columns:
             if pa.types.is_floating(column.type):
                 values = column.to_numpy(zero_copy_only=False)
-                assert not np.isnan(values[~column.is_null().to_numpy(zero_copy_only=False)]).any()
+                present = values[~column.is_null().to_numpy(zero_copy_only=False)]
+                assert np.isfinite(present).all(), (name, column)
 
 
 def test_a_seeded_fuzz_meets_nothing_but_refusals():
     """2,000 cases from five public triangles with one to three random edits and
-    random options, valid and not. Every call returns a result with no NaN or
-    raises exactly Refusal. A RuntimeWarning is an error here, so a silent NaN
-    path (an infinite amount subtracted from itself, say) fails the test."""
+    random options, valid and not. Every call returns a result whose numbers are
+    all finite (a missing one is a null) or raises exactly Refusal. A RuntimeWarning
+    is an error here, so a silent NaN path (an infinite amount subtracted from
+    itself, say) fails the test."""
     rng = np.random.default_rng(20260924)
     names = sorted(_FUZZ)
     outcomes: dict[str, int] = {}
@@ -1653,7 +1699,7 @@ def test_a_seeded_fuzz_meets_nothing_but_refusals():
                 json.dumps(refusal.to_dict(), allow_nan=False)
                 outcomes[refusal.reason] = outcomes.get(refusal.reason, 0) + 1
                 continue
-        _numbers_have_no_nan(result)
+        _numbers_are_finite(result)
         outcomes["answered"] = outcomes.get("answered", 0) + 1
     assert outcomes["answered"] > 100, outcomes
     assert len(outcomes) > 10, outcomes
@@ -1701,7 +1747,7 @@ def test_every_clrd_triangle_is_answered_or_refused():
                     ):
                         negatives += 1
                     continue
-                _numbers_have_no_nan(result)
+                _numbers_are_finite(result)
                 bucket["answered"] = bucket.get("answered", 0) + 1
     assert negatives == 41, counts
     quarterly = cl_module.load_sample("quarterly")

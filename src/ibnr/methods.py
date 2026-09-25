@@ -522,7 +522,6 @@ def _mack(grid, labels: _Origins, *, sigma_rule: str, zero_cells: str) -> Reserv
                 for i in zero_latest
             ],
         )
-    _require_nonzero_projection(fit, zero_cells)
     # a factor so small its square is 0, or a sum of squares past the largest double:
     # amounts too large (or small) to multiply out, refused by _require_finite
     with np.errstate(over="ignore", under="ignore", divide="ignore", invalid="ignore"):
@@ -543,7 +542,7 @@ def _mack(grid, labels: _Origins, *, sigma_rule: str, zero_cells: str) -> Reserv
             "parameter_se": _arrow.float64([np.sqrt(risk["parameter_total"])]),
             "process_se": _arrow.float64([np.sqrt(risk["process_total"])]),
         }
-    _require_finite(fit.origin_periods, per_origin, sigma, std_err, total)
+    _require_finite(fit.origin_periods, per_origin, np.r_[sigma, std_err], total)
     origins = pa.table(
         {
             "origin": labels.labels_for(fit.origin_periods),
@@ -563,68 +562,35 @@ def _mack(grid, labels: _Origins, *, sigma_rule: str, zero_cells: str) -> Reserv
     return ReserveResult("mack", as_of, step, origins, development, None, pa.table(total))
 
 
-def _require_nonzero_projection(fit, zero_cells: str) -> None:
-    """Refuse Mack's standard errors when a projected cumulative is zero.
+def _require_finite(periods, per_origin: dict, others, total: dict) -> None:
+    """Refuse an answer with a number that is not finite, naming the origins.
 
-    Under ``zero_cells="observed"`` a factor of 0 (every link ratio into an age
-    of zeros is 0) projects each origin still to develop through it to 0, and
-    Mack's process term divides by every projected cumulative, so its standard
-    error would be NaN. The factors and ultimates are fine; the variance is not.
-    """
-    with np.errstate(over="ignore"):
-        full = fit.full
-    at_zero = fit._zero_latest  # an origin at zero under "missing" gets 0, by its limit
-    steps = set()
-    for i in range(fit.n_w):
-        if at_zero[i]:
-            continue
-        for j in range(int(fit.latest_dev[i]), fit.n_d - 1):
-            if full[i, j] == 0:
-                steps.add(j - 1)
-    if steps:
-        step = fit.dev_grain_months
-        raise Refusal(
-            "variance_not_estimable",
-            "the factor {links} is 0, so every origin still to develop through it projects "
-            "to 0 there, and Mack's standard error divides by each projected amount. "
-            "chain_ladder gives the ultimates without standard errors"
-            + (
-                "; zero_cells='missing' leaves out the link ratios into a zero"
-                if zero_cells == "observed"
-                else ""
-            ),
-            option="zero_cells",
-            links=[((j + 1) * step, (j + 2) * step) for j in sorted(steps)],
-        )
-
-
-def _require_finite(periods, per_origin: dict, sigma, std_err, total: dict) -> None:
-    """Refuse a Mack answer with a number that is not finite, naming the origins.
-
-    The inputs were checked finite, so such a number is an overflow: amounts so
-    large that a square or a product passes the largest double. A result never
-    carries NaN or infinity, which Arrow would store as numbers, not nulls.
+    The inputs were checked finite, so such a number comes from amounts so large
+    that a sum, a square or a product passes the largest double (or so far
+    apart that a factor's square is 0). A result never carries NaN or infinity,
+    which Arrow would store as numbers, not nulls. ``per_origin`` holds the
+    per-origin columns, ``others`` any other numbers (Mack's sigmas), ``total``
+    the one-row totals.
     """
     bad = np.zeros(len(periods), dtype=bool)
     for values in per_origin.values():
-        bad |= ~np.isfinite(values)
+        bad |= ~np.isfinite(np.asarray(values, dtype=float))
     if bad.any():
         raise Refusal(
             "result_not_finite",
             "the ultimate or the standard error for {origins} is not a finite number: the "
-            "amounts are too large to multiply out. Divide them by a power of ten (work in "
-            "thousands, say) and multiply the answer back",
+            "amounts are too large (or too far apart) for their squares and products to "
+            "stay finite. Scale them (work in thousands, say) and scale the answer back",
             option="cells",
             cells=[RefusedCell(None, periods[i]) for i in np.flatnonzero(bad)],
         )
     totals = [column[0].as_py() for column in total.values()]
-    others = np.r_[sigma, std_err]
     if not (np.isfinite(others).all() and all(math.isfinite(t) for t in totals)):
         raise Refusal(
             "result_not_finite",
             "a total or a development age's sigma is not a finite number: the amounts are "
-            "too large to add up. Divide them by a power of ten (work in thousands, say) and "
-            "multiply the answer back",
+            "too large (or too far apart) for their sums and squares to stay finite. Scale "
+            "them (work in thousands, say) and scale the answer back",
             option="cells",
         )
 
@@ -816,7 +782,11 @@ def _conventional_result(
             "reason": _arrow.string(link("reason")),
         }
     )
-    totals = pa.table(_sums(latest, ultimate))
+    # the kernel checks each origin; a sum of finite ultimates can still overflow
+    with np.errstate(over="ignore"):
+        sums = _sums(latest, ultimate)
+    _require_finite(table["origin_period"], {}, np.r_[fit.factors, ratio[~np.isnan(ratio)]], sums)
+    totals = pa.table(sums)
     return ReserveResult(name, fit.as_of, step, pa.table(columns), development, link_ratios, totals)
 
 
