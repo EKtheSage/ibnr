@@ -83,16 +83,22 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
-import pandas as pd
 
 from ibnr.errors import Refusal, RefusedCell, _literal
 from ibnr.kernels.links import settings_named
 from ibnr.kernels.mack import PROCESS_LAWS, MackFit, _next_step_draws, _refuse_n_draws
-from ibnr.kernels.odp_bootstrap import ODP_PROCESS_LAWS, draw_next_increments, fit_odp_bootstrap
-from ibnr.kernels.predictive import PredictiveDistribution
+
+# ibnr.methods.one_year_cdr imports this module and must not load pandas or scipy.
+# pandas is imported by the functions that build a DataFrame or a
+# PredictiveDistribution, and the ODP bootstrap (which needs scipy through
+# kernels.densities) by the generator that uses it, each when it runs.
+if TYPE_CHECKING:
+    import pandas as pd
+
+    from ibnr.kernels.predictive import PredictiveDistribution
 
 #: draws a generator produces when the caller names no count. A Monte Carlo
 #: budget, so it belongs to the generators that HAVE one - a generator wrapping
@@ -131,6 +137,8 @@ class CDRResult:
         :class:`CDRResult` decoded from Arrow bytes carries no grain and is not
         checked, so a payload written by an older version can hold a figure for
         a shorter span."""
+        import pandas as pd
+
         cdr_se = np.sqrt(self.msep)
         runoff_se = np.sqrt(self.runoff_msep)
         out = pd.DataFrame(
@@ -722,6 +730,8 @@ class ODPBootstrapDiagonal(DiagonalGenerator):
     name = "odp_bootstrap"
 
     def __post_init__(self) -> None:
+        from ibnr.kernels.odp_bootstrap import ODP_PROCESS_LAWS
+
         if self.process not in ODP_PROCESS_LAWS:
             raise Refusal(
                 "invalid_option",
@@ -743,6 +753,8 @@ class ODPBootstrapDiagonal(DiagonalGenerator):
         """Build the deterministic half of the bootstrap and discard it: it is
         where the negative-increment refusal and the degrees-of-freedom check
         live, and both are cheap enough to pay twice."""
+        from ibnr.kernels.odp_bootstrap import fit_odp_bootstrap
+
         _require_zero_cells_unused(fit)
         _require_all_history_volume(fit)
         fit_odp_bootstrap(
@@ -755,6 +767,8 @@ class ODPBootstrapDiagonal(DiagonalGenerator):
         )
 
     def draw(self, fit: MackFit, *, n_draws: int, rng: np.random.Generator) -> np.ndarray:
+        from ibnr.kernels.odp_bootstrap import draw_next_increments, fit_odp_bootstrap
+
         boot = fit_odp_bootstrap(
             fit.cum,
             fit.obs_mask,
@@ -950,6 +964,8 @@ def cdr_methods() -> pd.DataFrame:
     Names in the ``name`` column are what ``generator=`` accepts, except
     ``merz_wuthrich``, whose ``entry_point`` says where it lives instead.
     """
+    import pandas as pd
+
     return pd.DataFrame(
         [{k: v for k, v in vars(m).items() if k != "generator"} for m in CDR_METHODS.values()]
     )
@@ -1083,6 +1099,43 @@ def simulate_one_year_cdr(
     ``generator="gallery"`` is refused too, for the opposite reason - it IS a
     generator, but it wraps a fitted entry that no string can carry.
     """
+    import pandas as pd
+
+    from ibnr.kernels.predictive import PredictiveDistribution
+
+    cdr = _one_year_cdr_draws(
+        fit,
+        n_draws=n_draws,
+        seed=seed,
+        generator=generator,
+        process=process,
+        parameter_risk=parameter_risk,
+    )
+    targets = pd.DataFrame(
+        {
+            "label": [str(o) for o in fit.origin_periods],
+            "origin_period": fit.origin_periods,
+        }
+    )
+    return PredictiveDistribution(samples=cdr, targets=targets, units=fit.units).with_total("total")
+
+
+def _one_year_cdr_draws(
+    fit: MackFit,
+    *,
+    n_draws: int | None,
+    seed: int | np.random.SeedSequence | None,
+    generator: DiagonalGenerator | str | None,
+    process: str | None,
+    parameter_risk: bool | None,
+) -> np.ndarray:
+    """``(n_draws, n_w)`` one-year CDR draws, a positive draw a release.
+
+    What :func:`simulate_one_year_cdr` returns before it becomes a
+    ``PredictiveDistribution``: the same checks, the same random stream and the
+    same arrays, with no pandas. ``ibnr.methods.one_year_cdr`` calls it, so its
+    draws are the ones ``simulate_one_year_cdr`` gives for the same arguments.
+    """
     gen = _resolve_generator(generator, process=process, parameter_risk=parameter_risk)
     if n_draws is not None and n_draws < 1:
         raise _refuse_n_draws(n_draws)
@@ -1093,14 +1146,7 @@ def simulate_one_year_cdr(
     _require_all_history_volume(fit)
     gen.check(fit)
     rng = np.random.default_rng(seed)
-    cdr = rereserve(fit, gen.draw(fit, n_draws=gen.resolve_n_draws(n_draws), rng=rng))
-    targets = pd.DataFrame(
-        {
-            "label": [str(o) for o in fit.origin_periods],
-            "origin_period": fit.origin_periods,
-        }
-    )
-    return PredictiveDistribution(samples=cdr, targets=targets, units=fit.units).with_total("total")
+    return rereserve(fit, gen.draw(fit, n_draws=gen.resolve_n_draws(n_draws), rng=rng))
 
 
 def simulated_msep(pred: PredictiveDistribution) -> np.ndarray:

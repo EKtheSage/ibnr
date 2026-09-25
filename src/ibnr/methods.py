@@ -12,6 +12,9 @@
 - :func:`tweedie_glm` (a Tweedie GLM fitted to the increments; power 1 with its
   defaults is the over-dispersed Poisson model, which reproduces the chain
   ladder)
+- :func:`one_year_cdr` (the one-year claims development result: how far next
+  year's re-estimate of Mack's chain-ladder ultimate can move, as the
+  Merz-Wuthrich standard error beside a simulation of next year)
 
 Each takes the cells of ONE triangle as a table with three columns, one row per
 observed cell:
@@ -28,7 +31,8 @@ observed cell:
 A cumulative of exactly zero is read as a missing cell by default, as
 chainladder-python reads it (``zero_cells="missing"``): every link ratio with a
 zero at either end is left out of the factors. Pass ``zero_cells="observed"``
-to keep zeros as data, which is the default of the kernels underneath.
+to keep zeros as data, which is the default of the kernels underneath and of
+:func:`one_year_cdr`.
 
 The results echo each origin's label back in a column ``origin``, with the
 value the caller wrote, next to ``origin_period``, which is always the first
@@ -38,10 +42,11 @@ the accident year written 2020-12-31 has its first cell at ``dev_lag`` 12.
 Any table Arrow can read is accepted: a polars DataFrame, a pyarrow Table or
 RecordBatch, anything else that offers the Arrow stream interface, or a dict
 of columns (Python lists or numpy arrays, as a service reading JSON has them).
-Other columns are ignored. Each function returns a :class:`ReserveResult`,
-whose tables are pyarrow Tables, so a service needs no DataFrame library at
-all; for analysis, ``result.to_polars()`` turns any of them into a polars
-DataFrame (``pip install "ibnr[polars]"``).
+Other columns are ignored. Each function returns a :class:`ReserveResult`
+(:func:`one_year_cdr` a :class:`OneYearCDRResult`), whose tables are pyarrow
+Tables, so a service needs no DataFrame library at all; for analysis,
+``result.to_polars()`` turns any of them into a polars DataFrame
+(``pip install "ibnr[polars]"``).
 
 The ``development`` table has one row per observed development age, and the
 same columns for every method that carries them, in this order:
@@ -78,7 +83,7 @@ listed for it, whatever options it is given, so a service can read each table
 by name.
 
 Importing this module loads numpy and pyarrow, and not ibis, pandas or scipy,
-and none of the methods loads them when it runs, so a service that starts
+and none of the functions loads them when it runs, so a service that starts
 a new process for a request does not pay for them (the CHANGELOG has the
 times). That holds for every input above except two, which make pyarrow load
 pandas: a pandas DataFrame, and a dict with a list that is not all strings,
@@ -101,9 +106,10 @@ means the calling code is wrong.
 This module is the front door. The functions here are thin wrappers over
 ``ibnr.kernels``, which is where the research tools live: refitting a fixed set
 of options at successive dates (``kernels.replay_conventional``), choosing
-among candidates on their history (``kernels.select_conventional``), the
-one-year claims development result (``kernels.one_year_cdr``), and the Triangle
-path to all of these (``kernels.fit_conventional``, ``kernels.fit_mack``).
+among candidates on their history (``kernels.select_conventional``), other
+ways to draw next year's diagonal for the one-year claims development result
+(``kernels.simulate_one_year_cdr``), and the Triangle path to all of these
+(``kernels.fit_conventional``, ``kernels.fit_mack``).
 """
 
 from __future__ import annotations
@@ -116,7 +122,7 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 import pyarrow as pa
@@ -124,14 +130,18 @@ import pyarrow.compute as pc
 
 from ibnr import _arrow
 from ibnr.errors import Refusal, RefusedCell, _literal
+from ibnr.kernels.cdr import _one_year_cdr_draws
+from ibnr.kernels.cdr import one_year_cdr as _merz_wuthrich
 from ibnr.kernels.conventional import ConventionalCandidate, _estimate_grid
 from ibnr.kernels.glm import TweedieFit, TweedieSpec, fit_tweedie_grid
 from ibnr.kernels.grid import as_date, check_grid, grid_from_columns, month_end
 from ibnr.kernels.links import REASONS as LINK_REASONS
 from ibnr.kernels.links import is_all_history
-from ibnr.kernels.mack import _require_mack_average, fit_mack_grid
+from ibnr.kernels.mack import PROCESS_LAWS, MackFit, _require_mack_average, fit_mack_grid
+from ibnr.kernels.rng import cohort_stream
 
 __all__ = [
+    "OneYearCDRResult",
     "Refusal",
     "ReserveResult",
     "benktander",
@@ -139,6 +149,7 @@ __all__ = [
     "cape_cod",
     "chain_ladder",
     "mack",
+    "one_year_cdr",
     "tweedie_glm",
 ]
 
@@ -270,13 +281,17 @@ class ReserveResult:
                 given=table,
                 method=self.method,
             )
-        try:
-            import polars as pl
-        except ImportError as exc:
-            raise ImportError(
-                'to_polars needs polars; install it with pip install "ibnr[polars]"'
-            ) from exc
-        return pl.from_arrow(data)
+        return _to_polars(data)
+
+
+def _to_polars(data: pa.Table):
+    try:
+        import polars as pl
+    except ImportError as exc:
+        raise ImportError(
+            'to_polars needs polars; install it with pip install "ibnr[polars]"'
+        ) from exc
+    return pl.from_arrow(data)
 
 
 def _absent(method: str, table: str) -> str:
@@ -775,13 +790,7 @@ def mack(
 def _mack(grid, labels: _Origins, wrapped: _Candidate, *, sigma_rule: str) -> ReserveResult:
     _, as_of = check_grid(grid)
     step = grid["dev_grain_months"]
-    if grid["n_d"] < 2:
-        raise Refusal(
-            "variance_not_estimable",
-            "mack needs at least two development ages; this triangle has one. chain_ladder "
-            "gives the latest amounts as the ultimates",
-            option="cells",
-        )
+    _require_two_ages(grid, "mack")
     _require_valuations_in_triangle(grid, wrapped.valuations)
     _require_exclusions_in_triangle(grid, wrapped.exclusions)
     candidate = wrapped.kernel
@@ -792,40 +801,14 @@ def _mack(grid, labels: _Origins, wrapped: _Candidate, *, sigma_rule: str) -> Re
     # R's reading of a link ratio out of a zero (it enters the volume factor).
     plain = average == "volume" and is_all_history(rules)
     links = None if zero_cells == "observed" and plain else rules
-    if links is not None:
-        # the triangle itself has too few link ratios for any sigma: refused here in
-        # the same words as below, before the kernel would blame the options
-        cum, mask = grid["cum"], grid["obs_mask"]
-        pair = mask[:, :-1] & mask[:, 1:] & (cum[:, :-1] > 0)
-        if zero_cells == "missing":
-            pair &= cum[:, 1:] != 0
-        if (pair.sum(axis=0) < 2).all():
-            raise _no_sigma_anywhere(grid["n_d"], step)
-    # Amounts near the largest or the smallest double are finite but Mack's sums,
-    # ratios and squares are not. numpy says so with a warning, which is silenced
-    # here and below because the kernel and _require_finite refuse such an answer
-    # by name before anything is returned.
-    with np.errstate(all="ignore"):
-        fit = fit_mack_grid(
-            grid, sigma_rule=sigma_rule, zero_cells=zero_cells, average=average, links=links
-        )
-    zero_factor = np.flatnonzero(fit.f == 0)
-    if zero_factor.size:
-        # Only the last age can get here with every link ratio 0 (the age after
-        # would have nothing to start from); any age can when a ratio is below
-        # the smallest double.
-        raise Refusal(
-            "no_link_ratio",
-            "the link ratios give a factor of 0.0 {links}, so every ultimate after that age "
-            "would be 0, and Mack's standard errors divide by the factor. Every origin with a "
-            "link ratio there closes at zero, or its amount is too small against the one before "
-            "for the ratio to be a number above 0. chain_ladder with unsupported_factor='unity' "
-            "uses a factor of 1.0 at that age instead",
-            option="cells",
-            links=[((j + 1) * step, (j + 2) * step) for j in zero_factor],
-        )
-    if (fit.n_pos < 2).all():
-        raise _no_sigma_anywhere(fit.n_d, step)
+    fit = _checked_mack_fit(
+        grid,
+        sigma_rule=sigma_rule,
+        zero_cells=zero_cells,
+        method="mack",
+        average=average,
+        links=links,
+    )
     # Negative cells never get here (the cells are checked first), so the one
     # latest amount msep_runoff refuses is a zero under "observed". Its own
     # message names MackFit attributes a ReserveResult does not have.
@@ -900,11 +883,11 @@ def _mack(grid, labels: _Origins, wrapped: _Candidate, *, sigma_rule: str) -> Re
     return ReserveResult("mack", as_of, step, origins, development, link_ratios, pa.table(total))
 
 
-def _no_sigma_anywhere(n_d: int, step: int) -> Refusal:
+def _no_sigma_anywhere(n_d: int, step: int, method: str) -> Refusal:
     return Refusal(
         "variance_not_estimable",
-        "mack needs at least one development age with two or more link ratios to estimate "
-        "Mack's sigma; this triangle has at most one at every age ({links}), so every "
+        f"{method} needs at least one development age with two or more link ratios to "
+        "estimate Mack's sigma; this triangle has at most one at every age ({links}), so every "
         "sigma would be set to 0 and the standard errors would read as no uncertainty at "
         "all. chain_ladder gives the same ultimates without standard errors",
         option="cells",
@@ -969,6 +952,71 @@ def _link_ratios(origins: _Origins, rows: dict[str, list]) -> pa.Table:
             "reason": _arrow.string(rows["reason"]),
         }
     )
+
+
+def _require_two_ages(grid, method: str) -> None:
+    if grid["n_d"] < 2:
+        raise Refusal(
+            "variance_not_estimable",
+            f"{method} needs at least two development ages; this triangle has one. "
+            "chain_ladder gives the latest amounts as the ultimates",
+            option="cells",
+        )
+
+
+def _checked_mack_fit(
+    grid,
+    *,
+    sigma_rule: str,
+    zero_cells: str,
+    method: str,
+    average: str = "volume",
+    links=None,
+) -> MackFit:
+    """Mack's fit, refused where its standard errors cannot be estimated.
+
+    Shared by :func:`mack` and :func:`one_year_cdr`; ``method`` is the calling
+    function's name, which the messages use. ``average`` and ``links`` are
+    passed to ``fit_mack_grid``; :func:`one_year_cdr` takes no development
+    option, so it leaves both at their defaults.
+    """
+    step = grid["dev_grain_months"]
+    _require_two_ages(grid, method)
+    if links is not None:
+        # the triangle itself has too few link ratios for any sigma: refused here in
+        # the same words as below, before the kernel would blame the options
+        cum, mask = grid["cum"], grid["obs_mask"]
+        pair = mask[:, :-1] & mask[:, 1:] & (cum[:, :-1] > 0)
+        if zero_cells == "missing":
+            pair &= cum[:, 1:] != 0
+        if (pair.sum(axis=0) < 2).all():
+            raise _no_sigma_anywhere(grid["n_d"], step, method)
+    # Amounts near the largest or the smallest double are finite but Mack's sums,
+    # ratios and squares are not. numpy says so with a warning, which is silenced
+    # here and below because the kernel and _require_finite refuse such an answer
+    # by name before anything is returned.
+    with np.errstate(all="ignore"):
+        fit = fit_mack_grid(
+            grid, sigma_rule=sigma_rule, zero_cells=zero_cells, average=average, links=links
+        )
+    zero_factor = np.flatnonzero(fit.f == 0)
+    if zero_factor.size:
+        # Only the last age can get here with every link ratio 0 (the age after
+        # would have nothing to start from); any age can when a ratio is below
+        # the smallest double.
+        raise Refusal(
+            "no_link_ratio",
+            "the link ratios give a factor of 0.0 {links}, so every ultimate after that age "
+            "would be 0, and Mack's standard errors divide by the factor. Every origin with a "
+            "link ratio there closes at zero, or its amount is too small against the one before "
+            "for the ratio to be a number above 0. chain_ladder with unsupported_factor='unity' "
+            "uses a factor of 1.0 at that age instead",
+            option="cells",
+            links=[((j + 1) * step, (j + 2) * step) for j in zero_factor],
+        )
+    if (fit.n_pos < 2).all():
+        raise _no_sigma_anywhere(fit.n_d, step, method)
+    return fit
 
 
 def _require_no_underflow(fit, msep: np.ndarray) -> None:
@@ -1340,6 +1388,454 @@ def _require_finite_tables(*tables: pa.Table) -> None:
                     "back",
                     option="cells",
                 )
+
+
+# -- the one-year claims development result ---------------------------------------
+
+#: The quantile levels :func:`one_year_cdr` reports when given none: the Reserving
+#: app's default percentiles, 50 to 99.9, divided by 100.
+_CDR_QUANTILES = (0.5, 0.75, 0.9, 0.95, 0.99, 0.995, 0.999)
+
+#: What the seed is combined with to make the random stream. They are the ones the
+#: gallery's mack entry uses for a Triangle with one segment ``Total`` and the
+#: field ``values`` (what ``Triangle.from_chainladder`` gives a one-column
+#: chainladder Triangle named ``values``), so a seed gives the draws the
+#: Reserving app's ``/cdr`` gave before it moved to this function.
+_CDR_STREAM = {"label": "cdr_distribution", "cohorts": [{"Total": "Total"}], "field": "values"}
+
+
+@dataclass(frozen=True)
+class OneYearCDRResult:
+    """What :func:`one_year_cdr` returns: pyarrow Tables with fixed column types.
+
+    A missing number is an Arrow null, never NaN. ``to_polars(name)`` gives any
+    of the tables as a polars DataFrame.
+
+    Every simulated number is about ``ultimate_change``, next year's
+    re-estimated ultimate minus today's: positive when the reserve is
+    strengthened, negative when it is released. That is the opposite sign of
+    the claims development result in ``kernels.simulate_one_year_cdr``, which
+    is positive for a release.
+
+    Attributes
+    ----------
+    method : str
+        ``"one_year_cdr"``.
+    as_of : datetime.date
+        The information date, the evaluation date of the latest cell.
+    dev_grain_months : int
+        Months per development step, always 12.
+    n_draws : int
+        The number of simulated years.
+    seed : int or None
+        The seed as passed; ``None`` means the draws came from fresh entropy
+        and cannot be made again.
+    origins : pyarrow.Table
+        One row per origin period: ``origin`` and ``origin_period`` (as in
+        :class:`ReserveResult`), ``latest_dev_lag`` (int64), ``latest``,
+        ``ultimate`` and ``ibnr`` (today's chain-ladder figures),
+        ``mean_ultimate_change`` and ``sd_ultimate_change`` (the draws' mean,
+        and their standard deviation with ``ddof=1``, null when ``n_draws`` is
+        1), ``cdr_se`` (the Merz-Wuthrich standard error of the one-year
+        claims development result) and ``runoff_se`` (Mack's standard error of
+        the whole run-off, what :func:`mack` reports as ``mack_se`` under the
+        same ``sigma_rule`` and ``zero_cells``), all float64. An origin at its
+        last development age has a change of 0 in every draw.
+    totals : pyarrow.Table
+        One row: ``latest``, ``ultimate``, ``ibnr``, ``mean_ultimate_change``,
+        ``sd_ultimate_change``, ``cdr_se``, ``runoff_se`` (float64) and
+        ``n_draws`` (int64), for the sum over the origins. The standard errors
+        are not the sums of the origins': the origins share the factors.
+    quantiles : pyarrow.Table
+        One row per origin, or the total, and level: ``origin`` and
+        ``origin_period`` (null for the total), ``level`` (the probability, as
+        passed), ``ultimate_change`` (the quantile of the draws, numpy's
+        linear rule, which is ``np.percentile`` with the level times 100) and
+        ``tvar`` (the mean of the draws at or above that quantile). The total's
+        rows come first, then each origin's in origin order, each in the order
+        of the levels.
+    draws : pyarrow.Table
+        Every draw of every origin, ``n_draws`` times the number of origins
+        rows, draw by draw: ``draw`` (int64, from 0), ``origin``,
+        ``origin_period`` and ``ultimate_change`` (float64). A draw's total is
+        the sum of its rows.
+    """
+
+    TABLES: ClassVar[tuple[str, ...]] = ("origins", "totals", "quantiles", "draws")
+
+    method: str
+    as_of: dt.date
+    dev_grain_months: int
+    n_draws: int
+    seed: int | None
+    origins: pa.Table
+    totals: pa.Table
+    quantiles: pa.Table
+    draws: pa.Table
+
+    def to_polars(self, table: str = "origins"):
+        """One of the result's tables as a polars DataFrame.
+
+        ``table`` is ``"origins"`` (the default), ``"totals"``, ``"quantiles"``
+        or ``"draws"``. Needs polars: ``pip install "ibnr[polars]"``.
+        """
+        if table not in self.TABLES:
+            raise Refusal(
+                "invalid_option",
+                f"table must be one of {self.TABLES}, got {{given}}",
+                option="table",
+                given=table,
+                method=self.method,
+            )
+        return _to_polars(getattr(self, table))
+
+
+def one_year_cdr(
+    cells,
+    *,
+    dev_grain_months: int = 12,
+    sigma_rule: str = "log_linear",
+    zero_cells: str = "observed",
+    n_draws: int = 20_000,
+    seed: int | None = None,
+    process: str = "gamma",
+    parameter_risk: bool = True,
+    quantiles=_CDR_QUANTILES,
+) -> OneYearCDRResult:
+    """The one-year claims development result: how far next year's re-estimate
+    of the chain-ladder ultimate can move.
+
+    ``cells`` is as in :func:`chain_ladder`. The chain ladder is Mack's:
+    volume-weighted factors over every link ratio, with no development options
+    and no tail, because the formulas below are derived for exactly that.
+
+    Two answers come back, and they are meant to be compared:
+
+    - the closed form of Merz and Wuthrich (2008), ``cdr_se``, per origin and
+      in total, with Mack's run-off standard error ``runoff_se`` beside it;
+    - a simulation of ``n_draws`` possible next years. Each draws next year's
+      diagonal from Mack's conditional moments (with ``process`` as the
+      shape of the noise, and, when ``parameter_risk`` is true, the factors
+      drawn from their estimation error too), re-estimates the volume-weighted
+      factors with that diagonal added, and reports the change in each
+      origin's ultimate. Its standard deviation agrees with ``cdr_se`` to
+      Monte Carlo error when ``parameter_risk`` is true, and it also gives
+      quantiles and tail means, which a capital figure needs.
+
+    ``ultimate_change`` is next year's ultimate minus today's, so positive is
+    adverse (a strengthening); the kernels' claims development result has the
+    opposite sign.
+
+    Options:
+
+    - ``dev_grain_months``: months per development step. The result is a
+      one-year figure only on an annual triangle, so any other step is read and
+      then refused: aggregate a quarterly or monthly triangle to annual first,
+      or use :func:`mack` for the run-off standard error.
+    - ``sigma_rule``: as in :func:`mack`; ``"log_linear"`` (the default, as in
+      chainladder-python) or ``"mack"``. It moves the standard errors and the
+      draws, not the ultimates.
+    - ``zero_cells``: ``"observed"`` (the default here, unlike the other
+      methods) keeps a zero cumulative as data. ``"missing"``, chainladder's
+      rule, is accepted only where it changes nothing, on a triangle with no
+      zero: the one-year formulas have not been checked with link ratios left
+      out for a zero. Under either rule every still-developing origin needs a
+      positive latest cumulative, because Mack's variance divides by it.
+    - ``n_draws``: how many next years to simulate, a whole number of 1 or
+      more (20,000 by default; the 99.5% quantile then rests on the top 100
+      draws). ``n_draws`` times the number of origins numbers are held in
+      memory and returned in ``draws``.
+    - ``seed``: a whole number of 0 or more makes the draws repeatable;
+      ``None`` (the default) draws from fresh entropy. The seed is turned into
+      a stream the same way the gallery's ``mack`` entry does for a triangle
+      with one segment ``Total`` and the field ``values``, so for the same
+      seed, draw count and options the draws equal, bit for bit, the ones the
+      Reserving app's ``/cdr`` route gave through that entry. A seed passed
+      straight to ``kernels.simulate_one_year_cdr`` is a different stream.
+    - ``process``: the shape of next year's noise, ``"gamma"`` (the default),
+      ``"lognormal"`` or ``"normal"``. All three have Mack's mean and
+      variance; only the first two keep the cumulative positive.
+    - ``parameter_risk``: ``True`` (the default) also draws the factors from
+      their estimation error, which is the half of the one-year risk that
+      comes from next year's factors moving; ``False`` leaves only the noise
+      of next year's cells.
+    - ``quantiles``: the levels of the ``quantiles`` table, probabilities
+      strictly between 0 and 1 (divide a percentile by 100). The default is
+      0.5, 0.75, 0.9, 0.95, 0.99, 0.995 and 0.999.
+
+    Returns a :class:`OneYearCDRResult`. Input it will not answer is refused
+    with :class:`Refusal`, as the module docstring describes; besides the
+    refusals of :func:`mack`, a step that is not twelve months and a zero
+    under ``zero_cells="missing"`` are refused with ``not_supported``, and a
+    zero latest cumulative on a still-developing origin with
+    ``variance_not_estimable``. The Merz-Wuthrich figures tie out to R's
+    ``ChainLadder`` (``CDR(MackChainLadder(MW2014, est.sigma="Mack"))``) to 6
+    decimals, per origin and in total.
+    """
+    with _CallersTerms("one_year_cdr") as terms:
+        count = _draw_count(n_draws)
+        _require_seed(seed)
+        levels = _levels(quantiles)
+        if not isinstance(process, str) or process not in PROCESS_LAWS:
+            raise Refusal(
+                "invalid_option",
+                f"process must be one of {PROCESS_LAWS}, got {{given}}",
+                option="process",
+                given=process,
+            )
+        if not isinstance(parameter_risk, bool | np.bool_):
+            raise Refusal(
+                "invalid_option",
+                "parameter_risk must be True or False, got {given}",
+                option="parameter_risk",
+                given=parameter_risk,
+            )
+        grid, labels = terms.read(cells, dev_grain_months)
+        return _one_year_cdr(
+            grid,
+            labels,
+            sigma_rule=sigma_rule,
+            zero_cells=zero_cells,
+            n_draws=count,
+            seed=seed,
+            process=str(process),
+            parameter_risk=bool(parameter_risk),
+            levels=levels,
+        )
+
+
+def _one_year_cdr(
+    grid,
+    labels: _Origins,
+    *,
+    sigma_rule: str,
+    zero_cells: str,
+    n_draws: int,
+    seed: int | None,
+    process: str,
+    parameter_risk: bool,
+    levels: tuple[float, ...],
+) -> OneYearCDRResult:
+    _, as_of = check_grid(grid)
+    step = grid["dev_grain_months"]
+    if step != 12:
+        # the kernels refuse this too, in words about Triangle methods
+        raise Refusal(
+            "not_supported",
+            f"the one-year claims development result needs a 12-month development step, and "
+            f"this triangle's is {step} months, so one step forward would be a {step}-month "
+            "result reported as a year. Aggregate the cells to annual origins and ages (from "
+            "a year-end valuation) first, or use methods.mack for the standard error of the "
+            "whole run-off, which does not depend on the step",
+            option="dev_grain_months",
+            given=step,
+        )
+    zero_at = [
+        RefusedCell(None, grid["origin_periods"][i], (int(j) + 1) * step, 0.0)
+        for i, j in zip(*np.nonzero(grid["obs_mask"] & (grid["cum"] == 0)), strict=True)
+    ]
+    if zero_cells == "missing" and zero_at:
+        # Checked before the fit, whose own refusals under this rule (a sigma left
+        # with nothing to fill it from) would be about a rule this function does
+        # not take on such a triangle. The kernels refuse this too, in words about
+        # MackFit. With no zero, "missing" is the same fit as "observed".
+        raise Refusal(
+            "not_supported",
+            "one_year_cdr takes zero_cells='missing' only when no cumulative is zero, and "
+            "{cells} are zero: the one-year formulas and the re-estimate of next year's factors "
+            "have not been checked with the link ratios that rule leaves out. zero_cells="
+            "'observed' (the default here) keeps the zeros as data; methods.mack gives the "
+            "run-off standard error under either rule",
+            option="zero_cells",
+            given=zero_cells,
+            cells=zero_at,
+        )
+    fit = _checked_mack_fit(
+        grid, sigma_rule=sigma_rule, zero_cells=zero_cells, method="one_year_cdr"
+    )
+    zero_latest = np.flatnonzero((fit.latest_dev < fit.n_d - 1) & (fit.latest == 0))
+    if zero_latest.size:
+        raise Refusal(
+            "variance_not_estimable",
+            "one_year_cdr needs every still-developing origin's latest cumulative to be "
+            "positive, and it is zero for {cells}: Mack's variance and the one-year formula "
+            "divide by that amount. methods.mack with zero_cells='missing' gives such an origin "
+            "a run-off standard error of 0, and methods.chain_ladder gives the ultimates",
+            option="cells",
+            cells=[
+                RefusedCell(None, fit.origin_periods[i], (int(fit.latest_dev[i]) + 1) * step, 0.0)
+                for i in zero_latest
+            ],
+        )
+    # Amounts too large or too small for the squares: numpy warns, and the checks
+    # below refuse such an answer by name before any draw is made.
+    with np.errstate(all="ignore"):
+        analytic = _merz_wuthrich(fit)
+        latest, ultimate = fit.latest, fit.ultimate
+        per_origin = {
+            "ultimate": ultimate,
+            "ibnr": ultimate - latest,
+            "cdr_se": np.sqrt(analytic.msep),
+            "runoff_se": np.sqrt(analytic.runoff_msep),
+        }
+        sums = _sums(latest, ultimate)
+        spread = {
+            "cdr_se": _arrow.float64([np.sqrt(analytic.msep_total)]),
+            "runoff_se": _arrow.float64([np.sqrt(analytic.runoff_msep_total)]),
+        }
+    _require_finite(fit.origin_periods, per_origin, [], {**sums, **spread})
+    _require_no_underflow(fit, analytic.runoff_msep)
+
+    stream = cohort_stream(seed, **_CDR_STREAM)
+    with np.errstate(all="ignore"):
+        cdr = _one_year_cdr_draws(
+            fit,
+            n_draws=n_draws,
+            seed=stream,
+            generator=None,
+            process=process,
+            parameter_risk=parameter_risk,
+        )
+        # Laid out as simulate_one_year_cdr's samples, the total last, and negated
+        # once, so that every summary below is the float the gallery entry's draws
+        # give when summarised the same way.
+        delta = -np.hstack([cdr, cdr.sum(axis=1, keepdims=True)])
+    n_w = fit.n_w
+    changes, total = delta[:, :n_w], delta[:, -1]
+    # a draw that is not finite makes its origin's mean not finite, which
+    # _require_finite refuses by name
+    with np.errstate(all="ignore"):
+        mean = [float(changes[:, i].mean()) for i in range(n_w)]
+        sd = [float(changes[:, i].std(ddof=1)) if n_draws > 1 else 0.0 for i in range(n_w)]
+        total_mean = float(total.mean())
+        total_sd = float(total.std(ddof=1)) if n_draws > 1 else 0.0
+        tails = [_tail(total, level) for level in levels] + [
+            _tail(changes[:, i], level) for i in range(n_w) for level in levels
+        ]
+    no_sd = n_draws == 1
+    _require_finite(
+        fit.origin_periods,
+        {"mean_ultimate_change": mean, "sd_ultimate_change": sd},
+        np.array(tails, dtype=float).ravel(),
+        {"mean": _arrow.float64([total_mean]), "sd": _arrow.float64([total_sd])},
+    )
+
+    periods = fit.origin_periods
+    shown = labels.labels_for(periods)
+    dates = _arrow.date32(periods)
+    origins = pa.table(
+        {
+            "origin": shown,
+            "origin_period": dates,
+            "latest_dev_lag": _arrow.int64((fit.latest_dev + 1) * step),
+            "latest": _arrow.float64(latest),
+            "ultimate": _arrow.float64(ultimate),
+            "ibnr": _arrow.float64(per_origin["ibnr"]),
+            "mean_ultimate_change": _arrow.float64(mean),
+            "sd_ultimate_change": _nullable(sd, np.full(n_w, no_sd)),
+            "cdr_se": _arrow.float64(per_origin["cdr_se"]),
+            "runoff_se": _arrow.float64(per_origin["runoff_se"]),
+        }
+    )
+    totals = pa.table(
+        {
+            **sums,
+            "mean_ultimate_change": _arrow.float64([total_mean]),
+            "sd_ultimate_change": _nullable([total_sd], [no_sd]),
+            **spread,
+            "n_draws": _arrow.int64([n_draws]),
+        }
+    )
+    # quantile rows: the total's (a null origin) first, then each origin's
+    n_levels = len(levels)
+    row_origin = np.r_[np.zeros(n_levels, dtype=np.int64), np.repeat(np.arange(n_w), n_levels)]
+    is_total = np.r_[np.ones(n_levels, dtype=bool), np.zeros(n_w * n_levels, dtype=bool)]
+    at = _arrow.int64(row_origin, mask=is_total)
+    quantile_values = np.array(tails, dtype=float).reshape(-1, 2)
+    quantile_table = pa.table(
+        {
+            "origin": shown.take(at),
+            "origin_period": dates.take(at),
+            "level": _arrow.float64(np.tile(levels, n_w + 1)),
+            "ultimate_change": _arrow.float64(quantile_values[:, 0]),
+            "tvar": _arrow.float64(quantile_values[:, 1]),
+        }
+    )
+    each = _arrow.int64(np.tile(np.arange(n_w), n_draws))
+    draws = pa.table(
+        {
+            "draw": _arrow.int64(np.repeat(np.arange(n_draws), n_w)),
+            "origin": shown.take(each),
+            "origin_period": dates.take(each),
+            "ultimate_change": _arrow.float64(changes.ravel()),
+        }
+    )
+    return OneYearCDRResult(
+        "one_year_cdr", as_of, step, n_draws, seed, origins, totals, quantile_table, draws
+    )
+
+
+def _tail(sample: np.ndarray, level: float) -> tuple[float, float]:
+    """The quantile at ``level`` and the mean of the draws at or above it.
+
+    ``np.quantile`` at ``level`` is ``np.percentile`` at ``100 * level``, and the
+    tail mean is taken over the draws themselves, as the Reserving app's
+    ``/cdr`` takes it, so the two give the same numbers.
+    """
+    threshold = np.quantile(sample, level)
+    return float(threshold), float(sample[sample >= threshold].mean())
+
+
+def _draw_count(n_draws) -> int:
+    if (
+        not isinstance(n_draws, numbers.Integral)
+        or isinstance(n_draws, bool | np.bool_)
+        or n_draws < 1
+    ):
+        raise Refusal(
+            "invalid_option",
+            "n_draws must be a whole number of 1 or more, got {given}",
+            option="n_draws",
+            given=n_draws,
+        )
+    return int(n_draws)
+
+
+def _require_seed(seed) -> None:
+    if seed is None:
+        return
+    if not isinstance(seed, numbers.Integral) or isinstance(seed, bool | np.bool_) or seed < 0:
+        raise Refusal(
+            "invalid_option",
+            "seed must be None or a whole number of 0 or more, got {given}",
+            option="seed",
+            given=seed,
+        )
+
+
+def _levels(quantiles) -> tuple[float, ...]:
+    """The quantile levels as floats, or a refusal naming what was passed."""
+    listed = isinstance(quantiles, list | tuple) or (
+        isinstance(quantiles, np.ndarray) and quantiles.ndim == 1
+    )
+    refusal = Refusal(
+        "invalid_option",
+        "quantiles must be a list of probabilities strictly between 0 and 1, such as 0.995 "
+        "(divide a percentile by 100), got {given}",
+        option="quantiles",
+        given=tuple(quantiles) if listed else quantiles,
+    )
+    if not listed:
+        raise refusal
+    levels = []
+    for level in quantiles:
+        if not isinstance(level, numbers.Real) or isinstance(level, bool | np.bool_):
+            raise refusal
+        value = float(level)
+        if not 0.0 < value < 1.0:  # also false for NaN
+            raise refusal
+        levels.append(value)
+    return tuple(levels)
 
 
 # -- refusals in the caller's terms ------------------------------------------------

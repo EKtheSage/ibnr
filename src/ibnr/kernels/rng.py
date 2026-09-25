@@ -64,11 +64,15 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 from collections.abc import Iterable, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from ibnr.kernels.holdout import HoldoutCells
+# ibnr.methods derives its one-year CDR stream with cohort_stream, and must not
+# load ibis or pandas, which kernels.holdout imports. Only heldout_stream needs
+# HoldoutCells, so it imports it when it runs.
+if TYPE_CHECKING:
+    from ibnr.kernels.holdout import HoldoutCells
 
 __all__ = ["cohort_stream", "heldout_stream"]
 
@@ -128,6 +132,8 @@ def heldout_stream(seed: Any, cells: HoldoutCells, *, field: str | None = None) 
     share, so two entries handed the same cells derive the same stream and stay
     comparable on common random numbers.
     """
+    from ibnr.kernels.holdout import HoldoutCells
+
     if not isinstance(cells, HoldoutCells):
         raise TypeError(
             "heldout_stream needs a HoldoutCells: the stream is keyed on the cells' "
