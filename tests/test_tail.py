@@ -28,6 +28,7 @@ from __future__ import annotations
 import csv
 import dataclasses
 import datetime as dt
+import inspect
 import json
 import sys
 import warnings
@@ -40,6 +41,7 @@ import pytest
 from ibnr import methods
 from ibnr.errors import Refusal
 from ibnr.kernels.cdr import (
+    DiagonalGenerator,
     MackDiagonal,
     ODPBootstrapDiagonal,
     one_year_cdr,
@@ -921,6 +923,82 @@ def test_the_alpha_reaches_the_tail_step():
         np.testing.assert_allclose(extra, 4.0 / 1.05**2 / amount**alpha, rtol=1e-6)
 
 
+@pytest.mark.parametrize("method", ["chain_ladder", "mack"])
+@pytest.mark.parametrize(
+    "tail",
+    [{"tail": "constant", "tail_factor": 1.05}, {"tail": "exponential"}],
+    ids=["constant", "exponential"],
+)
+def test_a_tail_attached_at_the_last_age_is_the_default(method, tail):
+    """Mack's refusal of an earlier attachment sends the caller to the last age,
+    120 months on raa, so that age has to be accepted and change nothing."""
+    default = call(method, **tail)
+    last = call(method, **tail, tail_attach_lag=120)
+    for table in ("origins", "development", "totals"):
+        assert getattr(last, table).equals(getattr(default, table)), table
+
+
+def test_tail_decay_reaches_macks_development_table():
+    """With the tail at the last age the decay spreads the tail over the rows
+    shown and moves no ultimate, so only the development table can show it."""
+    base = {"tail": "constant", "tail_factor": 1.05, "tail_rows": 3}
+    before = methods.mack(RAA, **base)
+    after = methods.mack(RAA, **base, tail_decay=0.9)
+    assert not after.development.equals(before.development)
+    assert after.origins.equals(before.origins)
+    assert after.totals.equals(before.totals)
+    # the rows are the chain ladder's for the same tail options
+    for decay in (None, 0.9):
+        mack = methods.mack(RAA, **base, tail_decay=decay)
+        chain_ladder = methods.chain_ladder(RAA, **base, tail_decay=decay)
+        for name in ("dev_lag", "factor", "cdf", "pct_reported", "source"):
+            assert mack.development[name].equals(chain_ladder.development[name]), (decay, name)
+
+
+#: A value each tail option accepts when there is a tail, so the only fault in
+#: the call below is that there is none.
+_TAIL_VALUES = {
+    "tail_factor": 1.05,
+    "tail_decay": 0.5,
+    "tail_attach_lag": 120,
+    "tail_fit_lags": (24, 84),
+    "tail_steps": 5,
+    "tail_rows": 2,
+    "tail_sigma": 0.1,
+    "tail_std_err": 0.01,
+}
+
+
+def _options_without_a_tail() -> list[tuple[str, str]]:
+    pairs = []
+    for method in METHODS:
+        accepted = inspect.signature(getattr(methods, method)).parameters
+        pairs += [(method, name) for name in methods._TAIL_OPTIONS if name in accepted]
+    return pairs
+
+
+def test_every_tail_option_is_taken_by_some_method():
+    taken = {name for _, name in _options_without_a_tail()}
+    assert taken == set(methods._TAIL_OPTIONS) == set(_TAIL_VALUES)
+
+
+@pytest.mark.parametrize(("method", "option"), _options_without_a_tail())
+def test_a_tail_option_without_a_tail_is_refused_not_ignored(method, option):
+    with pytest.raises(Refusal, match=f"^{option} was given but tail is None") as caught:
+        call(method, **{option: _TAIL_VALUES[option]})
+    assert caught.value.reason == "invalid_option"
+    assert caught.value.option == option
+
+
+@pytest.mark.parametrize("method", [m for m in METHODS if m != "mack"])
+@pytest.mark.parametrize("option", ["tail_sigma", "tail_std_err"])
+def test_macks_tail_variances_are_not_options_of_the_point_methods(method, option):
+    """They are not in the point methods' signatures, so Python refuses them
+    before ibnr sees them, as it does ``sigma_rule``: a TypeError, not a Refusal."""
+    with pytest.raises(TypeError, match=f"unexpected keyword argument '{option}'"):
+        call(method, tail="constant", tail_factor=1.05, **{option: 0.1})
+
+
 # -- 7. refusals, the one-year result, the simulations, the codec -----------------
 
 
@@ -974,6 +1052,12 @@ def test_the_alpha_reaches_the_tail_step():
         ),
         (
             {"tail": "constant", "tail_factor": 1.05, "tail_fit_lags": (12, 60)},
+            "invalid_option",
+            "tail_fit_lags",
+            "tail_fit_lags is a curve setting",
+        ),
+        (
+            {"tail": "constant", "tail_factor": 1.05, "tail_fit_lags": (None, None)},
             "invalid_option",
             "tail_fit_lags",
             "tail_fit_lags is a curve setting",
@@ -1097,6 +1181,32 @@ def test_every_factor_at_or_below_the_threshold_is_refused_not_answered_as_no_ta
     assert caught.value.reason == "not_identified"
     fit = apply_tail(f, 12, TailSpec("exponential"))
     assert fit.in_fit.tolist() == [True, True, False, False, False]
+
+
+def test_a_factor_of_exactly_the_threshold_is_left_out_of_the_curve():
+    f = np.array([1.5, 1.2, 1.1, 1.05, MIN_FIT_FACTOR])
+    fit = apply_tail(f, 12, TailSpec("exponential"))
+    assert fit.in_fit.tolist() == [True, True, True, True, False]
+
+
+def test_as_many_rows_as_steps_answers():
+    result = methods.chain_ladder(RAA, tail="exponential", tail_steps=3, tail_rows=3)
+    assert result.development.num_rows == 13
+    assert result.development["cdf"][-1].as_py() == 1.0
+    assert total(result, "tail_factor") > 1
+
+
+def test_the_tail_position_line_keeps_a_factor_just_above_one():
+    """R's position line goes through every factor above 1, the ones the curve
+    fit leaves out (at or below 1.00001) included."""
+    f = np.array([2.0, 1.5, 1.2, 1.1, 1.000005])
+    assert f[-1] < MIN_FIT_FACTOR
+    sigma2 = np.array([4.0, 2.0, 1.0, 0.5, 0.25])
+    s = np.array([100.0, 120.0, 130.0, 140.0, 150.0])
+    got = tail_variance(f, sigma2, s, 1.03)
+    t = np.arange(1.0, 6.0)
+    b, a = np.polyfit(t, np.log(f - 1), 1)
+    assert got.position == pytest.approx((np.log(0.03) - a) / b, rel=1e-12)
 
 
 def test_a_constant_tail_the_decay_cannot_spread_is_refused():
@@ -1239,6 +1349,29 @@ def test_the_one_year_result_and_the_simulations_refuse_a_tailed_fit(decoded):
         draw_next_cells(fit, cells, rng=np.random.default_rng(1), n_draws=5)
 
 
+class _Consulted(DiagonalGenerator):
+    """A generator that accepts any fit and records that it was asked."""
+
+    def __init__(self):
+        self.calls = []
+
+    def check(self, fit):
+        self.calls.append("check")
+
+    def draw(self, fit, *, n_draws, rng):
+        self.calls.append("draw")
+        return np.tile(fit.latest, (2, 1))
+
+
+def test_the_simulated_one_year_result_refuses_a_tail_before_any_generator_is_asked():
+    """The refusal is simulate_one_year_cdr's own, not the generator's: a
+    generator that takes any fit is never consulted."""
+    generator = _Consulted()
+    with pytest.raises(Refusal, match="the one-year claims development result has no tail"):
+        simulate_one_year_cdr(_tailed_fit(), generator=generator, n_draws=2, seed=1)
+    assert generator.calls == []
+
+
 def test_the_codec_carries_the_tail():
     for spec in (
         TailSpec("constant", factor=1.05, decay=0.7, rows=3),
@@ -1266,8 +1399,9 @@ def test_a_tampered_tail_is_refused():
     fit = _tailed_fit()
     with pytest.raises(Refusal, match="without a tail has tail_factor 1.0"):
         dataclasses.replace(fit, tail=None)
-    with pytest.raises(Refusal, match="positive finite float"):
-        dataclasses.replace(fit, tail_factor=float("nan"))
+    for factor in (float("nan"), 0.0, -1.05):
+        with pytest.raises(Refusal, match="positive finite float"):
+            dataclasses.replace(fit, tail_factor=factor)
 
 
 # -- the example workbook's triangle, from the mart -------------------------------
