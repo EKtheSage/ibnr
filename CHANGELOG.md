@@ -447,6 +447,76 @@ cases, 230 of them refusals, all identical (the refusals in the same places).
   not a run-off triangle, the message names the cells against the diagonal that
   leaves the fewest cells wrong; which triangles are refused is unchanged.
 
+### `methods.tweedie_glm`: a Tweedie GLM fitted to the increments
+
+A new method, `methods.tweedie_glm(cells, power=1.0, link="log", origin="factor",
+calendar="none", projection="pattern", dev_grain_months=12, max_iter=100)`, for
+a service moving off chainladder-python's `TweedieGLM`. It takes the same
+cumulative cells as the other methods, fits a GLM to their increments by
+iteratively reweighted least squares (Fisher scoring, as R's `glm` does, in
+numpy; the kernel is `kernels.fit_tweedie_grid` with `kernels.TweedieSpec`) and
+returns a `ReserveResult`.
+
+- `power` 0 (normal), 1 (over-dispersed Poisson), between 1 and 2 (compound
+  Poisson-gamma), 2 (gamma) or above; a power between 0 and 1 has no Tweedie
+  distribution and is refused. `link` is `"log"` or `"identity"`. `origin`
+  is `"factor"` (a level per origin) or `"none"`. `calendar="trend"` adds a
+  straight-line calendar trend, and only beside `origin="none"`: with origin
+  and development factors it cannot be estimated (R returns `NA` for it).
+- `projection="pattern"` (the default) is the latest cumulative times the
+  fitted development from the latest age, as chainladder reports it;
+  `"increments"` is the latest cumulative plus the fitted future increments, as
+  R's `glmReserve` reports it. `origins.model_ibnr` always carries the second.
+- `tail` is accepted only as `None` for now (`not_supported`).
+- No penalty and no `tol`: the fit stops when no fitted increment moves by
+  more than 1e-10 of the largest increment, so the answer scales exactly with
+  the units. A fit that has not settled within `max_iter` is refused
+  (`did_not_converge`), never returned.
+- Under the log link an origin or an age whose increments are all zero is
+  fitted at exactly zero (its coefficient null, `fitted_zero` true), which is
+  the limit of the fit and the chain ladder's answer.
+
+**Checked:** power 1 with the defaults equals `chain_ladder(cells,
+zero_cells="observed")` to 1e-10 by both projections on GenIns, UKMotor, ABC
+and MW2014, and chainladder-python's chain ladder too. Powers 0, 1, 1.5 and 2
+match R's `glm` with `statmod::tweedie` on the same four triangles (reserves to
+at most 9.3e-8 of the largest origin's, plus the coefficients, standard errors,
+deviance and dispersion); the numbers are frozen in
+`tests/data/tweedie_glm_r.json` by `scripts/r/tweedie_glm_reference.R`, because
+CI has no R. On the 775 clrd paid triangles, built from chainladder's raw
+`clrd.csv` so zeros stay zeros, the power-1 GLM equals `chain_ladder(cells,
+unsupported_factor="unity")` under both zero rules to 1e-8 on all 273 with
+increments of zero or more and no cumulative going from zero to a positive
+amount; of the other 82 with increments of zero or more, 13 have no finite fit
+and are refused (`degenerate_fit`) and 69 are answered.
+
+**What moves for a chainladder-python user.** chainladder 0.9.2's `TweedieGLM`
+never passes `alpha` to scikit-learn, so every fit carries scikit-learn's ridge
+penalty of 1.0 whatever `alpha` says, and its answer depends on the units.
+Total IBNR on genins, chainladder's `TweedieGLM` (with any `alpha`) against
+`tweedie_glm` (pattern route): power 1 18,683,659.86 against 18,680,855.61 (the
+chain ladder's); power 1.5 19,696,737.66 against 18,472,367.35; power 2
+24,252,472.98 against 18,257,520.17; power 0 19,115,349.05 against
+19,115,055.22. On ukmotor at power 1, chainladder's total over the chain
+ladder's is 1.0422 as stored and 2.9197 with the amounts divided by 1,000;
+ibnr's is 1 at every scale. `docs/coming-from-chainladder.md` lists the other
+differences.
+
+**`ReserveResult` gains two tables**, `cells` and `coefficients`, both `None`
+except on a `tweedie_glm` result, and `methods.TABLES` lists them; `to_polars`
+refuses a table a result does not carry with a message naming that table.
+`methods.__all__` gains `tweedie_glm`, and `ibnr.kernels` gains
+`TweedieSpec`, `TweedieFit` and `fit_tweedie_grid`. No refusal code was added:
+the GLM's refusals use `negative_increment`, `zero_increment`,
+`not_identified`, `did_not_converge`, `degenerate_fit`,
+`negative_fitted_mean`, `negative_projection`, `not_supported` and
+`invalid_option`. Nothing else moved: the chain ladder's,
+Bornhuetter-Ferguson's, Cape Cod's and Mack's results (measured before
+Benktander and the development options landed) were compared with the code
+before this change as raw Arrow bytes and exact refusal messages, eight sets of
+options on raa, GenIns, UKMotor, ABC, MW2014 and 130 clrd paid triangles, 1,218
+cases, all identical.
+
 ## 0.7.2 - 2026-09-24
 
 Three pull requests (#149, #152, #153) for moving a reserving service off

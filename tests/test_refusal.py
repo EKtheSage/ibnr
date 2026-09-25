@@ -66,12 +66,13 @@ QT = tri([(f"2001Q{o - 2000}", d // 4, v) for o, d, v in BASE])
 ZERO_COL = [(o, d, 0.0 if d == 12 else v) for o, d, v in BASE]
 Z2 = replace(replace(BASE, (2002, 12), 0.0), (2003, 12), 0.0)
 Z3 = replace(replace(BASE, (2002, 36), 0.0), (2002, 24), 0.0)
-cl, bf, bk, cc, mk = (
+cl, bf, bk, cc, mk, tg = (
     methods.chain_ladder,
     methods.bornhuetter_ferguson,
     methods.benktander,
     methods.cape_cod,
     methods.mack,
+    methods.tweedie_glm,
 )
 
 
@@ -280,6 +281,10 @@ def fixture_rows(name: str, scale: float = 1.0) -> list[tuple]:
 def years(cells: dict, step: int = 12) -> pa.Table:
     """A triangle from ``{origin: [cumulative at each age]}``."""
     return tri([(o, (j + 1) * step, float(v)) for o, vs in cells.items() for j, v in enumerate(vs)])
+
+
+#: an origin with losses only where the others have none: no finite Poisson fit
+GLM_BOUNDARY = years({2001: [0] * 5, 2002: [0] * 4, 2003: [0, 0, 50], 2004: [0, 60], 2005: [40]})
 
 
 #: (id, call, reason, option, column, expected cells, links, rows, extra fields)
@@ -1587,6 +1592,270 @@ CASES = [
         [],
         {"given": "nope"},
     ),
+    (
+        "glm_power_between_0_and_1",
+        lambda: tg(T, power=0.5),
+        "invalid_option",
+        "power",
+        None,
+        [],
+        [],
+        [],
+        {"given": 0.5},
+    ),
+    (
+        "glm_power_negative",
+        lambda: tg(T, power=-1),
+        "invalid_option",
+        "power",
+        None,
+        [],
+        [],
+        [],
+        {"given": -1},
+    ),
+    (
+        "glm_power_nan",
+        lambda: tg(T, power=math.nan),
+        "invalid_option",
+        "power",
+        None,
+        [],
+        [],
+        [],
+        {},
+    ),
+    (
+        "glm_power_bool",
+        lambda: tg(T, power=True),
+        "invalid_option",
+        "power",
+        None,
+        [],
+        [],
+        [],
+        {"given": True},
+    ),
+    (
+        "glm_power_text",
+        lambda: tg(T, power="1"),
+        "invalid_option",
+        "power",
+        None,
+        [],
+        [],
+        [],
+        {"given": "1"},
+    ),
+    (
+        "glm_link",
+        lambda: tg(T, link="logit"),
+        "invalid_option",
+        "link",
+        None,
+        [],
+        [],
+        [],
+        {"given": "logit"},
+    ),
+    (
+        "glm_origin",
+        lambda: tg(T, origin="year"),
+        "invalid_option",
+        "origin",
+        None,
+        [],
+        [],
+        [],
+        {"given": "year"},
+    ),
+    (
+        "glm_calendar",
+        lambda: tg(T, calendar="linear"),
+        "invalid_option",
+        "calendar",
+        None,
+        [],
+        [],
+        [],
+        {"given": "linear"},
+    ),
+    (
+        "glm_projection",
+        lambda: tg(T, projection="ultimate"),
+        "invalid_option",
+        "projection",
+        None,
+        [],
+        [],
+        [],
+        {"given": "ultimate"},
+    ),
+    (
+        "glm_max_iter_zero",
+        lambda: tg(T, max_iter=0),
+        "invalid_option",
+        "max_iter",
+        None,
+        [],
+        [],
+        [],
+        {"given": 0},
+    ),
+    (
+        "glm_max_iter_fraction",
+        lambda: tg(T, max_iter=2.5),
+        "invalid_option",
+        "max_iter",
+        None,
+        [],
+        [],
+        [],
+        {"given": 2.5},
+    ),
+    (
+        "glm_trend_beside_origin_factors",
+        lambda: tg(T, calendar="trend"),
+        "invalid_option",
+        "calendar",
+        None,
+        [],
+        [],
+        [],
+        {"options": ("calendar", "origin"), "given": "trend"},
+    ),
+    (
+        "glm_increments_without_origin_factors",
+        lambda: tg(T, origin="none", projection="increments"),
+        "invalid_option",
+        "projection",
+        None,
+        [],
+        [],
+        [],
+        {"options": ("projection", "origin"), "given": "increments"},
+    ),
+    (
+        "glm_tail",
+        lambda: tg(T, tail=1.05),
+        "not_supported",
+        "tail",
+        None,
+        [],
+        [],
+        [],
+        {"given": 1.05},
+    ),
+    (
+        "glm_negative_increment",
+        lambda: tg(tri(replace(BASE, (2001, 48), 160.0))),
+        "negative_increment",
+        "cells",
+        None,
+        [c(2001, 48, 160.0)],
+        [],
+        [],
+        {},
+    ),
+    (
+        "glm_zero_increment",
+        lambda: tg(tri(replace(BASE, (2001, 48), 170.0)), power=2),
+        "zero_increment",
+        "cells",
+        None,
+        [c(2001, 48, 170.0)],
+        [],
+        [],
+        {},
+    ),
+    (
+        "glm_no_losses",
+        lambda: tg(tri([(o, d, 0.0) for o, d, _ in BASE])),
+        "not_identified",
+        "cells",
+        None,
+        [],
+        [],
+        [],
+        {},
+    ),
+    (
+        "glm_not_identified",
+        lambda: tg(years({2001: [100, 150, 170]}), origin="none", calendar="trend"),
+        "not_identified",
+        "cells",
+        None,
+        [],
+        [],
+        [],
+        {},
+    ),
+    (
+        "glm_did_not_converge",
+        lambda: tg(T, max_iter=1),
+        "did_not_converge",
+        "max_iter",
+        None,
+        [],
+        [],
+        [],
+        {"given": 1},
+    ),
+    (
+        "glm_boundary",
+        lambda: tg(GLM_BOUNDARY),
+        "degenerate_fit",
+        "cells",
+        None,
+        [c(2003, 12, 0.0), c(2003, 24, 0.0), c(2004, 12, 0.0)],
+        [],
+        [],
+        {},
+    ),
+    (
+        "glm_identity_below_zero",
+        lambda: tg(years({2001: [100, 101], 2002: [1]}), link="identity"),
+        "negative_fitted_mean",
+        "link",
+        None,
+        [c(2002, 24)],
+        [],
+        [],
+        {"given": "identity"},
+    ),
+    (
+        "glm_negative_ultimate",
+        lambda: tg(years({2001: [100, 10], 2002: [1]}), power=0, link="identity"),
+        "negative_projection",
+        "projection",
+        None,
+        [c(2002)],
+        [],
+        [],
+        {"given": "pattern"},
+    ),
+    (
+        "to_polars_glm_link_ratios",
+        lambda: tg(T).to_polars("link_ratios"),
+        "invalid_option",
+        "table",
+        None,
+        [],
+        [],
+        [],
+        {"given": "link_ratios"},
+    ),
+    (
+        "to_polars_chain_ladder_cells",
+        lambda: cl(T).to_polars("cells"),
+        "invalid_option",
+        "table",
+        None,
+        [],
+        [],
+        [],
+        {"given": "cells"},
+    ),
 ]
 
 #: Cases whose message may show an ISO date although the labels are years: a gap
@@ -1618,6 +1887,7 @@ _METHOD_OF = {
     bk: "benktander",
     cc: "cape_cod",
     mk: "mack",
+    tg: "tweedie_glm",
 }
 
 
@@ -2366,6 +2636,46 @@ def test_a_seeded_fuzz_meets_nothing_but_refusals():
     assert len(outcomes) > 10, outcomes
 
 
+_GLM_POOL = {
+    "power": [1.0, 1.0, 0.0, 1.5, 2.0, 3.0, 0.5, -1.0, math.nan, True, "1"],
+    "link": ["log", "log", "identity", "logit", None],
+    "origin": ["factor", "factor", "none", "x"],
+    "calendar": ["none", "none", "trend", "x"],
+    "projection": ["pattern", "pattern", "increments", "x"],
+    "max_iter": [100, 100, 1, 3, 0, 2.5, True],
+    "dev_grain_months": [12, 12, 12, 3, 0],
+    "tail": [None, None, None, None, 1.05],
+}
+
+
+def test_a_seeded_fuzz_of_the_glm_meets_nothing_but_refusals():
+    """The same edits as the fuzz above, through ``tweedie_glm`` with random
+    options: every call gives finite numbers (a missing one a null) or exactly a
+    Refusal, and a RuntimeWarning is an error."""
+    rng = np.random.default_rng(20260925)
+    names = sorted(_FUZZ)
+    outcomes: dict[str, int] = {}
+    for _ in range(1500):
+        edited = _fuzz_case(rng, _FUZZ[names[int(rng.integers(0, len(names)))]])
+        options = {}
+        for name, pool in _GLM_POOL.items():
+            if rng.random() < 0.2:
+                options[name] = pool[int(rng.integers(0, len(pool)))]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            try:
+                result = tg(_as_table(edited) if edited else pa.table({}), **options)
+            except Refusal as refusal:
+                assert type(refusal) is Refusal
+                json.dumps(refusal.to_dict(), allow_nan=False)
+                outcomes[refusal.reason] = outcomes.get(refusal.reason, 0) + 1
+                continue
+        _numbers_are_finite(result)
+        outcomes["answered"] = outcomes.get("answered", 0) + 1
+    assert outcomes["answered"] > 40, sorted(outcomes.items())
+    assert len(outcomes) > 10, sorted(outcomes.items())
+
+
 @pytest.mark.tieout
 def test_every_clrd_triangle_is_answered_or_refused():
     """Every clrd company and line, paid and incurred, and the quarterly sample,
@@ -2396,6 +2706,8 @@ def test_every_clrd_triangle_is_answered_or_refused():
                 ("bornhuetter_ferguson", {"premium": premium, "expected_loss_ratio": 0.7}),
                 ("cape_cod", {"premium": premium}),
                 ("mack", {}),
+                ("tweedie_glm", {}),
+                ("tweedie_glm", {"power": 0.0}),
             ):
                 bucket = counts.setdefault((field, method), {})
                 try:
@@ -2418,7 +2730,7 @@ def test_every_clrd_triangle_is_answered_or_refused():
         "dev_lag": long["development"].astype("int64").tolist(),
         "value": long["paid"].astype(float).tolist(),
     }
-    for method in ("chain_ladder", "mack"):
+    for method in ("chain_ladder", "mack", "tweedie_glm"):
         refusal = refusal_of(
             lambda method=method: getattr(methods, method)(cells, dev_grain_months=3)
         )
