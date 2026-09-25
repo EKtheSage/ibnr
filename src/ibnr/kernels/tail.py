@@ -367,8 +367,9 @@ class TailFit:
         The index of the first link replaced; ``n_links`` when none is.
     ok : numpy.ndarray
         ``(...)`` bool: the fit passed every check. Always all true unless
-        :func:`apply_tail` was called with ``on_error="flag"``; the arrays of a
-        row that failed hold NaN.
+        :func:`apply_tail` was called with ``on_error="flag"``; the factors of a
+        row that failed hold NaN, and its ``intercept`` and ``slope`` are the
+        line that failed (NaN with fewer than two points).
     """
 
     spec: TailSpec
@@ -649,20 +650,23 @@ def _curve_refusal(
     ``position`` is (the row, how many rows there are), so a bootstrap's
     refusal names the simulation."""
     where = np.flatnonzero(in_range)
-    span = (
-        f"between {(where[0] + 1) * step} and {(where[-1] + 1) * step} months"
-        if where.size
-        else "in the fit range"
-    )
+    if where.size > 1:
+        span = f"from {(where[0] + 1) * step} to {(where[-1] + 1) * step} months"
+    elif where.size:
+        span = f"at {(where[0] + 1) * step} months"
+    else:
+        span = "in the fit range"
     row, m = position
     row = f" (in simulation row {row + 1} of {m})" if m > 1 else ""
     kind = spec.kind.replace("_", " ")
     links = [((j + 1) * step, (j + 2) * step) for j in where]
     if reason == "not_identified":
+        article = "a" if spec.kind == "weibull" else "an"
+        factors = "factor" if where.size == 1 else "factors"
         return Refusal(
             "not_identified",
-            f"an {kind} tail needs a straight line through at least two link factors above "
-            f"{MIN_FIT_FACTOR}; {span} only {count} of the {where.size} factor(s) "
+            f"{article} {kind} tail needs a straight line through at least two link factors "
+            f"above {MIN_FIT_FACTOR}; {span} only {count} of the {where.size} {factors} "
             f"{'is' if count == 1 else 'are'} above {MIN_FIT_FACTOR}{row}. Widen "
             f"{spec.name('fit_lags')} or use a constant tail",
             option=spec.name("kind"),
@@ -699,9 +703,9 @@ def _curve_refusal(
 
 
 def _blank(fit: TailFit, bad: np.ndarray) -> TailFit:
-    """The fit with NaN in every number of the rows ``bad``."""
+    """The fit with NaN in every factor of the rows ``bad``; their line is kept."""
     out = {}
-    for name in ("factors", "tail_factor", "shown", "beyond_cdf", "curve", "intercept", "slope"):
+    for name in ("factors", "tail_factor", "shown", "beyond_cdf", "curve"):
         values = getattr(fit, name).copy()
         values[bad] = np.nan
         out[name] = values
