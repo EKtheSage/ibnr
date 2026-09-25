@@ -36,6 +36,11 @@ tables are pyarrow Tables, so a service needs no DataFrame library at all; for
 analysis, ``result.to_polars()`` turns any of them into a polars DataFrame
 (``pip install "ibnr[polars]"``).
 
+Importing this module loads numpy and pyarrow, and not ibis, pandas or scipy,
+and none of the four methods loads them when it runs, so a service that starts
+a new process for a request does not pay for them (the CHANGELOG has the
+times).
+
 This module is the front door. The functions here are thin wrappers over
 ``ibnr.kernels``, which is where the research tools live: refitting a fixed set
 of options at successive dates (``kernels.replay_conventional``), choosing
@@ -49,6 +54,7 @@ from __future__ import annotations
 import datetime as dt
 import numbers
 import re
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -57,8 +63,9 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 
-from ibnr.kernels.contract import as_date, check_grid, grid_from_columns
-from ibnr.kernels.conventional import ConventionalCandidate, fit_conventional_grid
+from ibnr import _arrow
+from ibnr.kernels.conventional import ConventionalCandidate, _estimate_grid
+from ibnr.kernels.grid import as_date, check_grid, grid_from_columns
 from ibnr.kernels.mack import fit_mack_grid
 
 __all__ = [
@@ -456,14 +463,14 @@ def mack(
     origins = pa.table(
         {
             "origin": labels.labels_for(fit.origin_periods),
-            "origin_period": pa.array(fit.origin_periods, pa.date32()),
-            "latest_dev_lag": pa.array((fit.latest_dev + 1) * step, pa.int64()),
-            "latest": pa.array(latest, pa.float64()),
-            "ultimate": pa.array(ultimate, pa.float64()),
-            "ibnr": pa.array(ultimate - latest, pa.float64()),
-            "mack_se": pa.array(np.sqrt(risk["msep"]), pa.float64()),
-            "parameter_se": pa.array(np.sqrt(risk["parameter"]), pa.float64()),
-            "process_se": pa.array(np.sqrt(risk["process"]), pa.float64()),
+            "origin_period": _arrow.date32(fit.origin_periods),
+            "latest_dev_lag": _arrow.int64((fit.latest_dev + 1) * step),
+            "latest": _arrow.float64(latest),
+            "ultimate": _arrow.float64(ultimate),
+            "ibnr": _arrow.float64(ultimate - latest),
+            "mack_se": _arrow.float64(np.sqrt(risk["msep"])),
+            "parameter_se": _arrow.float64(np.sqrt(risk["parameter"])),
+            "process_se": _arrow.float64(np.sqrt(risk["process"])),
         }
     )
     development = pa.table(
@@ -476,9 +483,9 @@ def mack(
     totals = pa.table(
         {
             **_sums(latest, ultimate),
-            "mack_se": pa.array([np.sqrt(risk["msep_total"])], pa.float64()),
-            "parameter_se": pa.array([np.sqrt(risk["parameter_total"])], pa.float64()),
-            "process_se": pa.array([np.sqrt(risk["process_total"])], pa.float64()),
+            "mack_se": _arrow.float64([np.sqrt(risk["msep_total"])]),
+            "parameter_se": _arrow.float64([np.sqrt(risk["parameter_total"])]),
+            "process_se": _arrow.float64([np.sqrt(risk["process_total"])]),
         }
     )
     return ReserveResult("mack", as_of, step, origins, development, None, totals)
@@ -541,9 +548,11 @@ def _conventional_result(
 ) -> ReserveResult:
     candidate = wrapped.kernel
     keyed = None if premium is None else _premium(premium, origins)
-    fit = fit_conventional_grid(grid, candidate, premium=keyed)
-    selection = fit.factor_selection
-    seen = set(zip(selection["origin_period"], selection["from_dev_lag"], strict=True))
+    # fit_conventional_grid without its three pandas tables: the same checks and
+    # numbers, held in numpy arrays and lists, so a fit here never loads pandas
+    fit = _estimate_grid(grid, candidate, premium=keyed)
+    selection = fit.selection
+    seen = {(row["origin_period"], row["from_dev_lag"]) for row in selection}
     unknown = [_pair_shown(pair) for pair, key in wrapped.exclusions if key not in seen]
     if unknown:
         raise ValueError(
@@ -554,43 +563,48 @@ def _conventional_result(
         )
     step = grid["dev_grain_months"]
     table = fit.origins
-    latest = table["latest"].to_numpy(dtype=float)
-    ultimate = table["ultimate"].to_numpy(dtype=float)
+    latest = np.asarray(table["latest"], dtype=float)
+    ultimate = np.asarray(table["ultimate"], dtype=float)
     columns = {
-        "origin": origins.labels_for(list(table["origin_period"])),
-        "origin_period": pa.array(list(table["origin_period"]), pa.date32()),
-        "latest_dev_lag": pa.array(table["latest_dev_lag"].to_numpy(dtype=np.int64), pa.int64()),
-        "latest": pa.array(latest, pa.float64()),
-        "ultimate": pa.array(ultimate, pa.float64()),
-        "ibnr": pa.array(ultimate - latest, pa.float64()),
+        "origin": origins.labels_for(table["origin_period"]),
+        "origin_period": _arrow.date32(table["origin_period"]),
+        "latest_dev_lag": _arrow.int64(table["latest_dev_lag"]),
+        "latest": _arrow.float64(latest),
+        "ultimate": _arrow.float64(ultimate),
+        "ibnr": _arrow.float64(ultimate - latest),
     }
     if candidate.method != "cl":
-        columns["expected_loss_ratio"] = pa.array(
-            table["expected_loss_ratio"].to_numpy(dtype=float), pa.float64()
-        )
-    summary = fit.factor_summary
+        columns["expected_loss_ratio"] = _arrow.float64(table["expected_loss_ratio"])
+
+    def summary(key: str) -> list:
+        return [row[key] for row in fit.summary]
+
     development = pa.table(
         {
             **_pattern(fit.factors, grid["n_d"], step),
-            "n_selected": _with_last_null(summary["n_selected"].to_numpy(np.int64), pa.int64()),
-            "unity_fallback": _with_last_null(summary["unity_fallback"].to_numpy(bool), pa.bool_()),
+            "n_selected": _with_last_null(summary("n_selected"), pa.int64()),
+            "unity_fallback": _with_last_null(summary("unity_fallback"), pa.bool_()),
             "extreme_trimming_skipped": _with_last_null(
-                summary["extreme_trimming_skipped"].to_numpy(bool), pa.bool_()
+                summary("extreme_trimming_skipped"), pa.bool_()
             ),
         }
     )
-    ratio = selection["ratio"].to_numpy(dtype=float)
+
+    def link(key: str) -> list:
+        return [row[key] for row in selection]
+
+    ratio = np.array(link("ratio"), dtype=float)
     link_ratios = pa.table(
         {
-            "origin": origins.labels_for(list(selection["origin_period"])),
-            "origin_period": pa.array(list(selection["origin_period"]), pa.date32()),
-            "from_dev_lag": pa.array(selection["from_dev_lag"].to_numpy(np.int64), pa.int64()),
-            "previous": pa.array(selection["previous"].to_numpy(dtype=float), pa.float64()),
-            "following": pa.array(selection["following"].to_numpy(dtype=float), pa.float64()),
+            "origin": origins.labels_for(link("origin_period")),
+            "origin_period": _arrow.date32(link("origin_period")),
+            "from_dev_lag": _arrow.int64(link("from_dev_lag")),
+            "previous": _arrow.float64(link("previous")),
+            "following": _arrow.float64(link("following")),
             # an undefined ratio (from a zero cumulative) is missing, not a number
-            "ratio": pa.array(ratio, pa.float64(), mask=np.isnan(ratio)),
-            "included": pa.array(selection["included"].to_numpy(bool), pa.bool_()),
-            "reason": pa.array(list(selection["reason"]), pa.string()),
+            "ratio": _arrow.float64(ratio, mask=np.isnan(ratio)),
+            "included": _arrow.bool_(link("included")),
+            "reason": _arrow.string(link("reason")),
         }
     )
     totals = pa.table(_sums(latest, ultimate))
@@ -605,24 +619,24 @@ def _pattern(factors: np.ndarray, n_d: int, step: int) -> dict[str, pa.Array]:
     factors = np.asarray(factors, dtype=float)[: n_d - 1]
     cdf = np.r_[np.cumprod(factors[::-1])[::-1], 1.0]
     return {
-        "dev_lag": pa.array(np.arange(1, n_d + 1, dtype=np.int64) * step, pa.int64()),
+        "dev_lag": _arrow.int64(np.arange(1, n_d + 1, dtype=np.int64) * step),
         "factor": _with_last_null(factors, pa.float64()),
-        "cdf": pa.array(cdf, pa.float64()),
-        "pct_reported": pa.array(1.0 / cdf, pa.float64()),
+        "cdf": _arrow.float64(cdf),
+        "pct_reported": _arrow.float64(1.0 / cdf),
     }
 
 
-def _with_last_null(values: np.ndarray, kind: pa.DataType) -> pa.Array:
+def _with_last_null(values, kind: pa.DataType) -> pa.Array:
     """One value per link, plus a null for the last age, which has no next age."""
-    return pa.array([*values.tolist(), None], kind)
+    return _arrow.with_last_null(values, kind)
 
 
 def _sums(latest: np.ndarray, ultimate: np.ndarray) -> dict[str, pa.Array]:
     total_latest, total_ultimate = float(latest.sum()), float(ultimate.sum())
     return {
-        "latest": pa.array([total_latest], pa.float64()),
-        "ultimate": pa.array([total_ultimate], pa.float64()),
-        "ibnr": pa.array([total_ultimate - total_latest], pa.float64()),
+        "latest": _arrow.float64([total_latest]),
+        "ultimate": _arrow.float64([total_ultimate]),
+        "ibnr": _arrow.float64([total_ultimate - total_latest]),
     }
 
 
@@ -790,7 +804,7 @@ class _Origins:
     def labels_for(self, starts) -> pa.Array:
         """The caller's label for each period start, in the caller's Arrow type."""
         position = {start: i for i, start in enumerate(self.label_starts)}
-        return self.labels.take(pa.array([position[start] for start in starts], pa.int64()))
+        return self.labels.take(_arrow.int64([position[start] for start in starts]))
 
     def shown_for(self, starts) -> list[str]:
         """The caller's label for each period start, as a message prints it."""
@@ -835,7 +849,7 @@ def _read_origins(column: pa.ChunkedArray, name: str, step: int, *, cells: bool)
             f"got {kind}; {_FORMS}"
         )
     labels = pc.unique(column)
-    row_label = pc.index_in(column, value_set=labels).to_numpy().astype(np.int64)
+    row_label = _arrow.to_numpy(pc.index_in(column, value_set=labels)).astype(np.int64)
     if pa.types.is_timestamp(labels.type):
         shown = labels.cast(pa.string()).to_pylist()
         # a timestamp with a time zone is read as the date in that zone
@@ -870,6 +884,19 @@ def _table(data, name: str) -> pa.Table:
         return data
     if isinstance(data, pa.RecordBatch):
         return pa.Table.from_batches([data])
+    pandas = sys.modules.get("pandas")
+    is_pandas = pandas is not None and isinstance(data, pandas.DataFrame)
+    if hasattr(data, "__arrow_c_stream__") and not is_pandas:
+        # What pa.table does with such an object, without its first step: pa.table
+        # asks whether the object is a pandas DataFrame, which imports pandas.
+        # A pandas DataFrame still goes through pa.table, as it always has.
+        try:
+            return pa.RecordBatchReader.from_stream(data).read_all()
+        except (TypeError, ValueError, pa.ArrowException) as exc:
+            raise ValueError(
+                f"{name} must be a table Arrow can read, such as a polars DataFrame or a "
+                f"pyarrow Table, not {type(data).__name__}: {exc}"
+            ) from exc
     try:
         return pa.table(data)
     except (TypeError, ValueError, pa.ArrowException) as exc:
@@ -1018,9 +1045,9 @@ def _whole_months(column: pa.ChunkedArray) -> np.ndarray:
     if column.null_count:
         raise ValueError(f"dev_lag has {column.null_count} missing value(s)")
     if pa.types.is_integer(kind):
-        return column.to_numpy().astype(np.int64)
+        return _arrow.to_numpy(column).astype(np.int64)
     if pa.types.is_floating(kind):
-        months = column.to_numpy().astype(float)
+        months = _arrow.to_numpy(column).astype(float)
         fractional = ~np.isfinite(months) | (months != np.round(months))
         if fractional.any():
             raise ValueError(
@@ -1038,7 +1065,7 @@ def _numbers(column: pa.ChunkedArray, name: str, why: str) -> np.ndarray:
         raise ValueError(f"{name} must be a numeric column, got {kind}")
     if column.null_count:
         raise ValueError(f"{name} has {column.null_count} null value(s); {why}")
-    amounts = column.cast(pa.float64()).to_numpy()
+    amounts = _arrow.to_numpy(column.cast(pa.float64()))
     if np.isnan(amounts).any():
         raise ValueError(f"{name} has {int(np.isnan(amounts).sum())} NaN value(s); {why}")
     return amounts

@@ -1760,6 +1760,44 @@ def test_the_result_holds_no_pandas_objects():
             assert not isinstance(value, pd.DataFrame | pd.Series), method
 
 
+@pytest.mark.parametrize("method", list(SCHEMAS))
+def test_columns_in_several_pieces_or_part_way_into_memory_read_the_same(method):
+    """The methods read input columns straight from Arrow's memory buffers, so as
+    not to load pandas. A column held in several chunks, or one that starts part
+    way into its memory (a slice of a longer table), must read as the same
+    numbers. Mutation: read only the first chunk in ``ibnr._arrow.to_numpy``;
+    this fails. (On pyarrow 24 joining the chunks copies a slice to the start of
+    new memory, so the slice cannot reach ``to_numpy`` with an offset from here;
+    ``test_to_numpy_reads_a_slice_from_where_it_starts`` checks that case.)"""
+    plain = arrow_cells()
+    before = arrow_cells(
+        rows=[[7.0, 9.0], [5.0]], origins=[dt.date(1960, 1, 1), dt.date(1961, 1, 1)]
+    )
+    sliced = pa.concat_tables([before, plain]).combine_chunks().slice(before.num_rows)
+    pieces = pa.concat_tables([plain.slice(0, 20), plain.slice(20)])
+    assert sliced.column("value").chunk(0).offset == before.num_rows
+    assert pieces.column("value").num_chunks == 2
+    expected = run(method, plain)
+    for cells in (sliced, pieces):
+        got = run(method, cells)
+        for table in ("origins", "development", "link_ratios", "totals"):
+            assert getattr(got, table) == getattr(expected, table), table
+
+
+def test_to_numpy_reads_a_slice_from_where_it_starts():
+    """``ibnr._arrow.to_numpy`` on an array that starts part way into its memory.
+    Mutation: ignore the offset; this fails, reading the values before the slice."""
+    from ibnr import _arrow
+
+    whole = pa.table({"x": [10, 11, 12, 13, 14]}).column("x").chunk(0)
+    part = whole.slice(2)
+    assert part.offset == 2
+    out = _arrow.to_numpy(part)
+    assert out.dtype == np.int64
+    assert out.tolist() == [12, 13, 14]
+    assert _arrow.to_numpy(part.cast(pa.float64())).tolist() == [12.0, 13.0, 14.0]
+
+
 # -- the numpy grid builder ---------------------------------------------------------
 
 

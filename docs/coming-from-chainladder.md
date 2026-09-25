@@ -19,7 +19,10 @@ origin period, so an annual triangle starts at 12) and `value` (the cumulative
 loss). A polars DataFrame works, and so does a pyarrow Table or anything else
 Arrow can read. Each call returns a `ReserveResult` whose tables are pyarrow
 Tables; `.to_polars(name)` gives any of them as a polars DataFrame
-(`pip install "ibnr[polars]"`).
+(`pip install "ibnr[polars]"`). `from ibnr import methods` loads numpy and
+pyarrow only, not pandas, scipy or ibis, and the four methods do not load them
+when they run; `import chainladder` (0.9.2) loads pandas, scipy and
+scikit-learn.
 
 ```python
 import polars as pl

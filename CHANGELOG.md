@@ -19,6 +19,71 @@ corrected decision 8 - and, from 0.7.2,
 From 0.7.2 the minor number is kept for milestones: additions and fixes ship as
 patch releases, and 0.8 comes when the roadmap's goals are done.
 
+## Unreleased
+
+### `ibnr.methods` loads no ibis, pandas or scipy
+
+`from ibnr import methods` used to load ibis, pandas and scipy, although the four
+methods use none of them. A service that starts a new process per request paid
+for all three on every cold start. Now importing the module loads numpy and
+pyarrow only, and running `chain_ladder`, `bornhuetter_ferguson`, `cape_cod` or
+`mack` loads nothing more. No method needs an extra import on its first call.
+
+Import times, 11 fresh interpreters per arm, the two arms taking turns, on the
+dev box on 2026-09-25 (the box was busy: 0.7.2's `from ibnr import methods`
+measured 2.35 to 2.57 s there the day before, so read the ratios):
+
+| What was timed | 0.7.2, median (range) | now, median (range) | modules loaded |
+|---|---|---|---|
+| `from ibnr import methods` | 4.76 s (3.88-5.10) | 1.32 s (0.92-1.43) | 1,050 -> 291 |
+| that, then a first `chain_ladder` on raa | 4.00 s (3.30-4.40) | 1.13 s (0.94-1.30) | 1,053 -> 294 |
+| that, then a first `mack` on raa | 3.27 s (2.89-4.29) | 0.84 s (0.78-1.07) | 1,053 -> 294 |
+| `import ibnr` | 1.27 s (0.97-1.57) | 0.57 s (0.43-0.59) | 360 -> 159 |
+| `from ibnr import gallery` | 4.33 s (3.91-4.80) | 4.15 s (3.42-4.65) | 1,117 -> 1,113 |
+
+What is left is numpy (about 0.45 s on this box), pyarrow (about 0.25 s) and the
+lookup of ibnr's installed version (0.1 to 0.2 s); ibnr's own modules take about
+0.03 s. The gallery needs pandas and scipy, so its import time does not change.
+
+**No number moved.** Every result was compared with 0.7.2's code, as exact float
+bits and exact refusal messages: the four methods with eight sets of options,
+`fit_conventional_grid` and `fit_mack_grid` (with `msep_runoff` and `summary`)
+under both zero rules, the grid itself, and the Triangle path (`fit_mack`,
+`fit_mack_many`, `fit_conventional`), on raa, genins and 130 clrd paid
+triangles (every sixth company and line, in name order): 2,511 cases, 1,509 answers and 1,002 refusals, all identical.
+
+**What changed:**
+- `ibnr/__init__.py` imports `Triangle` and `TriangleMeta` the first time they
+  are read, so `import ibnr` no longer loads ibis. `ibnr.triangle` still
+  answers after `import ibnr`, and `ibnr.gallery` is still an `AttributeError`
+  until something imports it.
+- `ibnr/kernels/__init__.py` imports each name the first time it is read (PEP
+  562). `__all__` is unchanged, `kernels.codec` and the other submodules still
+  answer as attributes, and a `TYPE_CHECKING` block repeats every import for
+  type checkers and the docs build.
+- The numpy-only grid helpers (`grid_from_columns`, `check_grid`,
+  `require_run_off`, `dev_step_index`, `as_date`, `month_end`, `ZERO_CELLS`)
+  moved from `kernels/contract.py` to a new `kernels/grid.py`, beside a new
+  `TRIANGLE_MEASURES`. `kernels.contract` re-exports the first seven, so imports from there
+  keep working.
+- `kernels/conventional.py` and `kernels/mack.py` import pandas, the Triangle
+  layer and `PredictiveDistribution` inside the functions that use them.
+  `fit_conventional_grid` still returns pandas tables, and so imports pandas
+  when it runs; `ibnr.methods` reads the same fit before those tables are built.
+- pyarrow imports pandas, when it is installed, the first time `pa.array`,
+  `pa.scalar` or `Array.to_numpy` runs, and `pa.table` does too for nearly
+  every input (it asks whether the input is a pandas DataFrame, or builds
+  arrays with `pa.array`). So `ibnr.methods` builds its result
+  arrays from numpy memory (`ibnr/_arrow.py`), reads its input columns the same
+  way, and reads a polars DataFrame (or any other object offering the Arrow
+  stream interface, except a pandas DataFrame) with
+  `pa.RecordBatchReader.from_stream` instead of `pa.table`.
+
+**What can break:** code that counted on `import ibnr` or `import ibnr.kernels`
+having loaded something as a side effect. `vars(ibnr.kernels)` lists a name only
+once it has been read, and `sys.modules` no longer holds ibis after a bare
+`import ibnr`. Reading the names works as before.
+
 ## 0.7.2 - 2026-09-24
 
 Three pull requests (#149, #152, #153) for moving a reserving service off

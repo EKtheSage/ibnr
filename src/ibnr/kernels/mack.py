@@ -61,15 +61,22 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
-import pandas as pd
 
-from ibnr.kernels.contract import ZERO_CELLS, check_grid, cohort_grid, cohort_grid_frame
-from ibnr.kernels.holdout import CellIndex
-from ibnr.kernels.predictive import PredictiveDistribution
-from ibnr.triangle.core import GRAIN_MONTHS, Triangle
+# Nothing at module level here imports pandas or the Triangle layer, because
+# ibnr.methods imports this module and must not load ibis, pandas or scipy. The
+# Triangle paths (fit_mack, fit_mack_many), the pandas summaries and the
+# simulation import what they need when they run.
+from ibnr.kernels.grid import ZERO_CELLS, check_grid
+
+if TYPE_CHECKING:
+    import pandas as pd
+
+    from ibnr.kernels.holdout import CellIndex
+    from ibnr.kernels.predictive import PredictiveDistribution
+    from ibnr.triangle.core import Triangle
 
 #: how the variance of the LAST development step is estimated. That step has a
 #: single observation, so it has no residual degrees of freedom of its own.
@@ -306,6 +313,8 @@ class MackFit:
     def summary(self) -> pd.DataFrame:
         """One row per origin: latest, ultimate, IBNR and the run-off standard
         error, plus a ``total`` row. Mirrors ``cl.MackChainladder.summary_``."""
+        import pandas as pd
+
         risk = self.msep_runoff()
         out = pd.DataFrame(
             {
@@ -358,6 +367,8 @@ def fit_mack(
     how the last development step's variance is estimated - see
     ``_estimate_factors``. ``zero_cells`` is as in :func:`fit_mack_grid`.
     """
+    from ibnr.kernels.contract import cohort_grid
+
     train = triangle.as_of(as_of) if as_of is not None else triangle
     return fit_mack_grid(
         cohort_grid(train, loss_field=loss_field), sigma_rule=sigma_rule, zero_cells=zero_cells
@@ -387,6 +398,8 @@ class MackFitPanel:
         """One row per cohort: latest, ultimate, IBNR (point quantities only -
         per-cohort variance is ``self[key].msep_runoff()``, kept off this path
         because it needs the positive-open-diagonal guard cohort by cohort)."""
+        import pandas as pd
+
         rows = [
             {
                 **dict(zip(self.by, key, strict=True)),
@@ -442,6 +455,9 @@ def fit_mack_many(
 
     ``zero_cells`` is as in :func:`fit_mack_grid` and applies to every cohort.
     """
+    from ibnr.kernels.contract import cohort_grid_frame
+    from ibnr.triangle.core import GRAIN_MONTHS
+
     if on_error not in ("raise", "skip"):
         raise ValueError(f"on_error must be 'raise' or 'skip', got {on_error!r}")
     # checked before any cohort, so that on_error="skip" cannot turn a bad
@@ -799,6 +815,10 @@ def simulate_ultimates(
             var = fit.sigma2[j] * state
             state = draw_step(rng, mean, np.maximum(var, 0.0), law=process)
         ult[:, i] = state
+
+    import pandas as pd
+
+    from ibnr.kernels.predictive import PredictiveDistribution
 
     targets = pd.DataFrame(
         {
