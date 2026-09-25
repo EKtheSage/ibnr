@@ -53,6 +53,13 @@ SELECTION_COLUMNS = [
     "reason",
 ]
 
+#: The most Benktander iterations a candidate takes. The loop runs once per
+#: iteration, so the count bounds the time one fit can take: 10,000 took 0.02 s
+#: on raa and a million 1.3 s. Stopping early once the ultimate stops changing
+#: would not bound it: on 859 clrd triangles the loop took up to 106,028 passes
+#: to settle, and 146 of them end alternating between two values instead.
+MAX_N_ITERS = 10_000
+
 #: One row per estimated development factor.
 SUMMARY_COLUMNS = [
     "from_dev_lag",
@@ -97,11 +104,11 @@ class ConventionalCandidate:
 
     ``n_iters`` (``"bf"`` and ``"gcc"`` only) is the number of Benktander
     iterations: 1 is the method itself, and each further one uses the last
-    ultimate as the a priori ultimate. ``trend`` (``"gcc"`` only) is an annual
-    rate: each origin's losses are moved to the valuation date's level by
-    ``(1 + trend)`` a year from the end of the origin period before the loss
-    ratios are pooled, and each pooled ratio is brought back to its origin's
-    level after.
+    ultimate as the a priori ultimate, at most :data:`MAX_N_ITERS` (10,000).
+    ``trend`` (``"gcc"`` only) is an annual rate: each origin's losses are
+    moved to the valuation date's level by ``(1 + trend)`` a year from the end
+    of the origin period before the loss ratios are pooled, and each pooled
+    ratio is brought back to its origin's level after.
     """
 
     method: str = "cl"
@@ -213,6 +220,15 @@ class ConventionalCandidate:
             raise Refusal(
                 "invalid_option",
                 "n_iters must be a whole number of 1 or more, got {given}",
+                option="n_iters",
+                given=iterations,
+            )
+        if iterations > MAX_N_ITERS:
+            raise Refusal(
+                "invalid_option",
+                f"n_iters must be at most {MAX_N_ITERS}, got {{given}}; each iteration is one "
+                "more pass over the origins, so a larger count only costs time, and the chain "
+                "ladder the iterations move toward is chain_ladder itself",
                 option="n_iters",
                 given=iterations,
             )

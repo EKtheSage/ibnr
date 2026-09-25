@@ -262,6 +262,24 @@ def test_fitted_factors_change_while_the_procedure_settings_remain_fixed(backend
     assert set(result.fits) == {("fixed", date) for date in DATES}
 
 
+def test_an_excluded_valuation_is_left_out_once_a_refit_reaches_it(backend_name):
+    # The kernel accepts a valuation after the fit date, so one candidate can be
+    # replayed across dates before and after it.
+    plain = ConventionalCandidate(horizon=48)
+    later = ConventionalCandidate(horizon=48, exclude_valuations=(DATES[2],))
+    result = replay(full_triangle(backend_name), {"plain": plain, "later": later})
+    for date in DATES[:2]:
+        assert (
+            result.fits[("later", date)].factors.tobytes()
+            == result.fits[("plain", date)].factors.tobytes()
+        )
+    reached = result.fits[("later", DATES[2])]
+    assert not np.array_equal(reached.factors, result.fits[("plain", DATES[2])].factors)
+    selection = reached.factor_selection
+    left_out = selection[selection["reason"] == "valuation_exclusion"]
+    assert len(left_out) == 3  # the 2015 diagonal's link ratios, one per link
+
+
 def test_later_history_cannot_rewrite_an_earlier_interval(backend_name):
     original = full_triangle(backend_name)
     frame = original.execute()

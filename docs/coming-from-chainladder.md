@@ -128,8 +128,9 @@ Five details of the correspondence:
   equal amounts too go by origin, the newer for `drop_high` and the older for
   `drop_low`. `trim_ties="origin"` ranks equal ratios by origin alone, the rule
   of ibnr 0.7.2 and of `kernels.ConventionalCandidate`, which disagrees with
-  chainladder on 23 of the 681 clrd paid triangles both answer for
-  `drop_high=True`, on 124 for `drop_low=True` and on 83 for both.
+  chainladder on 23 of 681 clrd paid triangles for `drop_high=True`, on 124
+  for `drop_low=True` and on 83 for both. The 681 are the 731 ibnr answers less
+  the 50 that are zero in every cell, which chainladder holds no cells for.
 - chainladder-python reports a fully developed origin's IBNR and Mack standard
   error as NaN; ibnr reports 0.0, because nothing is left to develop.
 
@@ -173,9 +174,12 @@ published numbers do not move.)
   link ratio of exactly 1.0. The bounds' `preserve` also counts the ratios in
   the `history_periods` window, where chainladder counts the whole column and
   can empty the window.
-- **`n_iters` is a whole number of 1 or more.** chainladder-python reads
+- **`n_iters` is a whole number from 1 to 10,000.** chainladder-python reads
   `n_iters=0` as the expected loss method (every ultimate is the a priori
   one, a fully developed origin included) and accepts `2.5`; ibnr refuses both.
+  It also refuses a count above 10,000, because each iteration is one more pass
+  of a loop: a million took 1.3 seconds on raa, so a count typed by a user could
+  hold a request for minutes.
 - **One setting for every age.** chainladder-python takes a list per age for
   the drop options, `preserve` and `average`; ibnr refuses a list, and applies
   one setting at every age.
