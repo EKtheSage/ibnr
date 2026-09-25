@@ -1554,6 +1554,17 @@ CASES = [
         {},
     ),
     (
+        "mack_valuation_not_in_triangle",
+        lambda: mk(T, exclude_valuations=["2005-12-31"]),
+        "not_in_triangle",
+        "exclude_valuations",
+        None,
+        [],
+        [],
+        [],
+        {"given": "2005-12-31"},
+    ),
+    (
         "dev_lag_past_whole_numbers",
         lambda: cl(pa.table({"origin_period": [2001], "dev_lag": [1e30], "value": [1.0]})),
         "invalid_age",
@@ -1595,6 +1606,7 @@ _DATES_EXPECTED = {
     "valuation_first_diagonal",
     "valuation_after_the_latest",
     "valuation_twice",
+    "mack_valuation_not_in_triangle",
     # the message gives ['2020-12-31'] as an example of a list of valuations
     "exclude_valuations_'2002'",
     "exclude_valuations_2002",
