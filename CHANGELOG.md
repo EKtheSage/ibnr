@@ -27,19 +27,28 @@ patch releases, and 0.8 comes when the roadmap's goals are done.
 methods use none of them. A service that starts a new process per request paid
 for all three on every cold start. Now importing the module loads numpy and
 pyarrow only, and running `chain_ladder`, `bornhuetter_ferguson`, `cape_cod` or
-`mack` loads nothing more. No method needs an extra import on its first call.
+`mack` loads nothing heavy: a first call imports `numpy.ma` (3 modules), and
+later calls import nothing. That holds for cells given as a polars DataFrame,
+an Arrow table or a dict of Python lists or numpy arrays (what a service reading
+JSON has). Two inputs still make pyarrow load pandas: a pandas DataFrame, and a
+dict with a list that is not all strings, all bools, all dates or all numbers
+(one holding a null or a datetime, for example).
 
-Import times, 11 fresh interpreters per arm, the two arms taking turns, on the
-dev box on 2026-09-25 (the box was busy: 0.7.2's `from ibnr import methods`
-measured 2.35 to 2.57 s there the day before, so read the ratios):
+Times from one run on the dev box on 2026-09-25: for each row, 11 fresh
+interpreters per arm, the two arms taking turns, every row in the same run. The
+box was busy (0.7.2's `from ibnr import methods` measured 2.35 to 2.57 s there
+the day before), so read the ratios. The rows with a call include reading the
+cells, and are not slower than the bare import within the spread: a first call
+costs less than the difference between two runs of the same row.
 
 | What was timed | 0.7.2, median (range) | now, median (range) | modules loaded |
 |---|---|---|---|
-| `from ibnr import methods` | 4.76 s (3.88-5.10) | 1.32 s (0.92-1.43) | 1,050 -> 291 |
-| that, then a first `chain_ladder` on raa | 4.00 s (3.30-4.40) | 1.13 s (0.94-1.30) | 1,053 -> 294 |
-| that, then a first `mack` on raa | 3.27 s (2.89-4.29) | 0.84 s (0.78-1.07) | 1,053 -> 294 |
-| `import ibnr` | 1.27 s (0.97-1.57) | 0.57 s (0.43-0.59) | 360 -> 159 |
-| `from ibnr import gallery` | 4.33 s (3.91-4.80) | 4.15 s (3.42-4.65) | 1,117 -> 1,113 |
+| `from ibnr import methods` | 4.10 s (3.38-4.44) | 1.22 s (0.90-1.41) | 1,050 -> 286 |
+| that, then a first `chain_ladder` on raa read from an Arrow file | 3.90 s (3.73-4.44) | 1.13 s (1.00-1.38) | 1,053 -> 289 |
+| that, then a first `mack` on raa read from an Arrow file | 4.04 s (3.10-5.04) | 1.09 s (0.92-1.33) | 1,053 -> 289 |
+| that, then a first `chain_ladder` on raa as a dict of lists | 4.07 s (3.39-4.79) | 1.06 s (0.95-1.35) | 1,053 -> 289 |
+| `import ibnr` | 1.26 s (1.06-1.63) | 0.54 s (0.41-0.65) | 360 -> 154 |
+| `from ibnr import gallery` | 4.46 s (3.92-4.77) | 4.00 s (3.70-5.28) | 1,117 -> 1,113 |
 
 What is left is numpy (about 0.45 s on this box), pyarrow (about 0.25 s) and the
 lookup of ibnr's installed version (0.1 to 0.2 s); ibnr's own modules take about
@@ -51,6 +60,8 @@ bits and exact refusal messages: the four methods with eight sets of options,
 under both zero rules, the grid itself, and the Triangle path (`fit_mack`,
 `fit_mack_many`, `fit_conventional`), on raa, genins and 130 clrd paid
 triangles (every sixth company and line, in name order): 2,511 cases, 1,509 answers and 1,002 refusals, all identical.
+A dict of lists or numpy arrays is read into the same Arrow table `pa.table`
+made of it, type and value.
 
 **What changed:**
 - `ibnr/__init__.py` imports `Triangle` and `TriangleMeta` the first time they
@@ -77,7 +88,9 @@ triangles (every sixth company and line, in name order): 2,511 cases, 1,509 answ
   arrays from numpy memory (`ibnr/_arrow.py`), reads its input columns the same
   way, and reads a polars DataFrame (or any other object offering the Arrow
   stream interface, except a pandas DataFrame) with
-  `pa.RecordBatchReader.from_stream` instead of `pa.table`.
+  `pa.RecordBatchReader.from_stream` instead of `pa.table`. A dict of Python
+  lists or numpy arrays has its columns built the same way, and any other dict
+  still goes to `pa.table`.
 
 **What can break:** code that counted on `import ibnr` or `import ibnr.kernels`
 having loaded something as a side effect. `vars(ibnr.kernels)` lists a name only
