@@ -19,6 +19,11 @@ observed cell:
   an annual triangle is at 12;
 - ``value``: the CUMULATIVE loss in that cell.
 
+A cumulative of exactly zero is read as a missing cell by default, as
+chainladder-python reads it (``zero_cells="missing"``): every link ratio with a
+zero at either end is left out of the factors. Pass ``zero_cells="observed"``
+to keep zeros as data, which is the default of the kernels underneath.
+
 The results echo each origin's label back in a column ``origin``, with the
 value the caller wrote, next to ``origin_period``, which is always the first
 day of the period. ``dev_lag`` still counts from the period's first day, so
@@ -98,6 +103,10 @@ class ReserveResult:
         ``ibnr`` (float64; ``ibnr`` is ``ultimate - latest``).
         Bornhuetter-Ferguson and Cape Cod add ``expected_loss_ratio``; Mack adds
         ``mack_se`` and its two parts, ``parameter_se`` and ``process_se``.
+        An origin whose latest cumulative is zero keeps 0 as its latest amount,
+        so its chain-ladder ultimate is 0 and, under Mack with
+        ``zero_cells="missing"``, its ``mack_se`` is 0 too; chainladder-python
+        leaves both missing.
     development : pyarrow.Table
         One row per observed development age: ``dev_lag`` (int64), ``factor``
         (the link factor from this age to the next, null at the last age),
@@ -116,9 +125,12 @@ class ReserveResult:
         cumulatives at that age and the next), ``ratio`` (float64,
         ``following / previous``, null when ``previous`` is 0), ``included``
         (bool, whether the factor used it) and ``reason`` (string:
-        ``included``, ``undefined_ratio``, ``history_window``,
-        ``explicit_exclusion``, ``drop_low`` or ``drop_high``). ``None`` for
-        Mack, whose factors always use every ratio.
+        ``included``, ``zero_cell`` (a zero at either end, left out under
+        ``zero_cells="missing"``), ``undefined_ratio`` (``previous`` is 0, under
+        ``zero_cells="observed"``), ``history_window``, ``explicit_exclusion``,
+        ``drop_low`` or ``drop_high``). ``None`` for Mack, whose factors use
+        every ratio except, under ``zero_cells="missing"``, those with a zero
+        at either end.
     totals : pyarrow.Table
         One row with ``latest``, ``ultimate`` and ``ibnr`` summed over the
         origins. Mack adds ``mack_se``, ``parameter_se`` and ``process_se`` for
@@ -146,8 +158,11 @@ class ReserveResult:
         data = getattr(self, table)
         if data is None:
             raise ValueError(
-                f"a {self.method} result has no link_ratios table: Mack's factors use every "
-                "observed link ratio, so there is no selection to report"
+                f"a {self.method} result has no link_ratios table. Under "
+                "zero_cells='missing' (the default) Mack's factors use every link ratio "
+                "except those with a zero cell at either end, and "
+                "methods.chain_ladder(cells).link_ratios lists the same ones with reason "
+                "'zero_cell'; under zero_cells='observed' they use every observed link ratio"
             )
         try:
             import polars as pl
@@ -169,6 +184,7 @@ def chain_ladder(
     exclude=(),
     unsupported_factor: str = "raise",
     exhausted_exclusions: str = "keep",
+    zero_cells: str = "missing",
 ) -> ReserveResult:
     """The chain ladder: project each origin's latest cumulative loss to ultimate.
 
@@ -214,7 +230,9 @@ def chain_ladder(
       divides the sum of the later cumulatives by the sum of the earlier ones;
       ``"simple"`` is the plain mean of the ratios and ``"median"`` their median.
     - ``history_periods``: use only the latest this many link ratios at each age
-      (``None``, the default, uses them all).
+      (``None``, the default, uses them all). Under ``zero_cells="missing"`` a
+      ratio left out for a zero cell still counts as one of them, as in
+      chainladder-python's ``n_periods``, so the window then holds fewer.
     - ``drop_high`` / ``drop_low``: leave out the highest and/or lowest link
       ratio at each age.
     - ``exclude``: link ratios to leave out, as ``(origin_period, dev_lag)``
@@ -234,6 +252,18 @@ def chain_ladder(
       because on a complete triangle the last age has a single link ratio, so
       ``drop_high=True`` would always be refused; chainladder-python users
       expect it to work, and the result records the skip.
+    - ``zero_cells``: what a cumulative of exactly zero is. ``"missing"`` (the
+      default here) follows chainladder-python, which stores a zero cell as
+      missing: a link ratio is used only when neither of its two cells is zero,
+      so the ratio into a zero and the ratio out of it are both left out, shown
+      in ``link_ratios`` with reason ``zero_cell``. ``"observed"`` keeps the
+      zero as data: the ratio into it (0) is used, and only the ratio out of it,
+      which is undefined, is left out, with reason ``undefined_ratio``. The
+      default differs from ``kernels.ConventionalCandidate``'s ``"observed"``,
+      so that these functions give chainladder-python's factors on triangles
+      with zeros. Either way a zero on an origin's latest diagonal is its latest
+      amount, so its chain-ladder ultimate is 0, where chainladder-python
+      leaves that ultimate missing.
 
     Returns a :class:`ReserveResult`. There is no tail factor: each origin is
     projected to the last observed development age.
@@ -249,6 +279,7 @@ def chain_ladder(
         exclude=exclude,
         unsupported_factor=unsupported_factor,
         exhausted_exclusions=exhausted_exclusions,
+        zero_cells=zero_cells,
     )
     return _conventional_result("chain_ladder", grid, origins, candidate, premium=None)
 
@@ -266,6 +297,7 @@ def bornhuetter_ferguson(
     exclude=(),
     unsupported_factor: str = "raise",
     exhausted_exclusions: str = "keep",
+    zero_cells: str = "missing",
 ) -> ReserveResult:
     """Bornhuetter-Ferguson: the unreported share of an a priori ultimate.
 
@@ -298,6 +330,7 @@ def bornhuetter_ferguson(
         exclude=exclude,
         unsupported_factor=unsupported_factor,
         exhausted_exclusions=exhausted_exclusions,
+        zero_cells=zero_cells,
     )
     return _conventional_result("bornhuetter_ferguson", grid, origins, candidate, premium=premium)
 
@@ -315,6 +348,7 @@ def cape_cod(
     exclude=(),
     unsupported_factor: str = "raise",
     exhausted_exclusions: str = "keep",
+    zero_cells: str = "missing",
 ) -> ReserveResult:
     """Cape Cod: Bornhuetter-Ferguson with the loss ratio estimated from the triangle.
 
@@ -342,11 +376,18 @@ def cape_cod(
         exclude=exclude,
         unsupported_factor=unsupported_factor,
         exhausted_exclusions=exhausted_exclusions,
+        zero_cells=zero_cells,
     )
     return _conventional_result("cape_cod", grid, origins, candidate, premium=premium)
 
 
-def mack(cells, *, dev_grain_months: int = 12, sigma_rule: str = "log_linear") -> ReserveResult:
+def mack(
+    cells,
+    *,
+    dev_grain_months: int = 12,
+    sigma_rule: str = "log_linear",
+    zero_cells: str = "missing",
+) -> ReserveResult:
     """Mack's chain ladder: the chain-ladder ultimate and its standard error.
 
     Mack (1993), distribution-free. ``cells`` is as in :func:`chain_ladder`.
@@ -354,6 +395,18 @@ def mack(cells, *, dev_grain_months: int = 12, sigma_rule: str = "log_linear") -
     Mack's standard-error formulas are derived for exactly that estimator, and
     ibnr's Mack fit has no development options yet (no history window, no
     trimming, no exclusions), so this function does not accept them.
+
+    ``zero_cells`` is what a cumulative of exactly zero is. ``"missing"`` (the
+    default here, as in chainladder-python) leaves out every link ratio with a
+    zero at either end, from the factors and the sigmas alike. An origin whose
+    latest cumulative is zero keeps 0 as its latest amount, so its ultimate is
+    0 and its standard errors are 0, the limit of Mack's formula as that amount
+    goes to zero; chainladder-python leaves that origin's ultimate and standard
+    error missing, and its total standard error equals the one here.
+    ``"observed"`` keeps zeros as data, as R's ``MackChainLadder`` and
+    ``kernels.fit_mack`` (whose default it is) do: the factor uses every link
+    ratio, and a zero latest cumulative on a still-developing origin is refused,
+    because Mack's variance divides by it.
 
     ``sigma_rule`` picks how the variance is filled in at a development age
     with too few link ratios to estimate it, usually the last one:
@@ -366,22 +419,36 @@ def mack(cells, *, dev_grain_months: int = 12, sigma_rule: str = "log_linear") -
     ``origins`` and ``totals`` carry ``mack_se`` and its two parts:
     ``parameter_se``, from estimating the factors, and ``process_se``, from the
     randomness of future development, where ``mack_se ** 2 = parameter_se ** 2
-    + process_se ** 2``. The standard errors need every still-developing
-    origin's latest cumulative loss to be positive, and are refused otherwise.
-    They also need at least one development age with two or more link ratios,
-    since a sigma is estimated from the spread of link ratios: a triangle with
-    at most one at every age (two origins, for example) is refused rather than
-    given standard errors of 0.
+    + process_se ** 2``. Under ``zero_cells="observed"`` the standard errors
+    need every still-developing origin's latest cumulative loss to be positive,
+    and are refused otherwise. They also need at least one development age with
+    two or more link ratios, since a sigma is estimated from the spread of link
+    ratios: a triangle with at most one at every age (two origins, for example)
+    is refused rather than given standard errors of 0.
     """
     grid, labels = _grid(cells, dev_grain_months)
     _, as_of = check_grid(grid)
-    fit = fit_mack_grid(grid, sigma_rule=sigma_rule)
+    fit = fit_mack_grid(grid, sigma_rule=sigma_rule, zero_cells=zero_cells)
     if (fit.n_pos < 2).all():
         raise ValueError(
             "mack needs at least one development age with two or more link ratios to estimate "
             "Mack's sigma; this triangle has at most one at every age, so every sigma would be "
             "set to 0 and the standard errors would read as no uncertainty at all. "
             "chain_ladder gives the same ultimates without standard errors"
+        )
+    # Negative cells never get here (the cells are checked first), so the one
+    # latest amount msep_runoff refuses is a zero under "observed". Its own
+    # message names MackFit attributes a ReserveResult does not have.
+    zero_latest = np.flatnonzero((fit.latest_dev < fit.n_d - 1) & (fit.latest == 0))
+    if zero_cells == "observed" and zero_latest.size:
+        names = labels.shown_for(fit.origin_periods)
+        raise ValueError(
+            "mack cannot give standard errors under zero_cells='observed' while a "
+            "still-developing origin's latest cumulative is zero: "
+            f"{', '.join(names[i] for i in zero_latest)}. Mack's variance divides by that "
+            "amount. zero_cells='missing' (this function's default) gives such an origin an "
+            "ultimate and a standard error of 0, and methods.chain_ladder(cells, "
+            "zero_cells='observed') gives the ultimates without standard errors"
         )
     risk = fit.msep_runoff()
     step = fit.dev_grain_months

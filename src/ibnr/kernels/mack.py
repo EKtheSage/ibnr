@@ -34,6 +34,12 @@ cohort would throw away a usable reserve estimate; quietly summing 0 * inf into
 the variance would be worse. ``MackFit.n_obs`` and ``MackFit.n_pos`` record the
 two counts separately so the divergence is visible rather than inferred.
 
+That is the ``zero_cells="observed"`` reading, the default. Under
+``zero_cells="missing"`` (chainladder-python's rule, a zero cell is a missing
+one) every pair with a zero at either end leaves both sums, so the two sums run
+over the same origins again, and an open origin whose latest amount is zero gets
+an ultimate and a standard error of 0; see :func:`fit_mack_grid`.
+
 The one thing this file cannot check on the factor path is the LATEST DIAGONAL:
 those cells have no observed successor and so enter no step's estimator, yet
 every variance formula divides by them. That guard therefore lives on the
@@ -60,7 +66,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ibnr.kernels.contract import check_grid, cohort_grid, cohort_grid_frame
+from ibnr.kernels.contract import ZERO_CELLS, check_grid, cohort_grid, cohort_grid_frame
 from ibnr.kernels.holdout import CellIndex
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.triangle.core import GRAIN_MONTHS, Triangle
@@ -84,7 +90,9 @@ class MackFit:
     ``s[j]`` (its volume denominator), ``n_obs[j]`` (the origins behind the
     FACTOR) and ``n_pos[j]`` (the origins behind the SIGMA), each of length
     ``n_d - 1``. The last two differ only where a pair origin has a zero
-    cumulative; see the module docstring.
+    cumulative, and never under ``zero_cells="missing"``; see the module
+    docstring. ``zero_cells`` is the reading of a zero cumulative the fit was
+    made with, and ``zero_links`` counts the link ratios it left out.
 
     ``cum`` keeps the observed triangle (NaN outside it); ``full`` is the same
     matrix with the lower triangle filled by the chain-ladder projection, so
@@ -106,6 +114,13 @@ class MackFit:
     sigma_rule: str
     units: str | None = None
     loss_field: str | None = None
+    #: what a zero cumulative was taken to be; see :func:`fit_mack_grid`
+    zero_cells: str = "observed"
+
+    def __post_init__(self) -> None:
+        # checked here too, so a fit built by hand or decoded from a tampered
+        # payload cannot carry a setting every reader would take as "observed"
+        _require_zero_cells(self.zero_cells)
 
     # -- point estimates -------------------------------------------------------
 
@@ -141,6 +156,28 @@ class MackFit:
         """(n_w,) IBNR = ultimate - latest. Zero for a fully developed origin."""
         return self.ultimate - self.latest
 
+    @property
+    def zero_links(self) -> int:
+        """How many observed link ratios ``zero_cells="missing"`` left out.
+
+        A link ratio is left out under that rule when either of its two cells is
+        zero. Always 0 under ``zero_cells="observed"``, which leaves nothing out
+        (a zero there is data, and only sigma skips a pair starting from it).
+        """
+        if self.zero_cells != "missing":
+            return 0
+        pair = self.obs_mask[:, :-1] & self.obs_mask[:, 1:]
+        zero = (self.cum[:, :-1] == 0) | (self.cum[:, 1:] == 0)
+        return int((pair & zero).sum())
+
+    @property
+    def _zero_latest(self) -> np.ndarray:
+        """(n_w,) bool: open origins whose latest cumulative is exactly zero, under
+        ``zero_cells="missing"`` only (always all False under ``"observed"``)."""
+        if self.zero_cells != "missing":
+            return np.zeros(self.n_w, dtype=bool)
+        return (self.latest_dev < self.n_d - 1) & (self.latest == 0)
+
     # -- preconditions ---------------------------------------------------------
 
     def require_positive_open_diagonals(self) -> None:
@@ -170,10 +207,17 @@ class MackFit:
 
         A CLOSED origin (already at the last dev column) is exempt: it has no
         remaining step, so nothing divides by its diagonal.
+
+        Under ``zero_cells="missing"`` a latest cell of exactly zero is accepted
+        too. Every term of Mack's msep for that origin carries its latest amount
+        as a factor, so the msep's limit as the latest amount goes to zero is 0,
+        and :meth:`msep_runoff` returns that limit directly rather than dividing
+        by the zero. A simulation from it is a point mass at 0, which is the same
+        limit. A negative latest cell is still refused under either rule.
         """
         open_ = self.latest_dev < self.n_d - 1
         diag = self.cum[np.arange(self.n_w), self.latest_dev]
-        bad = np.nonzero(open_ & ~(diag > 0))[0]
+        bad = np.nonzero(open_ & ~(diag > 0) & ~self._zero_latest)[0]
         if bad.size:
             cells = ", ".join(f"{self.origin_periods[i]}={diag[i]:g}" for i in bad)
             raise ValueError(
@@ -212,6 +256,15 @@ class MackFit:
         Returns ``msep`` / ``process`` / ``parameter`` per origin (variances,
         not standard errors) plus the scalars ``msep_total``,
         ``process_total``, ``parameter_total``.
+
+        Under ``zero_cells="missing"`` an open origin whose latest cumulative is
+        zero gets msep 0, its process and parameter parts 0, and adds nothing to
+        the aggregate cross term. That is the limit of the formulas above as the
+        latest amount goes to zero, since ``C-hat_{i,J}`` and every
+        ``C-hat_{i,j}`` are that amount times a product of factors: the process
+        part is proportional to it and the other two to its square. It is set
+        directly because the process part's ``1 / C-hat_{i,j}`` would otherwise
+        divide by the zero.
         """
         self.require_positive_open_diagonals()  # 1/C-hat_{i,j} below starts there
         full = self.full
@@ -220,7 +273,10 @@ class MackFit:
         )
         process = np.zeros(self.n_w)
         parameter = np.zeros(self.n_w)
+        at_zero = self._zero_latest
         for i in range(self.n_w):
+            if at_zero[i]:
+                continue  # the limit as the latest amount goes to 0: every term is 0
             for j in range(int(self.latest_dev[i]), self.n_d - 1):
                 process[i] += ratio[j] / full[i, j]
                 parameter[i] += ratio[j] / self.s[j]
@@ -293,16 +349,19 @@ def fit_mack(
     loss_field: str = "paid_loss",
     as_of: dt.date | str | None = None,
     sigma_rule: str = "mack",
+    zero_cells: str = "observed",
 ) -> MackFit:
     """Fit the distribution-free chain ladder on a single-cohort Triangle.
 
     ``as_of`` slices the backtest diagonal first (the training window); the
     triangle must hold exactly one segment combination. ``sigma_rule`` selects
     how the last development step's variance is estimated - see
-    ``_estimate_factors``.
+    ``_estimate_factors``. ``zero_cells`` is as in :func:`fit_mack_grid`.
     """
     train = triangle.as_of(as_of) if as_of is not None else triangle
-    return fit_mack_grid(cohort_grid(train, loss_field=loss_field), sigma_rule=sigma_rule)
+    return fit_mack_grid(
+        cohort_grid(train, loss_field=loss_field), sigma_rule=sigma_rule, zero_cells=zero_cells
+    )
 
 
 @dataclass(frozen=True)
@@ -364,6 +423,7 @@ def fit_mack_many(
     as_of: dt.date | str | None = None,
     sigma_rule: str = "mack",
     on_error: str = "raise",
+    zero_cells: str = "observed",
 ) -> MackFitPanel:
     """Fit the distribution-free chain ladder on every cohort in one pass.
 
@@ -379,9 +439,14 @@ def fit_mack_many(
     ``"skip"`` records the reason in ``MackFitPanel.errors`` and keeps going -
     real multi-company panels (e.g. clrd) routinely contain cohorts that are
     not run-off staircases or have zero-volume steps.
+
+    ``zero_cells`` is as in :func:`fit_mack_grid` and applies to every cohort.
     """
     if on_error not in ("raise", "skip"):
         raise ValueError(f"on_error must be 'raise' or 'skip', got {on_error!r}")
+    # checked before any cohort, so that on_error="skip" cannot turn a bad
+    # setting into one identical error recorded against every cohort
+    _require_zero_cells(zero_cells)
     if triangle.meta.measure != "cumulative":
         raise ValueError("fit_mack_many requires a cumulative triangle")
     train = triangle.as_of(as_of) if as_of is not None else triangle
@@ -407,7 +472,7 @@ def fit_mack_many(
                 segment=dict(zip(by, key, strict=True)),
                 measure=triangle.meta.measure,
             )
-            fits[key] = fit_mack_grid(grid, sigma_rule=sigma_rule)
+            fits[key] = fit_mack_grid(grid, sigma_rule=sigma_rule, zero_cells=zero_cells)
         except ValueError as exc:
             if on_error == "raise":
                 raise ValueError(f"cohort {dict(zip(by, key, strict=True))}: {exc}") from exc
@@ -415,7 +480,9 @@ def fit_mack_many(
     return MackFitPanel(fits=fits, errors=errors, by=by)
 
 
-def fit_mack_grid(grid: dict[str, Any], *, sigma_rule: str = "mack") -> MackFit:
+def fit_mack_grid(
+    grid: dict[str, Any], *, sigma_rule: str = "mack", zero_cells: str = "observed"
+) -> MackFit:
     """Fit Mack's distribution-free chain ladder from a grid dict (the array entry point).
 
     ``grid`` is the dense one-cohort dict that ``kernels.cohort_grid_frame``
@@ -450,15 +517,41 @@ def fit_mack_grid(grid: dict[str, Any], *, sigma_rule: str = "mack") -> MackFit:
     chainladder-python's ``MackChainladder`` uses the log-linear rule by
     default, so pass ``sigma_rule="log_linear"`` to compare standard errors
     with it. The factors and ultimates do not depend on this choice.
+
+    ``zero_cells`` says what a cumulative of exactly zero is:
+
+    - ``"observed"`` (the default here): data. The factor at each step uses
+      every origin observing both ends of it, zeros included, as R's
+      ``MackChainLadder`` does; sigma uses the pairs that start from a positive
+      amount, since its residual divides by that amount.
+    - ``"missing"``: chainladder-python's rule, which stores a zero cell as
+      missing. A link ratio is used only when neither of its two cells is zero,
+      so the link into a zero and the link out of it both drop, from the factor,
+      its volume ``s``, ``n_obs`` and sigma alike. An origin whose latest
+      cumulative is zero keeps it as its latest amount: its ultimate is 0 and
+      its standard error is 0, the limit of Mack's formula (chainladder-python
+      leaves that origin's ultimate missing instead). ``MackFit.zero_links``
+      counts the link ratios the rule left out. The one-year claims development
+      result refuses a fit where this rule left anything out, because the
+      Merz-Wuthrich formulas have not been checked under it.
+
+    On a triangle with no zero cumulative the two give the identical fit.
     """
     if sigma_rule not in SIGMA_RULES:
         raise ValueError(f"sigma_rule must be one of {SIGMA_RULES}, got {sigma_rule!r}")
+    _require_zero_cells(zero_cells)
     origins, _ = check_grid(grid)
     cum, mask = grid["cum"], grid["obs_mask"]
     n_d = grid["n_d"]
     if n_d < 2:
         raise ValueError("a chain ladder needs at least two development steps")
-    f, sigma2, s, n_obs, n_pos = _estimate_factors(cum, mask, sigma_rule=sigma_rule)
+    f, sigma2, s, n_obs, n_pos = _estimate_factors(
+        cum,
+        mask,
+        sigma_rule=sigma_rule,
+        zero_cells=zero_cells,
+        lag_months=grid["dev_grain_months"],
+    )
     return MackFit(
         cum=cum,
         obs_mask=mask,
@@ -473,11 +566,26 @@ def fit_mack_grid(grid: dict[str, Any], *, sigma_rule: str = "mack") -> MackFit:
         sigma_rule=sigma_rule,
         units=grid.get("units"),
         loss_field=grid.get("loss_field"),
+        zero_cells=zero_cells,
     )
 
 
+def _require_zero_cells(zero_cells: str) -> None:
+    if zero_cells not in ZERO_CELLS:
+        raise ValueError(
+            f"zero_cells must be 'observed' or 'missing', got {zero_cells!r}. 'observed' keeps "
+            "a zero cumulative as data; 'missing' leaves out every link ratio with a zero at "
+            "either end, as chainladder-python does"
+        )
+
+
 def _estimate_factors(
-    cum: np.ndarray, mask: np.ndarray, *, sigma_rule: str
+    cum: np.ndarray,
+    mask: np.ndarray,
+    *,
+    sigma_rule: str,
+    zero_cells: str = "observed",
+    lag_months: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Volume-weighted factors and Mack's variance parameters, step by step.
 
@@ -513,6 +621,12 @@ def _estimate_factors(
                     to Mack's rule when the regression is not identified (fewer
                     than two positive sigmas) or would give a non-positive value.
 
+    Under ``zero_cells="missing"`` every pair with a zero at either end is left
+    out of the step before anything is estimated, so ``f``, ``s``, ``n_obs`` and
+    sigma all run over the same kept pairs, and ``n_pos == n_obs``. The negative
+    cell check still runs over every observed pair first, so leaving a pair out
+    can never hide a negative cumulative.
+
     Returns (f, sigma2, s, n_obs, n_pos), each of length ``n_d - 1``.
     """
     n_d = cum.shape[1]
@@ -523,7 +637,7 @@ def _estimate_factors(
     n_pos = np.zeros(n_d - 1, dtype=int)
     for j in range(n_d - 1):
         pair = mask[:, j] & mask[:, j + 1]
-        c0, c1 = cum[pair, j], cum[pair, j + 1]
+        c0 = cum[pair, j]
         if c0.size == 0:
             raise ValueError(
                 f"no origin observes both dev steps {j + 1} and {j + 2}; "
@@ -536,6 +650,16 @@ def _estimate_factors(
                 "Mack's variance is proportional to C_{i,j}, so a negative cell drives "
                 "sigma_j^2 itself negative and every msep built on it with it"
             )
+        if zero_cells == "missing":
+            pair = pair & (cum[:, j] != 0) & (cum[:, j + 1] != 0)
+            if not pair.any():
+                raise ValueError(
+                    f"every origin observing both ends of {_step_name(j, lag_months)} has a "
+                    "zero cumulative at one end or the other, and zero_cells='missing' leaves "
+                    "those link ratios out, so no factor can be estimated there. "
+                    "zero_cells='observed' keeps the zeros as data"
+                )
+        c0, c1 = cum[pair, j], cum[pair, j + 1]
         s[j] = c0.sum()
         if s[j] <= 0:
             raise ValueError(
@@ -562,9 +686,74 @@ def _estimate_factors(
             p0, p1 = c0[pos], c1[pos]
             sigma2[j] = float((p0 * (p1 / p0 - f[j]) ** 2).sum() / (n_pos[j] - 1))
     missing = np.nonzero(np.isnan(sigma2))[0]
-    for j in missing:
-        sigma2[j] = _tail_sigma2(sigma2, j, rule=sigma_rule)
+    if zero_cells == "missing" and (missing < n_d - 2).any():
+        # only this rule can leave a step BEFORE the last with one link ratio
+        _fill_sigma_gaps(sigma2, missing, rule=sigma_rule, lag_months=lag_months)
+    else:
+        for j in missing:
+            sigma2[j] = _tail_sigma2(sigma2, j, rule=sigma_rule)
     return f, sigma2, s, n_obs, n_pos
+
+
+def _step_name(j: int, lag_months: int | None) -> str:
+    """Development step ``j`` (0-based) in words, with its ages in months when known."""
+    text = f"dev step {j + 1}"
+    if lag_months is not None:
+        text += f" (the link from {(j + 1) * lag_months} to {(j + 2) * lag_months} months)"
+    return text
+
+
+def _fill_sigma_gaps(
+    sigma2: np.ndarray, missing: np.ndarray, *, rule: str, lag_months: int | None
+) -> None:
+    """Fill sigma at steps left with one link ratio when one of them is not the last.
+
+    Only ``zero_cells="missing"`` gets here: leaving out the link ratios that
+    touch a zero can leave a single link ratio at an early or middle step, where
+    sigma has no degrees of freedom. ``_tail_sigma2`` is written for the LAST
+    step and extrapolates from the steps before it only, so at the first step it
+    would answer 0.0 and call the most volatile step noiseless. This follows
+    chainladder-python instead, and fills only from sigmas the data estimated,
+    never from a value filled in here:
+
+    - ``log_linear``: one regression of log(sigma_j) on j over every step with
+      a positive estimate, before and after the gap, fills every step without
+      an estimate. (chainladder-python also stores an estimated sigma of
+      exactly 0 as missing and refills it; here it stays 0.)
+    - ``mack``: Mack's rule from the two steps just before, which both need an
+      estimate of their own.
+
+    Anything else is refused by name rather than filled with a guess.
+    """
+    known = sigma2.copy()
+    if rule == "log_linear":
+        # A sigma of exactly 0 (every link ratio at that step equal) is an
+        # estimate and stays as it is, but it has no logarithm to regress on.
+        estimated = np.flatnonzero(np.isfinite(known) & (known > 0))
+        if estimated.size < 2:
+            steps = ", ".join(_step_name(int(j), lag_months) for j in missing)
+            raise ValueError(
+                f"{steps} kept at most one link ratio once zero_cells='missing' left out those "
+                "with a zero cell, so sigma there has to be filled in from the other steps, and "
+                "the log-linear rule needs at least two other steps with a positive sigma to do "
+                "it. zero_cells='observed' keeps the zeros as data"
+            )
+        slope, intercept = np.polyfit(estimated.astype(float), np.log(np.sqrt(known[estimated])), 1)
+        for j in missing:
+            sigma2[j] = float(np.exp(intercept + slope * j) ** 2)
+        return
+    for j in missing:
+        if j < 2 or not (np.isfinite(known[j - 1]) and np.isfinite(known[j - 2])):
+            raise ValueError(
+                f"{_step_name(int(j), lag_months)} kept at most one link ratio once "
+                "zero_cells='missing' left out those with a zero cell, and Mack's rule fills its "
+                "sigma from the two steps just before it, which do not both have an estimate. "
+                "sigma_rule='log_linear' fills it from every estimated step instead; "
+                "zero_cells='observed' keeps the zeros as data"
+            )
+        last, prev = float(known[j - 1]), float(known[j - 2])
+        ratio = last**2 / prev if prev > 0 else last
+        sigma2[j] = float(min(ratio, last, prev))
 
 
 def simulate_ultimates(

@@ -224,7 +224,10 @@ lists every accepted form.
 `origin_period` and `premium` (or a dict keyed by origin period, such as
 `{2021: 2500.0, 2022: 2600.0, 2023: 2700.0}`). The development
 options (`average`, `history_periods`, `drop_high`, `drop_low`, `exclude`) are
-keyword arguments of all three point methods. Coming from chainladder-python,
+keyword arguments of all three point methods. So is `zero_cells`, which all
+four methods take: by default they read a cumulative of zero as a missing cell,
+as chainladder-python does, and `zero_cells="observed"` keeps it as data.
+Coming from chainladder-python,
 [this lookup table](https://github.com/EKtheSage/ibnr/blob/main/docs/coming-from-chainladder.md) maps its classes and
 attributes onto these functions. Import it with `from ibnr import methods`: a
 bare `import ibnr` does not load it.
@@ -250,7 +253,8 @@ one `value`:
 
 Absent means unobserved: rows with a null `value` are dropped rather than
 stored, and nothing is densified, so the unobserved half of the square simply is
-not there. Zero, by contrast, is an explicit observation and is kept.
+not there. Zero, by contrast, is an explicit observation and is kept; how a
+method reads it is the method's `zero_cells` setting.
 
 ```python
 import datetime as dt

@@ -74,9 +74,14 @@ at the cutoff.
 
 At each development age:
 
-1. Gather origins observing both ends of the link. Remove pairs with undefined
-   individual ratios (zero current cumulative loss). Keep the most recent
-   `history_periods` paired origins, or all if `None`.
+1. Gather origins observing both ends of the link. Under
+   `zero_cells="observed"`, remove pairs with undefined individual ratios (zero
+   current cumulative loss, reason `undefined_ratio`) and keep the most recent
+   `history_periods` of the pairs left. Under `zero_cells="missing"`, keep the
+   most recent `history_periods` of all the pairs and then remove every pair
+   with a zero at either end (reason `zero_cell`), so a removed pair keeps its
+   place in the window, as chainladder-python's `n_periods` counts it.
+   `history_periods=None` keeps every pair.
 2. Remove explicit `(origin_period, from_dev_lag)` exclusions. The lag is in
    months. Exclusions beyond the current information set remain fixed for later
    refits. Excluding a link does not delete that origin's observed losses.
@@ -109,9 +114,30 @@ beyond the horizon.
 The paper does not prescribe all of these boundary conventions, so this package
 declares its own and documents them here: the pair, window and tie rules above,
 and the unity and skipped-trimming fallbacks, which are never automatic and
-have to be requested explicitly. Mack's existing untrimmed volume estimator
-can include zero-current pairs; this candidate family consistently requires
-defined individual link ratios, so the two can differ on zero-valued data.
+have to be requested explicitly.
+
+A cumulative of exactly zero is read one of two ways, set by `zero_cells` on
+the candidate and on `fit_mack`, `fit_mack_grid` and `fit_mack_many`:
+
+- `"observed"`, the default of both kernels, keeps it as data, and the two
+  kernels then differ. This candidate family needs a defined individual link
+  ratio, so it leaves out the ratio out of a zero but uses the ratio into one
+  (a ratio of 0). Mack's untrimmed volume estimator keeps both pairs in its
+  column sums, as R's `MackChainLadder` does, and estimates sigma only from
+  pairs that start from a positive amount.
+- `"missing"` is chainladder-python's rule, which stores a zero cell as
+  missing: a link ratio is used only when neither of its two cells is zero, in
+  both kernels, for the factor and Mack's sigma alike. `ibnr.methods` defaults
+  to it. A zero on an origin's latest diagonal is still that origin's latest
+  amount, so its chain-ladder ultimate is 0 and, under this rule, its Mack
+  standard error is 0 too (chainladder-python leaves both missing). Where the
+  rule leaves an age before the last with one link ratio, Mack's sigma there is
+  filled in as chainladder-python fills it: the log-linear rule from one
+  regression over every age with a positive estimate, Mack's rule from the two
+  ages just before. The one-year claims development result refuses a Mack fit
+  on which this rule left anything out.
+
+On a triangle with no zero cumulative the two settings give the same answer.
 
 ## Fitting from arrays
 

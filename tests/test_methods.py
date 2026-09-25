@@ -1712,10 +1712,11 @@ def test_missing_numbers_are_nulls_never_nan(method):
 
 
 def test_an_undefined_link_ratio_is_null_and_says_why():
-    # 1982 starts at zero, so its first ratio has no value
+    # 1982 starts at zero, so its first ratio has no value; kept as data, the
+    # zero is observed and only the ratio out of it is left out
     rows = [list(row) for row in RAA]
     rows[1][0] = 0
-    result = methods.chain_ladder(arrow_cells(rows))
+    result = methods.chain_ladder(arrow_cells(rows), zero_cells="observed")
     ratios = result.link_ratios
     undefined = ratios.filter(pc.equal(ratios["reason"], "undefined_ratio"))
     assert undefined["origin_period"].to_pylist() == [dt.date(1982, 1, 1)]

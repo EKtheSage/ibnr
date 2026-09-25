@@ -221,6 +221,57 @@ def _require_annual_step(fit: MackFit) -> None:
     )
 
 
+def _require_zero_cells_unused(fit: MackFit) -> None:
+    """Refuse a fit on which ``zero_cells="missing"`` changed anything.
+
+    The Merz-Wuthrich formulas, and the re-reserving in :func:`rereserve`, are
+    written for the volume-weighted chain ladder over every observed pair, and
+    nobody has checked them under chainladder-python's rule that a zero cell is
+    missing. Two things change under that rule: link ratios with a zero at
+    either end leave the factors, and a still-developing origin can sit at a
+    latest amount of zero, which every formula here divides by. A ``"missing"``
+    fit with neither is the identical fit to an ``"observed"`` one and is
+    accepted.
+
+    Called inside :func:`one_year_cdr`, :func:`simulate_one_year_cdr` and
+    :func:`rereserve`, for the same reason as :func:`_require_annual_step`:
+    every route to a one-year result, including a third-party diagonal and
+    ``ibnr.gallery.GalleryDiagonal``, passes through one of the three.
+    """
+    if fit.zero_cells != "missing":
+        return
+    open_ = fit.latest_dev < fit.n_d - 1
+    zero_latest = [
+        str(o) for o, z in zip(fit.origin_periods, open_ & (fit.latest == 0), strict=True) if z
+    ]
+    if not fit.zero_links and not zero_latest:
+        return
+    found = []
+    if fit.zero_links:
+        found.append(f"left out {fit.zero_links} link ratio(s) with a zero cell at either end")
+    if zero_latest:
+        found.append(f"kept a latest amount of zero for open origin(s) {', '.join(zero_latest)}")
+    if zero_latest:
+        # "observed" refuses a zero latest amount too (every formula here divides
+        # by it), so refitting that way would only move the refusal
+        way_out = (
+            "A one-year result needs every open origin's latest amount to be positive under "
+            "either setting, so read the run-off uncertainty from MackFit.msep_runoff(), "
+            "which covers this rule"
+        )
+    else:
+        way_out = (
+            "Refit with zero_cells='observed' (fit_mack's default), which keeps zeros as data, "
+            "or read the run-off uncertainty from MackFit.msep_runoff(), which covers this rule"
+        )
+    raise ValueError(
+        "the one-year claims development result is not available for a fit made with "
+        f"zero_cells='missing' that {' and '.join(found)}: the Merz-Wuthrich formulas, and "
+        "the re-reserving that simulate_one_year_cdr and rereserve do, have not been checked "
+        f"under that rule. {way_out}"
+    )
+
+
 def _open_years(fit: MackFit) -> np.ndarray:
     """(n_w,) bool: origins that are not yet fully developed, i.e. the ones that
     still have a next diagonal cell to observe and therefore a CDR."""
@@ -291,7 +342,10 @@ def one_year_cdr(fit: MackFit) -> CDRResult:
     restrictions R's ``CDR.MackChainLadder`` enforces, and both are structural
     here: ``fit_mack`` estimates nothing else. The third is what makes the
     single development step above a year, and a fit on any other grain is
-    refused by name.
+    refused by name. So is a fit made with ``zero_cells="missing"`` that left
+    out a link ratio or kept a zero latest amount (see
+    ``_require_zero_cells_unused``), because nobody has checked the
+    formula under that rule.
 
     MACK-SPECIFIC BY CONSTRUCTION, and deliberately not offered as a
     ``generator=`` option on :func:`simulate_one_year_cdr`. Every term above is
@@ -303,6 +357,7 @@ def one_year_cdr(fit: MackFit) -> CDRResult:
     # One development step is one year only on an annual triangle, and every
     # term below is one step wide.
     _require_annual_step(fit)
+    _require_zero_cells_unused(fit)
     # Phi_i divides by C_{i,k_i} - the latest diagonal, the one cell class no
     # factor-side guard can see. Checked here as well as inside msep_runoff()
     # below so the failure is named before the loop builds a page of NaN.
@@ -425,6 +480,7 @@ def rereserve(fit: MackFit, next_diagonal: np.ndarray) -> np.ndarray:
     # the shape says how many origins the diagonal covers; the grain says how
     # far forward it is, and one step forward is one year only on an annual fit.
     _require_annual_step(fit)
+    _require_zero_cells_unused(fit)
     n_draws = x.shape[0]
     n_w, n_d = fit.n_w, fit.n_d
     k = fit.latest_dev
@@ -555,6 +611,7 @@ class MackDiagonal(DiagonalGenerator):
         diagonal, and ``draw_step`` then returns the mean exactly - an invisible
         point mass rather than an error, which is the one failure a simulation
         cannot surface on its own."""
+        _require_zero_cells_unused(fit)
         fit.require_positive_open_diagonals()
 
     def draw(self, fit: MackFit, *, n_draws: int, rng: np.random.Generator) -> np.ndarray:
@@ -623,6 +680,7 @@ class ODPBootstrapDiagonal(DiagonalGenerator):
         """Build the deterministic half of the bootstrap and discard it: it is
         where the negative-increment refusal and the degrees-of-freedom check
         live, and both are cheap enough to pay twice."""
+        _require_zero_cells_unused(fit)
         fit_odp_bootstrap(fit.cum, fit.obs_mask, fit.latest_dev, fit.f)
 
     def draw(self, fit: MackFit, *, n_draws: int, rng: np.random.Generator) -> np.ndarray:
@@ -686,6 +744,12 @@ class CDRMethod:
 #: The ``gallery`` row names a class in ``ibnr.gallery`` as a STRING and imports
 #: nothing - decision 8's re-export direction is gallery -> kernels only, and
 #: this table is documentation, not a registry that constructs anything.
+#: the zero_cells precondition every route shares; see _require_zero_cells_unused
+_ZERO_CELLS_REQUIREMENT = (
+    "; and, for a fit made with zero_cells='missing', no link ratio left out for a zero "
+    "cell and no open origin whose latest amount is zero"
+)
+
 CDR_METHODS: dict[str, CDRMethod] = {
     "merz_wuthrich": CDRMethod(
         name="merz_wuthrich",
@@ -696,6 +760,7 @@ CDR_METHODS: dict[str, CDRMethod] = {
         entry_point="one_year_cdr(fit)",
         requires=(
             "a MackFit on an annual development grain, with a strictly positive open diagonal"
+            + _ZERO_CELLS_REQUIREMENT
         ),
         validated=(
             "golden tie-out: R ChainLadder CDR(MackChainLadder(MW2014, "
@@ -718,6 +783,7 @@ CDR_METHODS: dict[str, CDRMethod] = {
         entry_point='simulate_one_year_cdr(fit, generator="mack")',
         requires=(
             "a MackFit on an annual development grain, with a strictly positive open diagonal"
+            + _ZERO_CELLS_REQUIREMENT
         ),
         validated=(
             "agrees with the merz_wuthrich closed form to Monte Carlo error, "
@@ -735,7 +801,7 @@ CDR_METHODS: dict[str, CDRMethod] = {
         entry_point='simulate_one_year_cdr(fit, generator="odp_bootstrap")',
         requires=(
             "a MackFit on an annual development grain, whose observed increments "
-            "are all non-negative"
+            "are all non-negative" + _ZERO_CELLS_REQUIREMENT
         ),
         validated=(
             "NO published digits exist - R's CDR.BootChainLadder example prints "
@@ -766,7 +832,7 @@ CDR_METHODS: dict[str, CDRMethod] = {
         requires=(
             "a MackFit on an annual development grain, and a HoldoutCells "
             "describing the SAME cohort, field and cutoff, with one scorable cell "
-            "for every open origin of the fit"
+            "for every open origin of the fit" + _ZERO_CELLS_REQUIREMENT
         ),
         validated=(
             "the wiring, not the model: a generator that reproduces Mack's own "
@@ -921,6 +987,7 @@ def simulate_one_year_cdr(
     # before the generator is consulted and before any draw: the grain is a
     # property of the fit, so no generator can make a non-annual step a year.
     _require_annual_step(fit)
+    _require_zero_cells_unused(fit)
     gen.check(fit)
     rng = np.random.default_rng(seed)
     cdr = rereserve(fit, gen.draw(fit, n_draws=gen.resolve_n_draws(n_draws), rng=rng))

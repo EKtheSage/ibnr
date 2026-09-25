@@ -811,6 +811,14 @@ def require_run_off(obs_mask: np.ndarray, origins: list) -> np.ndarray:
     return latest_dev
 
 
+#: What the chain-ladder fits (``kernels.fit_conventional`` and
+#: ``kernels.fit_mack``) take a cumulative of exactly zero to be. ``"observed"``
+#: keeps it as data, each kernel as it always has; ``"missing"`` follows
+#: chainladder-python, which stores a zero cell as missing, so a link ratio is
+#: used only when neither of its two cells is zero.
+ZERO_CELLS = ("observed", "missing")
+
+
 #: The grid keys the array fits read. ``premium`` is read by BF and GCC only.
 _GRID_KEYS = (
     "n_w",

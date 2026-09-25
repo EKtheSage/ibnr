@@ -6,7 +6,8 @@ chainladder-python's classes and attributes onto those functions. The numbers
 agree: on chainladder's `raa` and `genins` samples the ultimates, factors, Mack
 standard errors (with their parameter and process parts), Bornhuetter-Ferguson
 and Cape Cod match chainladder-python to a relative 1e-9, which
-`tests/test_methods.py` checks.
+`tests/test_methods.py` checks, and `tests/test_zero_cells.py` checks the same
+on triangles with zero cells.
 
 ## The shape of a call
 
@@ -81,11 +82,21 @@ cape_cod.to_polars()["expected_loss_ratio"]  # apriori_
 
 Every link ratio, and whether the factor used it, is in `result.link_ratios`,
 with the reason for any that were left out (`history_window`, `drop_high`,
-`drop_low`, `explicit_exclusion`, or `undefined_ratio` when the earlier
-cumulative is zero).
+`drop_low`, `explicit_exclusion`, `zero_cell` when either cumulative is zero,
+or, with `zero_cells="observed"`, `undefined_ratio` when the earlier one is).
 
-Three details of the correspondence:
+Four details of the correspondence:
 
+- A zero cumulative is read as chainladder-python reads it, as a missing
+  cell: a link ratio is used only when neither of its two cells is zero, so
+  the ratio into a zero and the ratio out of it both drop, from the factors
+  and from Mack's sigmas. This is the `zero_cells="missing"` default. As in
+  chainladder, a ratio left out for a zero keeps its place in a
+  `history_periods` window, so the window holds fewer ratios rather than
+  reaching back to an older origin, and a sigma at an age left with one link
+  ratio is filled in by the `sigma_rule`, as chainladder's
+  `sigma_interpolation` fills it. `tests/test_zero_cells.py` checks these
+  against chainladder-python; the differences that remain are listed below.
 - `exclude` names a link ratio by its origin and the age it develops FROM,
   the same as chainladder's `drop`. A pair that is not a link ratio of the
   triangle is refused rather than ignored.
@@ -102,10 +113,30 @@ published numbers do not move.)
 
 ## Behaviour that differs on purpose
 
-- **Explicit zeros stay zeros.** chainladder-python stores a zero cell as
-  missing, so a zero cumulative at 12 months disappears from its triangle. In
-  ibnr a cell you pass is observed, zero or not; an unobserved cell is one you
-  leave out. An option to read zeros as missing is planned.
+- **Zeros can be kept as data.** chainladder-python stores a zero cell as
+  missing, so a zero cumulative at 12 months disappears from its triangle.
+  `ibnr.methods` follows it by default (`zero_cells="missing"`, above). Pass
+  `zero_cells="observed"` to keep a zero as an observed cell instead: the
+  chain ladder, Bornhuetter-Ferguson and Cape Cod then use the link ratio
+  into a zero (a ratio of 0) and leave out only the one out of it, which has
+  no value, with reason `undefined_ratio`; Mack keeps both in its volume sums,
+  as R's `MackChainLadder` does, and refuses standard errors when a
+  still-developing origin's latest cumulative is zero. The kernels
+  (`kernels.ConventionalCandidate`, `kernels.fit_mack`) default to
+  `"observed"`. Either way an unobserved cell is one you leave out.
+- **A zero latest cumulative gives 0, not a missing number.** Under the default
+  `zero_cells="missing"`, an origin whose latest cumulative is zero still has
+  0 as its latest amount, so ibnr reports its ultimate as 0 and its Mack
+  standard error as 0 (the limit of Mack's formula as that amount goes to
+  zero), where chainladder-python leaves both missing. The total standard error
+  is the same in both.
+- **Two rarer Mack cases still differ with zeros present.** chainladder-python
+  also stores a sigma of exactly 0 (every link ratio at an age equal) as
+  missing and fills it in, which ibnr does not, so Mack's standard errors can
+  differ at such an age. And where no link ratio is left at an age, ibnr's Mack
+  refuses the triangle by name even when the only origins that need that age
+  sit at a latest amount of zero; chainladder-python leaves that factor missing
+  and still gives a total standard error.
 - **Duplicate cells are refused, not added together.** chainladder-python sums
   rows that land in the same cell. ibnr refuses them, naming the cells, because
   two rows for one cell are usually two companies or two lines passed at once,
