@@ -14,9 +14,27 @@ with accident years independent. Estimated on the observed run-off triangle by
     f_j-hat      = sum_i C_{i,j+1} / S_j,        S_j = sum_i C_{i,j}
     sigma_j-hat^2 = 1/(n_j - 1) * sum_i C_{i,j} * (C_{i,j+1}/C_{i,j} - f_j-hat)^2
 
-The volume-weighted (alpha = 1) factor is Mack's estimator and the one
-Merz-Wuthrich assume; no other averaging is offered here, because the CDR
-formulas downstream are only valid for this one.
+The volume-weighted (alpha = 1) factor over every link ratio is Mack's 1993
+estimator, the default here, and the only one the one-year CDR formulas
+downstream are valid for.
+
+DEVELOPMENT OPTIONS (Mack 1999). ``fit_mack_grid(average=..., links=...)``
+generalizes both moments to Mack's alpha family, with the link ratios chosen by
+``kernels.links.select_links``, the selection the conventional point fits use,
+so one set of options picks the same ratios and gives the same factors in
+both:
+
+    E[C_{i,j+1} | C_{i,j}]   = f_j * C_{i,j}
+    Var(C_{i,j+1} | C_{i,j}) = sigma_j^2 * C_{i,j}^(2 - alpha)
+
+    f_j-hat       = sum_U C^alpha F / sum_U C^alpha,   F = C_{i,j+1} / C_{i,j}
+    sigma_j-hat^2 = sum_U C^alpha (F - f_j-hat)^2 / (|U| - 1)
+    Var(f_j-hat)  = sigma_j^2 / sum_U C^alpha
+
+with ``U`` the link ratios the options keep at step ``j`` and alpha 0, 1 or 2
+for ``average`` "simple", "volume" or "regression". The options choose which
+ratios estimate the parameters; future development from the latest diagonal
+always carries its full variance, whatever was left out.
 
 THE TWO SUMS DO NOT ALWAYS RUN OVER THE SAME ORIGINS. Both range over the
 origins observing both ends of the step, but sigma's summand carries a 1/C_{i,j}
@@ -70,7 +88,20 @@ import numpy as np
 # Triangle paths (fit_mack, fit_mack_many), the pandas summaries and the
 # simulation import what they need when they run.
 from ibnr.errors import Refusal, RefusedCell, _literal
+from ibnr.kernels.conventional import _check_valuations
 from ibnr.kernels.grid import ZERO_CELLS, check_grid
+from ibnr.kernels.links import (
+    ALPHA,
+    OPTION_OF_REASON,
+    REASONS,
+    LinkRules,
+    LinkSelection,
+    exhausted_refusal,
+    is_all_history,
+    link_factors,
+    select_links,
+    settings_named,
+)
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -87,6 +118,12 @@ SIGMA_RULES = ("mack", "log_linear")
 #: two conditional moments, so a simulation must add one assumption; all three
 #: match those moments and differ in tail shape and support.
 PROCESS_LAWS = ("gamma", "normal", "lognormal")
+
+#: the averages Mack's standard errors are derived for: Mack's alpha 1, 0 and 2.
+MACK_AVERAGES = ("volume", "simple", "regression")
+
+_ZERO_CELL = REASONS.index("zero_cell")
+_UNDEFINED = REASONS.index("undefined_ratio")
 
 
 @dataclass(frozen=True)
@@ -107,6 +144,13 @@ class MackFit:
     ``full[:, -1]`` is the ultimate and ``full[i, j]`` for ``j > latest_dev[i]``
     is the ``C-hat_{i,j}`` that Mack's and Merz-Wuthrich's variance formulas
     both evaluate at.
+
+    A fit made with development options (see :func:`fit_mack_grid`) also
+    carries ``average``, the ``links`` rules and the ``selection`` they made.
+    Then ``s[j]`` is the weight total ``sum C^alpha`` over the link ratios used
+    at step ``j``, ``n_obs[j]`` is how many were used and ``n_pos[j]`` equals
+    it. ``links`` and ``selection`` are ``None`` on a fit made without options,
+    which is 0.7.2's estimator.
     """
 
     cum: np.ndarray  # (n_w, n_d) observed cumulative, NaN outside the triangle
@@ -124,11 +168,50 @@ class MackFit:
     loss_field: str | None = None
     #: what a zero cumulative was taken to be; see :func:`fit_mack_grid`
     zero_cells: str = "observed"
+    #: how the link ratios were averaged: "volume", "simple" or "regression"
+    average: str = "volume"
+    #: the development options the link ratios were chosen by; None for none
+    links: LinkRules | None = None
+    #: which link ratios ``links`` kept, and why the others went
+    selection: LinkSelection | None = None
 
     def __post_init__(self) -> None:
         # checked here too, so a fit built by hand or decoded from a tampered
         # payload cannot carry a setting every reader would take as "observed"
         _require_zero_cells(self.zero_cells)
+        _require_mack_average(self.average)
+        if (self.links is None) != (self.selection is None):
+            raise Refusal(
+                "invalid_option",
+                "a MackFit carries its link rules and the selection they made together, or neither",
+                option="links",
+            )
+        if self.links is None and self.average != "volume":
+            raise Refusal(
+                "invalid_option",
+                "a MackFit with average={given} must carry the link rules it was fitted with",
+                option="average",
+                given=self.average,
+            )
+        if self.links is not None and self.links.zero_cells != self.zero_cells:
+            raise Refusal(
+                "invalid_option",
+                f"a MackFit's zero_cells ({self.zero_cells!r}) must be its link rules' "
+                f"({self.links.zero_cells!r})",
+                option="zero_cells",
+            )
+
+    @property
+    def alpha(self) -> int:
+        """Mack's exponent for ``average``: 1 for volume, 0 simple, 2 regression."""
+        return ALPHA[self.average]
+
+    @property
+    def all_history_volume(self) -> bool:
+        """Whether this is the volume average over every link ratio the zero rule
+        allows: no development option that can leave a ratio out. It reads the
+        settings, not what they removed from this triangle."""
+        return self.average == "volume" and (self.links is None or is_all_history(self.links))
 
     # -- point estimates -------------------------------------------------------
 
@@ -174,6 +257,8 @@ class MackFit:
         """
         if self.zero_cells != "missing":
             return 0
+        if self.selection is not None:
+            return int((self.selection.reason == _ZERO_CELL).sum())
         pair = self.obs_mask[:, :-1] & self.obs_mask[:, 1:]
         zero = (self.cum[:, :-1] == 0) | (self.cum[:, 1:] == 0)
         return int((pair & zero).sum())
@@ -222,7 +307,29 @@ class MackFit:
         and :meth:`msep_runoff` returns that limit directly rather than dividing
         by the zero. A simulation from it is a point mass at 0, which is the same
         limit. A negative latest cell is still refused under either rule.
+
+        Except under ``average="regression"`` (alpha 2), whose variance
+        ``sigma^2 * C^0`` does not shrink with the amount: an origin at a latest
+        amount of zero would have a mean of 0 and a positive standard error, a
+        spread around nothing, so that is refused as ``not_supported``.
         """
+        if self.alpha == 2 and self._zero_latest.any():
+            step = self.dev_grain_months
+            raise Refusal(
+                "not_supported",
+                "under average='regression' Mack's variance does not shrink with the amount, so "
+                "the still-developing origin(s) {cells}, whose latest cumulative is 0, would get "
+                "a mean of 0 and a positive standard error. Use average='volume' or 'simple', "
+                "or leave the origin out",
+                option="average",
+                options=("average", "zero_cells"),
+                cells=[
+                    RefusedCell(
+                        None, self.origin_periods[i], (int(self.latest_dev[i]) + 1) * step, 0.0
+                    )
+                    for i in np.flatnonzero(self._zero_latest)
+                ],
+            )
         open_ = self.latest_dev < self.n_d - 1
         diag = self.cum[np.arange(self.n_w), self.latest_dev]
         bad = np.nonzero(open_ & ~(diag > 0) & ~self._zero_latest)[0]
@@ -285,6 +392,12 @@ class MackFit:
         part is proportional to it and the other two to its square. It is set
         directly because the process part's ``1 / C-hat_{i,j}`` would otherwise
         divide by the zero.
+
+        With a general alpha (``average`` "simple" or "regression", Mack 1999)
+        the process term is ``sigma_j^2 / f_j^2 / C-hat_{i,j}^alpha``, the
+        variance ``sigma_j^2 C^(2 - alpha)`` rolled forward to ultimate, and
+        ``S_j`` is the weight total ``sum C^alpha`` behind ``f_j``. At alpha 1
+        this is the formula above, computed the same way.
         """
         self.require_positive_open_diagonals()  # 1/C-hat_{i,j} below starts there
         full = self.full
@@ -294,11 +407,15 @@ class MackFit:
         process = np.zeros(self.n_w)
         parameter = np.zeros(self.n_w)
         at_zero = self._zero_latest
+        alpha = self.alpha
         for i in range(self.n_w):
             if at_zero[i]:
                 continue  # the limit as the latest amount goes to 0: every term is 0
             for j in range(int(self.latest_dev[i]), self.n_d - 1):
-                process[i] += ratio[j] / full[i, j]
+                if alpha == 1:
+                    process[i] += ratio[j] / full[i, j]
+                else:
+                    process[i] += ratio[j] / full[i, j] ** alpha
                 parameter[i] += ratio[j] / self.s[j]
         ult2 = self.ultimate**2
         process *= ult2
@@ -371,20 +488,27 @@ def fit_mack(
     loss_field: str = "paid_loss",
     as_of: dt.date | str | None = None,
     sigma_rule: str = "mack",
-    zero_cells: str = "observed",
+    zero_cells: str | None = None,
+    average: str = "volume",
+    links: LinkRules | None = None,
 ) -> MackFit:
     """Fit the distribution-free chain ladder on a single-cohort Triangle.
 
     ``as_of`` slices the backtest diagonal first (the training window); the
     triangle must hold exactly one segment combination. ``sigma_rule`` selects
     how the last development step's variance is estimated - see
-    ``_estimate_factors``. ``zero_cells`` is as in :func:`fit_mack_grid`.
+    ``_estimate_factors``. ``zero_cells``, ``average`` and ``links`` are as in
+    :func:`fit_mack_grid`.
     """
     from ibnr.kernels.contract import cohort_grid
 
     train = triangle.as_of(as_of) if as_of is not None else triangle
     return fit_mack_grid(
-        cohort_grid(train, loss_field=loss_field), sigma_rule=sigma_rule, zero_cells=zero_cells
+        cohort_grid(train, loss_field=loss_field),
+        sigma_rule=sigma_rule,
+        zero_cells=zero_cells,
+        average=average,
+        links=links,
     )
 
 
@@ -452,7 +576,9 @@ def fit_mack_many(
     as_of: dt.date | str | None = None,
     sigma_rule: str = "mack",
     on_error: str = "raise",
-    zero_cells: str = "observed",
+    zero_cells: str | None = None,
+    average: str = "volume",
+    links: LinkRules | None = None,
 ) -> MackFitPanel:
     """Fit the distribution-free chain ladder on every cohort in one pass.
 
@@ -472,7 +598,8 @@ def fit_mack_many(
     ``ibnr.errors.Refusal`` is skipped: any other exception is a defect, not a
     cohort the data rules out, and is raised whatever ``on_error`` says.
 
-    ``zero_cells`` is as in :func:`fit_mack_grid` and applies to every cohort.
+    ``zero_cells``, ``average`` and ``links`` are as in :func:`fit_mack_grid`
+    and apply to every cohort.
     """
     from ibnr.kernels.contract import cohort_grid_frame
     from ibnr.triangle.core import GRAIN_MONTHS
@@ -486,8 +613,9 @@ def fit_mack_many(
         )
     # checked before any cohort, so that on_error="skip" cannot turn a bad
     # setting into one identical error recorded against every cohort
-    _require_zero_cells(zero_cells)
+    zero_cells = _resolve_zero_cells(zero_cells, links)
     _require_sigma_rule(sigma_rule)
+    _require_mack_average(average)
     if triangle.meta.measure != "cumulative":
         raise Refusal(
             "invalid_option",
@@ -524,7 +652,9 @@ def fit_mack_many(
                 segment=dict(zip(by, key, strict=True)),
                 measure=triangle.meta.measure,
             )
-            fits[key] = fit_mack_grid(grid, sigma_rule=sigma_rule, zero_cells=zero_cells)
+            fits[key] = fit_mack_grid(
+                grid, sigma_rule=sigma_rule, zero_cells=zero_cells, average=average, links=links
+            )
         except Refusal as refusal:
             if on_error == "raise":
                 # the same refusal, its message led by the cohort it came from
@@ -538,7 +668,12 @@ def fit_mack_many(
 
 
 def fit_mack_grid(
-    grid: dict[str, Any], *, sigma_rule: str = "mack", zero_cells: str = "observed"
+    grid: dict[str, Any],
+    *,
+    sigma_rule: str = "mack",
+    zero_cells: str | None = None,
+    average: str = "volume",
+    links: LinkRules | None = None,
 ) -> MackFit:
     """Fit Mack's distribution-free chain ladder from a grid dict (the array entry point).
 
@@ -593,9 +728,46 @@ def fit_mack_grid(
       Merz-Wuthrich formulas have not been checked under it.
 
     On a triangle with no zero cumulative the two give the identical fit.
+    ``zero_cells=None`` (the default) is ``"observed"``, or the rule ``links``
+    carries when it is given; giving both with different values is refused.
+
+    **Development options** (Mack 1999). ``average`` is ``"volume"`` (the
+    default), ``"simple"`` or ``"regression"``, Mack's alpha 1, 0 and 2: each
+    link ratio is weighted by the amount it starts from to that power, in the
+    factor and in sigma, and the process variance of a step is
+    ``sigma^2 * C^(2 - alpha)``. A median or a geometric average is refused:
+    it is not a weighted mean of the ratios, so Mack's variance does not exist
+    for it. ``links`` (an ``ibnr.kernels.links.LinkRules``) chooses the link ratios with
+    :func:`kernels.links.select_links`, the selection the conventional fits
+    use, and the factors are :func:`kernels.links.link_factors` of it, so they
+    equal the chain ladder's with the same options exactly. Then ``s`` is the
+    weight total behind each factor and ``n_obs`` and ``n_pos`` count the
+    ratios used. The options choose which ratios estimate ``f`` and sigma; the
+    development still to come from each origin's latest amount keeps its full
+    variance whatever was left out. The drops that look at the ratios
+    (``drop_high``, ``drop_low``, ``drop_above``, ``drop_below``) choose after
+    seeing the data, which Mack's formulas do not allow for, so the standard
+    errors with them are approximate and tend to be low; R's
+    ``MackChainLadder`` and chainladder-python apply the formulas the same way.
+
+    With neither ``average`` nor ``links`` given, the fit is 0.7.2's, byte for
+    byte. With either, the development options path is taken, which:
+
+    - refuses ``history_periods=1`` by name, and any other options that leave
+      at most one link ratio at every age, since no sigma could be estimated;
+    - refuses an age left with no link ratio (``no_link_ratio``): a factor of
+      1.0 there would be chosen, not estimated, and has no variance;
+    - refuses ``zero_cells="observed"`` on a triangle with a link ratio out of
+      a zero, whose ratio has no value to rank, bound or window;
+    - fills a sigma at an age left with one link ratio: at the last age only,
+      as above; at an earlier age, under ``"log_linear"`` from one regression
+      over every age with a positive sigma, and under ``"mack"`` by Mack's rule
+      from the two ages before, filled or estimated, in order (both as R's
+      ``MackChainLadder`` does), refusing an age before the third.
     """
     _require_sigma_rule(sigma_rule)
-    _require_zero_cells(zero_cells)
+    _require_mack_average(average)
+    zero_cells = _resolve_zero_cells(zero_cells, links)
     origins, _ = check_grid(grid)
     cum, mask = grid["cum"], grid["obs_mask"]
     n_d = grid["n_d"]
@@ -604,6 +776,36 @@ def fit_mack_grid(
             "variance_not_estimable",
             "Mack's chain ladder needs at least two development ages; this triangle has one",
             option="cells",
+        )
+    if links is not None or average != "volume":
+        rules = links if links is not None else LinkRules(zero_cells=zero_cells)
+        f, sigma2, s, n_obs, n_pos, selection = _estimate_selected(
+            cum,
+            mask,
+            origins,
+            step=grid["dev_grain_months"],
+            rules=rules,
+            average=average,
+            sigma_rule=sigma_rule,
+        )
+        return MackFit(
+            cum=cum,
+            obs_mask=mask,
+            latest_dev=grid["latest_dev"],
+            f=f,
+            sigma2=sigma2,
+            s=s,
+            n_obs=n_obs,
+            n_pos=n_pos,
+            origin_periods=origins,
+            dev_grain_months=grid["dev_grain_months"],
+            sigma_rule=sigma_rule,
+            units=grid.get("units"),
+            loss_field=grid.get("loss_field"),
+            zero_cells=zero_cells,
+            average=average,
+            links=rules,
+            selection=selection,
         )
     f, sigma2, s, n_obs, n_pos = _estimate_factors(
         cum,
@@ -641,6 +843,62 @@ def _require_zero_cells(zero_cells: str) -> None:
             option="zero_cells",
             given=zero_cells,
         )
+
+
+def _resolve_zero_cells(zero_cells: str | None, links: LinkRules | None) -> str:
+    """The zero rule a fit uses: ``zero_cells``, or the one ``links`` carries.
+
+    ``None`` means the rule of ``links`` when it is given, else ``"observed"``.
+    Given both, they must agree: two answers to one question would leave one
+    of them unread.
+    """
+    if links is not None and not isinstance(links, LinkRules):
+        raise Refusal(
+            "invalid_option",
+            "links must be an ibnr.kernels.links.LinkRules or None, got {given}",
+            option="links",
+            given=type(links).__name__,
+        )
+    if zero_cells is None:
+        return links.zero_cells if links is not None else "observed"
+    _require_zero_cells(zero_cells)
+    if links is not None and links.zero_cells != zero_cells:
+        raise Refusal(
+            "invalid_option",
+            f"zero_cells is given twice, as zero_cells={zero_cells!r} and in links, as "
+            f"{links.zero_cells!r}; give it once",
+            option="zero_cells",
+            options=("zero_cells", "links"),
+        )
+    return zero_cells
+
+
+def _require_mack_average(average) -> None:
+    """Refuse an average Mack's standard errors are not derived for, by name."""
+    if isinstance(average, str) and average in MACK_AVERAGES:
+        return
+    if isinstance(average, str) and average in ("median", "geometric"):
+        # the chain ladder offers the median, and nothing offers a geometric average
+        instead = (
+            ". The chain ladder with average='median' gives the ultimates without standard errors"
+            if average == "median"
+            else ""
+        )
+        raise Refusal(
+            "not_supported",
+            "Mack's chain ladder takes average 'volume', 'simple' or 'regression', got {given}. "
+            "Mack's standard errors are derived for a weighted mean of link ratios, each "
+            "weighted by the amount it starts from to a power (1, 0 or 2); a "
+            f"{average} average is not one, and has no such variance{instead}",
+            option="average",
+            given=average,
+        )
+    raise Refusal(
+        "invalid_option",
+        "average must be 'volume', 'simple' or 'regression', got {given}",
+        option="average",
+        given=average,
+    )
 
 
 def _require_sigma_rule(sigma_rule: str) -> None:
@@ -878,6 +1136,245 @@ def _fill_sigma_gaps(
         sigma2[j] = float(min(_mack_ratio(last, prev), last, prev))
 
 
+def _causes(selection: LinkSelection, j: int | None = None) -> list[str]:
+    """The options that left link ratios out, at link ``j`` or anywhere, in rule order."""
+    reasons = selection.reason if j is None else selection.reason[:, j]
+    present = {int(code) for code in np.unique(reasons) if code > 0}
+    return list(dict.fromkeys(OPTION_OF_REASON[REASONS[code]] for code in sorted(present)))
+
+
+def _estimate_selected(
+    cum: np.ndarray,
+    mask: np.ndarray,
+    origins: list[dt.date],
+    *,
+    step: int,
+    rules: LinkRules,
+    average: str,
+    sigma_rule: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, LinkSelection]:
+    """Mack's parameters on the link ratios ``rules`` keep, averaged by ``average``.
+
+    The ratios come from :func:`kernels.links.select_links` and the factors from
+    :func:`kernels.links.link_factors`, the two calls the conventional fits make,
+    so the factors are theirs bit for bit. Then, at each link with ``U`` the
+    ratios used and ``alpha`` Mack's exponent for ``average``:
+
+        s[j]      = sum_U C^alpha                   (the weight total)
+        sigma2[j] = sum_U C^alpha (F - f_j)^2 / (|U| - 1)
+
+    Every used ratio starts from a positive amount (both zero rules leave out a
+    ratio starting from zero), so ``n_pos == n_obs == |U|``.
+
+    Returns (f, sigma2, s, n_obs, n_pos, selection).
+    """
+    n_links = cum.shape[1] - 1
+    alpha = ALPHA[average]
+
+    def cell(i: int, j: int) -> RefusedCell:
+        return RefusedCell(None, origins[i], (j + 1) * step, float(cum[i, j]))
+
+    infinite = mask & ~np.isfinite(cum)
+    if infinite.any():
+        raise Refusal(
+            "not_finite",
+            "cumulative losses must be finite: {cells}",
+            option="cells",
+            cells=[cell(i, j) for i, j in np.argwhere(infinite)],
+        )
+    negative = mask & (cum < 0)
+    if negative.any():
+        raise Refusal(
+            "negative_cumulative",
+            "negative cumulative loss in {cells}; in Mack's model a link ratio's weight and "
+            "variance are powers of the amount it starts from, which must be zero or more",
+            option="cells",
+            cells=[cell(i, j) for i, j in np.argwhere(negative)],
+        )
+    off_step = [(origin, lag) for origin, lag in rules.exclude if lag % step]
+    if off_step:
+        raise Refusal(
+            "grain_mismatch",
+            f"excluded development lags must be grain multiples ({step} months): {{cells}}",
+            option="exclude",
+            cells=[RefusedCell(None, origin, lag) for origin, lag in off_step],
+        )
+    _check_valuations(rules.exclude_valuations, origins, step)
+    if rules.history_periods == 1:
+        raise Refusal(
+            "variance_not_estimable",
+            "history_periods=1 keeps one link ratio at each development age, so Mack's sigma, "
+            "the spread of two or more link ratios, cannot be estimated at any age. Use "
+            "history_periods=2 or more; the chain ladder gives the ultimates without standard "
+            "errors",
+            option="history_periods",
+            given=1,
+        )
+    selection = select_links(cum, mask, origins, step, rules, n_links, raise_exhausted=False)
+    undefined = np.argwhere(selection.reason == _UNDEFINED)
+    if undefined.size:
+        raise Refusal(
+            "not_supported",
+            "under zero_cells='observed' the link ratio out of the zero at {cells} has no value, "
+            "so the development options cannot rank, bound or window it. zero_cells='missing' "
+            "leaves it out, as chainladder-python does; the volume average over every link "
+            "ratio, with no other option, keeps the zero as data, as R's MackChainLadder does",
+            option="zero_cells",
+            cells=[cell(i, j) for i, j in undefined],
+        )
+    f, n_used = link_factors(selection, average)
+    s = np.zeros(n_links)
+    sigma2 = np.full(n_links, np.nan)
+    for j in range(n_links):
+        link = [((j + 1) * step, (j + 2) * step)]
+        if rules.exhausted_exclusions == "raise":
+            refusal = exhausted_refusal(selection, rules, j, step)
+            if refusal is not None:
+                raise refusal
+        if not n_used[j]:
+            causes = _causes(selection, j)
+            if causes == ["zero_cells"]:
+                raise Refusal(
+                    "no_link_ratio",
+                    "every origin with a link ratio {links} has a zero cumulative at one end "
+                    "or the other, and zero_cells='missing' leaves those link ratios out, so "
+                    "no factor can be estimated there. zero_cells='observed' keeps the zeros "
+                    "as data",
+                    option="zero_cells",
+                    links=link,
+                )
+            raise Refusal(
+                "no_link_ratio",
+                f"the development options leave no link ratio {{links}} ({', '.join(causes)} "
+                "left out every one). Mack's chain ladder cannot use a factor of 1.0 there: it "
+                "would be chosen, not estimated, and Mack's formulas give it no variance. "
+                "Loosen the options; the chain ladder with unsupported_factor='unity' gives the "
+                "ultimates with a factor of 1.0 at that age",
+                option=causes[0],
+                options=tuple(causes),
+                links=link,
+            )
+        used = selection.used[:, j]
+        x = selection.previous[used, j]
+        ratio = selection.ratio[used, j]
+        weight = x if alpha == 1 else x**alpha
+        s[j] = float(weight.sum())
+        if not (np.isfinite(f[j]) and np.isfinite(ratio).all() and np.isfinite(s[j])):
+            raise Refusal(
+                "result_not_finite",
+                "the factor or a link ratio {links} is not a finite number: the amounts are too "
+                "large, or too far apart, for their sums and ratios to stay finite. Check them "
+                "for a unit error, or scale them (work in thousands, say) and scale the answer "
+                "back",
+                option="cells",
+                links=link,
+            )
+        if n_used[j] > 1:
+            sigma2[j] = float((weight * (ratio - f[j]) ** 2).sum() / (n_used[j] - 1))
+    n_obs = n_used.astype(int)
+    n_pos = n_obs.copy()
+    if (n_pos < 2).all():
+        links = [((j + 1) * step, (j + 2) * step) for j in range(n_links)]
+        # would the zero rule alone have left two ratios somewhere?
+        allowed = (selection.observed & (selection.reason != _ZERO_CELL)).sum(axis=0)
+        causes = [c for c in _causes(selection) if c != "zero_cells"]
+        if causes and (allowed >= 2).any():
+            settings = " and ".join(phrase for _, phrase in settings_named(rules))
+            raise Refusal(
+                "variance_not_estimable",
+                f"after {settings} at most one link ratio is left at "
+                "every development age ({links}), so Mack's sigma, the spread of two or more "
+                "link ratios, cannot be estimated at any age, and the standard errors would read "
+                "as no uncertainty at all. Loosen the options; the chain ladder gives the "
+                "ultimates without standard errors",
+                option=causes[0],
+                options=tuple(causes),
+                links=links,
+            )
+        raise Refusal(
+            "variance_not_estimable",
+            "Mack's chain ladder needs at least one development age with two or more link "
+            "ratios to estimate Mack's sigma; this triangle has at most one at every age "
+            "({links}), so every sigma would be set to 0 and the standard errors would read as "
+            "no uncertainty at all. The chain ladder gives the same ultimates without standard "
+            "errors",
+            option="cells",
+            links=links,
+        )
+    _fill_selected(sigma2, selection, rule=sigma_rule, lag_months=step)
+    return f, sigma2, s, n_obs, n_pos, selection
+
+
+def _fill_selected(
+    sigma2: np.ndarray, selection: LinkSelection, *, rule: str, lag_months: int
+) -> None:
+    """Fill sigma at links the development options left with one link ratio.
+
+    Only the last link: ``_tail_sigma2``, exactly as a fit without options. An
+    earlier link as well: under ``"log_linear"``, one regression of
+    log(sigma_j) on j over every link with a positive estimate fills every link
+    without one (``_fill_sigma_gaps``' rule, and R's ``MackChainLadder``);
+    under ``"mack"``, Mack's rule from the two links before, in link order, so a
+    link after a filled one uses the filled value, as R does. A link before the
+    third under Mack's rule, or fewer than two positive estimates for the
+    regression, is refused by name, naming the options that thinned the links.
+    """
+    missing = np.flatnonzero(np.isnan(sigma2))
+    if not missing.size:
+        return
+    last_link = sigma2.size - 1
+    if (missing == last_link).all():
+        sigma2[last_link] = _tail_sigma2(sigma2, last_link, rule=rule)
+        return
+
+    def links(steps) -> list[tuple[int, int]]:
+        return [((int(j) + 1) * lag_months, (int(j) + 2) * lag_months) for j in steps]
+
+    def why(steps) -> tuple[tuple[str, ...], str]:
+        causes = list(dict.fromkeys(c for j in steps for c in _causes(selection, int(j))))
+        if not causes:
+            return (), "the triangle has only one there"
+        if causes == ["zero_cells"]:
+            return ("zero_cells",), "zero_cells='missing' left out those with a zero cell"
+        return tuple(causes), f"the development options ({', '.join(causes)}) left out the others"
+
+    if rule == "log_linear":
+        estimated = np.flatnonzero(np.isfinite(sigma2) & (sigma2 > 0))
+        if estimated.size < 2:
+            causes, text = why(missing)
+            raise Refusal(
+                "variance_not_estimable",
+                "the link ratios {links} kept at most one ratio each once "
+                f"{text}, so Mack's sigma there has to be filled in from the other ages, and "
+                "the log-linear rule needs at least two other ages with a positive sigma to do "
+                "it",
+                option="sigma_rule",
+                options=("sigma_rule", *causes),
+                links=links(missing),
+            )
+        slope, intercept = np.polyfit(
+            estimated.astype(float), np.log(np.sqrt(sigma2[estimated])), 1
+        )
+        for j in missing:
+            sigma2[j] = float(np.exp(intercept + slope * j) ** 2)
+        return
+    for j in missing:
+        if j < 2:
+            causes, text = why([j])
+            raise Refusal(
+                "variance_not_estimable",
+                "the link ratios {links} kept at most one ratio once "
+                f"{text}, and Mack's rule fills that sigma from the two ages just before it, "
+                "which this age does not have. sigma_rule='log_linear' fills it from every "
+                "estimated age instead",
+                option="sigma_rule",
+                options=("sigma_rule", *causes),
+                links=links([j]),
+            )
+        last, prev = float(sigma2[j - 1]), float(sigma2[j - 2])
+        sigma2[j] = float(min(_mack_ratio(last, prev), last, prev))
+
+
 def simulate_ultimates(
     fit: MackFit,
     *,
@@ -905,12 +1402,17 @@ def simulate_ultimates(
     ``seed`` is anything ``np.random.default_rng`` accepts. The ``mack`` gallery
     entry hands a per-cohort ``SeedSequence`` through here; a plain integer keeps
     the byte-exact meaning it has always had.
+
+    A fit with another average draws each step with variance
+    ``sigma2[j] * C ** (2 - alpha)``, the fit's own model; at alpha 1 the draws
+    are what they always were.
     """
     # a non-positive diagonal would give var = sigma2 * state <= 0, which
     # draw_step returns at its mean - a silent point mass, not an error
     fit.require_positive_open_diagonals()
     rng = np.random.default_rng(seed)
     n_w, n_d = fit.n_w, fit.n_d
+    alpha = fit.alpha
     f_true = _factor_draws(fit, n_draws=n_draws, rng=rng, parameter_risk=parameter_risk)
 
     ult = np.empty((n_draws, n_w))
@@ -918,7 +1420,8 @@ def simulate_ultimates(
         state = np.full(n_draws, fit.cum[i, fit.latest_dev[i]])
         for j in range(int(fit.latest_dev[i]), n_d - 1):
             mean = f_true[:, j] * state
-            var = fit.sigma2[j] * state
+            # Var = sigma^2 * C^(2 - alpha); literally sigma^2 * C at alpha 1, as before
+            var = fit.sigma2[j] * state if alpha == 1 else fit.sigma2[j] * state ** (2 - alpha)
             state = draw_step(rng, mean, np.maximum(var, 0.0), law=process)
         ult[:, i] = state
 
@@ -970,7 +1473,8 @@ def _next_step_draws(
     parameter_risk: bool,
 ) -> np.ndarray:
     """One development step ahead of ``prev``: ``(n_draws, n_cells)`` draws with
-    Mack's conditional moments ``E = f[j] * prev``, ``Var = sigma2[j] * prev``.
+    Mack's conditional moments ``E = f[j] * prev``, ``Var = sigma2[j] * prev``
+    (``sigma2[j] * prev ** (2 - alpha)`` for a fit with another average).
 
     ``step0`` is the 0-based step index per cell (``f[step0]`` carries the
     step). The single core behind BOTH :func:`draw_next_cells` (the held-out
@@ -980,7 +1484,10 @@ def _next_step_draws(
     """
     f_true = _factor_draws(fit, n_draws=n_draws, rng=rng, parameter_risk=parameter_risk)
     mean = f_true[:, step0] * prev  # (n_draws, n_cells)
-    var = np.broadcast_to(fit.sigma2[step0] * prev, mean.shape)
+    step_var = (
+        fit.sigma2[step0] * prev if fit.alpha == 1 else fit.sigma2[step0] * prev ** (2 - fit.alpha)
+    )
+    var = np.broadcast_to(step_var, mean.shape)
     return draw_step(rng, mean, var, law=process)
 
 
@@ -1001,6 +1508,9 @@ def draw_next_cells(
 
         E   = f[d - 2] * prev_value
         Var = sigma2[d - 2] * prev_value
+
+    (``prev_value ** (2 - alpha)`` in place of ``prev_value`` for a fit with
+    another average)
 
     ``d - 2`` because ``cells.d`` is the 1-BASED dev index of the drawn cell
     while ``f``/``sigma2`` are 0-based per step (``f[j]`` carries dev index

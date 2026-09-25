@@ -218,6 +218,60 @@ class LinkRules:
         return bool(self.drop_high or self.drop_low)
 
 
+def is_all_history(rules: LinkRules) -> bool:
+    """True when the rules keep every observed ratio the zero rule allows.
+
+    That is: no history window, no explicit or valuation exclusion, no bound and
+    no trim. ``preserve``, ``trim_ties`` and ``exhausted_exclusions`` only say
+    how the bounds and trims act, so they do not count. This reads the SETTINGS,
+    not what they removed from a given triangle: a window of 9 removes nothing
+    from a 9 x 9 triangle today and one ratio from next year's.
+    """
+    return not settings_named(rules)
+
+
+def settings_named(rules: LinkRules) -> list[tuple[str, str]]:
+    """Each rule that can leave a link ratio out, as (option, phrase for a message).
+
+    For example ``[("history_periods", "history_periods=5"), ("exclude",
+    "exclude (2 link ratios)")]``; an empty list for rules that keep every
+    observed ratio. The exclusions are counted, not listed, because a kernel
+    names an origin by its period's first day and a caller may have written it
+    another way.
+    """
+    named = []
+    if rules.history_periods is not None:
+        named.append(("history_periods", f"history_periods={rules.history_periods}"))
+    if rules.exclude:
+        count = len(rules.exclude)
+        named.append(("exclude", f"exclude ({count} link ratio{'s' if count > 1 else ''})"))
+    if rules.exclude_valuations:
+        count = len(rules.exclude_valuations)
+        phrase = f"exclude_valuations ({count} valuation{'s' if count > 1 else ''})"
+        named.append(("exclude_valuations", phrase))
+    for name in ("drop_above", "drop_below"):
+        if getattr(rules, name) is not None:
+            named.append((name, f"{name}={getattr(rules, name)!r}"))
+    for name in ("drop_high", "drop_low"):
+        if getattr(rules, name):
+            named.append((name, f"{name}={getattr(rules, name)}"))
+    return named
+
+
+#: The option behind each reason a link ratio is left out.
+OPTION_OF_REASON = {
+    "zero_cell": "zero_cells",
+    "undefined_ratio": "zero_cells",
+    "history_window": "history_periods",
+    "explicit_exclusion": "exclude",
+    "valuation_exclusion": "exclude_valuations",
+    "drop_above": "drop_above",
+    "drop_below": "drop_below",
+    "drop_low": "drop_low",
+    "drop_high": "drop_high",
+}
+
+
 def _is_count(value) -> bool:
     return isinstance(value, int | np.integer) and not isinstance(value, bool | np.bool_)
 

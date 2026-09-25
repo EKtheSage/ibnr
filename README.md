@@ -227,7 +227,8 @@ period, such as `{2021: 2500.0, 2022: 2600.0, 2023: 2700.0}`); `benktander`
 takes `n_iters`, and `cape_cod` takes `decay`, `trend` and `n_iters`. The
 development options (`average`, `history_periods`, `drop_high`, `drop_low`,
 `preserve`, `drop_above`, `drop_below`, `exclude`, `exclude_valuations`,
-`trim_ties`) are keyword arguments of all four point methods. So is
+`trim_ties`) are keyword arguments of all four point methods, and of `mack`,
+which refuses `average="median"` and has no `unsupported_factor`. So is
 `zero_cells`, which all five methods take: by default they read a cumulative
 of zero as a missing cell, as chainladder-python does, and
 `zero_cells="observed"` keeps it as data.

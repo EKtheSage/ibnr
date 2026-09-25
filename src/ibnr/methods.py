@@ -7,7 +7,8 @@
 - :func:`benktander` (Bornhuetter-Ferguson iterated; ``n_iters=1`` is Bornhuetter-Ferguson)
 - :func:`cape_cod` (Gluck's generalized Cape Cod, with a trend; ``decay=1`` is the
   classic one)
-- :func:`mack` (the chain ladder with Mack's standard errors)
+- :func:`mack` (the chain ladder with Mack's standard errors; it takes the same
+  development options, and ``average`` is Mack's alpha)
 
 Each takes the cells of ONE triangle as a table with three columns, one row per
 observed cell:
@@ -50,16 +51,18 @@ factor                   float64  the link factor to the next age; null   all
                                   at the last age
 cdf                      float64  the factor to the last observed age     all
 pct_reported             float64  ``1 / cdf``                             all
-n_selected               int64    link ratios behind the factor           chain_ladder,
+n_selected               int64    link ratios behind the factor           all
+unity_fallback           bool     no ratio was left and 1.0 was used      chain_ladder,
                                                                           bornhuetter_ferguson,
                                                                           benktander, cape_cod
-unity_fallback           bool     no ratio was left and 1.0 was used      the same four
-extreme_trimming_skipped bool     ``preserve`` stopped ``drop_high`` and  the same four
+extreme_trimming_skipped bool     ``preserve`` stopped ``drop_high`` and  all
                                   ``drop_low`` at this age
-bounds_skipped           bool     ``preserve`` stopped ``drop_above`` and the same four
+bounds_skipped           bool     ``preserve`` stopped ``drop_above`` and all
                                   ``drop_below`` at this age
 sigma                    float64  Mack's sigma                            mack
 std_err                  float64  the factor's standard error             mack
+sigma_extrapolated       bool     sigma came from ``sigma_rule``: the     mack
+                                  age kept fewer than two link ratios
 ======================== ======== ======================================= =====================
 
 Every column but ``dev_lag``, ``cdf`` and ``pct_reported`` is null at the last
@@ -115,7 +118,9 @@ from ibnr import _arrow
 from ibnr.errors import Refusal, RefusedCell, _literal
 from ibnr.kernels.conventional import ConventionalCandidate, _estimate_grid
 from ibnr.kernels.grid import as_date, check_grid, grid_from_columns, month_end
-from ibnr.kernels.mack import fit_mack_grid
+from ibnr.kernels.links import REASONS as LINK_REASONS
+from ibnr.kernels.links import is_all_history
+from ibnr.kernels.mack import _require_mack_average, fit_mack_grid
 
 __all__ = [
     "Refusal",
@@ -175,12 +180,13 @@ class ReserveResult:
         ``cdf`` (the factor to the last observed age, 1.0 there) and
         ``pct_reported`` (``1 / cdf``). There is no tail factor, so
         ``pct_reported`` is 1.0 at the last observed age by construction rather
-        than by measurement. The chain ladder, Bornhuetter-Ferguson, Benktander
-        and Cape Cod add ``n_selected`` (int64, the link ratios behind the
-        factor), ``unity_fallback``, ``extreme_trimming_skipped`` and
-        ``bounds_skipped`` (bool); Mack adds ``sigma`` and ``std_err`` (the
-        factor's standard error), null at the last age. The module docstring
-        has the table of every column and the methods that carry it.
+        than by measurement. Every method adds ``n_selected`` (int64, the link
+        ratios behind the factor), ``extreme_trimming_skipped`` and
+        ``bounds_skipped`` (bool); the chain ladder, Bornhuetter-Ferguson,
+        Benktander and Cape Cod add ``unity_fallback`` (bool); Mack adds
+        ``sigma``, ``std_err`` (the factor's standard error) and
+        ``sigma_extrapolated`` (bool), all null at the last age. The module
+        docstring has the table of every column and the methods that carry it.
     link_ratios : pyarrow.Table or None
         Every observed link ratio, one row each: ``origin`` and
         ``origin_period`` (as in ``origins``), ``from_dev_lag`` (int64, the age
@@ -193,9 +199,12 @@ class ReserveResult:
         ``zero_cells="observed"``), ``history_window``, ``explicit_exclusion``,
         ``valuation_exclusion``, ``drop_above``, ``drop_below``, ``drop_low``
         or ``drop_high``: the first rule that left it out, in the order the
-        rules run). ``None`` for Mack, whose factors use
-        every ratio except, under ``zero_cells="missing"``, those with a zero
-        at either end.
+        rules run). Mack's is the chain ladder's for the same options; under
+        ``zero_cells="observed"`` with no development option every observed
+        link ratio is ``included``, a ratio out of a zero too (null, with its
+        following amount in the volume sum), as R's ``MackChainLadder`` reads
+        it. Every method returns this table; ``None`` is only for a result
+        built by hand.
     totals : pyarrow.Table
         One row with ``latest``, ``ultimate`` and ``ibnr`` summed over the
         origins. Mack adds ``mack_se``, ``parameter_se`` and ``process_se`` for
@@ -228,13 +237,10 @@ class ReserveResult:
             )
         data = getattr(self, table)
         if data is None:
+            # every method carries all four tables now; a result built by hand may not
             raise Refusal(
                 "invalid_option",
-                f"a {self.method} result has no link_ratios table. Under "
-                "zero_cells='missing' (the default) Mack's factors use every link ratio "
-                "except those with a zero cell at either end, and "
-                "methods.chain_ladder(cells).link_ratios lists the same ones with reason "
-                "'zero_cell'; under zero_cells='observed' they use every observed link ratio",
+                f"a {self.method} result has no {table} table",
                 option="table",
                 given=table,
                 method=self.method,
@@ -302,7 +308,8 @@ def chain_ladder(
     first day, whichever day names it.
 
     The development options, shared with :func:`bornhuetter_ferguson`,
-    :func:`benktander` and :func:`cape_cod`. The rules that leave link ratios
+    :func:`benktander` and :func:`cape_cod`, and with :func:`mack` except for
+    ``unsupported_factor`` and the median. The rules that leave link ratios
     out run in this order, each on the ratios the ones before it left:
     ``zero_cells``, ``history_periods``, ``exclude``, ``exclude_valuations``,
     ``drop_above``/``drop_below``, then ``drop_high``/``drop_low``. Each ratio
@@ -617,14 +624,48 @@ def mack(
     dev_grain_months: int = 12,
     sigma_rule: str = "log_linear",
     zero_cells: str = "missing",
+    average: str = "volume",
+    history_periods: int | None = None,
+    drop_high: bool | int = False,
+    drop_low: bool | int = False,
+    preserve: int = 1,
+    drop_above: float | None = None,
+    drop_below: float | None = None,
+    exclude=(),
+    exclude_valuations=(),
+    trim_ties: str = "volume",
+    exhausted_exclusions: str = "keep",
 ) -> ReserveResult:
     """Mack's chain ladder: the chain-ladder ultimate and its standard error.
 
-    Mack (1993), distribution-free. ``cells`` is as in :func:`chain_ladder`.
-    The factors are volume-weighted over every link ratio in the triangle.
-    Mack's standard-error formulas are derived for exactly that estimator, and
-    ibnr's Mack fit has no development options yet (no history window, no
-    trimming, no exclusions), so this function does not accept them.
+    Mack (1993), distribution-free, and Mack (1999) for the development
+    options. ``cells`` is as in :func:`chain_ladder`, and so are the development
+    options, which choose the link ratios exactly as they do there: the same
+    options give the same factors, bit for bit, and the same ``link_ratios``
+    table. There is no ``unsupported_factor``: an age the options leave with no
+    link ratio is refused, because a factor of 1.0 there would be chosen, not
+    estimated, and Mack's formulas give it no variance.
+
+    ``average`` is ``"volume"`` (the default), ``"simple"`` or
+    ``"regression"``. In Mack's terms each link ratio is weighted by the amount
+    it starts from to the power alpha, 1, 0 or 2, and the variance of one
+    development step is ``sigma ** 2 * amount ** (2 - alpha)``. ``"median"`` is
+    refused: a median is not a weighted mean of the ratios, so Mack's variance
+    does not exist for it (``"geometric"`` is refused for the same reason).
+
+    The options choose which link ratios estimate the factors and the sigmas.
+    The development still to come from each origin's latest amount keeps its
+    full variance whatever was left out; chainladder-python drops the first
+    year of it whenever a drop or a bound is set, and this function does not
+    (``docs/coming-from-chainladder.md`` has the numbers). ``drop_high``,
+    ``drop_low``, ``drop_above`` and ``drop_below`` choose ratios after looking
+    at them, which Mack's formulas do not allow for, so with them the standard
+    errors are approximate and tend to be low; R's ``MackChainLadder`` and
+    chainladder-python apply the formulas the same way. ``history_periods=1``
+    is refused (one ratio at every age leaves no sigma to estimate), and so are
+    any options that leave at most one link ratio at every age. The one-year
+    claims development result in ``ibnr.kernels`` needs a fit with no
+    development options.
 
     ``zero_cells`` is what a cumulative of exactly zero is. ``"missing"`` (the
     default here, as in chainladder-python) leaves out every link ratio with a
@@ -632,40 +673,66 @@ def mack(
     latest cumulative is zero keeps 0 as its latest amount, so its ultimate is
     0 and its standard errors are 0, the limit of Mack's formula as that amount
     goes to zero; chainladder-python leaves that origin's ultimate and standard
-    error missing, and its total standard error equals the one here.
-    ``"observed"`` keeps zeros as data, as R's ``MackChainLadder`` and
-    ``kernels.fit_mack`` (whose default it is) do: the factor uses every link
-    ratio, and a zero latest cumulative on a still-developing origin is refused,
-    because Mack's variance divides by it.
+    error missing, and its total standard error equals the one here. Under
+    ``average="regression"`` such an origin is refused: the variance of a step
+    does not shrink with the amount, so it would get a mean of 0 and a positive
+    standard error. ``"observed"`` keeps zeros as data, as R's
+    ``MackChainLadder`` and ``kernels.fit_mack`` (whose default it is) do: the
+    factor uses every link ratio, and a zero latest cumulative on a
+    still-developing origin is refused, because Mack's variance divides by it.
+    Under ``"observed"`` a link ratio out of a zero has no value, so any
+    development option on a triangle with one is refused.
 
     ``sigma_rule`` picks how the variance is filled in at a development age
     with too few link ratios to estimate it, usually the last one:
     ``"log_linear"`` (the default, as in chainladder-python) extends a straight
-    line through the logarithms of the earlier sigmas; ``"mack"`` is Mack's own
-    1993 rule. The ultimates do not depend on it; the standard errors do.
-    (``kernels.fit_mack`` keeps ``"mack"`` as its default, so published numbers
-    made with it do not move.)
+    line through the logarithms of the other sigmas; ``"mack"`` is Mack's own
+    1993 rule, from the two ages before. The ultimates do not depend on it; the
+    standard errors do. (``kernels.fit_mack`` keeps ``"mack"`` as its default,
+    so published numbers made with it do not move.)
 
     ``origins`` and ``totals`` carry ``mack_se`` and its two parts:
     ``parameter_se``, from estimating the factors, and ``process_se``, from the
     randomness of future development, where ``mack_se ** 2 = parameter_se ** 2
-    + process_se ** 2``. Under ``zero_cells="observed"`` the standard errors
-    need every still-developing origin's latest cumulative loss to be positive,
-    and are refused otherwise. They also need at least one development age with
-    two or more link ratios, since a sigma is estimated from the spread of link
-    ratios: a triangle with at most one at every age (two origins, for example)
-    is refused rather than given standard errors of 0. Input it will not answer
-    is refused with :class:`Refusal`, and so is a triangle whose amounts are
-    so large that a standard error is not a finite number, or so small that its
-    square reads as 0, and one where a factor is 0 (every origin at an age
-    closing at zero), since every ultimate after it would be 0.
+    + process_se ** 2``. ``development`` adds ``sigma``, ``std_err`` (the
+    factor's standard error) and ``sigma_extrapolated`` (the sigma came from
+    ``sigma_rule`` because the age kept fewer than two link ratios) to the
+    chain ladder's columns, and ``link_ratios`` lists every observed link ratio
+    and whether it was used, as for the chain ladder. Under
+    ``zero_cells="observed"`` the standard errors need every still-developing
+    origin's latest cumulative loss to be positive, and are refused otherwise.
+    They also need at least one development age with two or more link ratios,
+    since a sigma is estimated from the spread of link ratios: a triangle with
+    at most one at every age (two origins, for example) is refused rather than
+    given standard errors of 0. Input it will not answer is refused with
+    :class:`Refusal`, and so is a triangle whose amounts are so large that a
+    standard error is not a finite number, or so small that its square reads as
+    0, and one where a factor is 0 (every origin at an age closing at zero),
+    since every ultimate after it would be 0.
     """
     with _CallersTerms("mack") as terms:
         grid, labels = terms.read(cells, dev_grain_months)
-        return _mack(grid, labels, sigma_rule=sigma_rule, zero_cells=zero_cells)
+        _require_mack_average(average)
+        wrapped = _candidate(
+            "cl",
+            labels,
+            average=average,
+            history_periods=history_periods,
+            drop_high=drop_high,
+            drop_low=drop_low,
+            preserve=preserve,
+            drop_above=drop_above,
+            drop_below=drop_below,
+            exclude=exclude,
+            exclude_valuations=exclude_valuations,
+            trim_ties=trim_ties,
+            exhausted_exclusions=exhausted_exclusions,
+            zero_cells=zero_cells,
+        )
+        return _mack(grid, labels, wrapped, sigma_rule=sigma_rule)
 
 
-def _mack(grid, labels: _Origins, *, sigma_rule: str, zero_cells: str) -> ReserveResult:
+def _mack(grid, labels: _Origins, wrapped: _Candidate, *, sigma_rule: str) -> ReserveResult:
     _, as_of = check_grid(grid)
     step = grid["dev_grain_months"]
     if grid["n_d"] < 2:
@@ -675,12 +742,33 @@ def _mack(grid, labels: _Origins, *, sigma_rule: str, zero_cells: str) -> Reserv
             "gives the latest amounts as the ultimates",
             option="cells",
         )
+    _require_valuations_in_triangle(grid, wrapped.valuations)
+    _require_exclusions_in_triangle(grid, wrapped.exclusions)
+    candidate = wrapped.kernel
+    rules = candidate.link_rules
+    zero_cells, average = rules.zero_cells, candidate.average
+    # Under "missing" every fit reads its link ratios through kernels.links, as the
+    # chain ladder does. Under "observed" with no option, 0.7.2's estimator keeps
+    # R's reading of a link ratio out of a zero (it enters the volume factor).
+    plain = average == "volume" and is_all_history(rules)
+    links = None if zero_cells == "observed" and plain else rules
+    if links is not None:
+        # the triangle itself has too few link ratios for any sigma: refused here in
+        # the same words as below, before the kernel would blame the options
+        cum, mask = grid["cum"], grid["obs_mask"]
+        pair = mask[:, :-1] & mask[:, 1:] & (cum[:, :-1] > 0)
+        if zero_cells == "missing":
+            pair &= cum[:, 1:] != 0
+        if (pair.sum(axis=0) < 2).all():
+            raise _no_sigma_anywhere(grid["n_d"], step)
     # Amounts near the largest or the smallest double are finite but Mack's sums,
     # ratios and squares are not. numpy says so with a warning, which is silenced
     # here and below because the kernel and _require_finite refuse such an answer
     # by name before anything is returned.
     with np.errstate(all="ignore"):
-        fit = fit_mack_grid(grid, sigma_rule=sigma_rule, zero_cells=zero_cells)
+        fit = fit_mack_grid(
+            grid, sigma_rule=sigma_rule, zero_cells=zero_cells, average=average, links=links
+        )
     zero_factor = np.flatnonzero(fit.f == 0)
     if zero_factor.size:
         # Only the last age can get here with every link ratio 0 (the age after
@@ -697,15 +785,7 @@ def _mack(grid, labels: _Origins, *, sigma_rule: str, zero_cells: str) -> Reserv
             links=[((j + 1) * step, (j + 2) * step) for j in zero_factor],
         )
     if (fit.n_pos < 2).all():
-        raise Refusal(
-            "variance_not_estimable",
-            "mack needs at least one development age with two or more link ratios to estimate "
-            "Mack's sigma; this triangle has at most one at every age ({links}), so every "
-            "sigma would be set to 0 and the standard errors would read as no uncertainty at "
-            "all. chain_ladder gives the same ultimates without standard errors",
-            option="cells",
-            links=[((j + 1) * step, (j + 2) * step) for j in range(fit.n_d - 1)],
-        )
+        raise _no_sigma_anywhere(fit.n_d, step)
     # Negative cells never get here (the cells are checked first), so the one
     # latest amount msep_runoff refuses is a zero under "observed". Its own
     # message names MackFit attributes a ReserveResult does not have.
@@ -759,14 +839,96 @@ def _mack(grid, labels: _Origins, *, sigma_rule: str, zero_cells: str) -> Reserv
             **{name: _arrow.float64(values) for name, values in per_origin.items()},
         }
     )
+    selection = fit.selection
+    if selection is None:
+        # 0.7.2's estimator: no rule was there to skip
+        trimming_skipped = bounds_skipped = np.zeros(fit.n_d - 1, dtype=bool)
+    else:
+        trimming_skipped, bounds_skipped = selection.trimming_skipped, selection.bounds_skipped
     development = pa.table(
         {
             **_pattern(pattern, step),
+            "n_selected": _with_last_null(fit.n_obs.tolist(), pa.int64()),
+            "extreme_trimming_skipped": _with_last_null(trimming_skipped.tolist(), pa.bool_()),
+            "bounds_skipped": _with_last_null(bounds_skipped.tolist(), pa.bool_()),
             "sigma": _with_last_null(sigma, pa.float64()),
             "std_err": _with_last_null(std_err, pa.float64()),
+            "sigma_extrapolated": _with_last_null((fit.n_pos < 2).tolist(), pa.bool_()),
         }
     )
-    return ReserveResult("mack", as_of, step, origins, development, None, pa.table(total))
+    link_ratios = _link_ratios(labels, _mack_link_rows(fit))
+    return ReserveResult("mack", as_of, step, origins, development, link_ratios, pa.table(total))
+
+
+def _no_sigma_anywhere(n_d: int, step: int) -> Refusal:
+    return Refusal(
+        "variance_not_estimable",
+        "mack needs at least one development age with two or more link ratios to estimate "
+        "Mack's sigma; this triangle has at most one at every age ({links}), so every "
+        "sigma would be set to 0 and the standard errors would read as no uncertainty at "
+        "all. chain_ladder gives the same ultimates without standard errors",
+        option="cells",
+        links=[((j + 1) * step, (j + 2) * step) for j in range(n_d - 1)],
+    )
+
+
+def _mack_link_rows(fit) -> dict[str, list]:
+    """Every observed link ratio of a Mack fit, in the chain ladder's row order:
+    by development age, then by origin."""
+    rows: dict[str, list] = {name: [] for name in _LINK_COLUMNS}
+    selection, cum, step = fit.selection, fit.cum, fit.dev_grain_months
+    observed = fit.obs_mask[:, :-1] & fit.obs_mask[:, 1:]
+    for j in range(fit.n_d - 1):
+        for i in np.flatnonzero(observed[:, j]):
+            previous, following = cum[i, j], cum[i, j + 1]
+            rows["origin_period"].append(fit.origin_periods[i])
+            rows["from_dev_lag"].append((j + 1) * step)
+            rows["previous"].append(previous)
+            rows["following"].append(following)
+            if selection is None:
+                # 0.7.2's estimator: every observed link ratio enters the factor, a
+                # ratio out of a zero included (its following amount adds to the sum)
+                rows["ratio"].append(following / previous if previous > 0 else np.nan)
+                rows["included"].append(True)
+                rows["reason"].append("included")
+            else:
+                rows["ratio"].append(selection.ratio[i, j])
+                rows["included"].append(bool(selection.used[i, j]))
+                rows["reason"].append(LINK_REASONS[selection.reason[i, j]])
+    return rows
+
+
+#: The columns of a link_ratios table, before the caller's labels are added.
+_LINK_COLUMNS = (
+    "origin_period",
+    "from_dev_lag",
+    "previous",
+    "following",
+    "ratio",
+    "included",
+    "reason",
+)
+
+
+def _link_ratios(origins: _Origins, rows: dict[str, list]) -> pa.Table:
+    """The link_ratios table from its columns, one row per observed link ratio.
+
+    The one builder of the table, for the chain ladder's family and for Mack,
+    so the same selection gives equal tables."""
+    ratio = np.array(rows["ratio"], dtype=float)
+    return pa.table(
+        {
+            "origin": origins.labels_for(rows["origin_period"]),
+            "origin_period": _arrow.date32(rows["origin_period"]),
+            "from_dev_lag": _arrow.int64(rows["from_dev_lag"]),
+            "previous": _arrow.float64(rows["previous"]),
+            "following": _arrow.float64(rows["following"]),
+            # an undefined ratio (from a zero cumulative) is missing, not a number
+            "ratio": _arrow.float64(ratio, mask=np.isnan(ratio)),
+            "included": _arrow.bool_(rows["included"]),
+            "reason": _arrow.string(rows["reason"]),
+        }
+    )
 
 
 def _require_no_underflow(fit, msep: np.ndarray) -> None:
@@ -783,9 +945,12 @@ def _require_no_underflow(fit, msep: np.ndarray) -> None:
     underflowed = []
     for j in range(fit.n_d - 1):
         # the link ratios behind sigma at this age, as the kernel picks them
-        pair = mask[:, j] & mask[:, j + 1] & (cum[:, j] > 0)
-        if fit.zero_cells == "missing":
-            pair &= cum[:, j + 1] != 0
+        if fit.selection is not None:
+            pair = fit.selection.used[:, j]
+        else:
+            pair = mask[:, j] & mask[:, j + 1] & (cum[:, j] > 0)
+            if fit.zero_cells == "missing":
+                pair &= cum[:, j + 1] != 0
         with np.errstate(all="ignore"):
             ratios = cum[pair, j + 1] / cum[pair, j]
         if fit.sigma2[j] == 0 and ratios.size > 1 and np.ptp(ratios) > 0:
@@ -1058,6 +1223,34 @@ def _valuation(value, step: int) -> dt.date:
     return day
 
 
+def _require_exclusions_in_triangle(grid, exclusions) -> None:
+    """Refuse an exclusion that names a link ratio the triangle does not have.
+
+    ``exclusions`` is :attr:`_Candidate.exclusions`: each pair as written, with
+    the (period start, dev_lag) it names.
+    """
+    step = grid["dev_grain_months"]
+    origins, mask = grid["origin_periods"], grid["obs_mask"]
+    seen = {
+        (origins[i], (j + 1) * step)
+        for i, j in zip(*np.nonzero(mask[:, :-1] & mask[:, 1:]), strict=True)
+    }
+    unknown = [
+        RefusedCell(pair[0], start, lag)
+        for pair, (start, lag) in exclusions
+        if (start, lag) not in seen
+    ]
+    if unknown:
+        raise Refusal(
+            "not_in_triangle",
+            "exclude names link ratio(s) {cells} that the triangle does not have; each "
+            "exclusion is (origin_period, dev_lag) with dev_lag the age the ratio develops "
+            "FROM, and the origin must have cells at that age and the next",
+            option="exclude",
+            cells=unknown,
+        )
+
+
 def _require_valuations_in_triangle(grid, valuations) -> None:
     """Refuse an excluded valuation that no link ratio of the triangle develops into."""
     if not valuations:
@@ -1112,21 +1305,7 @@ def _conventional_result(
     with np.errstate(all="ignore"):
         fit = _estimate_grid(grid, candidate, premium=keyed)
     selection = fit.selection
-    seen = {(row["origin_period"], row["from_dev_lag"]) for row in selection}
-    unknown = [
-        RefusedCell(pair[0], start, lag)
-        for pair, (start, lag) in wrapped.exclusions
-        if (start, lag) not in seen
-    ]
-    if unknown:
-        raise Refusal(
-            "not_in_triangle",
-            "exclude names link ratio(s) {cells} that the triangle does not have; each "
-            "exclusion is (origin_period, dev_lag) with dev_lag the age the ratio develops "
-            "FROM, and the origin must have cells at that age and the next",
-            option="exclude",
-            cells=unknown,
-        )
+    _require_exclusions_in_triangle(grid, wrapped.exclusions)
     step = grid["dev_grain_months"]
     table = fit.origins
     latest = np.asarray(table["latest"], dtype=float)
@@ -1165,23 +1344,9 @@ def _conventional_result(
         }
     )
 
-    def link(key: str) -> list:
-        return [row[key] for row in selection]
-
-    ratio = np.array(link("ratio"), dtype=float)
-    link_ratios = pa.table(
-        {
-            "origin": origins.labels_for(link("origin_period")),
-            "origin_period": _arrow.date32(link("origin_period")),
-            "from_dev_lag": _arrow.int64(link("from_dev_lag")),
-            "previous": _arrow.float64(link("previous")),
-            "following": _arrow.float64(link("following")),
-            # an undefined ratio (from a zero cumulative) is missing, not a number
-            "ratio": _arrow.float64(ratio, mask=np.isnan(ratio)),
-            "included": _arrow.bool_(link("included")),
-            "reason": _arrow.string(link("reason")),
-        }
-    )
+    rows = {key: [row[key] for row in selection] for key in _LINK_COLUMNS}
+    link_ratios = _link_ratios(origins, rows)
+    ratio = np.array(rows["ratio"], dtype=float)
     per_origin = {"ultimate": ultimate, "ibnr": ibnr}
     if candidate.method == "gcc":
         # a trend near -1, or far above it, can take these past a double while the

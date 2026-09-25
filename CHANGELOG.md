@@ -21,6 +21,132 @@ patch releases, and 0.8 comes when the roadmap's goals are done.
 
 ## Unreleased
 
+### Mack with development options
+
+`methods.mack` takes the chain ladder's development options, and Mack's
+standard errors follow them (Mack 1999, "the standard error of chain ladder
+reserve estimates: recursive calculation and inclusion of a tail factor").
+
+**New in `ibnr.methods`:**
+- `methods.mack(cells, average=..., history_periods=..., drop_high=...,
+  drop_low=..., preserve=..., drop_above=..., drop_below=..., exclude=...,
+  exclude_valuations=..., trim_ties=..., exhausted_exclusions=...)`: every
+  option `chain_ladder` takes except `unsupported_factor`, with the same
+  defaults. The same options choose the same link ratios and give the same
+  factors, bit for bit, as `methods.chain_ladder`.
+- `average` is Mack's alpha: `"simple"` 0, `"volume"` 1, `"regression"` 2. A
+  link ratio is weighted by the amount it starts from to that power, in the
+  factor and in sigma, and one step's variance is sigma squared times the
+  amount to the power 2 - alpha.
+- A Mack result has a `link_ratios` table, the chain ladder's for the same
+  options (0.7.2 returned `None`, and `to_polars("link_ratios")` refused).
+- `development` gains `n_selected`, `extreme_trimming_skipped`,
+  `bounds_skipped` and `sigma_extrapolated` for Mack: the sigma came from
+  `sigma_rule` because the age kept fewer than two link ratios.
+
+**Refused, by name:** `average="median"` and `"geometric"` (`not_supported`: a
+median or a geometric average is not a weighted mean of the link ratios, so
+Mack's variance does not exist for it; the chain ladder still takes the
+median); `history_periods=1`, and any options that leave at most one link ratio
+at every age (`variance_not_estimable`); an age the options leave with no link
+ratio (`no_link_ratio`: a factor of 1.0 there would be chosen, not estimated,
+and would have no variance); `zero_cells="observed"` with any development
+option on a triangle with a link ratio out of a zero (`not_supported`: that
+ratio has no value to rank, bound or window); `average="regression"` with an
+origin whose latest amount is 0 under `zero_cells="missing"` (`not_supported`:
+the variance does not shrink with the amount, so it would get a mean of 0 and
+a positive standard error); and a sigma the fill cannot reach, naming the
+options that thinned the ages. No reason code was added.
+
+**In `ibnr.kernels`:**
+- `fit_mack_grid(grid, *, sigma_rule="mack", zero_cells=None, average="volume",
+  links=None)`, and the same `average` and `links` on `fit_mack` and
+  `fit_mack_many`. `links` is an `ibnr.kernels.links.LinkRules`. With neither
+  set, the fit is 0.7.2's, byte for byte. `zero_cells=None` means
+  `"observed"`, or the rule `links` carries; the two given with different
+  values are refused.
+- `MackFit` gains `average`, `links` and `selection` (the
+  `kernels.links.LinkSelection` the rules made), and the properties `alpha`
+  and `all_history_volume`. With options, `s` is the weight total behind each
+  factor and `n_obs` and `n_pos` count the link ratios used.
+- `msep_runoff`, `simulate_ultimates` and `draw_next_cells` use each fit's
+  alpha. A sigma at an age before the last that keeps one link ratio is filled
+  from one log-linear regression over every age with a positive sigma, or by
+  Mack's rule from the two ages before, in age order, so an age after a filled
+  one uses the filled value; both are R's.
+- The one-year claims development result (`one_year_cdr`,
+  `simulate_one_year_cdr` with either generator or `GalleryDiagonal`, and
+  `rereserve`) refuses a fit made with any development option, naming each
+  (`not_supported`). It reads the settings, not what they removed:
+  `rereserve` re-runs the volume chain ladder over every link ratio on next
+  year's triangle, where `history_periods=9` on a 9 x 9 triangle does remove a
+  ratio. `cdr_methods()` lists the condition.
+- `kernels.links` gains `is_all_history` and `settings_named`.
+- The wire format: a `MackFit` with options carries them and its selection, and
+  is written as codec version 2, which 0.7.2 refuses rather than read as a fit
+  without them. `CODEC_VERSION` is 2. Every other payload, a `MackFit` without
+  options included, keeps version 1 and its bytes.
+
+**Checked against R ChainLadder 0.2.21** (`MackChainLadder(Triangle, weights,
+alpha, est.sigma)`, frozen in `tests/data/r_mack_alpha_weights.json` by
+`scripts/r_mack_alpha_weights.R`, because CI has no R): raa, genins, ukmotor,
+abc and mw2014, each under the three averages, with every link ratio, the
+latest 5 and the latest 3, with and without an exclusion, and with the highest
+or the lowest ratio dropped, 27 settings, under both of R's sigma rules: 270
+fits, of which R answers 224 under its own rule (30 are R's infinite standard
+error at an age that keeps one ratio not the first origin's, 16 its silent
+switch from the log-linear rule to Mack's). On those 224 the link ratios chosen
+equal R's weights, the factors agree to 1e-13, and the total standard error and
+its process and parameter parts to 1e-12.
+
+**Checked against chainladder-python 0.9.2**, which has two standard-error
+defects when a drop or a bound is set, both named in
+`docs/coming-from-chainladder.md`: it removes the first projected year's process
+variance (raa with `drop_above=100`, which leaves out nothing, gives 13,037.79
+for 26,880.74; `drop_high=1` 7,796.95 for 14,811.95), and it takes the standard
+error of a factor kept from one link ratio from the first origin's cell. Where
+neither fires (the three averages, `n_periods` -1, 3 and 5, an explicit drop,
+an interior `drop_valuation`) ibnr equals chainladder on raa, genins, ukmotor,
+abc and mw2014; with both patched, it equals chainladder under nine drop and
+bound settings on the same five, and on the clrd paid triangles that are full
+positive staircases: 240 of the 348 ibnr answers under `drop_high=1`, the rest
+a sigma of exactly 0 that chainladder reads as 1e-320 when it fills another
+(R and ibnr leave it out), and one triangle (clrd 377 under `drop_low=1`) where
+chainladder projects a cell off the chain ladder and R agrees with ibnr. The
+example workbook's triangle (New Jersey Manufacturers, workers' compensation
+paid, 1988-1997) gives total standard errors of 10,329.10 with `drop_high=1`
+(the app's `/reserve` gives 5,914.68 today), 8,342.65 with both drops, 9,345.41
+with `drop_low=1`, 10,058.10 simple, 12,056.94 regression and 12,720.86 with
+`history_periods=5`.
+
+**No kernel number moved.** `fit_mack_grid` without `average` or `links`, under
+both sigma rules and both zero rules, on raa, genins, ukmotor, abc, mw2014, the
+same five with a zero cell, a 30 x 30 triangle and 53 clrd paid triangles (256
+cases), has the bytes of every array, of `msep_runoff`, and of the `to_arrow()`
+payload that the code before this change gave; digests are in
+`tests/data/mack_default_pin.json`, written by `scripts/freeze_mack_pin.py`
+against that code.
+
+**What can change for a caller:**
+- `methods.mack` now reads its factors through the shared link selection even
+  with no option set (except under `zero_cells="observed"`), which adds in
+  another order: its numbers move by at most 1e-14 relative. Checked on the 64
+  triangles above under the default, `sigma_rule="mack"` and
+  `zero_cells="observed"` (192 cases, the same refusals with the same reasons).
+- `methods.mack(sigma_rule="mack")` fills a sigma after an age whose own sigma
+  was filled from that filled value, as R does; 0.7.2 refused it. None of the
+  pinned triangles reaches it.
+- `ReserveResult.to_polars("link_ratios")` answers for Mack, and Mack's
+  `development` has four more columns.
+- `kernels.fit_mack`, `fit_mack_many` and `fit_mack_grid` accept
+  `zero_cells=None` (the default now), which they refused.
+- The seeded fuzz in `tests/test_refusal.py` runs 2,500 cases (was 2,000),
+  since Mack draws from thirteen options now, like the chain ladder.
+
+Speed: `methods.mack` on raa takes about 1.65 ms where it took 1.2 to 1.4 ms,
+and about 13 to 19 ms on a 40 x 40 quarterly triangle, as before (best of 7
+runs of 50, two alternating rounds on the dev box).
+
 ### Development options, Benktander, and Cape Cod's trend
 
 The chain ladder, Bornhuetter-Ferguson and Cape Cod take the development
