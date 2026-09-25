@@ -66,7 +66,7 @@ QT = tri([(f"2001Q{o - 2000}", d // 4, v) for o, d, v in BASE])
 ZERO_COL = [(o, d, 0.0 if d == 12 else v) for o, d, v in BASE]
 Z2 = replace(replace(BASE, (2002, 12), 0.0), (2003, 12), 0.0)
 Z3 = replace(replace(BASE, (2002, 36), 0.0), (2002, 24), 0.0)
-cl, bf, bk, cc, mk, tg, cdr = (
+cl, bf, bk, cc, mk, tg, cdr, ml = (
     methods.chain_ladder,
     methods.bornhuetter_ferguson,
     methods.benktander,
@@ -74,9 +74,26 @@ cl, bf, bk, cc, mk, tg, cdr = (
     methods.mack,
     methods.tweedie_glm,
     methods.one_year_cdr,
+    methods.ml_development,
 )
 #: few draws, so the one-year CDR's cases run fast
 FEW = {"n_draws": 20, "seed": 1}
+RF = {"estimator": "random_forest"}
+GB = {"estimator": "gradient_boosting"}
+
+
+def fitted(call):
+    """A case whose refusal comes after a scikit-learn fit: skipped without it.
+
+    The other ``ml_development`` cases are refused before scikit-learn is
+    imported, so they run in every CI leg.
+    """
+
+    def run():
+        pytest.importorskip("sklearn")
+        return call()
+
+    return run
 
 
 def year(y: int) -> dt.date:
@@ -288,6 +305,13 @@ def years(cells: dict, step: int = 12) -> pa.Table:
 
 #: an origin with losses only where the others have none: no finite Poisson fit
 GLM_BOUNDARY = years({2001: [0] * 5, 2002: [0] * 4, 2003: [0, 0, 50], 2004: [0, 60], 2005: [40]})
+#: cumulatives that fall after the first age: the forest (seed 42) fits 2003's
+#: cumulative at 24 months at -5.5, though 2003's latest amount is 1
+ML_FALLING = years({2001: [136, 3, 2, 6.8], 2002: [75, 3, 90], 2003: [104, 1], 2004: [52]})
+#: cumulatives all zero or more; boosting (seed 42) projects 2004 to -25.7
+ML_NEGATIVE = years(
+    {2001: [100, 2, 3, 4, 5], 2002: [110, 3, 4, 5], 2003: [95, 1, 2], 2004: [30, 1], 2005: [120]}
+)
 
 
 #: (id, call, reason, option, column, expected cells, links, rows, extra fields)
@@ -2109,6 +2133,164 @@ CASES = [
         [],
         {"given": "link_ratios"},
     ),
+    # machine-learning development: every option is checked before scikit-learn
+    *[
+        (
+            f"ml_{option}_{name}",
+            lambda option=option, value=value, extra=extra: ml(T, **{**extra, option: value}),
+            "invalid_option",
+            option,
+            None,
+            [],
+            [],
+            [],
+            {"given": value},
+        )
+        for option, name, value, extra in (
+            ("estimator", "none", None, {}),
+            ("estimator", "tweedie", "tweedie", {}),
+            ("seed", "none", None, RF),
+            ("seed", "negative", -1, RF),
+            ("seed", "too_large", 2**32, RF),
+            ("seed", "bool", True, RF),
+            ("seed", "float", 1.5, RF),
+            ("seed", "text", "1", RF),
+            ("n_estimators", "zero", 0, RF),
+            ("n_estimators", "float", 10.0, GB),
+            ("max_depth", "zero", 0, GB),
+            ("max_depth", "bool", True, RF),
+            ("min_samples_leaf", "zero", 0, RF),
+            ("learning_rate", "zero", 0.0, GB),
+            ("learning_rate", "nan", math.nan, GB),
+            ("learning_rate", "text", "0.1", GB),
+            ("response", "text", "increments", RF),
+            ("origin", "text", "year", RF),
+            ("calendar", "text", "linear", RF),
+            ("zero_cells", "text", "zero", RF),
+            ("unsupported_factor", "text", "one", RF),
+        )
+    ],
+    (
+        "ml_learning_rate_on_a_forest",
+        lambda: ml(T, learning_rate=0.1, **RF),
+        "invalid_option",
+        "learning_rate",
+        None,
+        [],
+        [],
+        [],
+        {"given": 0.1, "options": ("learning_rate", "estimator")},
+    ),
+    (
+        "ml_min_samples_leaf_on_boosting",
+        lambda: ml(T, min_samples_leaf=2, **GB),
+        "invalid_option",
+        "min_samples_leaf",
+        None,
+        [],
+        [],
+        [],
+        {"given": 2, "options": ("min_samples_leaf", "estimator")},
+    ),
+    (
+        "ml_tail",
+        lambda: ml(T, tail=1.05, **RF),
+        "not_supported",
+        "tail",
+        None,
+        [],
+        [],
+        [],
+        {"given": 1.05},
+    ),
+    (
+        "ml_one_cell",
+        lambda: ml(tri([(2001, 12, 100.0)]), **RF),
+        "not_identified",
+        "cells",
+        None,
+        [],
+        [],
+        [],
+        {},
+    ),
+    (
+        "ml_one_cell_not_zero",
+        lambda: ml(years({2001: [0, 0], 2002: [5]}), zero_cells="missing", **RF),
+        "not_identified",
+        "zero_cells",
+        None,
+        [],
+        [],
+        [],
+        {},
+    ),
+    (
+        "ml_an_age_of_zeros",
+        lambda: ml(tri(replace(BASE, (2001, 48), 0.0)), zero_cells="missing", **RF),
+        "no_link_ratio",
+        "unsupported_factor",
+        None,
+        [c(2001, 48, 0.0)],
+        [(36, 48)],
+        [],
+        {"options": ("unsupported_factor", "zero_cells")},
+    ),
+    (
+        "ml_first_age_of_zeros",
+        lambda: ml(tri(ZERO_COL), zero_cells="missing", **GB),
+        "no_link_ratio",
+        "unsupported_factor",
+        None,
+        [c(2001, 12, 0.0), c(2002, 12, 0.0), c(2003, 12, 0.0), c(2004, 12, 0.0)],
+        [],
+        [],
+        {"options": ("unsupported_factor", "zero_cells")},
+    ),
+    (
+        "ml_fitted_latest_not_positive",
+        fitted(lambda: ml(ML_FALLING, seed=42, **RF)),
+        "negative_projection",
+        "estimator",
+        None,
+        [c(2003, 24)],
+        [],
+        [],
+        {"given": "random_forest"},
+    ),
+    (
+        "ml_negative_ultimate",
+        fitted(lambda: ml(ML_NEGATIVE, seed=42, **GB)),
+        "negative_projection",
+        "estimator",
+        None,
+        [c(2004)],
+        [],
+        [],
+        {"given": "gradient_boosting"},
+    ),
+    (
+        "to_polars_ml_link_ratios",
+        fitted(lambda: ml(T, **GB).to_polars("link_ratios")),
+        "invalid_option",
+        "table",
+        None,
+        [],
+        [],
+        [],
+        {"given": "link_ratios"},
+    ),
+    (
+        "to_polars_ml_coefficients",
+        fitted(lambda: ml(T, **GB).to_polars("coefficients")),
+        "invalid_option",
+        "table",
+        None,
+        [],
+        [],
+        [],
+        {"given": "coefficients"},
+    ),
 ]
 
 #: Cases whose message may show an ISO date although the labels are years: a gap
@@ -2142,6 +2324,7 @@ _METHOD_OF = {
     mk: "mack",
     tg: "tweedie_glm",
     cdr: "one_year_cdr",
+    ml: "ml_development",
 }
 
 
@@ -3059,6 +3242,55 @@ def test_a_seeded_fuzz_of_the_one_year_cdr_meets_nothing_but_refusals():
         outcomes["answered"] = outcomes.get("answered", 0) + 1
     assert outcomes["answered"] > 100, sorted(outcomes.items())
     assert len(outcomes) > 8, sorted(outcomes.items())
+
+
+_ML_POOL = {
+    "estimator": ["random_forest", "gradient_boosting", "tweedie", None],
+    "seed": [0, 42, None, -1, 2**32, True],
+    "n_estimators": [5, 5, 0, 2.5],
+    "max_depth": [None, 2, 0],
+    "min_samples_leaf": [None, 2, 0],
+    "learning_rate": [None, 0.5, 0.0, math.inf],
+    "response": ["incremental", "cumulative", "x"],
+    "origin": ["factor", "none", "x"],
+    "calendar": ["none", "trend", "x"],
+    "zero_cells": ["observed", "missing", "x"],
+    "unsupported_factor": ["raise", "unity", "x"],
+    "dev_grain_months": [12, 12, 3, 0],
+    "tail": [None, None, None, 1.05],
+}
+
+
+def test_a_seeded_fuzz_of_ml_development_meets_nothing_but_refusals():
+    """The same edits as the fuzz above, through ``ml_development`` with random
+    options and 5 trees, so it runs in seconds: every call gives finite numbers
+    (a missing one a null) or exactly a Refusal, and a RuntimeWarning is an
+    error. Triangles scaled to near the largest double are fitted too, and a
+    sum that overflows is refused as ``result_not_finite``."""
+    pytest.importorskip("sklearn")
+    rng = np.random.default_rng(20260927)
+    names = sorted(_FUZZ)
+    outcomes: dict[str, int] = {}
+    for _ in range(1500):
+        edited = _fuzz_case(rng, _FUZZ[names[int(rng.integers(0, len(names)))]])
+        options = {"estimator": ("random_forest", "gradient_boosting")[int(rng.integers(0, 2))]}
+        options["n_estimators"] = 5
+        for name, pool in _ML_POOL.items():
+            if rng.random() < 0.1:
+                options[name] = pool[int(rng.integers(0, len(pool)))]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            try:
+                result = ml(_as_table(edited) if edited else pa.table({}), **options)
+            except Refusal as refusal:
+                assert type(refusal) is Refusal
+                json.dumps(refusal.to_dict(), allow_nan=False)
+                outcomes[refusal.reason] = outcomes.get(refusal.reason, 0) + 1
+                continue
+        _numbers_are_finite(result)
+        outcomes["answered"] = outcomes.get("answered", 0) + 1
+    assert outcomes["answered"] > 150, sorted(outcomes.items())
+    assert len(outcomes) > 10, sorted(outcomes.items())
 
 
 @pytest.mark.tieout

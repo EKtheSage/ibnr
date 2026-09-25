@@ -632,6 +632,114 @@ the other 40 are empty or have holes where chainladder dropped a zero), and
 the gallery `mack` entry's `cdr_distribution` and `predict` draws on raa and
 GenIns: 9,381 hashed answers and 330 refusals, all identical.
 
+### `methods.ml_development`: a random forest or gradient boosting fitted to the cells
+
+A new function, `methods.ml_development(cells, estimator=..., seed=0,
+n_estimators=100, max_depth=None, min_samples_leaf=None, learning_rate=None,
+response="incremental", origin="factor", calendar="none", dev_grain_months=12,
+zero_cells="observed", unsupported_factor="raise", tail=None)`, for a service
+moving off chainladder-python's `DevelopmentML` followed by `Chainladder` (the
+Reserving app's `POST /ml`). It fits scikit-learn's `RandomForestRegressor`
+or `GradientBoostingRegressor` to one row per observed cell (its increment,
+or its cumulative with `response="cumulative"`), over a column of ones and an
+indicator per development age and per origin, predicts every cell, and
+projects each origin by its own fitted pattern: `latest *
+fitted_cumulative[last age] / fitted_cumulative[latest age]`. The kernel is
+`kernels.fit_ml_development_grid` with `kernels.MLDevelopmentSpec`.
+
+- **A new extra, `ml`** (`pip install "ibnr[ml]"`), holding `scikit-learn>=1.4,<2`.
+  scikit-learn is imported inside the fit only: `from ibnr import methods`
+  still loads no ibis, pandas, scipy or scikit-learn, and the six other
+  methods still load none of them when they run. `ml_development`'s first call
+  imports scikit-learn, which loads scipy and pandas (never ibis). On the dev
+  box, 11 fresh interpreters per row taking turns, `from ibnr import methods`
+  took 1.04 s (median; 0.86 to 1.30) and loaded 294 modules, and that plus a
+  first boosting fit of raa took 6.37 s (4.41 to 18.91) and loaded 1,772; a
+  first `chain_ladder` took 0.94 s. Without scikit-learn the call raises
+  `ImportError` naming the extra.
+- `estimator` is required: `"random_forest"` or `"gradient_boosting"` (the two
+  are 52% apart on the app's workbook). chainladder's third estimator,
+  `TweedieRegressor`, is `methods.tweedie_glm` here.
+- `seed` goes to scikit-learn as `random_state` unchanged, so the same integer
+  gives chainladder's numbers. It defaults to 0; `None` is refused, because a
+  forest with no seed gives a different answer on every call.
+- `origin` and `calendar` are `tweedie_glm`'s design words; the four designs
+  are chainladder's `C(development) + C(origin)` (the default),
+  `C(development)`, `C(development) + valuation` and `C(development) +
+  C(origin) + valuation`. No formula strings.
+- `zero_cells` defaults to `"observed"`, unlike the link-ratio methods: under
+  `"missing"` (chainladder's rule, offered) an age whose cells are all zero
+  leaves the model nothing to fit, which happens on 208 of the 722 clrd paid
+  triangles with losses. Such an age is refused (`no_link_ratio`) or, with
+  `unsupported_factor="unity"`, developed by 1.
+- `tail` is accepted only as `None` for now (`not_supported`).
+- The result is a `ReserveResult` with `origins` (adding `fitted_latest`,
+  `fitted_ultimate`, `cdf` and `model_ibnr`), `development` (a pattern only
+  where every origin shares one, plus `n_trained` and `unity_fallback`),
+  `cells` (every cell's fitted increment and cumulative, and each origin's
+  own factors) and `totals` (echoing every setting, `n_training_rows` and
+  `scikit_learn_version`). `link_ratios` and `coefficients` are `None`.
+
+**Tree models projected this way overshoot the chain ladder, and that is the
+method, not a defect.** The youngest origin has one training row, the trees
+split it off by its origin indicator, and its predicted increment stays near
+that value at every later age. On the app's workbook triangle (New Jersey
+Manufacturers workers' compensation paid, a 10 x 10 Schedule P triangle) the
+forest with seed 42 gives 2.7 times the chain ladder's IBNR and boosting 1.8
+times; on MW2014 the forest gives 40 times. chainladder gives the same numbers.
+
+**Checked:** for the same estimator, seed and design, the ultimates and every
+cell `DevelopmentML` predicts match chainladder 0.9.2 to 1e-12 on raa, GenIns,
+UKMotor, ABC and MW2014 (forest seeds 0 and 42, boosting seed 42, both
+responses, all four designs) and on raa relabelled as quarters. On the 367
+clrd paid triangles with no zero cell the ultimates match to 1e-10 (the largest
+gap was 1.0e-15) wherever ibnr answers: all 353 the forest fits and 333 of
+boosting's; the other 14 have a negative cumulative, and boosting projects 20
+below zero, which chainladder answers and ibnr refuses. A sample of 31 runs
+with the `tieout` marker, all 367 under `-m slow`. Under
+`zero_cells="missing"` the training rows are chainladder's, cell for cell, and
+every fitted value it predicts is the same to 1e-12, on the 36 clrd triangles
+with a zero cell whose every origin and age has a loss (29 answered, 7
+refused). The app's workbook totals are reproduced to the cent: forest seed 42
+1,002,288.05, seed 0 1,047,110.10, boosting 657,942.08 at seeds 0, 7 and 42,
+and the forest's cumulative response -250,298.82.
+
+**Where the answers differ from chainladder**, all named in
+`docs/coming-from-chainladder.md`: each origin's own pattern is reported (the
+app showed the oldest origin's); a zero cell's fitted increment counts in its
+origin's fitted cumulative; a zero latest amount gives an ultimate of 0, not
+NaN; a triangle with a whole origin or age of zeros no longer has its factors
+lined up against the wrong origins (clrd Pioneer State Mut's 1996 private
+auto: 75 or about 91 here, 2,807.76 in chainladder); a negative ultimate, and
+a still-developing origin with losses whose fitted cumulative at its latest
+age is zero or less, are refused (`negative_projection`); fewer than 2 cells
+to fit are refused (`not_identified`), where chainladder raises a scikit-learn
+`TypeError`; and a setting that does not apply to the estimator
+(`learning_rate` on a forest, `min_samples_leaf` on boosting) is refused
+rather than ignored.
+
+No refusal code was added: `ml_development` uses `invalid_option`,
+`not_identified`, `no_link_ratio`, `negative_projection` and `not_supported`,
+and `no_link_ratio`'s description in `ibnr.errors` now also covers a model
+fitted to the cells with no cell left at an age.
+
+`methods.__all__` gains `ml_development`, and `ibnr.kernels` gains
+`MLDevelopmentSpec`, `MLDevelopmentFit` and `fit_ml_development_grid`. CI
+gains an `ml` leg that installs that extra alone; the core legs now check that
+scikit-learn is absent, and the `interop` leg, where the tie-outs run, that it
+is present. The `slow` marker now also covers the two long clrd sweeps.
+
+**One message changed, no number moved.** `result.to_polars("cells")` on a
+method that has no cells table now says that `tweedie_glm` and
+`ml_development` carry one. Everything else was compared with the code before
+this change as raw Arrow bytes and exact refusal messages: the four link-ratio
+methods under both zero rules and two sets of options, `tweedie_glm` at two
+settings, `one_year_cdr`, `fit_conventional_grid` and `fit_mack_grid` under
+both zero rules, on raa, GenIns, UKMotor, ABC, MW2014 and every sixth clrd
+paid triangle (135 triangles): 2,835 cases, 1,452 answers and 1,383 refusals,
+identical except for that message in 71 of them. `fit_mack_grid`'s
+comparison covers its ultimates, factors and run-off standard errors.
+
 ## 0.7.2 - 2026-09-24
 
 Three pull requests (#149, #152, #153) for moving a reserving service off

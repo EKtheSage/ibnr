@@ -447,6 +447,7 @@ def test_the_public_names_are_pinned():
         "cape_cod",
         "chain_ladder",
         "mack",
+        "ml_development",
         "one_year_cdr",
         "tweedie_glm",
     ]

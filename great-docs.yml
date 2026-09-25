@@ -29,8 +29,8 @@ repo: https://github.com/EKtheSage/ibnr
 tagline: >
   Probabilistic loss reserving with mandatory evaluation - Bayesian MCMC,
   neural, and statistical methods over a long-format triangle data layer,
-  and the chain ladder, Bornhuetter-Ferguson, Benktander, Cape Cod, Mack and a
-  Tweedie GLM in ibnr.methods.
+  and the chain ladder, Bornhuetter-Ferguson, Benktander, Cape Cod, Mack, a
+  Tweedie GLM and tree-model development in ibnr.methods.
 
 # API Discovery Settings
 # ----------------------
@@ -102,6 +102,7 @@ reference:
       - methods.benktander
       - methods.cape_cod
       - methods.tweedie_glm
+      - methods.ml_development
       - methods.one_year_cdr
       - name: methods.ReserveResult
         members: true
@@ -211,6 +212,19 @@ reference:
       - name: kernels.TweedieSpec
         members: true
       - name: kernels.TweedieFit
+        members: true
+
+  - title: Machine-learning development
+    desc: >
+      The kernel under methods.ml_development: a random forest or gradient
+      boosting (scikit-learn, from the ml extra) fitted to a cumulative grid's
+      cells over chainladder-python's DevelopmentML design, each origin
+      projected by its own fitted pattern.
+    contents:
+      - kernels.fit_ml_development_grid
+      - name: kernels.MLDevelopmentSpec
+        members: true
+      - name: kernels.MLDevelopmentFit
         members: true
 
   - title: Conventional point candidates

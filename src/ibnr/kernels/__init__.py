@@ -75,6 +75,11 @@ if TYPE_CHECKING:
     from ibnr.kernels.glm import TweedieFit, TweedieSpec, fit_tweedie_grid
     from ibnr.kernels.holdout import HoldoutCells, next_diagonal
     from ibnr.kernels.mack import MackFit, fit_mack, fit_mack_grid, simulate_ultimates
+    from ibnr.kernels.ml_development import (
+        MLDevelopmentFit,
+        MLDevelopmentSpec,
+        fit_ml_development_grid,
+    )
     from ibnr.kernels.parity import ParityReport, compare_posteriors
     from ibnr.kernels.point_scores import (
         level_errors,
@@ -143,6 +148,9 @@ _LAZY = {
     "fit_mack": "mack",
     "fit_mack_grid": "mack",
     "simulate_ultimates": "mack",
+    "MLDevelopmentFit": "ml_development",
+    "MLDevelopmentSpec": "ml_development",
+    "fit_ml_development_grid": "ml_development",
     "ParityReport": "parity",
     "compare_posteriors": "parity",
     "level_errors": "point_scores",
@@ -200,6 +208,8 @@ __all__ = [
     "ConventionalSelection",
     "ForecastPanel",
     "HoldoutCells",
+    "MLDevelopmentFit",
+    "MLDevelopmentSpec",
     "MackDiagonal",
     "MackFit",
     "ODPBootstrapDiagonal",
@@ -220,6 +230,7 @@ __all__ = [
     "fit_conventional_grid",
     "fit_mack",
     "fit_mack_grid",
+    "fit_ml_development_grid",
     "fit_tweedie_grid",
     "from_arrow",
     "get_cdr_method",

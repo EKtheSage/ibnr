@@ -24,6 +24,22 @@ ChainLadder 0.2.21, statmod 1.5.2): from the repository root, `Rscript
 scripts/r/tweedie_glm_reference.R > tests/data/tweedie_glm_r.json`. CI has no
 R, so the output is committed. Read by `tests/test_glm.py`.
 
+## `ml_workbook_paid.csv`
+
+The paid triangle of the Reserving app's example workbook
+(`examples/schedule-p-methods.xlsx`, sheet `Data`, the range `PaidTriangle`):
+New Jersey Manufacturers Grp (company 7080), workers' compensation, cumulative
+paid loss in $000s, accident years 1988 to 1997 as known at year-end 1997,
+from the CAS Schedule P gold mart at publish `20260613_041006`. One row per
+cell: `origin_period` (the accident year), `dev_lag` (months) and `value`.
+Copied on 2026-09-25 with openpyxl, reading the workbook's stored values.
+
+Read by `tests/test_ml_development.py`, which reproduces the app's `POST /ml`
+answers on it (chainladder 0.9.2 and scikit-learn 1.9.0): total IBNR
+1,002,288.05 for the forest with seed 42, 1,047,110.10 with seed 0, and
+657,942.08 for gradient boosting at any seed, against the chain ladder's
+373,346.30.
+
 ## `tlrn_study_company_reserves.csv`, `tlrn_study_pairs.csv`
 
 Produced on 2026-09-20 by replaying the companion study's R implementation of
