@@ -48,11 +48,13 @@ from ibnr.kernels.codec import (
     to_arrow,
     to_summary,
 )
+from ibnr.kernels.contract import cohort_grid_frame
 from ibnr.kernels.conventional import (
     ConventionalCandidate,
     ConventionalFit,
     conventional_grid,
     fit_conventional,
+    fit_conventional_grid,
 )
 from ibnr.kernels.densities import to_amount_scale
 from ibnr.kernels.forecast import (
@@ -64,7 +66,7 @@ from ibnr.kernels.forecast import (
     leaderboard,
 )
 from ibnr.kernels.holdout import HoldoutCells, next_diagonal
-from ibnr.kernels.mack import MackFit, fit_mack, simulate_ultimates
+from ibnr.kernels.mack import MackFit, fit_mack, fit_mack_grid, simulate_ultimates
 from ibnr.kernels.parity import ParityReport, compare_posteriors
 from ibnr.kernels.point_scores import (
     level_errors,
@@ -117,11 +119,14 @@ __all__ = [
     "calibrated_draws",
     "cdr_methods",
     "cdr_risk_measures",
+    "cohort_grid_frame",
     "compare_posteriors",
     "conventional_grid",
     "evaluate_conventional",
     "fit_conventional",
+    "fit_conventional_grid",
     "fit_mack",
+    "fit_mack_grid",
     "from_arrow",
     "get_cdr_method",
     "leaderboard",

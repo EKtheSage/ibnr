@@ -9,6 +9,8 @@ factor estimator. See ``docs/conventional.md`` for the selection conventions.
 from __future__ import annotations
 
 import datetime as dt
+import numbers
+from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import product
 from typing import Any
@@ -16,7 +18,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ibnr.kernels.contract import cohort_grid
+# as_date lives in contract so the grid check can read origin periods with it;
+# it stays importable from here, where replay and selection read it.
+from ibnr.kernels.contract import as_date, check_grid, cohort_grid
 from ibnr.triangle import Triangle
 
 #: One row per observed link ratio, whether or not it was used.
@@ -174,6 +178,147 @@ def fit_conventional(
         premium_field=premium_field if candidate.method != "cl" else None,
     )
     return _fit_grid(grid, candidate, cutoff)
+
+
+def fit_conventional_grid(
+    grid: dict[str, Any],
+    candidate: ConventionalCandidate,
+    *,
+    premium: Mapping | pd.Series | None = None,
+) -> ConventionalFit:
+    """Fit one cohort from a grid of plain arrays, with no Triangle and no database queries.
+
+    The same estimator as :func:`fit_conventional`, giving the same factors,
+    development proportions and ultimates for the same cells, but starting from
+    arrays rather than a ``Triangle``. It is meant for a service that fits one
+    small triangle per request, where the database queries inside
+    :func:`fit_conventional` take longer than the fit itself. Importing it still
+    imports ibis, because the kernels modules import the Triangle layer; only
+    the queries are gone.
+
+    ``grid`` is the one-cohort dict that ``kernels.cohort_grid_frame`` builds
+    from a pandas frame with columns ``origin_period``, ``dev_lag`` (months) and
+    ``value``; its page lists the keys this function reads. It must hold
+    cumulative losses on a run-off triangle. The caller's dict is never changed.
+
+    ``premium`` is needed for ``"bf"`` and ``"gcc"`` candidates only. It is keyed
+    by origin period, never by position, so it cannot be lined up against the
+    wrong origin: a dict, or a pandas Series indexed by origin period. Keys may be
+    dates, timestamps, numpy datetime64 values or ISO strings, and amounts must
+    be numbers. A grid can also carry premium itself, as a float array under the
+    key ``"premium"`` in origin order; then this argument must be left out.
+
+    The information date is not an argument; it is read from the grid. It is
+    the evaluation date of the latest observed cell, which by this package's
+    convention is the day before the origin period plus ``dev_lag`` months
+    (origin 1988-01-01 at 12 months is 1988-12-31). It is returned as
+    ``ConventionalFit.as_of``. Origin periods must therefore be the first day
+    of their period.
+
+    Refused, by name:
+
+    - a grid missing one of the keys it reads, or whose arrays disagree with
+      each other or have the wrong type: ``cum`` not a float array of shape
+      ``(n_w, n_d)``, ``obs_mask`` not a boolean array equal to ``~isnan(cum)``,
+      ``latest_dev`` not an integer array of each origin's last observed
+      column, ``n_w``, ``n_d`` or ``dev_grain_months`` not whole numbers,
+      ``origin_periods`` of the wrong length or not in increasing order;
+    - origin periods that are not dates or not the first day of a month;
+    - cells that are not a run-off triangle, or still-developing origins whose
+      latest cells are on different dates;
+    - a grid measure other than ``"cumulative"``;
+    - origin periods not one development step apart. The smallest gap between
+      neighbouring origins must equal the development step and every gap must be
+      a whole number of steps. A missing origin period is allowed only where
+      every origin before it has already reached the last development step (the
+      run-off check counts origins by position), and GCC then measures its
+      distances in real origin periods across the gap. Quarterly origins on an
+      annual step are refused, and so is a grid whose origins are all two or
+      more steps apart, because a grid cannot tell an annual axis with gaps from
+      a two-year one;
+    - premium passed with a ``"cl"`` candidate (it would never be read), given
+      both here and on the grid, missing for a ``"bf"`` or ``"gcc"`` candidate,
+      not keyed by origin, with a key that is not a date, with two keys that are
+      the same origin once read as dates, with an amount that is not a number,
+      missing an origin of the grid, or carrying an origin the grid does not
+      have (filter it first). Premium on the grid must be a float array with one
+      value per origin. Premium must also be finite and positive, which the
+      estimator checks.
+
+    Everything else (the horizon, exclusions, factor fallbacks) is refused
+    exactly as :func:`fit_conventional` refuses it.
+    """
+    origins, valuation = check_grid(grid)
+    n_w = grid["n_w"]
+    fitted = dict(grid, origin_periods=origins)
+    if candidate.method == "cl":
+        if premium is not None:
+            raise ValueError(
+                "premium was passed for a 'cl' candidate, which never reads it; pass premium "
+                "only for 'bf' or 'gcc'"
+            )
+    elif premium is not None:
+        if grid.get("premium") is not None:
+            raise ValueError(
+                "premium was given twice: as premium= and already on the grid (from "
+                "cohort_grid(premium_field=...)); pass it one way only"
+            )
+        fitted["premium"] = _premium_by_origin(premium, origins)
+    elif grid.get("premium") is None:
+        raise ValueError(
+            f"a {candidate.method!r} candidate needs premium; pass premium= keyed by origin "
+            "period, or build the grid with cohort_grid(premium_field=...)"
+        )
+    else:
+        carried = grid["premium"]
+        if (
+            not isinstance(carried, np.ndarray)
+            or carried.dtype.kind != "f"
+            or carried.shape != (n_w,)
+        ):
+            raise ValueError(
+                f"grid premium must be a float array with one value per origin, {n_w} in all"
+            )
+    return _fit_grid(fitted, candidate, valuation)
+
+
+def _premium_by_origin(premium, origins: list[dt.date]) -> np.ndarray:
+    """Premium keyed by origin period as an array in grid order, or a refusal."""
+    if not isinstance(premium, Mapping | pd.Series):
+        raise ValueError(
+            "premium must be keyed by origin period (a dict, or a pandas Series indexed by "
+            f"origin period), not {type(premium).__name__}; a plain sequence is refused "
+            "because nothing in it says which origin each amount belongs to"
+        )
+    by_origin: dict[dt.date, Any] = {}
+    repeated = set()
+    for key, amount in premium.items():
+        try:
+            origin = as_date(key)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"premium key {key!r} is not an origin period: {exc}") from exc
+        # A number, not something float() happens to accept: the string "500"
+        # would convert, and pd.NA would raise a TypeError that names no premium.
+        if isinstance(amount, bool) or not isinstance(amount, numbers.Real):
+            raise ValueError(f"premium for origin {origin} is {amount!r}, which is not a number")
+        if origin in by_origin:
+            repeated.add(origin)
+        by_origin[origin] = amount
+    if repeated:
+        raise ValueError(
+            f"premium has more than one amount for origin(s) {sorted(repeated)} once its keys "
+            "are read as dates"
+        )
+    absent = [o for o in origins if o not in by_origin]
+    if absent:
+        raise ValueError(f"premium has no amount for origin(s) {absent}")
+    extra = sorted(set(by_origin) - set(origins))
+    if extra:
+        raise ValueError(
+            f"premium has amounts for origin(s) {extra} that are not in the grid; "
+            "pass premium for the grid's origins only"
+        )
+    return np.array([by_origin[o] for o in origins], dtype=float)
 
 
 def _fit_grid(
@@ -347,19 +492,3 @@ def conventional_grid(
         )
         candidates.extend(ConventionalCandidate("gcc", decay=g, **common) for g in decays)
     return tuple(dict.fromkeys(candidates))
-
-
-def as_date(value: dt.date | str) -> dt.date:
-    """An ISO string, date or timestamp as a plain date, or a refusal.
-
-    Public: ``kernels.replay`` and ``kernels.selection`` read the same kind of
-    caller-supplied information date, and one shared reading is what keeps two
-    dates that were typed differently comparable.
-    """
-    if isinstance(value, str):
-        return dt.date.fromisoformat(value)
-    if isinstance(value, dt.datetime) and not pd.isna(value):
-        return value.date()
-    if isinstance(value, dt.date) and not pd.isna(value):
-        return value
-    raise ValueError(f"expected an ISO date or date object, got {value!r}")

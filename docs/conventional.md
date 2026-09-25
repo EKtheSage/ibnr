@@ -113,6 +113,64 @@ have to be requested explicitly. Mack's existing untrimmed volume estimator
 can include zero-current pairs; this candidate family consistently requires
 defined individual link ratios, so the two can differ on zero-valued data.
 
+## Fitting from arrays
+
+`fit_conventional_grid` is the same estimator as `fit_conventional`, started
+from plain arrays instead of a `Triangle`, so no database query runs on the
+path. Importing it still imports ibis, because the kernels modules import the
+Triangle layer; only the queries are gone. Use it in a service that fits one
+small triangle per request, where the database queries inside
+`fit_conventional` take longer than the fit itself. On the same cells it
+returns exactly what `fit_conventional` returns.
+
+```python
+import datetime as dt
+
+import pandas as pd
+
+from ibnr.kernels import ConventionalCandidate, cohort_grid_frame, fit_conventional_grid
+
+a, b, c = dt.date(2021, 1, 1), dt.date(2022, 1, 1), dt.date(2023, 1, 1)
+rows = pd.DataFrame(
+    {
+        "origin_period": [a, a, a, b, b, c],
+        "dev_lag": [12, 24, 36, 12, 24, 12],  # months from the origin's start
+        "value": [100.0, 180.0, 200.0, 120.0, 210.0, 130.0],  # cumulative
+    }
+)
+grid = cohort_grid_frame(rows, dev_grain_months=12, measure="cumulative")
+
+chain_ladder = fit_conventional_grid(grid, ConventionalCandidate())
+print(chain_ladder.as_of)  # 2023-12-31, read from the latest cell
+print(chain_ladder.origins[["origin_period", "ultimate", "reserve"]])
+
+premium = {a: 250.0, b: 260.0, c: 280.0}  # keyed by origin, never by position
+bf = fit_conventional_grid(
+    grid, ConventionalCandidate("bf", expected_loss_ratio=0.8), premium=premium
+)
+print(bf.origins[["origin_period", "ultimate", "reserve"]])
+```
+
+There is no `as_of` argument: the information date is the evaluation date of
+the grid's latest cell (origin 2023-01-01 at 12 months is 2023-12-31), so each
+origin period must be the first day of its period. The grid carries a
+development step but no origin grain, so the fit reads the origin spacing from
+the dates and refuses origins that are not one development step apart. A
+missing origin period is accepted only where every origin before it has
+already reached the last development step: the run-off check counts origins by
+position, so a missing year among origins still developing is refused as not a
+run-off triangle, as it is by `fit_conventional`. Premium is needed for BF and
+GCC only, and passing it to a chain ladder candidate is refused rather than
+ignored. `fit_mack_grid`, which gives Mack's standard errors from the same
+grid, checks the grid the same way.
+
+Measured on RAA (ten accident years, chain ladder), as the median of 100 to
+200 warm runs, repeated in three separate processes on one Windows laptop
+(Intel Core Ultra 9 285H, Python 3.12, duckdb backend): `fit_conventional` took
+about 28 ms, `cohort_grid_frame` plus `fit_conventional_grid` about 2 ms, and
+chainladder-python's `Chainladder().fit` about 28 ms. The ratio is the finding;
+the milliseconds move with the machine.
+
 ## Observed replay
 
 ```python

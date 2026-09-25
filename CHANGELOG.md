@@ -15,6 +15,54 @@ held-out evaluation pipeline, and a `segment` argument on three entry methods).
 - `evaluate` is a method on a fitted entry and `scaffold` is planned, per the
 corrected decision 8.)
 
+## Unreleased
+
+A public array entry point for the conventional point estimators, for a
+service that fits one small triangle per request. Mostly additive; the few new
+refusals on existing functions are listed at the end.
+
+- `kernels.fit_conventional_grid(grid, candidate, *, premium=None)`: the same
+  estimator as `fit_conventional` (chain ladder, Bornhuetter-Ferguson,
+  generalized Cape Cod, with every factor setting), started from a grid of plain
+  arrays, with no database query on the path (importing it still imports ibis,
+  because the kernels modules import the Triangle layer). On the same cells it
+  returns exactly what `fit_conventional` returns, and from plain arrays it
+  matches chainladder-python's `Chainladder`, `BornhuetterFerguson` and `CapeCod` (with
+  `trend=0`) on raa and genins to a relative 1e-9. On RAA, building the grid
+  and fitting took about 2 ms, against about 28 ms for `fit_conventional` and
+  about 28 ms for chainladder-python's `Chainladder().fit` (medians of warm
+  runs, three separate processes, one Windows laptop with an Intel Core Ultra
+  9 285H; the ratio is the finding, the milliseconds move with the machine).
+  It takes no `as_of`: the information date is read from the grid's latest cell,
+  because a date the caller supplied would only be stamped on the result, never
+  checked. Premium is keyed by origin period (a dict or a pandas Series), never
+  by position. Refused by name: a grid missing a key or whose arrays disagree
+  or have the wrong type, a grid that is not a run-off triangle, an incremental
+  grid, origin periods that are not the first day of their period, origins
+  whose spacing does not match the development step (the grid carries no
+  origin grain, so without this quarterly origins on an annual step would pass
+  and GCC would measure distances in the wrong unit), an origin still
+  developing but observed only to an earlier date than the rest, premium
+  passed to a chain ladder candidate or given twice, premium amounts that are
+  not numbers, and premium keys that are not dates, collide, miss an origin or
+  name one the grid does not have. A missing origin period is accepted only
+  where every origin before it has already run off, as in `fit_conventional`.
+- `kernels.cohort_grid_frame` (builds that grid from a pandas frame of
+  `origin_period`, `dev_lag`, `value`) and `kernels.fit_mack_grid` (Mack from
+  the same grid, for standard errors) are now exported and in the API
+  reference. `fit_mack_grid` always estimates Mack's sigmas, so it refuses
+  triangles a point fit does not need to refuse; it is not the point path.
+- New refusals on existing functions. `fit_mack_grid` (and so `fit_mack` and
+  `fit_mack_many`) now checks its grid exactly as `fit_conventional_grid` does;
+  before, it read an incremental grid, quarterly origins on an annual step, or
+  a hand-edited grid without complaint. `cohort_grid_frame` refuses a measure
+  other than `"cumulative"` or `"incremental"`, a row with no origin period, and
+  origin periods that are not dates; it now reads ISO strings such as
+  `"2010-01-01"` as dates, where before it kept them as text and sorted them as
+  text. `kernels.conventional.as_date` also accepts numpy `datetime64` values.
+  A grid built from a triangle whose origin and development grains match is
+  not affected, and the rest of the test suite passes unchanged.
+
 ## 0.7.1 - 2026-09-23
 
 One pull request (#147), for notebook 04's next run: it trains forty `tlrn`

@@ -159,6 +159,8 @@ reference:
       - name: kernels.MackFit
         members: true
       - kernels.fit_mack
+      - kernels.fit_mack_grid
+      - kernels.cohort_grid_frame
       - kernels.simulate_ultimates
       - kernels.cdr_methods
       - kernels.get_cdr_method
@@ -182,6 +184,7 @@ reference:
       evaluation scores the frozen forecast against later terminal observations.
     contents:
       - kernels.fit_conventional
+      - kernels.fit_conventional_grid
       - kernels.conventional_grid
       - name: kernels.ConventionalCandidate
         members: true
