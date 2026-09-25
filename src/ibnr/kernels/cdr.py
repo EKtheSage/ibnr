@@ -88,7 +88,7 @@ from typing import ClassVar
 import numpy as np
 import pandas as pd
 
-from ibnr.errors import Refusal, RefusedCell
+from ibnr.errors import Refusal, RefusedCell, _literal
 from ibnr.kernels.mack import PROCESS_LAWS, MackFit, _next_step_draws, _refuse_n_draws
 from ibnr.kernels.odp_bootstrap import ODP_PROCESS_LAWS, draw_next_increments, fit_odp_bootstrap
 from ibnr.kernels.predictive import PredictiveDistribution
@@ -954,9 +954,9 @@ def _resolve_generator(
         raise Refusal(
             "invalid_option",
             f"{', '.join(inert)} is a MackDiagonal setting and cannot be combined with "
-            f"generator={given!r}; every generator carries its own knobs, so pass them to "
-            f"the generator itself (e.g. MackDiagonal(process=...)). Accepting them here "
-            "would leave the argument inert whenever the generator is not mack",
+            f"generator={_literal(repr(given))}; every generator carries its own knobs, so "
+            "pass them to the generator itself (e.g. MackDiagonal(process=...)). Accepting them "
+            "here would leave the argument inert whenever the generator is not mack",
             option="generator",
             options=("generator", *inert),
         )

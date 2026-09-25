@@ -9,6 +9,7 @@ factor estimator. See ``docs/conventional.md`` for the selection conventions.
 from __future__ import annotations
 
 import datetime as dt
+import math
 import numbers
 import sys
 from collections.abc import Mapping
@@ -24,7 +25,7 @@ import numpy as np
 # ibnr.methods imports this module and must not load ibis, pandas or scipy. The
 # Triangle path (fit_conventional) and the pandas tables of ConventionalFit
 # import what they need when they run.
-from ibnr.errors import Refusal, RefusedCell
+from ibnr.errors import Refusal, RefusedCell, _literal
 from ibnr.kernels.grid import ZERO_CELLS, as_date, check_grid
 
 if TYPE_CHECKING:
@@ -137,7 +138,7 @@ class ConventionalCandidate:
             # A number, and not a bool: True used to be read as 1.0 and text raised a
             # TypeError from inside numpy.
             ratio = self.expected_loss_ratio
-            if not _is_number(ratio) or not np.isfinite(ratio) or ratio < 0:
+            if not _is_number(ratio) or not math.isfinite(ratio) or ratio < 0:
                 raise Refusal(
                     "invalid_option",
                     "expected_loss_ratio must be a finite number of 0 or more, got {given}",
@@ -154,7 +155,7 @@ class ConventionalCandidate:
             )
         if self.method == "gcc":
             decay = self.decay
-            if not _is_number(decay) or not np.isfinite(decay) or not 0 <= decay <= 1:
+            if not _is_number(decay) or not math.isfinite(decay) or not 0 <= decay <= 1:
                 raise Refusal(
                     "invalid_option",
                     "decay must be a number from 0 to 1, got {given}",
@@ -176,7 +177,7 @@ class ConventionalCandidate:
             except (TypeError, ValueError) as exc:
                 raise Refusal(
                     "unreadable_label",
-                    f"exclude origin {{given}} is not a date: {exc}",
+                    f"exclude origin {{given}} is not a date: {_literal(exc)}",
                     option="exclude",
                     given=origin,
                 ) from exc
@@ -449,7 +450,7 @@ def _premium_by_origin(premium, origins: list[dt.date]) -> np.ndarray:
         except (TypeError, ValueError) as exc:
             raise Refusal(
                 "unreadable_label",
-                f"premium key {{given}} is not an origin period: {exc}",
+                f"premium key {{given}} is not an origin period: {_literal(exc)}",
                 option="premium",
                 given=key,
             ) from exc
@@ -579,7 +580,9 @@ def _estimate(grid: dict[str, Any], candidate: ConventionalCandidate, cutoff: dt
         raise Refusal(
             "result_not_finite",
             "the development pattern is not a finite positive number {links}: the link "
-            "factors are too large to multiply out",
+            "factors are too large or too small to multiply out, which link ratios this far "
+            "from 1 make likely to be a unit error in the amounts",
+            option="cells",
             links=[((j + 1) * step, (j + 2) * step) for j in bad],
         )
     latest = cum[np.arange(grid["n_w"]), grid["latest_dev"]]
@@ -604,12 +607,12 @@ def _estimate(grid: dict[str, Any], candidate: ConventionalCandidate, cutoff: dt
                 ],
             )
         if candidate.method == "bf":
-            elr[:] = candidate.expected_loss_ratio
+            elr[:] = float(candidate.expected_loss_ratio)
         else:
             # Distances are in origin periods, including any calendar gaps.
             periods = np.array([o.year * 12 + o.month for o in grid["origin_periods"]])
             distance = np.abs(periods[:, None] - periods[None, :]) / step
-            weights = candidate.decay**distance  # 0**0 = 1 gives GCC(0) = CL.
+            weights = float(candidate.decay) ** distance  # 0**0 = 1 gives GCC(0) = CL.
             elr = (weights @ latest) / (weights @ (premium * developed))
         prior = premium * elr
     reserve = prior * (1 - developed)
@@ -628,8 +631,9 @@ def _estimate(grid: dict[str, Any], candidate: ConventionalCandidate, cutoff: dt
         bad = ~(np.isfinite(prior) & np.isfinite(ultimate) & np.isfinite(reserve))
         raise Refusal(
             "result_not_finite",
-            "the ultimate for {origins} is not a "
-            "finite number: the amounts are too large to multiply out",
+            "the ultimate for {origins} is not a finite number: the amounts, premiums or "
+            "loss ratios are too large or too small for their products to stay finite. Check "
+            "them for a unit error, or scale them and scale the answer back",
             option="cells",
             cells=[RefusedCell(None, grid["origin_periods"][i]) for i in np.flatnonzero(bad)],
         )
@@ -727,7 +731,19 @@ def _factors(grid, candidate, n_dev):
             else:
                 reducer = np.mean if candidate.average == "simple" else np.median
                 factor = float(reducer([r["ratio"] for r in kept]))
-            fallback = not np.isfinite(factor) or factor <= 0
+            if not math.isfinite(factor):
+                # Every kept ratio starts from a positive amount, so this is a sum or
+                # a ratio past the largest double. A factor of 1.0 in its place
+                # would be a wrong answer, so unsupported_factor does not apply.
+                raise Refusal(
+                    "result_not_finite",
+                    "the factor {links} is not a finite number: the amounts are too large, or "
+                    "too far apart, for their sums and ratios to stay finite. Check them for a "
+                    "unit error, or scale them (work in thousands, say) and scale the answer back",
+                    option="cells",
+                    links=[((j + 1) * step, (j + 2) * step)],
+                )
+            fallback = factor <= 0
             if not fallback:
                 factors[j] = factor
         if fallback and candidate.unsupported_factor == "raise":

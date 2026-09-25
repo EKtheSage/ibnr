@@ -21,7 +21,7 @@ from typing import Any
 
 import numpy as np
 
-from ibnr.errors import Refusal, RefusedCell
+from ibnr.errors import Refusal, RefusedCell, _literal
 
 #: A triangle's measure. The same two values as ``ibnr.triangle.core.Measure``,
 #: which this module cannot import without loading ibis;
@@ -148,7 +148,7 @@ def grid_from_columns(
         except (TypeError, ValueError) as exc:
             raise Refusal(
                 "unreadable_label",
-                f"origin_period values must be dates: {exc}",
+                f"origin_period values must be dates: {_literal(exc)}",
                 column="origin_period",
                 given=unique,
             ) from exc

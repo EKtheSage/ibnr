@@ -69,7 +69,7 @@ import numpy as np
 # ibnr.methods imports this module and must not load ibis, pandas or scipy. The
 # Triangle paths (fit_mack, fit_mack_many), the pandas summaries and the
 # simulation import what they need when they run.
-from ibnr.errors import Refusal, RefusedCell
+from ibnr.errors import Refusal, RefusedCell, _literal
 from ibnr.kernels.grid import ZERO_CELLS, check_grid
 
 if TYPE_CHECKING:
@@ -528,7 +528,7 @@ def fit_mack_many(
         except Refusal as refusal:
             if on_error == "raise":
                 # the same refusal, its message led by the cohort it came from
-                raise refusal._replace(template=cohort + refusal.template) from refusal
+                raise refusal._replace(template=_literal(cohort) + refusal._template) from refusal
             errors[key] = str(refusal)
             reasons[key] = refusal.reason
         except ValueError as exc:
@@ -776,6 +776,18 @@ def _estimate_factors(
         # subset's count minus one, NOT n_obs - 1: dividing a shorter sum by a
         # longer df would shrink sigma for exactly the cohorts this admits.
         pos = c0 > 0
+        if not (np.isfinite(f[j]) and np.isfinite(c1[pos] / c0[pos]).all()):
+            # a sum or a link ratio past the largest double: without this, sigma
+            # below is NaN and is then filled in as if the age had too few ratios
+            raise Refusal(
+                "result_not_finite",
+                "the factor or a link ratio {links} is not a finite number: the amounts are "
+                "too large, or too far apart, for their sums and ratios to stay finite. Check "
+                "them for a unit error, or scale them (work in thousands, say) and scale the "
+                "answer back",
+                option="cells",
+                links=link,
+            )
         n_pos[j] = int(pos.sum())
         if n_obs[j] > 1 and n_pos[j] < 2:
             raise Refusal(
@@ -863,8 +875,7 @@ def _fill_sigma_gaps(
                 links=links([j]),
             )
         last, prev = float(known[j - 1]), float(known[j - 2])
-        ratio = last**2 / prev if prev > 0 else last
-        sigma2[j] = float(min(ratio, last, prev))
+        sigma2[j] = float(min(_mack_ratio(last, prev), last, prev))
 
 
 def simulate_ultimates(
@@ -1122,5 +1133,20 @@ def _tail_sigma2(sigma2: np.ndarray, j: int, *, rule: str) -> float:
     if known.size == 1:
         return float(known[-1])
     last, prev = float(known[-1]), float(known[-2])
-    ratio = last**2 / prev if prev > 0 else last
-    return float(min(ratio, last, prev))
+    return float(min(_mack_ratio(last, prev), last, prev))
+
+
+def _mack_ratio(last: float, prev: float) -> float:
+    """``last**2 / prev``, the first term of Mack's rule, or ``last`` when ``prev`` is 0.
+
+    Python raises OverflowError when ``last**2`` passes the largest double
+    (``last`` above about 1.3e154). The ratio can still be a number then, when
+    ``prev`` is larger than ``last``, so it is taken the other way round, which
+    gives infinity only when the ratio itself is past the largest double.
+    """
+    if prev <= 0:
+        return last
+    try:
+        return last**2 / prev
+    except OverflowError:
+        return last * (last / prev)
