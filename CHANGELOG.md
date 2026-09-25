@@ -168,9 +168,9 @@ cases, 230 of them refusals, all identical (the refusals in the same places).
   `invalid_option`. `get_cdr_method` still raises `KeyError`, as a lookup does;
 - `fit_mack_many(on_error="skip")` records only a `Refusal` and raises anything
   else, since that is a defect rather than a cohort the data rules out. The
-  panel gains `reasons`, each skipped cohort's code beside its message in
-  `errors`, and the codec carries it. An unknown `sigma_rule` is refused before
-  any cohort instead of being recorded against every one. Under
+  returned `MackFitPanel` gains `reasons`, each skipped cohort's code beside
+  its message in `errors`, and the codec carries it. An unknown `sigma_rule` is
+  refused before any cohort instead of being recorded against every one. Under
   `on_error="raise"` a cohort's refusal stays a `Refusal`, its message led by the
   cohort;
 - many messages are reworded to name ages in months and origins as written:

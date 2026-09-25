@@ -601,7 +601,7 @@ def _encode_mack_panel(obj: MackFitPanel, compression: str | None) -> bytes:
         "error_keys": [[_tag(part) for part in key] for key in obj.errors],
         "error_messages": list(obj.errors.values()),
         # each skipped cohort's Refusal reason code, in the same order (None for
-        # an error with no code, which only a panel built by hand can have)
+        # an error with no code, which only a MackFitPanel built by hand can have)
         "error_reasons": [obj.reasons.get(key) for key in obj.errors],
     }
     # Cohorts are addressed by position, not by a joined string: a key is a tuple
@@ -620,7 +620,7 @@ def _decode_mack_panel(body, header: dict, frames, arrays, nested: dict) -> Mack
     fits = {key: from_arrow(nested[str(i)], expect="MackFit") for i, key in enumerate(keys)}
     error_keys = [tuple(_untag(part) for part in key) for key in header["error_keys"]]
     errors = dict(zip(error_keys, header["error_messages"], strict=True))
-    # absent from a panel written before the reason codes existed
+    # absent from a payload written before the reason codes existed
     codes = header.get("error_reasons") or [None] * len(error_keys)
     reasons = {key: code for key, code in zip(error_keys, codes, strict=True) if code is not None}
     return MackFitPanel(fits=fits, errors=errors, by=tuple(header["by"]), reasons=reasons)

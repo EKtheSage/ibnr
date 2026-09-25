@@ -1820,8 +1820,8 @@ def test_fit_mack_many_skips_a_refusal_and_raises_anything_else(monkeypatch):
     holed = SMALL.copy()
     holed[0, 1] = np.nan
     t = make_multiline_triangle(None, {"good": SMALL, "holed": holed})
-    panel = mack_kernels.fit_mack_many(t, loss_field="paid_loss", on_error="skip")
-    assert panel.reasons == {("0001", "holed"): "not_run_off"}
+    fitted = mack_kernels.fit_mack_many(t, loss_field="paid_loss", on_error="skip")
+    assert fitted.reasons == {("0001", "holed"): "not_run_off"}
     refused = refusal_of(lambda: mack_kernels.fit_mack_many(t, loss_field="paid_loss"))
     assert refused.reason == "not_run_off"
     assert str(refused).startswith("cohort {") and "holed" in str(refused)
