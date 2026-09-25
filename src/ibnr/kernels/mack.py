@@ -144,9 +144,10 @@ class MackFit:
 
     ``cum`` keeps the observed triangle (NaN outside it); ``full`` is the same
     matrix with the lower triangle filled by the chain-ladder projection, so
-    ``full[:, -1]`` is the ultimate and ``full[i, j]`` for ``j > latest_dev[i]``
-    is the ``C-hat_{i,j}`` that Mack's and Merz-Wuthrich's variance formulas
-    both evaluate at.
+    ``full[:, -1]`` is the projection to the last observed age (the ultimate
+    only without a tail; with one, the ultimate is ``ultimate``) and
+    ``full[i, j]`` for ``j > latest_dev[i]`` is the ``C-hat_{i,j}`` that Mack's
+    and Merz-Wuthrich's variance formulas both evaluate at.
 
     A fit made with development options (see :func:`fit_mack_grid`) also
     carries ``average``, the ``links`` rules and the ``selection`` they made.

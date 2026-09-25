@@ -63,10 +63,10 @@ curve_factor             float64  a fitted curve's factor at this row,    all
                                   null on the final row and without a
                                   curve
 in_tail_fit              bool     the curve was fitted through this       all
-                                  age's factor; null on the rows beyond
-                                  the last observed age and without a
-                                  curve
-n_selected               int64    link ratios behind the factor           all
+                                  age's factor; null at the last
+                                  observed age, on the rows beyond it,
+                                  and without a curve
+n_selected               int64    link ratios selected at this age        all
 unity_fallback           bool     no ratio was left and 1.0 was used      chain_ladder,
                                                                           bornhuetter_ferguson,
                                                                           benktander, cape_cod
@@ -81,9 +81,12 @@ sigma_extrapolated       bool     sigma came from ``sigma_rule``: the     mack
 ======================== ======== ======================================= =====================
 
 ``n_selected`` and every column after it is null at the last observed age,
-which has no link ratios after it, and on every row beyond it. A method
-carries exactly the columns listed for it, whatever options it is given, tail
-or none, so a service can read each table by name.
+which has no link ratios after it, and on every row beyond it. On an
+observed age whose ``source`` is ``"tail"`` (a tail attached before the last
+age), ``n_selected`` and the three flags still describe the link ratios at
+that age, but the factor is the tail's, not their average. A method carries
+exactly the columns listed for it, whatever options it is given, tail or
+none, so a service can read each table by name.
 
 Every method takes a tail, the development still to come after the last
 observed age: ``tail="constant"`` with ``tail_factor`` (such as 1.05), or a
@@ -216,8 +219,10 @@ class ReserveResult:
         the triangle), null at the last age without a tail; ``curve_factor``
         (float64) is a fitted curve's factor at each row but the final one;
         ``in_tail_fit`` (bool) says whether the curve was fitted through that
-        observed age's factor. Every method adds ``n_selected`` (int64, the
-        link ratios behind the factor), ``extreme_trimming_skipped`` and
+        age's factor, null from the last observed age on. Every method adds
+        ``n_selected`` (int64, the link ratios selected at that age; on an age
+        whose ``source`` is ``"tail"`` the factor is the tail's, not their
+        average), ``extreme_trimming_skipped`` and
         ``bounds_skipped`` (bool); the chain ladder, Bornhuetter-Ferguson,
         Benktander and Cape Cod add ``unity_fallback`` (bool); Mack adds
         ``sigma``, ``std_err`` (the factor's standard error) and
@@ -1688,6 +1693,16 @@ def _tail_spec(tail, **options) -> TailSpec | None:
             )
         return None
     fit_lags = options.get("tail_fit_lags")
+    if tail == "constant" and fit_lags is not None:
+        # The kernel reads (None, None) as not given, so a caller's (None, None)
+        # would pass there unnoticed; here any value was given.
+        raise Refusal(
+            "invalid_option",
+            "tail_fit_lags is a curve setting; a constant tail takes tail_factor and tail_decay",
+            option="tail_fit_lags",
+            options=("tail_fit_lags", "tail"),
+            given=fit_lags,
+        )
     return TailSpec(
         tail,
         factor=options.get("tail_factor"),

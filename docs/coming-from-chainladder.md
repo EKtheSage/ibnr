@@ -366,7 +366,9 @@ raa with a constant 1.05, `108-120`, `120-132`, `132-144` and `120-Ult`,
 `132-Ult`. `totals["tail_factor"]` is the development beyond the last observed
 age, which with an earlier attachment is chainladder's `tail_`, the part of the
 constant left after the attached ages, not the constant itself. Mack adds
-`tail_sigma`, `tail_std_err` and `tail_position` to `totals`.
+`tail_sigma`, `tail_std_err` and `tail_position` to `totals`. Only `mack` takes
+`tail_sigma` and `tail_std_err`: passed to the other four methods, either is a
+Python `TypeError`, as `sigma_rule` is, not an `ibnr.errors.Refusal`.
 
 The numbers agree: the factors after the attachment, the steps shown beyond
 the triangle, the rest and the tail factor match chainladder to a relative

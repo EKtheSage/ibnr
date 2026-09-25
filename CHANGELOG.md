@@ -39,7 +39,9 @@ they develop from, both included), `tail_steps` (how many development steps a
 curve is extrapolated, 100 by default) and `tail_rows` (how many steps beyond
 the last age are shown, one year's by default); `mack` also takes
 `tail_sigma` and `tail_std_err`. Every option but `tail` defaults to `None`,
-so one passed without a tail is refused, not ignored.
+so one passed without a tail is refused, not ignored. The other four methods
+do not take `tail_sigma` or `tail_std_err`, so passing either to them is a
+Python `TypeError`, as `sigma_rule` is, not a `Refusal`.
 
 **Result tables:**
 - `development` goes on past the last observed age for `tail_rows` rows. On
@@ -49,8 +51,10 @@ so one passed without a tail is refused, not ignored.
   not: `source` (`"link_ratios"` or `"tail"`: where the row's factor came from;
   null on the last age without a tail), `curve_factor` (a fitted curve's factor
   at each row but the final one) and `in_tail_fit` (whether the age's factor
-  went through the curve). Every other per-age column is null on the rows
-  beyond the last age.
+  went through the curve; null from the last observed age on). Every other
+  per-age column is null on the rows beyond the last age. On an observed age
+  whose factor a tail replaced, `n_selected` and the three flags still
+  describe that age's link ratios.
 - `totals` gains `tail_factor` for every method (1.0 without a tail), and
   `mack` also `tail_sigma`, `tail_std_err` and `tail_position` (null without a
   tail; the position is null too when both variances were given).
@@ -88,7 +92,7 @@ so one passed without a tail is refused, not ignored.
 passed as `tail` is told that a constant's factor goes in `tail_factor`); any
 tail option without a tail; a constant without a positive finite
 `tail_factor`; a constant tail's options on a curve and a curve's on a
-constant; `tail_decay` outside 0 to 1; `tail_attach_lag` or a `tail_fit_lags`
+constant (`tail_fit_lags=(None, None)` included); `tail_decay` outside 0 to 1; `tail_attach_lag` or a `tail_fit_lags`
 end off the triangle's ages (`grain_mismatch`) or past them
 (`not_in_triangle`); `tail_steps` outside 1 to 10,000, `tail_rows` below 0, and
 more rows than steps; a curve with fewer than two factors above 1.00001 in
