@@ -14,7 +14,7 @@
   ladder)
 - :func:`ml_development` (a random forest or gradient boosting fitted to the
   cells, chainladder-python's ``DevelopmentML``; needs the ``ml`` extra, and
-  overshoots the chain ladder by the method's nature)
+  usually overshoots the chain ladder by the method's nature)
 - :func:`one_year_cdr` (the one-year claims development result: how far next
   year's re-estimate of Mack's chain-ladder ultimate can move, as the
   Merz-Wuthrich standard error beside a simulation of next year)
@@ -1453,13 +1453,14 @@ def ml_development(
     Read these before using the answer:
 
     - It is a point estimate, with no standard error or distribution.
-    - **Tree models projected this way overshoot the chain ladder**, often by a
-      lot, and that comes from the method, not from a defect: the youngest
-      origin has one training row, the trees split it off by its origin
-      indicator, and its predicted increment stays near that one value at every
-      later age. On a 10 x 10 Schedule P paid triangle the forest (seed 42)
-      gives 2.7 times the chain ladder's IBNR and boosting 1.8 times; on
-      MW2014 the forest gives 40 times.
+    - **Tree models projected this way usually overshoot the chain ladder**,
+      often by a lot, and that comes from the method, not from a defect: the
+      youngest origin has one training row, the trees split it off by its
+      origin indicator, and its predicted increment stays near that one value
+      at every later age. On a 10 x 10 Schedule P paid triangle the forest
+      (seed 42) gives 2.7 times the chain ladder's IBNR and boosting 1.8
+      times; on MW2014 the forest gives 40 times. It is not a rule: on GenIns
+      the forest gives 0.93 times and boosting 0.87 times.
     - A random forest's answer depends on ``seed`` (from 1.5% to 3.6% of the
       total, as the standard deviation over 20 seeds on six public
       triangles). Gradient boosting's does not with these settings: it looks
@@ -1503,8 +1504,10 @@ def ml_development(
       losses; under ``"observed"`` it never happens.
     - ``unsupported_factor``: under ``zero_cells="missing"``, what to do at an
       age whose cells are all zero: ``"raise"`` (the default) refuses;
-      ``"unity"`` develops by a factor of 1 into it (a fitted increment of 0)
-      and marks it in ``development.unity_fallback``.
+      ``"unity"`` develops by a factor of 1 into it (a fitted increment of 0).
+      ``development.unity_fallback`` marks the factor INTO such an age, on
+      the row of the age before it, so an all-zero first age has no row to
+      show on and shows only as ``n_trained`` 0.
     - ``dev_grain_months``: as in :func:`chain_ladder`.
     - ``tail``: not supported yet; anything but ``None`` is refused. Each
       origin is projected to the last observed development age.
@@ -1548,13 +1551,16 @@ def ml_development(
 
     Refused, besides the refusals of :func:`chain_ladder`'s ``cells``: a
     setting outside its values or one that does not apply to the estimator
-    (``invalid_option``); fewer than 2 cells to fit (``not_identified``); under
-    ``zero_cells="missing"`` with ``unsupported_factor="raise"``, an age whose
-    cells are all zero (``no_link_ratio``); a still-developing origin with
-    losses whose fitted cumulative at its latest age is zero or less, so its
-    factor to ultimate is undefined, and an ultimate below zero (both
-    ``negative_projection``), in that order; and a tail (``not_supported``).
-    Negative increments are fitted like any others.
+    (``invalid_option``); a triangle whose cells are all zero, as
+    :func:`tweedie_glm` refuses it, and fewer than 2 cells to fit (both
+    ``not_identified``); under ``zero_cells="missing"`` with
+    ``unsupported_factor="raise"``, an age whose cells are all zero
+    (``no_link_ratio``); fitted values that are not finite numbers, from
+    amounts near the largest double (``result_not_finite``); a
+    still-developing origin with losses whose fitted cumulative at its latest
+    age is zero or less, so its factor to ultimate is undefined, and an
+    ultimate below zero (both ``negative_projection``), in that order; and a
+    tail (``not_supported``). Negative increments are fitted like any others.
     ``docs/coming-from-chainladder.md`` lists where the answers differ from
     chainladder-python's.
     """

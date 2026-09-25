@@ -680,13 +680,15 @@ fitted_cumulative[last age] / fitted_cumulative[latest age]`. The kernel is
   own factors) and `totals` (echoing every setting, `n_training_rows` and
   `scikit_learn_version`). `link_ratios` and `coefficients` are `None`.
 
-**Tree models projected this way overshoot the chain ladder, and that is the
-method, not a defect.** The youngest origin has one training row, the trees
-split it off by its origin indicator, and its predicted increment stays near
-that value at every later age. On the app's workbook triangle (New Jersey
+**Tree models projected this way usually overshoot the chain ladder, and that
+is the method, not a defect.** The youngest origin has one training row, the
+trees split it off by its origin indicator, and its predicted increment stays
+near that value at every later age. On the app's workbook triangle (New Jersey
 Manufacturers workers' compensation paid, a 10 x 10 Schedule P triangle) the
 forest with seed 42 gives 2.7 times the chain ladder's IBNR and boosting 1.8
-times; on MW2014 the forest gives 40 times. chainladder gives the same numbers.
+times; on MW2014 the forest gives 40 times. It is not a rule: on GenIns the
+forest gives 0.93 times and boosting 0.87 times. chainladder gives the same
+numbers.
 
 **Checked:** for the same estimator, seed and design, the ultimates and every
 cell `DevelopmentML` predicts match chainladder 0.9.2 to 1e-12 on raa, GenIns,
@@ -714,12 +716,19 @@ auto: 75 or about 91 here, 2,807.76 in chainladder); a negative ultimate, and
 a still-developing origin with losses whose fitted cumulative at its latest
 age is zero or less, are refused (`negative_projection`); fewer than 2 cells
 to fit are refused (`not_identified`), where chainladder raises a scikit-learn
-`TypeError`; and a setting that does not apply to the estimator
+`TypeError`; a triangle whose cells are all zero is refused (`not_identified`,
+"cells has no losses to fit"), in the words `tweedie_glm` uses, where
+chainladder raises `ValueError: negative dimensions are not allowed`; amounts
+near the largest double whose fitted values are
+not finite (boosting's own squares overflow and it predicts NaN) are refused as
+`result_not_finite`, not as a fitted cumulative of zero or less; and a setting
+that does not apply to the estimator
 (`learning_rate` on a forest, `min_samples_leaf` on boosting) is refused
 rather than ignored.
 
 No refusal code was added: `ml_development` uses `invalid_option`,
-`not_identified`, `no_link_ratio`, `negative_projection` and `not_supported`,
+`not_identified`, `no_link_ratio`, `negative_projection`, `result_not_finite`
+and `not_supported`,
 and `no_link_ratio`'s description in `ibnr.errors` now also covers a model
 fitted to the cells with no cell left at an age.
 

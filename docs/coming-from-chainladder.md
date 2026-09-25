@@ -443,15 +443,17 @@ fit.to_polars()  # ultimate, and the fitted cumulative at the latest age and the
 fit.to_polars("cells")  # every cell's fitted increment and each origin's own factors
 ```
 
-**Tree models overshoot the chain ladder, and that is the method, not a
-defect in either library.** The youngest origin has one training row. With an
-indicator per origin the trees split that origin off, so its predicted
+**Tree models usually overshoot the chain ladder, and that is the method, not
+a defect in either library.** The youngest origin has one training row. With
+an indicator per origin the trees split that origin off, so its predicted
 increment stays near its one 12-month value at every later age. On the
 Reserving app's workbook triangle (a 10 x 10 Schedule P paid triangle), the
 forest with seed 42 gives 2.7 times the chain ladder's IBNR (1,002,288.05
 against 373,346.30) and boosting 1.8 times (657,942.08); on MW2014 the forest
-gives 40 times. The two libraries give the same numbers here; read them as a
-property of the model before using them.
+gives 40 times. It is not a rule: on raa, UKMotor and ABC the forest gives 1.4
+to 2.6 times, and on GenIns 0.93 times (boosting 0.87 times). The two
+libraries give the same numbers here; read them as a property of the model
+before using them.
 
 Where the answers differ from chainladder-python 0.9.2, and why:
 
@@ -512,14 +514,17 @@ Where the answers differ from chainladder-python 0.9.2, and why:
   triangle with fewer than 2 cells to fit (chainladder raises a `TypeError`
   from scikit-learn, or a `PatsyError` on some sparse triangles; here
   `not_identified`).
+- **A triangle with no losses is refused**, as `tweedie_glm` refuses it and in
+  the same words: "cells has no losses to fit" (`not_identified`). chainladder
+  raises `ValueError: negative dimensions are not allowed` there.
 - **The design is named, not written as a formula.** `origin` and `calendar`
   give the four designs above. `C(valuation)` fails in chainladder on every
   triangle (future calendar periods have no level), and other formulas are not
   offered, since a patsy formula can run arbitrary code.
-- **The cumulative response is kept, with a warning.** With
-  `response="cumulative"` the forest's fitted cumulatives fall with age, and
-  the total IBNR was below zero on all six test triangles (raa -23,332; the
-  workbook -250,298.82), in both libraries.
+- **The cumulative response is kept; the docstring warns against it.** No
+  Python warning is raised. With `response="cumulative"` the forest's fitted
+  cumulatives fall with age, and the total IBNR was below zero on all six test
+  triangles (raa -23,332; the workbook -250,298.82), in both libraries.
 
 ## The one-year claims development result
 

@@ -2226,6 +2226,17 @@ CASES = [
         {},
     ),
     (
+        "ml_no_losses",
+        lambda: ml(tri([(o, d, 0.0) for o, d, _ in BASE]), **RF),
+        "not_identified",
+        "cells",
+        None,
+        [],
+        [],
+        [],
+        {},
+    ),
+    (
         "ml_an_age_of_zeros",
         lambda: ml(tri(replace(BASE, (2001, 48), 0.0)), zero_cells="missing", **RF),
         "no_link_ratio",
@@ -2915,6 +2926,26 @@ _EXTREMES = [
         lambda: cc(tri(fixture_rows("raa")), premium={y: 1e-320 for y in range(1981, 1991)}),
         "result_not_finite",
     ),
+    # every ultimate is past the largest double, though every cell is finite
+    *[
+        (
+            f"ml_raa_1e303_{estimator}",
+            fitted(
+                lambda estimator=estimator: ml(
+                    tri(fixture_rows("raa", 1e303)), estimator=estimator, n_estimators=5
+                )
+            ),
+            "result_not_finite",
+        )
+        for estimator in ("random_forest", "gradient_boosting")
+    ],
+    # boosting's own squared residuals overflow, so every prediction is NaN:
+    # not a fitted cumulative of zero or less
+    (
+        "ml_genins_1e301_gradient_boosting",
+        fitted(lambda: ml(tri(fixture_rows("genins", 1e301)), n_estimators=5, **GB)),
+        "result_not_finite",
+    ),
     # the normal deviance is a sum of squared amounts, past the largest double
     (
         "glm_deviance_overflow_genins_1e200",
@@ -3265,8 +3296,8 @@ def test_a_seeded_fuzz_of_ml_development_meets_nothing_but_refusals():
     """The same edits as the fuzz above, through ``ml_development`` with random
     options and 5 trees, so it runs in seconds: every call gives finite numbers
     (a missing one a null) or exactly a Refusal, and a RuntimeWarning is an
-    error. Triangles scaled to near the largest double are fitted too, and a
-    sum that overflows is refused as ``result_not_finite``."""
+    error. Amounts near the largest double are in ``_EXTREMES``: none of the
+    1,500 draws here reaches ``result_not_finite``."""
     pytest.importorskip("sklearn")
     rng = np.random.default_rng(20260927)
     names = sorted(_FUZZ)
