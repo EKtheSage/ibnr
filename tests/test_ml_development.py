@@ -218,8 +218,10 @@ _CASES = [
 @pytest.mark.parametrize("case", _CASES, ids=["-".join(map(str, c[:5])) for c in _CASES])
 def test_the_sample_triangles_match_chainladder(sklearn, sample, case):
     """Mutations: drop the column of ones, put the rows in development order,
-    number the calendar column from 1, or project from ``latest_dev + 1``: each
-    fails here, most at the first cell."""
+    count the calendar as origin minus age, or project from ``latest_dev + 1``:
+    each fails here, most at the first cell. Numbering the calendar column
+    from 1 changes nothing and is not caught: a tree splits halfway between
+    two values, so adding a constant to a column moves no split."""
     cl = pytest.importorskip("chainladder")
     estimator, seed, response, origin, calendar, formula = case
     triangle = cl.load_sample(sample)
@@ -242,10 +244,22 @@ def test_the_sample_triangles_match_chainladder(sklearn, sample, case):
     _require_same_cells(result, predicted, grid.shape[1], incremental=response == "incremental")
 
 
+def _quarters(i: int) -> str:
+    return f"{1981 + i // 4}Q{i % 4 + 1}"
+
+
 @pytest.mark.tieout
 @pytest.mark.parametrize("estimator", ["random_forest", "gradient_boosting"])
-def test_quarterly_origins_on_quarterly_ages_match_chainladder(sklearn, estimator):
-    """raa relabelled as ten quarters from 1981Q1, at ``dev_grain_months=3``."""
+@pytest.mark.parametrize(
+    ("calendar", "formula"),
+    [("none", "C(development) + C(origin)"), ("trend", "C(development) + C(origin) + valuation")],
+)
+def test_quarterly_origins_on_quarterly_ages_match_chainladder(
+    sklearn, estimator, calendar, formula
+):
+    """raa relabelled as ten quarters from 1981Q1, at ``dev_grain_months=3``.
+    Mutation: count the calendar column in years rather than development
+    steps; the ``"trend"`` cases fail."""
     cl = pytest.importorskip("chainladder")
     import pandas as pd
 
@@ -260,14 +274,12 @@ def test_quarterly_origins_on_quarterly_ages_match_chainladder(sklearn, estimato
         data, origin="origin", development="valuation", columns="values", cumulative=True
     )
     assert (triangle.origin_grain, triangle.development_grain) == ("Q", "Q")
-    expected, dev = _chainladder_fit(
-        triangle, estimator, 42, formula="C(development) + C(origin)", incremental=True
-    )
-    labels = [f"{1981 + i // 4}Q{i % 4 + 1}" for i in range(len(RAA))]
+    expected, dev = _chainladder_fit(triangle, estimator, 42, formula=formula, incremental=True)
     result = ml(
-        cells_of(RAA, step=3, label=labels.__getitem__),
+        cells_of(RAA, step=3, label=_quarters),
         estimator,
         seed=42,
+        calendar=calendar,
         dev_grain_months=3,
     )
     np.testing.assert_allclose(column(result.origins, "ultimate"), expected, rtol=1e-12)
@@ -515,6 +527,15 @@ def test_pinned_totals_catch_a_design_or_row_order_defect(
     assert total_ibnr(result) == pytest.approx(expected, abs=0.5)
 
 
+def test_a_pinned_quarterly_calendar_total(sklearn):
+    """raa relabelled as quarters, with ``calendar="trend"``: the calendar
+    column counts development steps (quarters here). Mutation: count it in
+    years; the total moves from 79,155.19 to 41,727.86."""
+    cells = cells_of(RAA, step=3, label=_quarters)
+    result = ml(cells, seed=42, calendar="trend", dev_grain_months=3)
+    assert total_ibnr(result) == pytest.approx(79_155.19, abs=0.005)
+
+
 def test_the_design_columns_follow_the_options(sklearn):
     grid = _grid(RAA)
     names = {
@@ -624,6 +645,12 @@ def test_zero_cells_decides_which_cells_are_trained(sklearn):
     trained = left.cells.filter(pc.equal(left.cells["origin"], 1986))["trained"].to_pylist()
     assert trained == [False, True, True, True, True, False, False, False, False, False]
     assert total_ibnr(kept) != pytest.approx(total_ibnr(left), rel=1e-6)
+    # the zero is observed though not trained on: its increment is 0, not null.
+    # Mutation: null the increment wherever a cell is not trained; this fails.
+    zero = left.cells.filter(pc.equal(left.cells["origin"], 1986))
+    assert zero["observed"][0].as_py() is True
+    assert zero["increment"][0].as_py() == 0.0
+    assert zero["increment"].to_pylist()[5:] == [None] * 5
 
 
 def test_a_zero_cells_fitted_increment_counts_in_its_fitted_cumulative(sklearn):
@@ -685,6 +712,70 @@ def test_an_age_with_only_zeros_is_refused_or_developed_by_one(sklearn):
     # with every cell trained, the same triangle needs no fallback
     kept = ml(cells, seed=42)
     assert kept.development["unity_fallback"].to_pylist() == [False] * 9 + [None]
+
+
+def test_the_cumulative_response_develops_by_one_into_an_age_with_only_zeros(sklearn):
+    """The same triangle as above, with ``response="cumulative"``: every placed
+    origin's fitted cumulative at 120 months is its fitted cumulative at 108,
+    so its factor there is 1. Mutation: set the fitted cumulative at the
+    unity age to 0; every ultimate but 1981's falls to 0 (total IBNR
+    -142,153), and this fails."""
+    rows = [list(row) for row in RAA]
+    rows[0] = [0] * 10
+    result = ml(
+        cells_of(rows, 1981),
+        "gradient_boosting",
+        seed=42,
+        response="cumulative",
+        zero_cells="missing",
+        unsupported_factor="unity",
+    )
+    assert result.development["unity_fallback"].to_pylist() == [False] * 8 + [True, None]
+    fitted = column(result.cells, "fitted_cumulative").reshape(10, 10)
+    np.testing.assert_array_equal(fitted[1:, 9], fitted[1:, 8])
+    factors = column(result.cells, "factor").reshape(10, 10)
+    np.testing.assert_array_equal(factors[1:, 8], 1.0)
+    assert column(result.origins, "ultimate")[1:].min() > 0
+    assert total_ibnr(result) == pytest.approx(300.32, abs=0.005)
+
+
+def test_a_first_age_with_only_zeros_shows_as_no_training_row(sklearn):
+    """Every 12-month cell is zero: under ``"missing"`` with ``"unity"`` the
+    fitted increment there is 0. ``unity_fallback`` says whether the factor
+    from an age to the next is the 1 of the fallback, as for every other
+    method, so no row marks the first age: it shows as ``n_trained`` 0."""
+    cells = cells_of([[0, 10, 20, 25], [0, 12, 22], [0, 15], [0]])
+    result = ml(cells, zero_cells="missing", unsupported_factor="unity")
+    assert result.development["n_trained"].to_pylist() == [0, 3, 2, 1]
+    assert result.development["unity_fallback"].to_pylist() == [False, False, False, None]
+    first = column(result.cells, "fitted_increment").reshape(4, 4)[:, 0]
+    np.testing.assert_array_equal(first[:3], 0.0)
+
+
+def test_a_triangle_with_no_losses_is_refused_as_tweedie_glm_refuses_it(sklearn):
+    """Every cell zero: ``tweedie_glm`` refuses it, and so does this, in the
+    same words, under both zero-cell rules. Mutation: drop the check; under
+    ``"observed"`` the forest answers 0 for every origin and this fails."""
+    zeros = cells_of([[0, 0], [0]])
+    expected = str(refusal_of(lambda: methods.tweedie_glm(zeros)))
+    for rule in ("observed", "missing"):
+        refusal = refusal_of(lambda rule=rule: ml(zeros, zero_cells=rule))
+        assert refusal.reason == "not_identified", rule
+        assert refusal.option == "cells", rule
+        assert str(refusal) == expected.replace("tweedie_glm", "ml_development"), rule
+    assert "cells has no losses to fit: every observed increment is zero" in expected
+
+
+def test_a_closed_origin_is_never_refused_for_its_fitted_pattern(sklearn):
+    """The oldest origin is at the last age, and boosting's fitted cumulative
+    for it there is -0.03: nothing is projected from it, so it is answered with
+    a factor of 1 and its latest as its ultimate. Mutation: check closed
+    origins too; this is refused as ``negative_projection``."""
+    cells = cells_of([[69, 3.45, 0.069, 0.00138], [135, 135, 202.5], [134, 201], [81]])
+    result = ml(cells, "gradient_boosting", seed=42)
+    assert result.origins["fitted_ultimate"][0].as_py() == pytest.approx(-0.0317, abs=5e-5)
+    assert result.origins["cdf"][0].as_py() == 1.0
+    assert result.origins["ultimate"][0].as_py() == 0.00138
 
 
 def test_fewer_than_two_training_rows_is_refused(sklearn):

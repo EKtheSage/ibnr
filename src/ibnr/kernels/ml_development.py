@@ -29,10 +29,13 @@ integer gives chainladder-python's numbers. A random forest's answer depends
 on it; gradient boosting's does not with these settings, because it looks at
 every feature at every split and uses every row.
 
-Tree models projected this way overshoot the chain ladder, often by a lot:
-the youngest origin has one training row, trees split it off by its origin
-indicator, and its predicted increment stays near that one value at every
-later age. That is the method, not a defect of this code.
+Tree models projected this way usually overshoot the chain ladder, often by
+a lot: the youngest origin has one training row, trees split it off by its
+origin indicator, and its predicted increment stays near that one value at
+every later age. With seed 42 the forest's IBNR is 1.4 to 40 times the chain
+ladder's on raa, UKMotor, ABC, MW2014 and a Schedule P triangle, and 0.93
+times on GenIns (boosting 0.87 times there). That comes from the method, not
+from a defect of this code.
 
 This module imports numpy and ``ibnr.errors`` only (and the grid check), so
 ``ibnr.methods`` can import it without loading scikit-learn. scikit-learn,
@@ -419,11 +422,14 @@ def fit_ml_development_grid(grid: dict, spec: MLDevelopmentSpec) -> MLDevelopmen
     Refused, each with ``ibnr.errors.Refusal``: fewer than 2 training rows
     (``not_identified``); under ``zero_cells="missing"`` with
     ``unsupported_factor="raise"``, an age whose cells are all zero
-    (``no_link_ratio``); a still-developing origin with losses whose fitted
-    cumulative at its latest age is zero or less, so its factor to ultimate is
-    undefined, and a negative ultimate (both ``negative_projection``). Those
-    are checked in that order. scikit-learn not installed raises
-    ``ImportError``.
+    (``no_link_ratio``); a fitted value that is not a finite number, from
+    amounts near the largest double (``result_not_finite``); a
+    still-developing origin with losses whose fitted cumulative at its latest
+    age is zero or less, so its factor to ultimate is undefined, and a
+    negative ultimate (both ``negative_projection``). Those are checked in
+    that order. Before them all, a triangle whose cells are all zero is
+    refused as ``tweedie_glm`` refuses it (``not_identified``, "cells has no
+    losses to fit"). scikit-learn not installed raises ``ImportError``.
     """
     if not isinstance(spec, MLDevelopmentSpec):
         raise TypeError(f"spec must be an MLDevelopmentSpec, got {type(spec).__name__}")
@@ -437,6 +443,13 @@ def fit_ml_development_grid(grid: dict, spec: MLDevelopmentSpec) -> MLDevelopmen
     inc = cum.copy()
     inc[:, 1:] = cum[:, 1:] - cum[:, :-1]
 
+    if not (observed & (cum != 0)).any():
+        # the same refusal, in the same words, as tweedie_glm's
+        raise Refusal(
+            "not_identified",
+            "cells has no losses to fit: every observed increment is zero",
+            option="cells",
+        )
     trained = observed & (cum != 0) if spec.zero_cells == "missing" else observed.copy()
     n_rows = int(trained.sum())
     if n_rows < 2:
@@ -520,6 +533,18 @@ def fit_ml_development_grid(grid: dict, spec: MLDevelopmentSpec) -> MLDevelopmen
             fitted = fitted_cum.copy()
             fitted[:, 1:] = fitted_cum[:, 1:] - fitted_cum[:, :-1]
     fitted[~placed] = np.nan
+    if not (np.isfinite(fitted[placed]).all() and np.isfinite(fitted_cum[placed]).all()):
+        # Amounts near the largest double: scikit-learn's own squares overflow
+        # and it predicts NaN, or the running sum passes the largest double.
+        # Either is refused here, before a NaN could read as a fitted
+        # cumulative of zero or less.
+        raise Refusal(
+            "result_not_finite",
+            "the model's fitted values are not all finite numbers: the amounts are too large "
+            "for the fit's squares and sums to stay finite. Scale them (work in thousands, say) "
+            "and scale the answer back",
+            option="cells",
+        )
 
     fit = MLDevelopmentFit(
         spec=spec,
