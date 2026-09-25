@@ -701,10 +701,7 @@ def _estimate(grid: dict[str, Any], candidate: ConventionalCandidate, cutoff: dt
         for j, row in enumerate(summary):
             row["factor"] = factors[j]
             row["tail"] = j >= tail.attach_index
-    beta = np.r_[1 / np.cumprod(factors[::-1])[::-1], 1.0]
-    if tail is not None:
-        # every age's share of the ultimate, the tail's development included
-        beta = beta / tail.tail_factor
+    beta = pattern_beta(factors[None, :], None if tail is None else tail.tail_factor)[0]
     if not np.isfinite(beta).all() or (beta <= 0).any():
         bad = np.flatnonzero(~np.isfinite(beta[:-1]) | (beta[:-1] <= 0))
         raise Refusal(
@@ -718,13 +715,9 @@ def _estimate(grid: dict[str, Any], candidate: ConventionalCandidate, cutoff: dt
     n_w = grid["n_w"]
     latest = cum[np.arange(n_w), grid["latest_dev"]]
     developed = beta[grid["latest_dev"]]
-    elr = np.full(n_w, np.nan)
-    expected = np.full(n_w, np.nan)
-    trended = np.full(n_w, np.nan)
+    premium = weights = None
     trend_factor = np.ones(n_w)
-    if candidate.method == "cl":
-        prior = latest / developed
-    else:
+    if candidate.method != "cl":
         premium = grid["premium"]
         if not np.isfinite(premium).all() or (premium <= 0).any():
             reason = "missing_value" if np.isnan(premium).any() else "not_finite"
@@ -740,28 +733,23 @@ def _estimate(grid: dict[str, Any], candidate: ConventionalCandidate, cutoff: dt
                     for i in np.flatnonzero(bad)
                 ],
             )
-        if candidate.method == "bf":
-            elr[:] = float(candidate.expected_loss_ratio)
-        else:
-            # Distances are in origin periods, including any calendar gaps.
-            periods = np.array([o.year * 12 + o.month for o in grid["origin_periods"]])
-            distance = np.abs(periods[:, None] - periods[None, :]) / step
-            weights = float(candidate.decay) ** distance  # 0**0 = 1 gives GCC(0) = CL.
-            # Gluck's trend: origin k's losses at the valuation date's level, pooled,
-            # and each pooled ratio brought back to its own origin's level. At trend 0
-            # every factor is exactly 1.0, so the loss ratios are 0.7.2's, bit for bit.
+        if candidate.method == "gcc":
+            weights = cape_cod_weights(grid["origin_periods"], step, candidate.decay)
             trend_factor = (1 + candidate.trend) ** (_months_to(cutoff, grid, step) / 12)
-            trended = (weights @ (latest * trend_factor)) / (weights @ (premium * developed))
-            elr = trended / trend_factor
-        expected = premium * elr
-        # Benktander: U_0 is the a priori ultimate and U_k = latest + (1 - beta) * U_(k-1).
-        # The reserve is (1 - beta) * U_(n-1), so n_iters=1 is the method itself, and
-        # prior_ultimate is U_(n-1), which keeps predict_cumulative right for every n.
-        prior = expected
-        for _ in range(candidate.n_iters - 1):
-            prior = latest + (1 - developed) * prior
-    reserve = prior * (1 - developed)
-    ultimate = latest + reserve
+    projected = project_ultimates(
+        candidate.method,
+        latest[None, :],
+        developed[None, :],
+        premium=premium,
+        expected_loss_ratio=candidate.expected_loss_ratio,
+        weights=weights,
+        trend_factor=trend_factor,
+        n_iters=candidate.n_iters,
+    )
+    elr, expected, trended, prior, reserve, ultimate = (
+        projected[name][0]
+        for name in ("elr", "expected", "trended", "prior", "reserve", "ultimate")
+    )
     origins = {
         "origin_period": grid["origin_periods"],
         "latest_dev_lag": (grid["latest_dev"] + 1) * step,
@@ -786,6 +774,108 @@ def _estimate(grid: dict[str, Any], candidate: ConventionalCandidate, cutoff: dt
             cells=[RefusedCell(None, grid["origin_periods"][i]) for i in np.flatnonzero(bad)],
         )
     return _Estimate(candidate, cutoff, grid, factors, beta, origins, selection, summary, tail)
+
+
+def pattern_beta(factors: np.ndarray, tail_factor=None) -> np.ndarray:
+    """``(S, n_links + 1)`` share of the ultimate reported at each age, one row per set of factors.
+
+    ``factors`` is ``(S, n_links)``: one row of link factors for the central fit
+    (``S = 1``) or one per bootstrap draw. ``tail_factor`` is ``None`` or one
+    tail factor per row, ``(S,)``; with it, every share includes the tail's
+    development, so the last age's share is ``1 / tail_factor``. The central fit
+    and every bootstrap refit run this same arithmetic.
+    """
+    factors = np.asarray(factors, dtype=float)
+    reported = 1 / np.cumprod(factors[:, ::-1], axis=1)[:, ::-1]
+    beta = np.concatenate([reported, np.ones((factors.shape[0], 1))], axis=1)
+    if tail_factor is not None:
+        beta = beta / np.reshape(tail_factor, (-1, 1))
+    return beta
+
+
+def cape_cod_weights(origin_periods, step: int, decay: float) -> np.ndarray:
+    """``(n_w, n_w)`` Cape Cod weights: ``decay ** k`` for origins ``k`` periods apart.
+
+    Distances are in origin periods, counted across any calendar gap.
+    ``0 ** 0 = 1``, so ``decay=0`` weights each origin by itself alone, which
+    is the chain ladder.
+    """
+    periods = np.array([o.year * 12 + o.month for o in origin_periods])
+    distance = np.abs(periods[:, None] - periods[None, :]) / step
+    return float(decay) ** distance
+
+
+def project_ultimates(
+    method: str,
+    latest: np.ndarray,
+    developed: np.ndarray,
+    *,
+    premium: np.ndarray | None = None,
+    expected_loss_ratio: float | None = None,
+    weights: np.ndarray | None = None,
+    trend_factor: np.ndarray | None = None,
+    n_iters: int = 1,
+    prior_multiplier: np.ndarray | None = None,
+) -> dict[str, np.ndarray]:
+    """Each origin's ultimate from its latest amount and the share reported at its age.
+
+    ``latest`` and ``developed`` are ``(S, n_w)``: one row for the central fit
+    (``S = 1``) and one per draw in the bootstrap, so the two run this same
+    arithmetic. ``method`` is ``"cl"``, ``"bf"`` (Benktander with ``n_iters``
+    above 1) or ``"gcc"``. The a priori methods read ``premium`` (``(n_w,)``);
+    Bornhuetter-Ferguson reads ``expected_loss_ratio``, Cape Cod ``weights``
+    (:func:`cape_cod_weights`) and ``trend_factor`` (``(n_w,)``, each origin's
+    factor to the valuation date's level). ``prior_multiplier`` (``(S,)``,
+    bootstrap only) multiplies each row's a priori ultimate, the same number for
+    every origin of the row.
+
+    Returns ``elr``, ``expected``, ``trended``, ``prior`` (the a priori ultimate
+    of the last iteration), ``reserve`` and ``ultimate``, each ``(S, n_w)``;
+    ``elr``, ``expected`` and ``trended`` are NaN where a method has none.
+
+    Benktander: ``U_0`` is the a priori ultimate and ``U_k = latest + (1 -
+    beta) U_(k-1)``. The reserve is ``(1 - beta) U_(n-1)``, so ``n_iters=1`` is
+    the method itself, and ``prior`` is ``U_(n-1)``, which keeps
+    ``ConventionalFit.predict_cumulative`` right for every ``n``.
+
+    Cape Cod with Gluck's trend: origin ``k``'s losses at the valuation date's
+    level, pooled, and each pooled ratio brought back to its own origin's
+    level. At trend 0 every factor is exactly 1.0, so the loss ratios are
+    0.7.2's, bit for bit. Each row's pooled ratios are one matrix-vector
+    product, row by row, so the central fit's row is computed exactly as it
+    was before the bootstrap shared this code.
+    """
+    shape = latest.shape
+    elr = np.full(shape, np.nan)
+    expected = np.full(shape, np.nan)
+    trended = np.full(shape, np.nan)
+    if method == "cl":
+        prior = latest / developed
+    else:
+        if method == "bf":
+            elr[:] = float(expected_loss_ratio)
+        else:
+            for s in range(shape[0]):
+                trended[s] = (weights @ (latest[s] * trend_factor)) / (
+                    weights @ (premium * developed[s])
+                )
+            elr = trended / trend_factor
+        expected = premium * elr
+        if prior_multiplier is not None:
+            expected = expected * np.reshape(prior_multiplier, (-1, 1))
+        prior = expected
+        for _ in range(n_iters - 1):
+            prior = latest + (1 - developed) * prior
+    reserve = prior * (1 - developed)
+    ultimate = latest + reserve
+    return {
+        "elr": elr,
+        "expected": expected,
+        "trended": trended,
+        "prior": prior,
+        "reserve": reserve,
+        "ultimate": ultimate,
+    }
 
 
 def _months_to(cutoff: dt.date, grid: dict[str, Any], step: int) -> np.ndarray:

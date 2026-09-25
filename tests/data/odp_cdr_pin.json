@@ -1,0 +1,320 @@
+{
+"abc": {
+"cdr|gamma": "a81c054d9ac74c22a15fbb7f",
+"cdr|od_poisson": "406a74d6514a60eadd78ef54",
+"fit": "82feb9fe803640c1381ff071",
+"next|gamma|01": "e62c2243212f0e781ed5d01f",
+"next|gamma|10": "95e62e9c72a49beb6c2ae9fe",
+"next|gamma|11": "4a6b7cf4826cd95a234d9638",
+"next|od_poisson|01": "e62c2243212f0e781ed5d01f",
+"next|od_poisson|10": "517f6d120c91f50033eb49e2",
+"next|od_poisson|11": "483b3673824a56ad6972a08f"
+},
+"clrd|Alaska Timber Ins Exchange|wkcomp": {
+"fit": "refused|negative_increment|1 negative incremental cell(s) at (1989-01-01, 84 months). The over-dispersed Poisson family is defined on non-negative increments - its Pearson residual divides by a fitted mean that a negative increment can drive below zero, and its process draw has no negative mean - so the ODP bootstrap refuses this cohort outright rather than reflecting it through sign(). Mack's conditional moments carry no such restriction: the mack diagonal generator (and one_year_cdr) still answer here"
+},
+"clrd|American Hallmark Ins Co Of TX|ppauto": {
+"cdr|gamma": "d6000228d33334d6368c9858",
+"cdr|od_poisson": "258d5661e6ed52ccdffb9193",
+"fit": "3a91a50ef9ceea5d48b1cbad",
+"next|gamma|01": "ab7a735ce1ff43507de094a5",
+"next|gamma|10": "97c16954e13e2abd99732513",
+"next|gamma|11": "9010ccf9fd6615226e1ab24a",
+"next|od_poisson|01": "ab7a735ce1ff43507de094a5",
+"next|od_poisson|10": "2ee087ec157299bdfd7ba846",
+"next|od_poisson|11": "94230c6781372c7310dad897"
+},
+"clrd|Amerisafe Grp|othliab": {
+"fit": "refused|negative_increment|1 negative incremental cell(s) at (1988-01-01, 96 months). The over-dispersed Poisson family is defined on non-negative increments - its Pearson residual divides by a fitted mean that a negative increment can drive below zero, and its process draw has no negative mean - so the ODP bootstrap refuses this cohort outright rather than reflecting it through sign(). Mack's conditional moments carry no such restriction: the mack diagonal generator (and one_year_cdr) still answer here"
+},
+"clrd|Bedford Grange Mut Ins Co|othliab": {
+"cdr|gamma": "36438cefa7206dac9ef150b6",
+"cdr|od_poisson": "36438cefa7206dac9ef150b6",
+"fit": "61ee8dc002d47b0c0c3c39cb",
+"next|gamma|01": "0c92bddb4e96f3ea9ec9f0f6",
+"next|gamma|10": "0c92bddb4e96f3ea9ec9f0f6",
+"next|gamma|11": "0c92bddb4e96f3ea9ec9f0f6",
+"next|od_poisson|01": "0c92bddb4e96f3ea9ec9f0f6",
+"next|od_poisson|10": "0c92bddb4e96f3ea9ec9f0f6",
+"next|od_poisson|11": "0c92bddb4e96f3ea9ec9f0f6"
+},
+"clrd|Chicago Mut Ins Co|ppauto": {
+"fit": "refused|negative_increment|1 negative incremental cell(s) at (1988-01-01, 120 months). The over-dispersed Poisson family is defined on non-negative increments - its Pearson residual divides by a fitted mean that a negative increment can drive below zero, and its process draw has no negative mean - so the ODP bootstrap refuses this cohort outright rather than reflecting it through sign(). Mack's conditional moments carry no such restriction: the mack diagonal generator (and one_year_cdr) still answer here"
+},
+"clrd|Colorado Farm Bureau Mut Ins Co|othliab": {
+"fit": "refused|negative_increment|3 negative incremental cell(s) at (1991-01-01, 72 months), (1993-01-01, 60 months) and (1994-01-01, 48 months). The over-dispersed Poisson family is defined on non-negative increments - its Pearson residual divides by a fitted mean that a negative increment can drive below zero, and its process draw has no negative mean - so the ODP bootstrap refuses this cohort outright rather than reflecting it through sign(). Mack's conditional moments carry no such restriction: the mack diagonal generator (and one_year_cdr) still answer here"
+},
+"clrd|Consumers Ins Usa Inc|ppauto": {
+"cdr|gamma": "d34d3e4f2d479cd870686d01",
+"cdr|od_poisson": "be2eca686b0f94fb5ca2d2d2",
+"fit": "44162a80c6a7deec773c36a0",
+"next|gamma|01": "40c87ce1c315a0875d918988",
+"next|gamma|10": "8db1505174985e91b2183ff4",
+"next|gamma|11": "b31a356984704979a0b6965f",
+"next|od_poisson|01": "40c87ce1c315a0875d918988",
+"next|od_poisson|10": "bba3021ce2a25f3ce754b5b5",
+"next|od_poisson|11": "58e277f5af8927651d8e0634"
+},
+"clrd|Eveready Ins Co|comauto": {
+"cdr|gamma": "763814406e3f0ca77617dae4",
+"cdr|od_poisson": "8518ece11ccac0ac9a9dd7c0",
+"fit": "101c961e2e1ed61fd1462277",
+"next|gamma|01": "c28ec8a5e3b1ab6783c7b155",
+"next|gamma|10": "b612bf65be8dd6a7b45fe5b2",
+"next|gamma|11": "59609db32556816d4ebf4f65",
+"next|od_poisson|01": "c28ec8a5e3b1ab6783c7b155",
+"next|od_poisson|10": "be3472cfb0f22df1bf31e3a5",
+"next|od_poisson|11": "0ffb1d9c631721f1623d4afb"
+},
+"clrd|Farm Bureau Grp|ppauto": {
+"fit": "refused|negative_increment|8 negative incremental cell(s) at (1988-01-01, 60 months), (1988-01-01, 108 months), (1989-01-01, 84 months), (1989-01-01, 96 months), (1989-01-01, 108 months) and 3 more. The over-dispersed Poisson family is defined on non-negative increments - its Pearson residual divides by a fitted mean that a negative increment can drive below zero, and its process draw has no negative mean - so the ODP bootstrap refuses this cohort outright rather than reflecting it through sign(). Mack's conditional moments carry no such restriction: the mack diagonal generator (and one_year_cdr) still answer here"
+},
+"clrd|Farmers Automobile Grp|prodliab": {
+"cdr|gamma": "ac7bf08189d9eceaf4560eb1",
+"cdr|od_poisson": "fd180d896148c54b944f1eef",
+"fit": "37ca33bd2ed0b5e1cb9ff2d7",
+"next|gamma|01": "f530ccc2b067fe9498611865",
+"next|gamma|10": "e0b9a19347365da542efde40",
+"next|gamma|11": "909acb835eba299cb339730a",
+"next|od_poisson|01": "f530ccc2b067fe9498611865",
+"next|od_poisson|10": "4752c35da55a28817e2b2d18",
+"next|od_poisson|11": "bc9dcbcdc2815c91e9c9596c"
+},
+"clrd|Farmers Mut Ins Co Of NE|ppauto": {
+"fit": "refused|negative_increment|1 negative incremental cell(s) at (1988-01-01, 108 months). The over-dispersed Poisson family is defined on non-negative increments - its Pearson residual divides by a fitted mean that a negative increment can drive below zero, and its process draw has no negative mean - so the ODP bootstrap refuses this cohort outright rather than reflecting it through sign(). Mack's conditional moments carry no such restriction: the mack diagonal generator (and one_year_cdr) still answer here"
+},
+"clrd|Finger Lakes Fire & Cas Ins Co|othliab": {
+"cdr|gamma": "2a60234169161ee03e2e21f7",
+"cdr|od_poisson": "9dc22dd98e7e665a7b1c2f37",
+"fit": "86f200b0bb937348b43aa921",
+"next|gamma|01": "c41886dcf7a6998af94190fc",
+"next|gamma|10": "c8eab47203e98a2009dbddb3",
+"next|gamma|11": "a9f90184972c0c101890ae22",
+"next|od_poisson|01": "c41886dcf7a6998af94190fc",
+"next|od_poisson|10": "3ebba6208488d676b246150e",
+"next|od_poisson|11": "5e5a74cdc8778f45fa0bd060"
+},
+"clrd|Fitchburg Mut Ins Co|ppauto": {
+"fit": "refused|negative_cumulative|negative cumulative loss in (1989-01-01, 12 months); Mack's variance is proportional to the cumulative a link ratio starts from, so a negative one drives the variance itself negative and every standard error built on it with it"
+},
+"clrd|Goodville Mut Cas Co|comauto": {
+"cdr|gamma": "04f19db401332df4bab2d55a",
+"cdr|od_poisson": "fb19c340dcac66cd41eb84e1",
+"fit": "1c4f6e5752f46db5deb9b003",
+"next|gamma|01": "0a3c4a4134765e66a67e489d",
+"next|gamma|10": "83d7a5610336f9f9e4a915dd",
+"next|gamma|11": "4eb67c49e8dd0c0b227d1aa8",
+"next|od_poisson|01": "0a3c4a4134765e66a67e489d",
+"next|od_poisson|10": "3750594b52cd5904116eecf5",
+"next|od_poisson|11": "db6aa870d88ae5f6b09863e8"
+},
+"clrd|Grinnell Mut Grp|ppauto": {
+"fit": "refused|negative_increment|2 negative incremental cell(s) at (1988-01-01, 120 months) and (1989-01-01, 84 months). The over-dispersed Poisson family is defined on non-negative increments - its Pearson residual divides by a fitted mean that a negative increment can drive below zero, and its process draw has no negative mean - so the ODP bootstrap refuses this cohort outright rather than reflecting it through sign(). Mack's conditional moments carry no such restriction: the mack diagonal generator (and one_year_cdr) still answer here"
+},
+"clrd|Hastings Mut Ins Co|wkcomp": {
+"cdr|gamma": "e53b07255044079a357bc697",
+"cdr|od_poisson": "e6b5f114ea91cd6dc178eeb7",
+"fit": "6e4c50178dc905f79c2cec73",
+"next|gamma|01": "a5fab06e7b6d60e5cbde423e",
+"next|gamma|10": "cd3faadbe94d2e2bfff5be82",
+"next|gamma|11": "7b6139955f31ce9049db73eb",
+"next|od_poisson|01": "a5fab06e7b6d60e5cbde423e",
+"next|od_poisson|10": "a02b18273bbae4f12df52806",
+"next|od_poisson|11": "794f5b8ca6a853a607e2608c"
+},
+"clrd|Horace Mann Grp|othliab": {
+"cdr|gamma": "551442bdb04133dc43648202",
+"cdr|od_poisson": "0cd033ef1f3afd8dbacaacfb",
+"fit": "80b4794ca4e780e91c11e509",
+"next|gamma|01": "3508b0e750f6d81b996e7778",
+"next|gamma|10": "2d43df4a2f0ccf4cb8712a7a",
+"next|gamma|11": "10dc0b07ce9bf34bdd078831",
+"next|od_poisson|01": "3508b0e750f6d81b996e7778",
+"next|od_poisson|10": "ab5b8c2fd9203c45cec4b4ed",
+"next|od_poisson|11": "1167208d8c0f02901a0f35b7"
+},
+"clrd|IMT Ins Co Mut|wkcomp": {
+"fit": "refused|negative_increment|9 negative incremental cell(s) at (1988-01-01, 84 months), (1988-01-01, 96 months), (1988-01-01, 120 months), (1989-01-01, 48 months), (1989-01-01, 72 months) and 4 more. The over-dispersed Poisson family is defined on non-negative increments - its Pearson residual divides by a fitted mean that a negative increment can drive below zero, and its process draw has no negative mean - so the ODP bootstrap refuses this cohort outright rather than reflecting it through sign(). Mack's conditional moments carry no such restriction: the mack diagonal generator (and one_year_cdr) still answer here"
+},
+"clrd|Kentucky Farm Bureau Mut Ins Grp|othliab": {
+"fit": "refused|negative_increment|2 negative incremental cell(s) at (1991-01-01, 36 months) and (1992-01-01, 72 months). The over-dispersed Poisson family is defined on non-negative increments - its Pearson residual divides by a fitted mean that a negative increment can drive below zero, and its process draw has no negative mean - so the ODP bootstrap refuses this cohort outright rather than reflecting it through sign(). Mack's conditional moments carry no such restriction: the mack diagonal generator (and one_year_cdr) still answer here"
+},
+"clrd|MO Employers Mut Ins Co|wkcomp": {
+"cdr|gamma": "947f5635d1c520f1741db930",
+"cdr|od_poisson": "0288cdc720b024e663e338dd",
+"fit": "3a9d745140079fc5c6867811",
+"next|gamma|01": "4d1dff06ccf3390a47702bc8",
+"next|gamma|10": "1f01162fb3cf2271149e4050",
+"next|gamma|11": "c18304d00f365e760822707e",
+"next|od_poisson|01": "4d1dff06ccf3390a47702bc8",
+"next|od_poisson|10": "d706643578851e34bd9f4adb",
+"next|od_poisson|11": "471d8db2162ff53567ed450d"
+},
+"clrd|Martingale Natl Ins Co|wkcomp": {
+"cdr|gamma": "907bd8215dfd28c201b5e721",
+"cdr|od_poisson": "657cc59378850b46f057d9a8",
+"fit": "726bfe0a75d73f3201f9dfee",
+"next|gamma|01": "6e362c5ae5e0cb8f717151f2",
+"next|gamma|10": "0057bdc54f31c6b9476100e7",
+"next|gamma|11": "6f7a78051ed999a55e929df8",
+"next|od_poisson|01": "6e362c5ae5e0cb8f717151f2",
+"next|od_poisson|10": "7bd70cfd93191669197152f2",
+"next|od_poisson|11": "b2eb71cac0625bc93cae144e"
+},
+"clrd|Millers Mut Ins Assoc|prodliab": {
+"fit": "refused|negative_increment|2 negative incremental cell(s) at (1989-01-01, 72 months) and (1991-01-01, 60 months). The over-dispersed Poisson family is defined on non-negative increments - its Pearson residual divides by a fitted mean that a negative increment can drive below zero, and its process draw has no negative mean - so the ODP bootstrap refuses this cohort outright rather than reflecting it through sign(). Mack's conditional moments carry no such restriction: the mack diagonal generator (and one_year_cdr) still answer here"
+},
+"clrd|Mutual Benefit Grp|wkcomp": {
+"fit": "refused|negative_increment|6 negative incremental cell(s) at (1988-01-01, 108 months), (1989-01-01, 84 months), (1989-01-01, 96 months), (1990-01-01, 60 months), (1990-01-01, 96 months) and 1 more. The over-dispersed Poisson family is defined on non-negative increments - its Pearson residual divides by a fitted mean that a negative increment can drive below zero, and its process draw has no negative mean - so the ODP bootstrap refuses this cohort outright rather than reflecting it through sign(). Mack's conditional moments carry no such restriction: the mack diagonal generator (and one_year_cdr) still answer here"
+},
+"clrd|New York Marine & General Ins Co|comauto": {
+"cdr|gamma": "36438cefa7206dac9ef150b6",
+"cdr|od_poisson": "36438cefa7206dac9ef150b6",
+"fit": "46ba3d4071dbf34c9549ff8c",
+"next|gamma|01": "0c92bddb4e96f3ea9ec9f0f6",
+"next|gamma|10": "0c92bddb4e96f3ea9ec9f0f6",
+"next|gamma|11": "0c92bddb4e96f3ea9ec9f0f6",
+"next|od_poisson|01": "0c92bddb4e96f3ea9ec9f0f6",
+"next|od_poisson|10": "0c92bddb4e96f3ea9ec9f0f6",
+"next|od_poisson|11": "0c92bddb4e96f3ea9ec9f0f6"
+},
+"clrd|Nonprofits Ins Assn Interins|othliab": {
+"cdr|gamma": "866fc9521fdaeb8cc013b50a",
+"cdr|od_poisson": "41803896f22824c8a0bbe9e5",
+"fit": "26795d7386d8d99f92cdbdb9",
+"next|gamma|01": "32694883ca475a6e0647abd3",
+"next|gamma|10": "a053cde81f6c10590a3ec977",
+"next|gamma|11": "92e89bc6fa7e536bf6f8763e",
+"next|od_poisson|01": "32694883ca475a6e0647abd3",
+"next|od_poisson|10": "2c221c8caa6bf8c063ec24e8",
+"next|od_poisson|11": "fa15bfe934a5148413888879"
+},
+"clrd|Oklahoma Farm Grp|ppauto": {
+"fit": "refused|negative_increment|1 negative incremental cell(s) at (1988-01-01, 108 months). The over-dispersed Poisson family is defined on non-negative increments - its Pearson residual divides by a fitted mean that a negative increment can drive below zero, and its process draw has no negative mean - so the ODP bootstrap refuses this cohort outright rather than reflecting it through sign(). Mack's conditional moments carry no such restriction: the mack diagonal generator (and one_year_cdr) still answer here"
+},
+"clrd|Overseas Partners Us Reins Co|othliab": {
+"cdr|gamma": "10e4ceda328c05cc706577d0",
+"cdr|od_poisson": "ce6d6862bb9c3016cedbe25f",
+"fit": "15ee077d2152ccf62544189c",
+"next|gamma|01": "6143476cad48f0a1fb282d6d",
+"next|gamma|10": "2d3dad6184892e7a63e8d0b2",
+"next|gamma|11": "21a8bd205397670f84d1e99a",
+"next|od_poisson|01": "6143476cad48f0a1fb282d6d",
+"next|od_poisson|10": "c51fc542bccbad1ad6abff74",
+"next|od_poisson|11": "05772999c81d1fd6da972a52"
+},
+"clrd|Partners Mut Ins Co|wkcomp": {
+"fit": "refused|negative_increment|4 negative incremental cell(s) at (1989-01-01, 84 months), (1990-01-01, 84 months), (1991-01-01, 72 months) and (1992-01-01, 60 months). The over-dispersed Poisson family is defined on non-negative increments - its Pearson residual divides by a fitted mean that a negative increment can drive below zero, and its process draw has no negative mean - so the ODP bootstrap refuses this cohort outright rather than reflecting it through sign(). Mack's conditional moments carry no such restriction: the mack diagonal generator (and one_year_cdr) still answer here"
+},
+"clrd|Pennsylvania Natl Ins Grp|wkcomp": {
+"cdr|gamma": "c6907a18313de1742f3f33c5",
+"cdr|od_poisson": "0d096124192a2b6d102b4d4d",
+"fit": "f800dbf895b27f09dc150f21",
+"next|gamma|01": "1bfb33f34e2d7d24509d53de",
+"next|gamma|10": "db9f310fd4ead0d623f166e7",
+"next|gamma|11": "c5fef01b81742927ebdd9e79",
+"next|od_poisson|01": "1bfb33f34e2d7d24509d53de",
+"next|od_poisson|10": "a15974cdfd0dac2ede99276e",
+"next|od_poisson|11": "55de1116c4829ea08e8081d6"
+},
+"clrd|Samsung Fire & Marine Ins Co Ltd|prodliab": {
+"fit": "refused|negative_cumulative|negative cumulative loss in (1991-01-01, 60 months); Mack's variance is proportional to the cumulative a link ratio starts from, so a negative one drives the variance itself negative and every standard error built on it with it"
+},
+"clrd|Seguros Triples Inc|ppauto": {
+"cdr|gamma": "1a471e15ae3d4150121f0b27",
+"cdr|od_poisson": "630e1813bdf2e67cbb3ef8a6",
+"fit": "1b6d144277d8f9e7e452862f",
+"next|gamma|01": "9688627af24673f2a7cedf54",
+"next|gamma|10": "9ee72c26f734a47cd8ce7659",
+"next|gamma|11": "ae709e0f19177677bfa27367",
+"next|od_poisson|01": "9688627af24673f2a7cedf54",
+"next|od_poisson|10": "1b200165bbe977784fff5367",
+"next|od_poisson|11": "89d471423c73958095a75fd7"
+},
+"clrd|Standard Mut Ins Co|othliab": {
+"fit": "refused|negative_increment|2 negative incremental cell(s) at (1991-01-01, 84 months) and (1992-01-01, 48 months). The over-dispersed Poisson family is defined on non-negative increments - its Pearson residual divides by a fitted mean that a negative increment can drive below zero, and its process draw has no negative mean - so the ODP bootstrap refuses this cohort outright rather than reflecting it through sign(). Mack's conditional moments carry no such restriction: the mack diagonal generator (and one_year_cdr) still answer here"
+},
+"clrd|State-Wide Ins Co|ppauto": {
+"cdr|gamma": "3a8ddbddce1d713a329c7922",
+"cdr|od_poisson": "683cd00c0b36c60e9e7a9dc2",
+"fit": "78094be265c66bd695e3d08d",
+"next|gamma|01": "da5a18341dbb0a021bc826d9",
+"next|gamma|10": "70bd55fc23b729f7eb768a22",
+"next|gamma|11": "0079f7193a68863b0b5fc505",
+"next|od_poisson|01": "da5a18341dbb0a021bc826d9",
+"next|od_poisson|10": "506df4e1ac7b6129948c0d6c",
+"next|od_poisson|11": "7f97a3498d9b7452db93cb8a"
+},
+"clrd|Vanliner Ins Co|comauto": {
+"fit": "refused|negative_increment|1 negative incremental cell(s) at (1989-01-01, 108 months). The over-dispersed Poisson family is defined on non-negative increments - its Pearson residual divides by a fitted mean that a negative increment can drive below zero, and its process draw has no negative mean - so the ODP bootstrap refuses this cohort outright rather than reflecting it through sign(). Mack's conditional moments carry no such restriction: the mack diagonal generator (and one_year_cdr) still answer here"
+},
+"clrd|Wea Prop & Cas Ins Co|ppauto": {
+"cdr|gamma": "0ee2b7670b5d24ec763b7010",
+"cdr|od_poisson": "a37d77d8ada82806d169725a",
+"fit": "d83b353524525f7d010f8341",
+"next|gamma|01": "28327f6ead25e2e2666eb500",
+"next|gamma|10": "783dcc425915dc8bd5f4df8d",
+"next|gamma|11": "35076ca06621a61b2669935f",
+"next|od_poisson|01": "28327f6ead25e2e2666eb500",
+"next|od_poisson|10": "af25933420815a083368e0b0",
+"next|od_poisson|11": "ac5155afac21406acc1c737b"
+},
+"clrd|Wisconsin Mut Ins Co|ppauto": {
+"cdr|gamma": "247046c4f436625b5e63069f",
+"cdr|od_poisson": "13e17640f0b8a8827f01cf30",
+"fit": "fb5de577e127fadaf0c31b88",
+"next|gamma|01": "ef809b87fbbd505e6e47c10d",
+"next|gamma|10": "260c37715dd435c4cc59f4a3",
+"next|gamma|11": "c785c3250bc5b62c311ba94f",
+"next|od_poisson|01": "ef809b87fbbd505e6e47c10d",
+"next|od_poisson|10": "a70e56a5e90347065d59dae7",
+"next|od_poisson|11": "ac1a2098e6c5d92ce01b9e3b"
+},
+"formula_30": {
+"cdr|gamma": "17213771d41af197b8e572db",
+"cdr|od_poisson": "4b5fe0a150e2198e6cebeaa0",
+"fit": "cca94275f09fff15a2159146",
+"next|gamma|01": "e2f76cc8cbfff480b62bf907",
+"next|gamma|10": "8e939ecab7dcc80396478b85",
+"next|gamma|11": "2043a6eb3990a355ed5fc9d9",
+"next|od_poisson|01": "e2f76cc8cbfff480b62bf907",
+"next|od_poisson|10": "8e70b6852c916ae425f29b2a",
+"next|od_poisson|11": "ed9a6ae6b38e3701a8619d5e"
+},
+"genins": {
+"cdr|gamma": "4a6cc806eb0bcaa9e1438aa3",
+"cdr|od_poisson": "6422bec8e163a053549099e0",
+"fit": "8f0a52b4109ce9a1fc07821e",
+"next|gamma|01": "9db3a93b9d0628ecac618e7d",
+"next|gamma|10": "01f37871214ec2ebb81e3db3",
+"next|gamma|11": "fb10ec994b12d74782ef7b0d",
+"next|od_poisson|01": "9db3a93b9d0628ecac618e7d",
+"next|od_poisson|10": "3c762857bd9635e87fb7025e",
+"next|od_poisson|11": "d854e46b45b727d53ab1dc31"
+},
+"mw2014": {
+"cdr|gamma": "f175eec29239c4063f2fb78d",
+"cdr|od_poisson": "244bf214c4364a9eb2793ec7",
+"fit": "4098b3e1ba0e69efb01d988c",
+"next|gamma|01": "4b2f8772dd5bc3a15664d284",
+"next|gamma|10": "955e6f87ee00c17437dd16ab",
+"next|gamma|11": "dc0617decfdc7e99ed61e049",
+"next|od_poisson|01": "4b2f8772dd5bc3a15664d284",
+"next|od_poisson|10": "d21f79dd371512948cba02e6",
+"next|od_poisson|11": "24508e3f5e6f5b25bf4ffe67"
+},
+"raa": {
+"fit": "refused|negative_increment|1 negative incremental cell(s) at (1982-01-01, 84 months). The over-dispersed Poisson family is defined on non-negative increments - its Pearson residual divides by a fitted mean that a negative increment can drive below zero, and its process draw has no negative mean - so the ODP bootstrap refuses this cohort outright rather than reflecting it through sign(). Mack's conditional moments carry no such restriction: the mack diagonal generator (and one_year_cdr) still answer here"
+},
+"ukmotor": {
+"cdr|gamma": "9b5d94bbd4d37d3b98213797",
+"cdr|od_poisson": "c9fd4fa54658bb59fd9c02a6",
+"fit": "5b2baeb157174f7fd1a3f3c7",
+"next|gamma|01": "9ca1668007907abf27cf7938",
+"next|gamma|10": "0c1c442eb3999dd10bbc2a0a",
+"next|gamma|11": "190326a0c012a6fd66dd7b60",
+"next|od_poisson|01": "9ca1668007907abf27cf7938",
+"next|od_poisson|10": "e170f4f41383f3d025f5c89d",
+"next|od_poisson|11": "d8a06ab0266163490cce733d"
+}
+}

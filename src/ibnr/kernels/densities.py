@@ -100,7 +100,6 @@ the arithmetic come out.
 from __future__ import annotations
 
 import numpy as np
-from scipy.special import gammaln
 
 __all__ = [
     "MEASURES",
@@ -203,6 +202,10 @@ def odp_lpdf(y, mu, phi) -> np.ndarray:
         raise ValueError("odp_lpdf needs strictly positive mu")
     if np.any(y < 0):
         raise ValueError("odp_lpdf needs non-negative y")
+    # Imported here rather than at the top: odp_draw below is the draw the
+    # run-off bootstrap uses, and ibnr.methods imports that without scipy.
+    from scipy.special import gammaln
+
     scaled = y / phi
     return scaled * np.log(mu / phi) - mu / phi - gammaln(scaled + 1.0)
 
