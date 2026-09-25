@@ -153,12 +153,12 @@ cases, 230 of them refusals, all identical (the refusals in the same places).
   triangle with none) or answered NaN. Now `not_finite`, naming the cells;
 - `expected_loss_ratio=True` and `decay=True`, which were read as 1. Now
   `invalid_option`, in `ibnr.methods` and in `kernels.ConventionalCandidate`;
-- a `methods.mack` answer that is not a finite number (amounts near the largest
-  double, whose squares overflow), which came back as NaN in a float column.
-  Now `result_not_finite`, naming the origins;
-- `methods.mack` under `zero_cells="observed"` where a factor of 0 projects an
-  origin to 0, which gave NaN standard errors. Now `variance_not_estimable`,
-  naming the link.
+- an answer with a number that is not finite: a `methods.mack` standard error
+  (amounts near the largest double, whose squares overflow), which came back as
+  NaN, and a total or a link ratio of the other three methods that overflows
+  although each ultimate is finite, which came back as infinity. Now
+  `result_not_finite`, naming the origins where it can. A result's numbers are
+  all finite, and a missing one is a null.
 
 **Other changes a caller can see:**
 - a text `expected_loss_ratio` or `decay` raised a `TypeError` from inside
