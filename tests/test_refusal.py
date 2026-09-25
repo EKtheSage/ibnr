@@ -66,6 +66,19 @@ QT = tri([(f"2001Q{o - 2000}", d // 4, v) for o, d, v in BASE])
 ZERO_COL = [(o, d, 0.0 if d == 12 else v) for o, d, v in BASE]
 Z2 = replace(replace(BASE, (2002, 12), 0.0), (2003, 12), 0.0)
 Z3 = replace(replace(BASE, (2002, 36), 0.0), (2002, 24), 0.0)
+# a staircase whose link factors grow with age, so no tail curve decays
+GROWING = [
+    (2001, 12, 100.0),
+    (2001, 24, 105.0),
+    (2001, 36, 111.3),
+    (2001, 48, 119.1),
+    (2002, 12, 110.0),
+    (2002, 24, 115.5),
+    (2002, 36, 122.4),
+    (2003, 12, 120.0),
+    (2003, 24, 126.0),
+    (2004, 12, 130.0),
+]
 cl, bf, bk, cc, mk = (
     methods.chain_ladder,
     methods.bornhuetter_ferguson,
@@ -1575,6 +1588,201 @@ CASES = [
         [0],
         {},
     ),
+    # tails
+    (
+        "tail_a_number",
+        lambda: cl(T, tail=1.05),
+        "invalid_option",
+        "tail",
+        None,
+        [],
+        [],
+        [],
+        {"given": 1.05},
+    ),
+    (
+        "tail_option_without_a_tail",
+        lambda: cl(T, tail_decay=0.5),
+        "invalid_option",
+        "tail_decay",
+        None,
+        [],
+        [],
+        [],
+        {"options": ("tail_decay", "tail"), "given": 0.5},
+    ),
+    (
+        "tail_constant_without_a_factor",
+        lambda: bf(T, premium=PREM, expected_loss_ratio=0.7, tail="constant"),
+        "invalid_option",
+        "tail_factor",
+        None,
+        [],
+        [],
+        [],
+        {},
+    ),
+    (
+        "tail_factor_on_a_curve",
+        lambda: cc(T, premium=PREM, tail="weibull", tail_factor=1.05),
+        "invalid_option",
+        "tail_factor",
+        None,
+        [],
+        [],
+        [],
+        {"options": ("tail_factor", "tail")},
+    ),
+    (
+        "tail_steps_on_a_constant",
+        lambda: bk(
+            T,
+            premium=PREM,
+            expected_loss_ratio=0.7,
+            tail="constant",
+            tail_factor=1.05,
+            tail_steps=5,
+        ),
+        "invalid_option",
+        "tail_steps",
+        None,
+        [],
+        [],
+        [],
+        {"options": ("tail_steps", "tail")},
+    ),
+    (
+        "tail_decay_above_one",
+        lambda: cl(T, tail="constant", tail_factor=1.05, tail_decay=1.5),
+        "invalid_option",
+        "tail_decay",
+        None,
+        [],
+        [],
+        [],
+        {"given": 1.5},
+    ),
+    (
+        "tail_attach_off_the_grid",
+        lambda: cl(T, tail="constant", tail_factor=1.05, tail_attach_lag=30),
+        "grain_mismatch",
+        "tail_attach_lag",
+        None,
+        [],
+        [],
+        [],
+        {"given": 30},
+    ),
+    (
+        "tail_attach_after_the_last_age",
+        lambda: cl(T, tail="constant", tail_factor=1.05, tail_attach_lag=60),
+        "not_in_triangle",
+        "tail_attach_lag",
+        None,
+        [],
+        [],
+        [],
+        {"given": 60},
+    ),
+    (
+        "tail_fit_lags_past_the_links",
+        lambda: cl(T, tail="exponential", tail_fit_lags=(12, 48)),
+        "not_in_triangle",
+        "tail_fit_lags",
+        None,
+        [],
+        [],
+        [],
+        {"given": (12, 48)},
+    ),
+    (
+        "tail_rows_past_the_steps",
+        lambda: cl(T, tail="exponential", tail_steps=1, tail_rows=2),
+        "invalid_option",
+        "tail_rows",
+        None,
+        [],
+        [],
+        [],
+        {"options": ("tail_rows", "tail_steps")},
+    ),
+    (
+        "tail_curve_with_one_factor",
+        lambda: cl(T, tail="exponential", tail_fit_lags=(36, None)),
+        "not_identified",
+        "tail",
+        None,
+        [],
+        [(36, 48)],
+        [],
+        {"options": ("tail", "tail_fit_lags")},
+    ),
+    (
+        "tail_curve_that_grows",
+        lambda: cl(tri(GROWING), tail="exponential"),
+        "tail_not_decaying",
+        "tail",
+        None,
+        [],
+        [(12, 24), (24, 36), (36, 48)],
+        [],
+        {"options": ("tail", "tail_fit_lags")},
+    ),
+    (
+        "tail_decay_cannot_spread",
+        lambda: cl(T, tail="constant", tail_factor=0.5, tail_decay=0.0),
+        "result_not_finite",
+        "tail_decay",
+        None,
+        [],
+        [],
+        [],
+        {"options": ("tail_decay", "tail_factor")},
+    ),
+    (
+        "mack_tail_attached_early",
+        lambda: mk(T, tail="constant", tail_factor=1.05, tail_attach_lag=24),
+        "not_supported",
+        "tail_attach_lag",
+        None,
+        [],
+        [(24, 36), (36, 48)],
+        [],
+        {"given": 24},
+    ),
+    (
+        "mack_tail_below_one",
+        lambda: mk(T, tail="constant", tail_factor=0.95),
+        "variance_not_estimable",
+        "tail_sigma",
+        None,
+        [],
+        [],
+        [],
+        {"options": ("tail_sigma", "tail_std_err")},
+    ),
+    (
+        "mack_tail_before_the_first_link",
+        lambda: mk(T, tail="constant", tail_factor=3.0),
+        "variance_not_estimable",
+        "tail_sigma",
+        None,
+        [],
+        [],
+        [],
+        {"options": ("tail_sigma", "tail_std_err")},
+    ),
+    (
+        "mack_tail_sigma_negative",
+        lambda: mk(T, tail="constant", tail_factor=1.05, tail_sigma=-1.0),
+        "invalid_option",
+        "tail_sigma",
+        None,
+        [],
+        [],
+        [],
+        {"given": -1.0},
+    ),
     # the result
     (
         "to_polars_unknown",
@@ -2364,6 +2572,63 @@ def test_a_seeded_fuzz_meets_nothing_but_refusals():
         outcomes["answered"] = outcomes.get("answered", 0) + 1
     assert outcomes["answered"] > 100, outcomes
     assert len(outcomes) > 10, outcomes
+
+
+_TAIL_POOL = {
+    "tail_factor": [1.05, 1.0, 0.95, 0.0, -1.0, math.inf, math.nan, True, 1e300, "1.05", 3.0],
+    "tail_decay": [0.5, 0.0, 1.0, 1.5, math.nan],
+    "tail_attach_lag": [12, 24, 60, 72, 100, 1000, 12.5, True],
+    "tail_fit_lags": [(12, None), (24, 84), (None, 24), (84, 24), (30, None), 24, (None, None)],
+    "tail_steps": [1, 5, 100, 10_000, 0, 10_001, 2.5],
+    "tail_rows": [0, 1, 3, 20, -1],
+    "tail_sigma": [0.0, 0.1, -1.0, math.nan],
+    "tail_std_err": [0.0, 0.02, math.inf],
+}
+_TAIL_KINDS = [None, "constant", "exponential", "inverse_power", "weibull", "x", 1.05]
+
+
+def test_a_seeded_fuzz_of_tails_meets_nothing_but_refusals():
+    """1,500 cases: a tail kind, valid or not, and each tail option drawn at random
+    from values valid and not, through all five methods on the five public
+    triangles, some of them edited. Every call answers with finite numbers or
+    raises exactly Refusal, and a RuntimeWarning is an error."""
+    rng = np.random.default_rng(20260925)
+    names = sorted(_FUZZ)
+    outcomes: dict[str, int] = {}
+    for _ in range(1500):
+        rows = _FUZZ[names[int(rng.integers(0, len(names)))]]
+        edited = _fuzz_case(rng, rows) if rng.random() < 0.3 else [list(r) for r in rows]
+        method = ("chain_ladder", "bornhuetter_ferguson", "benktander", "cape_cod", "mack")[
+            int(rng.integers(0, 5))
+        ]
+        options = {"tail": _TAIL_KINDS[int(rng.integers(0, len(_TAIL_KINDS)))]}
+        for name, pool in _TAIL_POOL.items():
+            if name in ("tail_sigma", "tail_std_err") and method != "mack":
+                continue
+            if rng.random() < 0.3:
+                options[name] = pool[int(rng.integers(0, len(pool)))]
+        if options["tail"] == "constant" and rng.random() < 0.7:
+            options.setdefault("tail_factor", 1.05)
+        if method in ("bornhuetter_ferguson", "benktander", "cape_cod"):
+            origins = sorted({r[0] for r in rows})
+            options["premium"] = {o: 1000.0 * (1 + k) for k, o in enumerate(origins)}
+        if method in ("bornhuetter_ferguson", "benktander"):
+            options["expected_loss_ratio"] = 0.7
+        function = getattr(methods, method)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            try:
+                result = function(_as_table(edited) if edited else pa.table({}), **options)
+            except Refusal as refusal:
+                assert type(refusal) is Refusal
+                json.dumps(refusal.to_dict(), allow_nan=False)
+                outcomes[refusal.reason] = outcomes.get(refusal.reason, 0) + 1
+                continue
+        _numbers_are_finite(result)
+        outcomes["answered"] = outcomes.get("answered", 0) + 1
+    assert outcomes["answered"] > 100, outcomes
+    for reason in ("invalid_option", "not_in_triangle", "grain_mismatch", "not_supported"):
+        assert outcomes.get(reason, 0) > 0, (reason, outcomes)
 
 
 @pytest.mark.tieout
