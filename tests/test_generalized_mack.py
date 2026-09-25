@@ -305,6 +305,8 @@ SHARED = [
     {"drop_above": 2.5, "drop_below": 1.02},
     {"exclude_valuations": ["1995-12-31"], "history_periods": 6},
     {"trim_ties": "origin", "drop_low": 1},
+    # preserve stops the trims at most ages and the bound at the first (on raa)
+    {"drop_high": 2, "drop_low": 2, "preserve": 3, "drop_above": 1.5},
 ]
 
 
@@ -331,8 +333,19 @@ def test_mack_and_the_chain_ladder_select_and_average_alike(name, options):
         return
     assert mack.development["factor"].equals(point.development["factor"])
     assert mack.link_ratios.equals(point.link_ratios)
-    assert mack.development["n_selected"].equals(point.development["n_selected"])
+    for name in ("n_selected", "extreme_trimming_skipped", "bounds_skipped"):
+        assert mack.development[name].equals(point.development[name]), name
     np.testing.assert_allclose(column(mack, "ultimate"), column(point, "ultimate"), rtol=1e-12)
+
+
+def test_mack_says_where_preserve_stopped_a_trim_and_a_bound():
+    """On raa, preserve=3 stops drop_high=2 and drop_low=2 at every age from 24
+    months on, and stops drop_above=1.5 at 12 months, where it would leave too few
+    ratios. Mack reports both, as the chain ladder does."""
+    result = methods.mack(RAA, drop_high=2, drop_low=2, preserve=3, drop_above=1.5)
+    development = result.development
+    assert development["extreme_trimming_skipped"].to_pylist() == [False] + [True] * 8 + [None]
+    assert development["bounds_skipped"].to_pylist() == [True] + [False] * 8 + [None]
 
 
 # -- 4. behaviour ------------------------------------------------------------------------
@@ -476,6 +489,43 @@ def test_a_gap_with_estimates_after_it_is_filled_from_both_sides():
     assert fit.sigma2[2] != pytest.approx(np.exp(first + before * 2) ** 2, rel=1e-3)
 
 
+#: drop_high=1 leaves 1.25 and 1.25 from 36 to 48 months (sigma exactly 0), one ratio
+#: from 48 to 60, and the one ratio at the last age kept
+ZERO_SIGMA = [
+    [100.0, 180.0, 400.0, 500.0, 525.0, 540.0],
+    [110.0, 230.0, 480.0, 600.0, 650.0],
+    [90.0, 200.0, 320.0, 480.0],
+    [120.0, 250.0, 450.0],
+    [105.0, 260.0],
+    [115.0],
+]
+
+
+def test_a_sigma_of_zero_stays_zero_and_is_left_out_of_the_log_linear_fill():
+    """The two ratios kept from 36 to 48 months are equal, so sigma there is 0: an
+    estimate, not an underflow, and a value with no logarithm. The log-linear fill
+    at 48 and 60 months regresses on the two positive sigmas only (R's rule), and
+    methods.mack answers rather than refusing the 0 as amounts too small."""
+    result = methods.mack(cells_of(rows_of(ZERO_SIGMA)), drop_high=1)
+    sigma = column(result, "sigma", "development")[:-1]
+    links = result.link_ratios.filter(result.link_ratios["included"]).to_pylist()
+    by_hand = []
+    for lag in (12, 24):
+        kept = [(r["previous"], r["ratio"]) for r in links if r["from_dev_lag"] == lag]
+        previous, ratios = np.array(kept).T
+        factor = (previous * ratios).sum() / previous.sum()
+        by_hand.append(np.sqrt((previous * (ratios - factor) ** 2).sum() / (len(kept) - 1)))
+    np.testing.assert_allclose(sigma[:2], by_hand, rtol=1e-12)
+    assert sigma[2] == 0.0
+    # a line through log sigma at ages 0 and 1, read off at ages 3 and 4
+    slope = np.log(by_hand[1]) - np.log(by_hand[0])
+    np.testing.assert_allclose(
+        sigma[3:], np.exp(np.log(by_hand[0]) + slope * np.array([3, 4])), rtol=1e-12
+    )
+    assert result.development["sigma_extrapolated"].to_pylist()[:-1] == [False] * 3 + [True] * 2
+    assert np.isfinite(total(result)) and total(result) > 0
+
+
 def test_a_gap_the_rule_cannot_fill_is_refused_naming_the_option():
     # three origins: drop_high=1 leaves the first link with one ratio, and Mack's
     # rule has no two links before it; the regression has only one estimate
@@ -526,6 +576,11 @@ def test_observed_zeros_with_options_are_refused_and_without_keep_0_7_2():
     fit = fit_mack_grid(grid_of(rows))
     assert (fit.n_obs != fit.n_pos).any()  # R's reading: the link out of the zero counts
     assert plain.link_ratios["included"].to_pylist() == [True] * 45
+    # n_selected counts the included ratios at each age, the one out of the zero too
+    lags = plain.link_ratios["from_dev_lag"].to_pylist()
+    counts = [lags.count(12 * (j + 1)) for j in range(9)]
+    assert counts[0] == 9
+    assert plain.development["n_selected"].to_pylist() == [*counts, None]
     for options in ({"average": "simple"}, {"history_periods": 50}, {"drop_high": 1}):
         with pytest.raises(Refusal, match=r"the link ratio out of the zero at") as refused:
             methods.mack(cells_of(rows), zero_cells="observed", **options)
@@ -827,6 +882,64 @@ def test_exhausted_exclusions_is_delivered():
     assert np.isfinite(total(methods.mack(RAA, drop_high=1, exhausted_exclusions="keep")))
     with pytest.raises(Refusal):
         methods.mack(RAA, drop_high=1, exhausted_exclusions="raise")
+
+
+def _matrix(rows) -> np.ndarray:
+    """An (origins, ages) matrix, NaN unobserved, from [year, dev_lag, value] rows."""
+    first = min(y for y, _, _ in rows)
+    out = np.full(
+        (max(y for y, _, _ in rows) - first + 1, max(d for _, d, _ in rows) // 12), np.nan
+    )
+    for y, d, v in rows:
+        out[y - first, d // 12 - 1] = v
+    return out
+
+
+def test_fit_mack_and_fit_mack_many_deliver_average_and_links():
+    """The Triangle entry points pass ``average`` and ``links`` on to the fit. On raa,
+    a simple average over the last five link ratios gives a total standard error of
+    27,485.84 and five link ratios alone 22,290.07, where the default fit gives
+    26,909.01: a dropped argument would give the default."""
+    from ibnr.kernels.mack import fit_mack, fit_mack_many
+
+    from .conftest import make_cohort_triangle
+
+    rules = LinkRules(history_periods=5)
+    se = {}
+    for name, rows in (("raa", PUBLIC["raa"]), ("genins", PUBLIC["genins"])):
+        matrix = _matrix(rows)
+        one = make_cohort_triangle(None, matrix, start_year=int(rows[0][0]))
+        default = fit_mack(one)
+        for average in ("volume", "simple"):
+            fit = fit_mack(one, average=average, links=rules)
+            assert fit.average == average and fit.links == rules
+            expected = fit_mack_grid(grid_of(rows), average=average, links=rules)
+            assert fit.msep_runoff()["msep_total"] == expected.msep_runoff()["msep_total"]
+            assert fit.msep_runoff()["msep_total"] != default.msep_runoff()["msep_total"]
+            se[name, average] = float(np.sqrt(fit.msep_runoff()["msep_total"]))
+        se[name, "default"] = float(np.sqrt(default.msep_runoff()["msep_total"]))
+    assert se["raa", "default"] == pytest.approx(26_909.01, abs=0.01)
+    assert se["raa", "simple"] == pytest.approx(27_485.84, abs=0.01)
+    assert se["raa", "volume"] == pytest.approx(22_290.07, abs=0.01)
+
+    # the same two cohorts in one triangle, fitted in one pass
+    import pandas as pd
+
+    from ibnr import Triangle
+
+    frames = [
+        make_cohort_triangle(None, _matrix(rows), segment={"lob": name}).execute()
+        for name, rows in (("raa", PUBLIC["raa"]), ("genins", PUBLIC["genins"]))
+    ]
+    both = Triangle.from_long(pd.concat(frames, ignore_index=True), measure="cumulative")
+    for average in ("volume", "simple"):
+        panel = fit_mack_many(both, average=average, links=rules)
+        for name in ("raa", "genins"):
+            fit = panel[name]
+            assert fit.average == average and fit.links == rules
+            total_se = float(np.sqrt(fit.msep_runoff()["msep_total"]))
+            assert total_se == pytest.approx(se[name, average], rel=1e-12)
+            assert total_se != pytest.approx(se[name, "default"], rel=1e-6)
 
 
 # -- 6. chainladder-python and the example workbook ----------------------------------------
