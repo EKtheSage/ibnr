@@ -9,10 +9,11 @@ and Cape Cod match chainladder-python to a relative 1e-9, which
 `tests/test_methods.py` checks, and `tests/test_zero_cells.py` checks the same
 on triangles with zero cells. `tests/test_development_options.py` checks the
 development options, Benktander and Cape Cod's trend against chainladder on
-raa, genins, ukmotor, abc, mw2014, a 40 x 40 quarterly triangle and clrd, and
+raa, genins, ukmotor, abc, mw2014, a 40 x 40 quarterly triangle and clrd,
 `tests/test_generalized_mack.py` checks Mack with development options against
 R's `MackChainLadder` and chainladder (see
-[Mack with development options](#mack-with-development-options)).
+[Mack with development options](#mack-with-development-options)), and
+`tests/test_tail.py` checks tails against both (see [Tails](#tails)).
 
 ## The shape of a call
 
@@ -319,6 +320,116 @@ fewer than two link ratios). The one-year claims development result in
 Merz-Wuthrich formulas are derived for the volume average over every link
 ratio, and the re-reserving re-runs that estimator on next year's triangle.
 
+## Tails
+
+Every method in `ibnr.methods` takes a tail: `chain_ladder`,
+`bornhuetter_ferguson`, `benktander`, `cape_cod` and `mack`. chainladder puts a
+`cl.TailConstant` or a `cl.TailCurve` between `cl.Development` and the method;
+ibnr takes the same settings as keyword options on the method.
+
+```python
+# cl.Chainladder().fit(cl.TailConstant(1.05).fit_transform(cl.Development().fit_transform(tri)))
+methods.chain_ladder(cells, tail="constant", tail_factor=1.05)
+
+# cl.TailCurve("exponential", extrap_periods=50, projection_period=24, attachment_age=36)
+methods.chain_ladder(cells, tail="exponential", tail_steps=50, tail_rows=2, tail_attach_lag=36)
+
+# cl.TailCurve("weibull", fit_period=(12, 48)) in front of cl.MackChainladder()
+methods.mack(cells, tail="weibull", tail_fit_lags=(12, 36))
+```
+
+| chainladder-python | ibnr |
+|---|---|
+| no tail | `tail=None` (the default) |
+| `cl.TailConstant(tail=t)` | `tail="constant", tail_factor=t` |
+| `cl.TailConstant(decay=d)` | `tail_decay=d` (0.5 by default in both) |
+| `cl.TailCurve(curve=c)`, `c` one of `"exponential"`, `"inverse_power"`, `"weibull"` | `tail=c` |
+| `attachment_age=a` | `tail_attach_lag=a` |
+| `extrap_periods=n` | `tail_steps=n` (100 by default in both; development steps, not months) |
+| `projection_period=p` | `tail_rows=int(p / 12) * (12 // dev_grain_months)` (one year of steps by default in both) |
+| `fit_period=(s, e)` | `tail_fit_lags=(s, e - dev_grain_months)`: chainladder leaves out the link from `e` |
+| `errors="ignore"`, `reg_threshold=(1.00001, None)` | fixed: a factor at or below 1.00001 is left out of the curve fit; not an option |
+| `.tail_` | `result.totals["tail_factor"]` |
+| `.ldf_`, `.cdf_` with the tail columns | `result.development`, which goes on past the last observed age (below) |
+| `MackChainladder` on the tailed `Development` | `methods.mack(cells, tail=...)`, and `tail_sigma`, `tail_std_err` (R's `tail.sigma`, `tail.se`) |
+
+`development` has one row per observed age and then `tail_rows` rows beyond the
+last one, at the ages that follow. On each row `factor` is the factor to the
+next row (null on the final row), and `cdf` is the development to ultimate with
+the tail in it, so on the final row it is what is left of the tail. `source`
+says whether the factor came from the link ratios or the tail, `curve_factor`
+is a fitted curve's factor at every row but the final one, for plotting fitted
+against selected, and `in_tail_fit` says which observed ages' factors the curve
+went through. chainladder's `ldf_` values are every `factor` that is not null
+and then the final row's `cdf`, and its `cdf_` values are every row's `cdf`: on
+raa with a constant 1.05, `108-120`, `120-132`, `132-144` and `120-Ult`,
+`132-Ult`. `totals["tail_factor"]` is the development beyond the last observed
+age, which with an earlier attachment is chainladder's `tail_`, the part of the
+constant left after the attached ages, not the constant itself. Mack adds
+`tail_sigma`, `tail_std_err` and `tail_position` to `totals`.
+
+The numbers agree: the factors after the attachment, the steps shown beyond
+the triangle, the rest and the tail factor match chainladder to a relative
+1e-12 on raa, genins, ukmotor, abc, mw2014, the tail sample's paid and incurred
+triangles and clrd's commercial auto paid, for each curve with and without an
+attachment, a fit range and `extrap_periods`/`projection_period`, and each
+constant with a decay and an attachment. The four point methods' ultimates
+match to 1e-10, and Mack's standard errors, their two parts and the tail's
+sigma and standard error to 1e-9, wherever no factor is at or below 1 and no
+sigma is 0. Mack's also match R's `MackChainLadder(tail=, tail.se=,
+tail.sigma=)` on raa, genins, ukmotor, abc and mw2014 at alpha 0, 1 and 2, to
+1e-8 (`tests/test_tail.py`).
+
+Where they differ, on purpose:
+
+- **An attachment at the first age is honoured.** chainladder ignores
+  `TailConstant(attachment_age=12)` on an annual triangle and attaches at the
+  last age (its test for an attachment is false for index 0); `TailCurve`
+  honours it. ibnr honours it for both.
+- **`tail_fit_lags` includes both ends.** chainladder's `fit_period=(12, 108)`
+  leaves out the link from 108 (raa: tail 1.00864 against 1.00944 for
+  `(12, 120)`); ibnr's `(12, 108)` fits it.
+- **Every case chainladder rounds, crashes on or answers as no tail is
+  refused by name.** An attachment age off the grid (chainladder rounds it up)
+  or after the last age (a numpy error); a curve with fewer than two factors
+  above 1.00001 to fit, such as a fit range holding one link (chainladder's
+  tail is NaN, read as 1.0, so the result silently equals no tail); a decay
+  above 1 (chainladder's tail overflows to NaN, also no tail); more rows shown
+  than steps extrapolated (chainladder fits, then fails to build its tables); a
+  curve whose factors grow with age (chainladder gives an exponential tail of
+  5.8e229 on factors 1.05 to 1.09), and an inverse power curve whose slope is
+  between -1 and 0, whose product never converges, so the tail would be set by
+  `tail_steps` alone (`tail_not_decaying`).
+- **Mack's tail variance reads the logarithms it can take.** The tail's sigma
+  and standard error are read off straight lines through the logarithms of the
+  sigmas and the factors' standard errors, at the age where a line through
+  `log(f - 1)` reaches the tail. ibnr, like R, fits the first line through the
+  factors above 1 only and the other two through the positive values only.
+  chainladder leaves a left-out point's age in its sums, and fills a sigma of
+  0 with 1e-320, so its lines are not the least-squares lines whenever a
+  factor is at or below 1 or a sigma is 0 or missing: on a quarterly triangle
+  whose last three factors are exactly 1, a constant 1.05 gives a total
+  standard error of 1,054.30 here and 934.35 in chainladder, and 1.01 gives
+  1,021.18 here and 4.8e15 in chainladder (`tests/test_tail.py`). Where
+  nothing is left out, the two agree.
+- **Mack refuses what has no variance.** A tail attached before the last age
+  (`not_supported`: chainladder keeps the link ratios' sigmas and standard
+  errors for the curve factors that replace them, which no formula derives); a
+  tail factor below 1 without `tail_sigma` and `tail_std_err`
+  (`variance_not_estimable`: chainladder applies the tail but reads its
+  variance as if it were 1.001, and R ignores a tail below 1 altogether); and a
+  tail larger than the line through the factors gives even at the first link,
+  whose sigma would be extrapolated backwards (`variance_not_estimable`; on raa
+  any tail above about 2.3). `tail_sigma` and `tail_std_err` answer all but the
+  first.
+- **A tail below 1 moves the ultimates**, as in chainladder (raa with 0.95:
+  202,466.12). R ignores it.
+
+The one-year claims development result, `kernels.simulate_ultimates` and the
+held-out draws refuse a tailed fit (`not_supported`): the Merz-Wuthrich
+formulas and R's `CDR.MackChainLadder` cover the development inside the
+triangle only.
+
 ## When a method refuses
 
 chainladder-python has no error class of its own: bad input raises whatever
@@ -443,8 +554,6 @@ year written `2020-12-31` has its first cell at `dev_lag` 12, valued
 
 ## Not there yet
 
-- Tail factors (`cl.TailCurve`, `cl.TailConstant`): every method projects to
-  the last observed development age.
 - `fillna`. chainladder's `drop_below` defaults to 0, which leaves out
   negative link ratios; ibnr has none to leave out, since it refuses negative
   cumulatives.

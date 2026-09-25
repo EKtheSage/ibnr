@@ -21,6 +21,136 @@ patch releases, and 0.8 comes when the roadmap's goals are done.
 
 ## Unreleased
 
+### Tails: constant, exponential, inverse power and Weibull
+
+Every method in `ibnr.methods` takes a tail, the development still to come
+after the last observed age, and Mack's standard errors carry it (Mack 1999; R
+ChainLadder's `MackChainLadder(tail=, tail.se=, tail.sigma=)`).
+
+**New in `ibnr.methods`:** `chain_ladder`, `bornhuetter_ferguson`,
+`benktander`, `cape_cod` and `mack` take `tail` (`None`, the default, or
+`"constant"`, `"exponential"`, `"inverse_power"`, `"weibull"`),
+`tail_factor` (a constant tail's development from the attachment age to
+ultimate), `tail_decay` (how a constant tail is spread over the rows shown,
+0.5 by default), `tail_attach_lag` (the age of the first link the tail
+replaces; the last observed age by default, where nothing is replaced),
+`tail_fit_lags` (the first and last link a curve is fitted to, by the ages
+they develop from, both included), `tail_steps` (how many development steps a
+curve is extrapolated, 100 by default) and `tail_rows` (how many steps beyond
+the last age are shown, one year's by default); `mack` also takes
+`tail_sigma` and `tail_std_err`. Every option but `tail` defaults to `None`,
+so one passed without a tail is refused, not ignored.
+
+**Result tables:**
+- `development` goes on past the last observed age for `tail_rows` rows. On
+  each row `factor` is the factor to the next row (null on the final row) and
+  `cdf` the development to ultimate with the tail in it (on the final row,
+  what is left of the tail). Three columns are new for every method, tail or
+  not: `source` (`"link_ratios"` or `"tail"`: where the row's factor came from;
+  null on the last age without a tail), `curve_factor` (a fitted curve's factor
+  at each row but the final one) and `in_tail_fit` (whether the age's factor
+  went through the curve). Every other per-age column is null on the rows
+  beyond the last age.
+- `totals` gains `tail_factor` for every method (1.0 without a tail), and
+  `mack` also `tail_sigma`, `tail_std_err` and `tail_position` (null without a
+  tail; the position is null too when both variances were given).
+- `origins` keeps its columns; the ultimates, reserves and Mack's standard
+  errors include the tail, the oldest origin's too.
+
+**In `ibnr.kernels`:**
+- `kernels/tail.py` (numpy only): `TailSpec`, `apply_tail(factors,
+  dev_grain_months, spec, on_error="raise")`, which also takes one row of
+  factors per simulation, `(n_sims, n_links)`, fitting every row's curve in one
+  call (with `on_error="flag"` a row whose curve fails is marked in `ok`
+  rather than refused), and `tail_variance`. `TailSpec`, `apply_tail` and
+  `tail_variance` are exported from `ibnr.kernels`.
+- `ConventionalCandidate(tail=...)`: every age's share of the ultimate is
+  divided by the tail factor, so the chain ladder, Bornhuetter-Ferguson,
+  Benktander and Cape Cod all read the tail through the pattern.
+  `ConventionalFit.tail` holds the `TailFit`, `factor_summary` gains a `tail`
+  column, and `predict_cumulative` at the last age now gives the amount there,
+  not the ultimate. A tail together with `horizon` is refused (`not_supported`),
+  and so are `TailSpec.sigma` and `std_err` on a candidate.
+- `fit_mack_grid(..., tail=None)`. `MackFit` gains `tail`, `tail_factor`,
+  `tail_sigma2`, `tail_se2` and `tail_position`; `ultimate` is the last
+  observed column times the tail factor; `msep_runoff` adds the tail step for
+  every origin, with its process variance divided by the amount at the last
+  age to the power of the fit's alpha, and its parameter variance in the cross
+  term.
+- The wire format: a tailed `MackFit` carries its tail and is written as codec
+  version 3, which a version-2 reader refuses rather than decode untailed.
+  `CODEC_VERSION` is 3. Every other payload keeps its version and its bytes.
+- `one_year_cdr`, `simulate_one_year_cdr` (every generator, and
+  `GalleryDiagonal`), `rereserve`, `simulate_ultimates` and `draw_next_cells`
+  refuse a tailed fit by name (`not_supported`).
+
+**Refused, by name:** a `tail` that is not one of the four kinds (a number
+passed as `tail` is told that a constant's factor goes in `tail_factor`); any
+tail option without a tail; a constant without a positive finite
+`tail_factor`; a constant tail's options on a curve and a curve's on a
+constant; `tail_decay` outside 0 to 1; `tail_attach_lag` or a `tail_fit_lags`
+end off the triangle's ages (`grain_mismatch`) or past them
+(`not_in_triangle`); `tail_steps` outside 1 to 10,000, `tail_rows` below 0, and
+more rows than steps; a curve with fewer than two factors above 1.00001 in
+its fit range (`not_identified`); a curve that does not decay, and an inverse
+power curve with a slope from -1 to 0, whose product never converges
+(`tail_not_decaying`); a constant tail the decay cannot spread
+(`result_not_finite`). For `mack`: a tail attached before the last age
+(`not_supported`: no formula gives a curve factor's standard error in place of
+a link ratio's); a tail factor below 1, too few factors above 1 or positive
+sigmas to read the tail's variance from, and a tail larger than the line
+through the factors gives at the first link (`variance_not_estimable`),
+unless `tail_sigma` and `tail_std_err` are given; and a negative or infinite
+`tail_sigma` or `tail_std_err`. No reason code was added.
+
+**Checked against chainladder-python 0.9.2:** the tail arithmetic (every factor
+after the attachment, the steps shown, the rest, the tail factor) to a relative
+1e-12 on raa, genins, ukmotor, abc, mw2014, the tail sample's paid and incurred
+and clrd's commercial auto paid, under 25 settings each; every clrd paid and
+incurred triangle whose factors chainladder can give (485 and 494 of 775), for
+each curve, to 1e-12 where ibnr answers, with every refusal either chainladder's
+silent 1.0 (fewer than two factors to fit) or a line that grows, the slope
+chainladder's own; the four point methods' ultimates to 1e-10 on raa, genins,
+abc and mw2014; Mack's standard errors, their two parts and the tail's sigma
+and standard error to 1e-9 on eight triangles for each kind of tail. **Against
+R ChainLadder 0.2.21** (frozen in `tests/data/r_mack_tail.json` by
+`scripts/r_mack_tail.R`): raa, genins, ukmotor, abc and mw2014 with a constant
+1.05 at alpha 0, 1 and 2, R's own exponential tail, and given tail sigma and
+standard error, under both sigma rules, 50 fits: the ultimates to 1e-10 and
+every standard error to 1e-8. The example workbook's triangle (New Jersey
+Manufacturers, workers' compensation paid) gives the Reserving app's
+chain-ladder reserve and Mack standard error for no tail, a constant 1.05 and
+each curve, to the cent.
+
+**Where ibnr differs from chainladder, on purpose** (all in
+`docs/coming-from-chainladder.md`): a constant tail attached at the first age
+is honoured (chainladder ignores it); `tail_fit_lags` includes its last link
+(chainladder's `fit_period` leaves out its end); every case chainladder rounds,
+crashes on or silently answers as no tail is refused; and Mack's tail variance
+reads its straight lines through the factors above 1 and the positive sigmas
+only, as R does. chainladder keeps a left-out point's age in its sums and fills
+a zero sigma with 1e-320, so the two differ whenever a factor is at or below 1
+or a sigma is 0: on a quarterly triangle whose last three factors are exactly
+1, a constant 1.05 gives a total standard error of 1,054.30 here and 934.35 in
+chainladder, and 1.01 gives 1,021.18 here and 4.8e15 there. On clrd, 712 of
+864 paid and incurred triangles have such a point, so a user moving from
+chainladder with a Mack tail will see those numbers move.
+
+**No untailed number moved.** Every conventional fit (chain ladder,
+Bornhuetter-Ferguson, Cape Cod, under 18 option sets), every `fit_mack_grid`
+fit (four settings) with its `msep_runoff` and `to_arrow()` payload, and every
+column of every table of the five methods (eight calls), on the five public
+triangles, the same five with a zero cell, a 30 x 30 triangle and 36 clrd paid
+triangles, has the bytes the code before this change gave; digests are in
+`tests/data/untailed_pin.json`, written by `scripts/freeze_untailed_pin.py`
+against that code.
+
+**What can change for a caller:** every method's `development` table has three
+more columns and every `totals` table one more (Mack's four), whether a tail
+is asked for or not; `development` has more rows than observed ages when there
+is a tail; `ConventionalFit.factor_summary` has a `tail` column; and
+`CODEC_VERSION` is 3.
+
 ### Mack with development options
 
 `methods.mack` takes the chain ladder's development options, and Mack's

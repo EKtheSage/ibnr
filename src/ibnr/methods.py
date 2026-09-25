@@ -40,17 +40,32 @@ whose tables are pyarrow Tables, so a service needs no DataFrame library at
 all; for analysis, ``result.to_polars()`` turns any of them into a polars
 DataFrame (``pip install "ibnr[polars]"``).
 
-The ``development`` table has one row per observed development age, and the
-same columns for every method that carries them, in this order:
+The ``development`` table has one row per observed development age, then,
+with a tail, ``tail_rows`` rows for the ages after the last observed one. It
+has the same columns for every method that carries them, in this order:
 
 ======================== ======== ======================================= =====================
 column                   type     meaning                                 methods
 ======================== ======== ======================================= =====================
 dev_lag                  int64    the age, in months                      all
-factor                   float64  the link factor to the next age; null   all
-                                  at the last age
-cdf                      float64  the factor to the last observed age     all
+factor                   float64  the factor to the next row; null on the all
+                                  final row
+cdf                      float64  the factor to ultimate, the tail's      all
+                                  development included (without a tail,
+                                  to the last observed age); on a tail's
+                                  final row, the rest of the tail
 pct_reported             float64  ``1 / cdf``                             all
+source                   string   where the factor came from:             all
+                                  ``"link_ratios"`` or ``"tail"``; null
+                                  on the last age without a tail
+curve_factor             float64  a fitted curve's factor at this row,    all
+                                  for plotting fitted against selected;
+                                  null on the final row and without a
+                                  curve
+in_tail_fit              bool     the curve was fitted through this       all
+                                  age's factor; null on the rows beyond
+                                  the last observed age and without a
+                                  curve
 n_selected               int64    link ratios behind the factor           all
 unity_fallback           bool     no ratio was left and 1.0 was used      chain_ladder,
                                                                           bornhuetter_ferguson,
@@ -65,9 +80,18 @@ sigma_extrapolated       bool     sigma came from ``sigma_rule``: the     mack
                                   age kept fewer than two link ratios
 ======================== ======== ======================================= =====================
 
-Every column but ``dev_lag``, ``cdf`` and ``pct_reported`` is null at the last
-age, which has no next age. A method carries exactly the columns listed for
-it, whatever options it is given, so a service can read each table by name.
+``n_selected`` and every column after it is null at the last observed age,
+which has no link ratios after it, and on every row beyond it. A method
+carries exactly the columns listed for it, whatever options it is given, tail
+or none, so a service can read each table by name.
+
+Every method takes a tail, the development still to come after the last
+observed age: ``tail="constant"`` with ``tail_factor`` (such as 1.05), or a
+curve fitted to the link factors, ``"exponential"``, ``"inverse_power"`` or
+``"weibull"``. :func:`chain_ladder` describes the tail options. With a tail
+every origin's ultimate includes it, the oldest origin's too, ``totals`` has
+the tail factor in ``tail_factor`` (1.0 without a tail), and :func:`mack`'s
+standard errors carry one more development step for it.
 
 Importing this module loads numpy and pyarrow, and not ibis, pandas or scipy,
 and none of the methods loads them when it runs, so a service that starts
@@ -170,24 +194,36 @@ class ReserveResult:
         Cape Cod also adds ``trended_loss_ratio`` (the loss ratio at the
         valuation date's level, chainladder-python's ``apriori_``) and
         ``trend_factor`` (1.0 at ``trend=0``); Mack adds ``mack_se`` and its
-        two parts, ``parameter_se`` and ``process_se``.
+        two parts, ``parameter_se`` and ``process_se``. With a tail the
+        ultimates, reserves and standard errors include it, the oldest
+        origin's too.
         An origin whose latest cumulative is zero keeps 0 as its latest amount,
         so its chain-ladder ultimate is 0 and, under Mack with
         ``zero_cells="missing"``, its ``mack_se`` is 0 too; chainladder-python
         leaves both missing.
     development : pyarrow.Table
-        One row per observed development age: ``dev_lag`` (int64), ``factor``
-        (the link factor from this age to the next, null at the last age),
-        ``cdf`` (the factor to the last observed age, 1.0 there) and
-        ``pct_reported`` (``1 / cdf``). There is no tail factor, so
-        ``pct_reported`` is 1.0 at the last observed age by construction rather
-        than by measurement. Every method adds ``n_selected`` (int64, the link
-        ratios behind the factor), ``extreme_trimming_skipped`` and
+        One row per observed development age, and with a tail ``tail_rows``
+        more for the ages after the last observed one: ``dev_lag`` (int64),
+        ``factor`` (the factor from this row to the next, null on the final
+        row), ``cdf`` (the factor to ultimate, float64) and ``pct_reported``
+        (``1 / cdf``). Without a tail ``cdf`` runs to the last observed age, so
+        ``pct_reported`` is 1.0 there by construction rather than by
+        measurement. With one it includes the tail, and on the final row it is
+        what is left of the tail after the rows shown, so the factors from any
+        row times the final row's ``cdf`` are that row's ``cdf``. ``source``
+        (string) is ``"link_ratios"`` for a factor averaged from link ratios
+        and ``"tail"`` for one from the tail (an attached age, or a row beyond
+        the triangle), null at the last age without a tail; ``curve_factor``
+        (float64) is a fitted curve's factor at each row but the final one;
+        ``in_tail_fit`` (bool) says whether the curve was fitted through that
+        observed age's factor. Every method adds ``n_selected`` (int64, the
+        link ratios behind the factor), ``extreme_trimming_skipped`` and
         ``bounds_skipped`` (bool); the chain ladder, Bornhuetter-Ferguson,
         Benktander and Cape Cod add ``unity_fallback`` (bool); Mack adds
         ``sigma``, ``std_err`` (the factor's standard error) and
-        ``sigma_extrapolated`` (bool), all null at the last age. The module
-        docstring has the table of every column and the methods that carry it.
+        ``sigma_extrapolated`` (bool), all null at the last observed age and
+        beyond it. The module docstring has the table of every column and the
+        methods that carry it.
     link_ratios : pyarrow.Table or None
         Every observed link ratio, one row each: ``origin`` and
         ``origin_period`` (as in ``origins``), ``from_dev_lag`` (int64, the age
@@ -208,9 +244,18 @@ class ReserveResult:
         built by hand.
     totals : pyarrow.Table
         One row with ``latest``, ``ultimate`` and ``ibnr`` summed over the
-        origins. Mack adds ``mack_se``, ``parameter_se`` and ``process_se`` for
-        the total, which is not the sum of the origins' standard errors: the
-        origins share the estimated factors.
+        origins, and ``tail_factor`` (float64), the development beyond the
+        last observed age: 1.0 without a tail, the constant itself for a
+        constant tail attached at the last age, and what is left of it after
+        the attached ages for one attached earlier (chainladder-python's
+        ``tail_``). Mack adds ``mack_se``, ``parameter_se`` and ``process_se``
+        for the total, which is not the sum of the origins' standard errors:
+        the origins share the estimated factors; and ``tail_sigma``,
+        ``tail_std_err`` (the tail step's sigma and the tail factor's standard
+        error) and ``tail_position`` (where the tail sits on the link axis,
+        link 1 developing from the first age), all float64 and null without a
+        tail, ``tail_position`` also when ``tail_sigma`` and ``tail_std_err``
+        were both given or the tail factor is exactly 1.
     """
 
     method: str
@@ -395,10 +440,59 @@ def chain_ladder(
       amount, so its chain-ladder ultimate is 0, where chainladder-python
       leaves that ultimate missing.
 
-    Returns a :class:`ReserveResult`. There is no tail factor: each origin is
-    projected to the last observed development age. Input it will not answer is
-    refused with :class:`Refusal`, whose reason codes the module docstring
-    describes.
+    The tail options, shared with :func:`bornhuetter_ferguson`,
+    :func:`benktander`, :func:`cape_cod` and :func:`mack`. A tail is the
+    development still to come after the last observed age. It is applied to
+    the factors the development options produced, and every origin's
+    development to ultimate then includes it, the oldest origin's too, so
+    Bornhuetter-Ferguson, Benktander and Cape Cod read it through
+    ``pct_reported``. Every option but ``tail`` defaults to ``None``, and one
+    given without ``tail`` is refused rather than ignored.
+
+    - ``tail``: ``None`` (the default, no tail), ``"constant"``, or a curve
+      fitted to the link factors by least squares: ``"exponential"`` (``f - 1 =
+      exp(a + b t)`` at link ``t``, link 1 developing from the first age),
+      ``"inverse_power"`` (``f - 1 = exp(a) t ** b``) or ``"weibull"`` (``f =
+      1 / (1 - exp(-exp(a) t ** b))``), as chainladder-python's ``TailCurve``.
+      A curve must decay with age, and an inverse power curve's slope must be
+      below -1, since between -1 and 0 the product of its factors never
+      converges; otherwise it is refused.
+    - ``tail_factor``: a constant tail's development from ``tail_attach_lag``
+      to ultimate, such as 1.05; needed for ``"constant"``. Below 1 is allowed
+      and lowers the ultimates.
+    - ``tail_decay``: from 0 to 1 (0.5 by default), how a constant tail is
+      spread over the steps it covers: each step's development above 1 is
+      ``tail_decay`` times the step's before it, and the last step holds what
+      is left, so the steps multiply to ``tail_factor``. With the tail attached at the
+      last observed age it changes only the rows shown, never an ultimate.
+    - ``tail_attach_lag``: the age, in months, of the first link the tail
+      replaces. The default is the last observed age, where no link is
+      replaced; an earlier age replaces the factors from that age on with the
+      curve's (or the constant's steps), and ``development.source`` says which.
+    - ``tail_fit_lags``: curves only, ``(first, last)``: the ages, in months,
+      that the first and the last link fitted develop from, both included;
+      ``None`` at either end is the edge of the triangle. Only factors above
+      1.00001 go through the line, and at least two must, or the tail is
+      refused (``in_tail_fit`` shows which did).
+    - ``tail_steps``: curves only, how many development steps past the last
+      observed age the curve is extrapolated, 1 to 10,000 (100 by default, as
+      chainladder-python's ``extrap_periods``). It is a count of steps of the
+      triangle's own grain, not months. An inverse power tail still grows
+      noticeably at 100 steps.
+    - ``tail_rows``: how many rows beyond the last observed age ``development``
+      shows, one step each (one year's by default: 1 on an annual triangle, 4
+      on a quarterly one); the final row's ``cdf`` holds the rest of the tail.
+      It never changes an ultimate. A curve cannot show more rows than
+      ``tail_steps``.
+
+    ``docs/coming-from-chainladder.md`` maps chainladder-python's
+    ``TailConstant`` and ``TailCurve`` options onto these, with the cases
+    chainladder-python rounds, ignores or answers as no tail that are refused
+    here.
+
+    Returns a :class:`ReserveResult`. Without a tail each origin is projected
+    to the last observed development age. Input it will not answer is refused
+    with :class:`Refusal`, whose reason codes the module docstring describes.
     """
     with _CallersTerms("chain_ladder") as terms:
         grid, origins = terms.read(cells, dev_grain_months)
@@ -464,7 +558,8 @@ def bornhuetter_ferguson(
     ``premium * expected_loss_ratio * (1 - pct_reported)``, where
     ``pct_reported`` comes from the chain-ladder development pattern.
 
-    ``cells`` and the development options are as in :func:`chain_ladder`.
+    ``cells``, the development options and the tail options are as in
+    :func:`chain_ladder`; with a tail, ``pct_reported`` includes it.
 
     ``premium`` is keyed by origin period, never by position: either a table
     with columns ``origin_period`` and ``premium`` (a polars DataFrame or a
@@ -551,9 +646,10 @@ def benktander(
     which ignores the reported losses, and each iteration is one more pass of a
     loop, so the upper limit bounds the time one call can take.
 
-    ``cells`` and the development options are as in :func:`chain_ladder`, and
-    ``premium`` and ``expected_loss_ratio`` as in :func:`bornhuetter_ferguson`.
-    The result has the same tables and columns as Bornhuetter-Ferguson's.
+    ``cells``, the development options and the tail options are as in
+    :func:`chain_ladder`, and ``premium`` and ``expected_loss_ratio`` as in
+    :func:`bornhuetter_ferguson`. The result has the same tables and columns
+    as Bornhuetter-Ferguson's.
     """
     with _CallersTerms("benktander") as terms:
         grid, origins = terms.read(cells, dev_grain_months)
@@ -644,7 +740,8 @@ def cape_cod(
     1 (the default) is Cape Cod itself, and 0 and counts above 10,000 are
     refused.
 
-    ``cells`` and the development options are as in :func:`chain_ladder`, and
+    ``cells``, the development options and the tail options are as in
+    :func:`chain_ladder` (with a tail, the used-up premium includes it), and
     ``premium`` as in :func:`bornhuetter_ferguson`. The loss ratios are in
     ``origins.expected_loss_ratio`` and ``origins.trended_loss_ratio``, and
     ``origins.trend_factor`` is each origin's factor (1.0 at trend 0).
@@ -739,7 +836,7 @@ def mack(
     is refused (one ratio at every age leaves no sigma to estimate), and so are
     any options that leave at most one link ratio at every age. The one-year
     claims development result in ``ibnr.kernels`` needs a fit with no
-    development options.
+    development options and no tail.
 
     ``zero_cells`` is what a cumulative of exactly zero is. ``"missing"`` (the
     default here, as in chainladder-python) leaves out every link ratio with a
@@ -764,6 +861,27 @@ def mack(
     1993 rule, from the two ages before. The ultimates do not depend on it; the
     standard errors do. (``kernels.fit_mack`` keeps ``"mack"`` as its default,
     so published numbers made with it do not move.)
+
+    The tail options are as in :func:`chain_ladder`, and the tail is one more
+    development step, taken by every origin, the fully developed one too (Mack
+    1999; R's ``MackChainLadder(tail=, tail.se=, tail.sigma=)``). Its sigma
+    and the tail factor's standard error are read off straight lines through
+    the logarithms of the sigmas and of the factors' standard errors, at the
+    age where a straight line through ``log(factor - 1)`` reaches the tail
+    (``totals.tail_position``); the lines go through the factors above 1 and
+    the positive values only, as R's do. ``tail_sigma`` and ``tail_std_err``
+    (R's ``tail.sigma`` and ``tail.se``, zero or more) give either instead.
+    The tail step's process variance is divided by the origin's amount at the
+    last observed age to the power alpha, as every other step's is. Refused: a
+    tail attached before the last observed age (no formula gives a curve
+    factor's standard error where a link ratio's was); and, unless both
+    ``tail_sigma`` and ``tail_std_err`` are given, a tail factor below 1, too
+    few factors above 1 or positive sigmas to draw the lines through, and a
+    tail larger than the line through the factors gives even at the first
+    link, where the sigma would be read backwards past the data.
+    chainladder-python's lines keep a left-out point's age in their sums, so
+    its tail variance differs from this one whenever a factor is at or below 1
+    or a sigma is 0 (``docs/coming-from-chainladder.md`` has the numbers).
 
     ``origins`` and ``totals`` carry ``mack_se`` and its two parts:
     ``parameter_se``, from estimating the factors, and ``process_se``, from the
