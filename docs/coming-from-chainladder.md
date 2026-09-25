@@ -12,35 +12,28 @@ and Cape Cod match chainladder-python to a relative 1e-9, which
 
 chainladder-python builds a `Triangle` object first and fits estimators to it.
 ibnr takes the cells directly: a table with one row per observed cell and the
-columns `origin_period` (the first day of the origin period), `dev_lag` (months
-from that day, so an annual triangle starts at 12) and `value` (the cumulative
+columns `origin_period` (the origin period, such as the accident year `2020`;
+see [Origin labels](#origin-labels)), `dev_lag` (months from the start of the
+origin period, so an annual triangle starts at 12) and `value` (the cumulative
 loss). A polars DataFrame works, and so does a pyarrow Table or anything else
 Arrow can read. Each call returns a `ReserveResult` whose tables are pyarrow
 Tables; `.to_polars(name)` gives any of them as a polars DataFrame
 (`pip install "ibnr[polars]"`).
 
 ```python
-from datetime import date
-
 import polars as pl
 
 from ibnr import methods
 
 cells = pl.DataFrame(
     {
-        "origin_period": [date(2020, 1, 1)] * 4
-        + [date(2021, 1, 1)] * 3
-        + [date(2022, 1, 1)] * 2
-        + [date(2023, 1, 1)],
+        "origin_period": [2020] * 4 + [2021] * 3 + [2022] * 2 + [2023],
         "dev_lag": [12, 24, 36, 48, 12, 24, 36, 12, 24, 12],
         "value": [100.0, 180.0, 220.0, 240.0, 110.0, 200.0, 250.0, 90.0, 170.0, 120.0],
     }
 )
 premium = pl.DataFrame(
-    {
-        "origin_period": [date(2020 + i, 1, 1) for i in range(4)],
-        "premium": [400.0, 420.0, 450.0, 480.0],
-    }
+    {"origin_period": [2020, 2021, 2022, 2023], "premium": [400.0, 420.0, 450.0, 480.0]}
 )
 
 # cl.Chainladder().fit(cl.Development(n_periods=3, drop_high=True).fit_transform(tri))
@@ -71,7 +64,7 @@ cape_cod.to_polars()["expected_loss_ratio"]  # apriori_
 | `cl.Development(n_periods=n)` | `history_periods=n` |
 | `cl.Development(average="volume" / "simple")` | `average="volume"` / `"simple"`, and also `"median"` |
 | `cl.Development(drop_high=True, drop_low=True)` | `drop_high=True, drop_low=True` |
-| `cl.Development(drop=("1982", 12))` | `exclude=[(date(1982, 1, 1), 12)]` |
+| `cl.Development(drop=("1982", 12))` | `exclude=[(1982, 12)]` |
 | `cl.Development(sigma_interpolation="log-linear" / "mack")` | `methods.mack(cells, sigma_rule="log_linear" / "mack")` |
 | `.ultimate_` | `result.origins["ultimate"]` |
 | `.ibnr_` | `result.origins["ibnr"]` |
@@ -129,10 +122,62 @@ published numbers do not move.)
   nothing to measure. ibnr refuses it rather than report a standard error of
   0 that would read as no uncertainty; `methods.chain_ladder` still gives the
   ultimates.
-- **Integer accident years are not dates.** `origin_period` is the first day of
-  the period, so the accident year 2020 is `date(2020, 1, 1)`; in polars,
-  `pl.date(pl.col("year"), 1, 1)` makes that column. A timestamp is read as its
-  date, in its own time zone when it has one.
+
+## Origin labels
+
+`origin_period` accepts the ways an origin period is usually written, and the
+premium table (or dict) and the origins in `exclude` accept the same forms,
+each independently of how the cells write theirs:
+
+- an integer year with its century: `2020` is the calendar year 2020 (a
+  two-digit year such as `97` is refused rather than read as the year 97);
+- a text label: a year `"2020"`, a quarter `"2020Q3"` or a month `"2020-03"`;
+- a date, a timestamp (read as its date, in its own time zone when it has one)
+  or an ISO date string such as `"2020-12-31"`.
+
+A date must be the first day or the last day of its period, and it is read
+with `dev_grain_months`, which is also the length of an origin period. The
+first day of a month starts a period, and the last day of a month ends a
+period that began `dev_grain_months` months earlier. So with
+`dev_grain_months=12`, `2020-01-01` and `2020-12-31` are both the accident year
+2020, and `2021-06-30` is the year from July 2020 to June 2021, a fiscal or
+treaty year that an integer cannot name; with `dev_grain_months=3`,
+`2020-12-31` is the fourth quarter of 2020. Any other day of the month is
+refused. A year, quarter or month label must name a period `dev_grain_months`
+long, so `2020` with `dev_grain_months=3` is refused rather than read as a
+quarter. A label that names no period (`"2020Q5"`, `"FY20"`) is refused by
+name, and so is a period written two ways in one column (`"2020"` and
+`"2020-12-31"` together), because the results echo the label back.
+
+```python
+from datetime import date
+
+import polars as pl
+
+from ibnr import methods
+
+fiscal = pl.DataFrame(
+    {
+        "origin_period": [date(2021, 6, 30)] * 2 + [date(2022, 6, 30)],
+        "dev_lag": [12, 24, 12],
+        "value": [100.0, 150.0, 120.0],
+    }
+)
+result = methods.chain_ladder(fiscal)
+result.to_polars()  # origin 2021-06-30 has origin_period 2020-07-01
+print(result.as_of)  # 2022-06-30
+```
+
+The results show your label in a column `origin`, the first column of
+`origins` and `link_ratios`, with the type you passed it in: integers stay
+integers (int64), text stays text (string), dates stay dates (date32) and
+timestamps keep their own type. Beside it, `origin_period` is always the first
+day of the period, as everywhere else in ibnr, while a valuation date is the
+last day of one: the accident year 2020 at 12 months is valued 2020-12-31, and
+`result.as_of` is the valuation date of the latest diagonal. `dev_lag` still
+counts from the period's first day whichever day names it, so the accident
+year written `2020-12-31` has its first cell at `dev_lag` 12, valued
+2020-12-31, not at `dev_lag` 0.
 
 ## Not there yet
 

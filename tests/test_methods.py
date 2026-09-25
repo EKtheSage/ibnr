@@ -159,6 +159,27 @@ def test_chain_ladder_matches_chainladder(cl, pl, name):
 
 
 @pytest.mark.tieout
+@pytest.mark.parametrize("name", ["raa", "genins"])
+def test_integer_accident_years_match_chainladder(cl, pl, name):
+    # the form a chainladder user most likely has: the accident year as a whole number
+    frame, sample = polars_cells(cl, pl, name)
+    years = frame.with_columns(pl.col("origin_period").dt.year().cast(pl.Int64))
+    result = methods.chain_ladder(years)
+    np.testing.assert_allclose(
+        ultimates(result), cl.Chainladder().fit(sample).ultimate_.values.ravel(), rtol=1e-9
+    )
+    reference = cl.MackChainladder().fit(sample)
+    assert methods.mack(years).totals["mack_se"][0].as_py() == pytest.approx(
+        float(np.asarray(reference.total_mack_std_err_).ravel()[0]), rel=1e-9
+    )
+    starts = sorted(set(frame["origin_period"].to_list()))
+    assert result.origins["origin"].type == pa.int64()
+    assert result.origins["origin"].to_pylist() == [start.year for start in starts]
+    assert result.origins["origin_period"].to_pylist() == starts
+    assert result.as_of == dt.date(starts[-1].year, 12, 31)
+
+
+@pytest.mark.tieout
 @pytest.mark.parametrize(
     ("ours", "theirs"),
     [
@@ -428,63 +449,172 @@ def test_the_public_names_are_pinned():
 # -- what the functions accept ------------------------------------------------------
 
 
+def without_origin(table: pa.Table) -> pa.Table:
+    return table.drop_columns(["origin"])
+
+
+def assert_same_numbers(result, expected) -> None:
+    """Every table and the information date agree, apart from the echoed labels."""
+    assert result.as_of == expected.as_of
+    assert without_origin(result.origins).equals(without_origin(expected.origins))
+    assert result.development.equals(expected.development)
+    assert result.totals.equals(expected.totals)
+    if expected.link_ratios is None:
+        assert result.link_ratios is None
+    else:
+        assert without_origin(result.link_ratios).equals(without_origin(expected.link_ratios))
+
+
+def assert_echoes(result, labels: pa.Array) -> None:
+    """``origin`` is the caller's label for each period, one per origin in origin order,
+    in both tables that carry it, with the Arrow type the caller's column decodes to."""
+    assert result.origins.column_names[0] == "origin"
+    assert result.origins["origin"].type == labels.type
+    assert result.origins["origin"].equals(pa.chunked_array([labels]))
+    if result.link_ratios is not None:
+        assert result.link_ratios.column_names[0] == "origin"
+        starts = result.origins["origin_period"].to_pylist()
+        position = [starts.index(o) for o in result.link_ratios["origin_period"].to_pylist()]
+        expected = labels.take(pa.array(position, pa.int64()))
+        assert result.link_ratios["origin"].equals(pa.chunked_array([expected]))
+
+
+def first_rows(origins: list) -> list[int]:
+    """The row each origin first appears in, in origin order."""
+    return [origins.index(o) for o in sorted(set(origins))]
+
+
+def one_label_per_origin(origin: pa.Array, kind: pa.DataType) -> pa.Array:
+    """What the ``origin`` column should hold for a cells column ``origin``."""
+    if pa.types.is_dictionary(origin.type):
+        origin = origin.dictionary_decode()
+    rows = first_rows(columns()["origin_period"])
+    # cast first: pyarrow cannot take from a string_view array
+    return origin.cast(kind).take(pa.array(rows, pa.int64()))
+
+
 def origin_variants():
-    """The same origin column in each type the functions read."""
+    """The same accident years, 1981 to 1990, in each form the functions read, with
+    the Arrow type the result echoes each in."""
     dates = columns()["origin_period"]
-    yield "date32", pa.array(dates, pa.date32())
-    yield "date64", pa.array(dates, pa.date64())
-    yield "timestamp", pa.array([dt.datetime(o.year, 1, 1) for o in dates], pa.timestamp("us"))
+    ends = [dt.date(o.year, 12, 31) for o in dates]
+    years = [o.year for o in dates]
+    yield "date32", pa.array(dates, pa.date32()), pa.date32()
+    yield "date64", pa.array(dates, pa.date64()), pa.date32()
+    yield "year_end_date32", pa.array(ends, pa.date32()), pa.date32()
+    yield (
+        "timestamp",
+        pa.array([dt.datetime(o.year, 1, 1) for o in dates], pa.timestamp("us")),
+        pa.timestamp("us"),
+    )
     # Midnight on 1 January in Tokyo is 15:00 on 31 December in UTC. The date
     # read is Tokyo's, the zone the column is in; reading the UTC date would
     # put every origin on 31 December.
+    tokyo = pa.timestamp("us", tz="Asia/Tokyo")
     yield (
         "timestamp_tz",
-        pa.array(
-            [dt.datetime(o.year - 1, 12, 31, 15, tzinfo=dt.UTC) for o in dates],
-            pa.timestamp("us", tz="Asia/Tokyo"),
-        ),
+        pa.array([dt.datetime(o.year - 1, 12, 31, 15, tzinfo=dt.UTC) for o in dates], tokyo),
+        tokyo,
+    )
+    # 23:00 on 31 December in Tokyo is 14:00 the same day in UTC: the year's last day
+    yield (
+        "year_end_timestamp_tz",
+        pa.array([dt.datetime(o.year, 12, 31, 14, tzinfo=dt.UTC) for o in dates], tokyo),
+        tokyo,
     )
     # a time of day is dropped: the date part is the origin period
     yield (
         "timestamp_time_of_day",
         pa.array([dt.datetime(o.year, 1, 1, 6) for o in dates], pa.timestamp("s")),
+        pa.timestamp("s"),
     )
-    yield "string", pa.array([o.isoformat() for o in dates], pa.string())
-    yield "large_string", pa.array([o.isoformat() for o in dates], pa.large_string())
+    yield "string", pa.array([o.isoformat() for o in dates], pa.string()), pa.string()
+    yield (
+        "year_end_string",
+        pa.array([o.isoformat() for o in ends], pa.string()),
+        pa.string(),
+    )
+    yield "year_string", pa.array([str(y) for y in years], pa.string()), pa.string()
+    yield (
+        "large_string",
+        pa.array([o.isoformat() for o in dates], pa.large_string()),
+        pa.string(),
+    )
+    if hasattr(pa, "string_view"):  # pyarrow 16 and later; the floor is 15
+        yield (
+            "string_view",
+            pa.array([str(y) for y in years], pa.string()).cast(pa.string_view()),
+            pa.string(),
+        )
     yield (
         "dictionary_string",
         pa.array([o.isoformat() for o in dates], pa.string()).dictionary_encode(),
+        pa.string(),
     )
-    yield "dictionary_date", pa.array(dates, pa.date32()).dictionary_encode()
+    yield "dictionary_date", pa.array(dates, pa.date32()).dictionary_encode(), pa.date32()
+    yield "int64_year", pa.array(years, pa.int64()), pa.int64()
+    yield "int16_year", pa.array(years, pa.int16()), pa.int64()
+    yield "uint32_year", pa.array(years, pa.uint32()), pa.int64()
+    yield "dictionary_year", pa.array(years, pa.int64()).dictionary_encode(), pa.int64()
+
+
+VARIANTS = list(origin_variants())
 
 
 @pytest.mark.parametrize(
-    ("kind", "origin"), list(origin_variants()), ids=[kind for kind, _ in origin_variants()]
+    ("kind", "origin", "echo"), VARIANTS, ids=[kind for kind, _, _ in VARIANTS]
 )
-def test_every_accepted_origin_type_gives_the_same_answer(kind, origin):
-    expected = methods.chain_ladder(arrow_cells())
-    cells = arrow_cells().set_column(0, "origin_period", origin)
-    result = methods.chain_ladder(cells)
-    assert result.origins.equals(expected.origins), kind
-    assert result.as_of == expected.as_of
+@pytest.mark.parametrize("method", ["chain_ladder", "bornhuetter_ferguson", "cape_cod", "mack"])
+def test_every_accepted_origin_form_gives_the_same_answer(method, kind, origin, echo):
+    expected = run(method)
+    result = run(method, arrow_cells().set_column(0, "origin_period", origin))
+    assert_same_numbers(result, expected)
+    assert result.origins["origin_period"].to_pylist() == RAA_ORIGINS
+    assert_echoes(result, one_label_per_origin(origin, echo))
 
 
-@pytest.mark.parametrize("kind", ["date", "datetime", "string", "categorical", "enum"])
-def test_polars_origin_types_give_the_same_answer(pl, kind):
+POLARS_FORMS = [
+    "date",
+    "year_end_date",
+    "datetime",
+    "string",
+    "year_end_string",
+    "year_string",
+    "categorical",
+    "enum",
+    "int64_year",
+]
+
+
+@pytest.mark.parametrize("kind", POLARS_FORMS)
+def test_polars_origin_forms_give_the_same_answer(pl, kind):
     expected = methods.chain_ladder(arrow_cells())
     data = columns()
-    origins = data["origin_period"]
-    if kind == "datetime":
-        origins = [dt.datetime(o.year, o.month, o.day) for o in origins]
-    elif kind != "date":
-        origins = [o.isoformat() for o in origins]
+    starts = data["origin_period"]
+    origins = {
+        "date": starts,
+        "year_end_date": [dt.date(o.year, 12, 31) for o in starts],
+        "datetime": [dt.datetime(o.year, o.month, o.day) for o in starts],
+        "year_end_string": [f"{o.year}-12-31" for o in starts],
+        "year_string": [str(o.year) for o in starts],
+        "int64_year": [o.year for o in starts],
+    }.get(kind, [o.isoformat() for o in starts])
     frame = pl.DataFrame({**data, "origin_period": origins})
     if kind == "categorical":
         frame = frame.with_columns(pl.col("origin_period").cast(pl.Categorical))
     elif kind == "enum":
-        labels = sorted(set(origins))
-        frame = frame.with_columns(pl.col("origin_period").cast(pl.Enum(labels)))
-    assert methods.chain_ladder(frame).origins.equals(expected.origins)
+        frame = frame.with_columns(pl.col("origin_period").cast(pl.Enum(sorted(set(origins)))))
+    result = methods.chain_ladder(frame)
+    assert_same_numbers(result, expected)
+    labels = [origins[i] for i in first_rows(starts)]
+    assert result.origins["origin"].to_pylist() == labels
+    kind_echoed = {
+        "date": pa.date32(),
+        "year_end_date": pa.date32(),
+        "datetime": pa.timestamp("us"),
+        "int64_year": pa.int64(),
+    }.get(kind, pa.string())
+    assert result.origins["origin"].type == kind_echoed
 
 
 def test_a_record_batch_and_extra_columns_are_accepted():
@@ -566,13 +696,17 @@ def test_a_missing_column_is_refused_by_name(missing):
             "origin_period has 1 missing value",
         ),
         (
-            with_column("origin_period", ["1981-13-01"] * N),
-            "origin_period strings must be ISO dates",
+            with_column("origin_period", one_bad(1981, None), pa.int64()),
+            "origin_period has 1 missing value",
         ),
         (
-            with_column("origin_period", [1981] * N),
-            "origin_period must be a date, timestamp or ISO date string column, got int64. "
-            r"An accident year 2020 is the date 2020-01-01; in polars, pl.date\(",
+            with_column("origin_period", one_bad("1981", None), pa.string()),
+            "origin_period has 1 missing value",
+        ),
+        (
+            with_column("origin_period", [1981.0] * N),
+            "origin_period must be a column of integer years, text labels, dates or "
+            r"timestamps, got double; write it as a year \(2020\)",
         ),
     ],
     ids=[
@@ -583,8 +717,9 @@ def test_a_missing_column_is_refused_by_name(missing):
         "nan_value",
         "text_value",
         "null_origin",
-        "bad_iso",
-        "integer_origin",
+        "null_year",
+        "null_label",
+        "float_origin",
     ],
 )
 def test_a_bad_column_is_refused_by_name(cells, match):
@@ -602,16 +737,47 @@ def years(*first_years: int) -> list:
     return [dt.date(y, 1, 1) for y in first_years]
 
 
+#: raa's origins written three ways, with how a message names the 1985 origin in each
+ORIGIN_SPELLINGS = pytest.mark.parametrize(
+    ("spell", "shown"),
+    [(lambda o: o, "1985-01-01"), (lambda o: o.year, "1985"), (lambda o: str(o.year), "'1985'")],
+    ids=["date", "int_year", "text_year"],
+)
+
+
+def relabelled(cells: pa.Table, spell) -> pa.Table:
+    """``cells`` with each row's origin written by ``spell``."""
+    by_row = [spell(o) for o in cells["origin_period"].to_pylist()]
+    return cells.set_column(0, "origin_period", pa.array(by_row))
+
+
+@ORIGIN_SPELLINGS
 @pytest.mark.parametrize("method", ["chain_ladder", "mack"])
-def test_a_negative_cumulative_is_refused_naming_the_cells(method):
+def test_a_negative_cumulative_is_refused_naming_the_cells(method, spell, shown):
     rows = [list(row) for row in RAA]
     rows[4][1], rows[4][2] = -50, -80
     with pytest.raises(
         ValueError,
         match=r"value is negative in 2 cell\(s\), \(origin_period, dev_lag\) "
-        r"\[\(datetime.date\(1985, 1, 1\), 24\), \(datetime.date\(1985, 1, 1\), 36\)\]",
+        rf"\[\({shown}, 24\), \({shown}, 36\)\]\.",
     ):
-        getattr(methods, method)(arrow_cells(rows))
+        getattr(methods, method)(relabelled(arrow_cells(rows), spell))
+
+
+@ORIGIN_SPELLINGS
+def test_two_rows_for_one_cell_are_named_in_the_callers_labels(spell, shown):
+    cells = arrow_cells()
+    data = columns()
+    at = [*zip(data["origin_period"], data["dev_lag"], strict=True)].index(
+        (dt.date(1985, 1, 1), 24)
+    )
+    doubled = pa.concat_tables([cells, cells.slice(at, 1)])
+    with pytest.raises(
+        ValueError,
+        match=r"more than one row for the \(origin_period, dev_lag\) cell\(s\) "
+        rf"\[\({shown}, 24\)\]",
+    ):
+        methods.chain_ladder(relabelled(doubled, spell))
 
 
 @pytest.mark.parametrize(
@@ -624,14 +790,25 @@ def test_a_negative_cumulative_is_refused_naming_the_cells(method):
     ],
     ids=["off_the_diagonal", "on_the_diagonal"],
 )
+@pytest.mark.parametrize(
+    ("spell", "first", "second"),
+    [
+        (lambda o: o, "2020-01-01", "2022-01-01"),
+        (lambda o: o.year, "2020", "2022"),
+        (lambda o: dt.date(o.year, 12, 31), "2020-12-31", "2022-12-31"),
+    ],
+    ids=["date", "int_year", "year_end"],
+)
 @pytest.mark.parametrize("method", ["chain_ladder", "mack"])
-def test_a_missing_origin_period_is_refused_by_name(method, rows, origins):
+def test_a_missing_origin_period_is_refused_by_name(method, rows, origins, spell, first, second):
+    # the two neighbours are named as the caller wrote them; the missing period has
+    # no label, so it is named by its first day
     with pytest.raises(
         ValueError,
-        match=r"2020-01-01 and 2022-01-01 are 24 months apart, but dev_grain_months=12.*"
-        r"cells has no rows for \[datetime.date\(2021, 1, 1\)\]",
+        match=rf"origin periods {first} and {second} are 24 months apart, but "
+        r"dev_grain_months=12.*cells has no rows for the period\(s\) starting 2021-01-01: ",
     ):
-        getattr(methods, method)(arrow_cells(rows, origins))
+        getattr(methods, method)(relabelled(arrow_cells(rows, origins), spell))
 
 
 def test_annual_origins_developed_quarterly_are_refused_by_name():
@@ -685,11 +862,11 @@ def test_a_bad_dev_grain_is_refused(grain):
         ),
         (
             pa.concat_tables([premium_table(RAA_PREMIUM), premium_table(RAA_PREMIUM).slice(0, 1)]),
-            r"premium has more than one row for origin period\(s\) \[datetime.date\(1981, 1, 1\)\]",
+            r"premium has more than one row for origin period\(s\) 1981-01-01$",
         ),
         (
             premium_table(RAA_PREMIUM).slice(1),
-            r"premium has no amount for origin\(s\) \[datetime.date\(1981, 1, 1\)\]",
+            r"premium has no amount for origin\(s\) 1981-01-01$",
         ),
         (
             pa.table(
@@ -724,9 +901,47 @@ def test_bad_premium_is_refused_by_name(premium, match):
         methods.cape_cod(arrow_cells(), premium=premium)
 
 
-def test_an_exclusion_the_triangle_does_not_have_is_refused():
-    with pytest.raises(ValueError, match="exclude names link ratio.*1990, 1, 1\\), 12"):
-        methods.chain_ladder(arrow_cells(), exclude=[(dt.date(1990, 1, 1), 12)])
+@pytest.mark.parametrize(
+    ("origin", "shown"),
+    [
+        (dt.date(1990, 1, 1), "1990-01-01"),
+        # named as the caller wrote it, not as the date it was read as
+        (1990, "1990"),
+        (dt.date(1990, 12, 31), "1990-12-31"),
+        ("1990", "'1990'"),
+    ],
+    ids=["date", "int_year", "year_end", "text_year"],
+)
+def test_an_exclusion_the_triangle_does_not_have_is_refused(origin, shown):
+    with pytest.raises(
+        ValueError, match=rf"exclude names link ratio\(s\) \[\({shown}, 12\)\] that the triangle"
+    ):
+        methods.chain_ladder(arrow_cells(), exclude=[(origin, 12)])
+
+
+@pytest.mark.parametrize(
+    ("exclude", "match"),
+    [
+        (
+            [(1982, 12), ("1982-12-31", 12)],
+            r"exclude names one link ratio twice, as \(1982, 12\) and \('1982-12-31', 12\); "
+            r"list each \(origin_period, dev_lag\) pair once",
+        ),
+        (
+            [(1982, 12), (dt.date(1983, 1, 1), 24), (1982, np.int64(12))],
+            r"twice, as \(1982, 12\) and \(1982, 12\)",
+        ),
+        (
+            # two equal literal tuples, which Python may hand over as one object
+            [(1982, 12), (1982, 12)],
+            r"twice, as \(1982, 12\) and \(1982, 12\)",
+        ),
+    ],
+    ids=["two_spellings", "the_same_pair_again", "the_same_literal_twice"],
+)
+def test_one_link_ratio_excluded_twice_is_refused_as_written(exclude, match):
+    with pytest.raises(ValueError, match=match):
+        methods.chain_ladder(spelled(lambda o: o.year), exclude=exclude)
 
 
 @pytest.mark.parametrize(
@@ -740,6 +955,524 @@ def test_an_exclusion_that_is_not_a_list_of_pairs_is_refused(exclude):
 def test_mack_refuses_an_unknown_sigma_rule():
     with pytest.raises(ValueError, match="sigma_rule must be one of"):
         methods.mack(arrow_cells(), sigma_rule="log-linear")
+
+
+# -- origin labels: the forms, the echo, and what is refused ----------------------
+
+#: raa's accident years written as whole numbers, the form a chainladder user has
+RAA_YEARS = [o.year for o in RAA_ORIGINS]
+
+
+def spelled(spell, kind=None, *, bad=None, at: int = MIDDLE) -> pa.Table:
+    """raa's cells with each origin written by ``spell``, one row optionally replaced."""
+    labels = [spell(o) for o in columns()["origin_period"]]
+    if bad is not None:
+        labels[at] = bad
+    return with_column("origin_period", labels, kind)
+
+
+def year_end(origin: dt.date) -> dt.date:
+    return dt.date(origin.year, 12, 31)
+
+
+def last_day(first: dt.date) -> dt.date:
+    """The last day of the month ``first`` starts."""
+    following = dt.date(first.year + first.month // 12, first.month % 12 + 1, 1)
+    return following - dt.timedelta(days=1)
+
+
+def quarter_end(start: dt.date) -> dt.date:
+    return last_day(dt.date(start.year, start.month + 2, 1))
+
+
+#: Five quarterly origins, 2020Q1 to 2021Q1, developed quarterly.
+QUARTERS = [dt.date(2020, 1 + 3 * q, 1) for q in range(4)] + [dt.date(2021, 1, 1)]
+QUARTER_ROWS = [
+    [100.0, 180.0, 220.0, 240.0, 250.0],
+    [110.0, 200.0, 230.0, 250.0],
+    [90.0, 170.0, 190.0],
+    [120.0, 210.0],
+    [130.0],
+]
+QUARTER_PREMIUM = [500.0, 600.0, 700.0, 800.0, 900.0]
+
+
+def quarter_label(start: dt.date) -> str:
+    return f"{start.year}Q{(start.month + 2) // 3}"
+
+
+@pytest.mark.parametrize(
+    ("spell", "echo"),
+    [
+        (quarter_label, pa.string()),
+        (lambda o: o, pa.date32()),
+        (quarter_end, pa.date32()),
+        (lambda o: quarter_end(o).isoformat(), pa.string()),
+    ],
+    ids=["quarter_label", "quarter_start", "quarter_end", "quarter_end_string"],
+)
+@pytest.mark.parametrize("method", ["chain_ladder", "mack"])
+def test_quarterly_origins_written_each_way_agree(method, spell, echo):
+    function = getattr(methods, method)
+    cells = arrow_cells(QUARTER_ROWS, QUARTERS, step=3)
+    expected = function(cells, dev_grain_months=3)
+    written = [spell(o) for o in QUARTERS]
+    by_row = [spell(o) for o in cells["origin_period"].to_pylist()]
+    result = function(cells.set_column(0, "origin_period", pa.array(by_row)), dev_grain_months=3)
+    assert_same_numbers(result, expected)
+    assert result.origins["origin_period"].to_pylist() == QUARTERS
+    assert result.as_of == dt.date(2021, 3, 31)
+    assert_echoes(result, pa.array(written, echo))
+
+
+@pytest.mark.parametrize(
+    "premium",
+    [
+        {quarter_label(o): p for o, p in zip(QUARTERS, QUARTER_PREMIUM, strict=True)},
+        {quarter_end(o): p for o, p in zip(QUARTERS, QUARTER_PREMIUM, strict=True)},
+        pa.table(
+            {
+                "origin_period": [quarter_end(o).isoformat() for o in QUARTERS],
+                "premium": QUARTER_PREMIUM,
+            }
+        ),
+    ],
+    ids=["dict_of_labels", "dict_of_quarter_ends", "table_of_quarter_ends"],
+)
+def test_quarterly_premium_is_read_with_the_quarterly_step(premium):
+    # a quarter's last day is read with dev_grain_months=3, never as a year's end
+    cells = arrow_cells(QUARTER_ROWS, QUARTERS, step=3)
+    by_start = dict(zip(QUARTERS, QUARTER_PREMIUM, strict=True))
+    expected = methods.cape_cod(cells, premium=by_start, dev_grain_months=3)
+    result = methods.cape_cod(cells, premium=premium, dev_grain_months=3)
+    assert_same_numbers(result, expected)
+
+
+def monthly_cells() -> pa.Table:
+    origins = [dt.date(2020, 1 + k, 1) for k in range(4)]
+    rows = [[100.0, 180.0, 220.0, 240.0], [110.0, 200.0, 230.0], [90.0, 170.0], [120.0]]
+    return arrow_cells(rows, origins, step=1)
+
+
+@pytest.mark.parametrize(
+    ("step", "origin"),
+    [
+        (3, "2020Q2"),
+        (3, dt.date(2020, 4, 1)),
+        (3, dt.date(2020, 6, 30)),
+        (3, "2020-06-30"),
+        (1, "2020-02"),
+        (1, dt.date(2020, 2, 1)),
+        (1, dt.date(2020, 2, 29)),
+    ],
+    ids=[
+        "quarter_label",
+        "quarter_start",
+        "quarter_end",
+        "quarter_end_string",
+        "month_label",
+        "month_start",
+        "month_end",
+    ],
+)
+def test_an_exclusion_is_read_with_the_triangles_step(step, origin):
+    # the second origin's first link ratio, however the exclusion writes that origin
+    cells = arrow_cells(QUARTER_ROWS, QUARTERS, step=3) if step == 3 else monthly_cells()
+    second = cells["origin_period"].to_pylist()[len(QUARTER_ROWS[0]) if step == 3 else 4]
+    expected = methods.chain_ladder(cells, dev_grain_months=step, exclude=[(second, step)])
+    result = methods.chain_ladder(cells, dev_grain_months=step, exclude=[(origin, step)])
+    assert_same_numbers(result, expected)
+    excluded = result.link_ratios.filter(
+        pc.equal(result.link_ratios["reason"], "explicit_exclusion")
+    )
+    assert excluded["origin_period"].to_pylist() == [second]
+    assert excluded["from_dev_lag"].to_pylist() == [step]
+    plain = methods.chain_ladder(cells, dev_grain_months=step)
+    assert factors(result) != factors(plain)
+
+
+@pytest.mark.parametrize(
+    ("premium", "exclude", "match"),
+    [
+        (
+            {2020: 1.0},
+            (),
+            r"premium origin 2020 is a year, 12 months long, but the triangle's origin periods "
+            r"are 3 months long \(dev_grain_months=3\)\. Write it as one of the triangle's "
+            "origin periods, as a label of that length or as the period's first or last day$",
+        ),
+        (
+            dict(zip(QUARTERS, QUARTER_PREMIUM, strict=True)),
+            [("2020-03", 3)],
+            r"exclude origin '2020-03' is a month, 1 month long, but the triangle's origin "
+            r"periods are 3 months long \(dev_grain_months=3\)",
+        ),
+    ],
+    ids=["premium_by_year", "exclude_by_month"],
+)
+def test_premium_and_exclusions_are_told_to_follow_the_cells(premium, exclude, match):
+    # the cells set the period length, so the advice is to rewrite the origin, not the step
+    cells = arrow_cells(QUARTER_ROWS, QUARTERS, step=3)
+    with pytest.raises(ValueError, match=match) as refused:
+        methods.cape_cod(cells, premium=premium, dev_grain_months=3, exclude=exclude)
+    assert "pass dev_grain_months" not in str(refused.value)
+
+
+@pytest.mark.parametrize("spell", [lambda o: o.year, year_end, lambda o: str(o.year)])
+@pytest.mark.parametrize("order", ["newest_first", "shuffled"])
+def test_the_echoed_label_follows_each_rows_period_not_its_position(order, spell):
+    # rows arrive out of order, so the first label seen is not the first period
+    cells = arrow_cells()
+    if order == "newest_first":
+        rows = np.arange(cells.num_rows)[::-1]
+    else:
+        rows = np.random.default_rng(2020).permutation(cells.num_rows)
+    shuffled = relabelled(cells.take(pa.array(rows)), spell)
+    premium = premium_table(RAA_PREMIUM).take(pa.array([9, 3, 0, 7, 1, 8, 2, 6, 4, 5]))
+    expected = methods.cape_cod(arrow_cells(), premium=RAA_PREMIUM)
+    result = methods.cape_cod(shuffled, premium=premium)
+    assert_same_numbers(result, expected)
+    assert result.origins["origin"].to_pylist() == [spell(o) for o in RAA_ORIGINS]
+    for table in (result.origins, result.link_ratios):
+        starts = table["origin_period"].to_pylist()
+        assert table["origin"].to_pylist() == [spell(o) for o in starts]
+
+
+@pytest.mark.parametrize(
+    ("spell", "echo"),
+    [
+        (lambda o: f"{o.year}-{o.month:02d}", pa.string()),
+        (lambda o: o, pa.date32()),
+        (last_day, pa.date32()),
+    ],
+    ids=["month_label", "month_start", "month_end"],
+)
+# January to April 2020 has 29 February; December 2020 to March 2021 has 28 February
+@pytest.mark.parametrize(
+    ("first", "as_of"),
+    [(dt.date(2020, 1, 1), dt.date(2020, 4, 30)), (dt.date(2020, 12, 1), dt.date(2021, 3, 31))],
+    ids=["leap_year", "common_year"],
+)
+def test_monthly_origins_written_each_way_agree(spell, echo, first, as_of):
+    origins = [first]
+    for _ in range(3):
+        origins.append(last_day(origins[-1]) + dt.timedelta(days=1))
+    rows = [[100.0, 180.0, 220.0, 240.0], [110.0, 200.0, 230.0], [90.0, 170.0], [120.0]]
+    cells = arrow_cells(rows, origins, step=1)
+    expected = methods.chain_ladder(cells, dev_grain_months=1)
+    result = methods.chain_ladder(relabelled(cells, spell), dev_grain_months=1)
+    assert_same_numbers(result, expected)
+    assert result.origins["origin_period"].to_pylist() == origins
+    assert result.as_of == as_of
+    assert_echoes(result, pa.array([spell(o) for o in origins], echo))
+
+
+def test_a_june_fiscal_year_is_read_from_its_last_day():
+    # 30 June 1982 ends the year that began 1 July 1981, which no integer year can name
+    ends = [dt.date(o.year + 1, 6, 30) for o in RAA_ORIGINS]
+    calendar = methods.mack(arrow_cells())
+    fiscal = methods.mack(spelled(lambda o: dt.date(o.year + 1, 6, 30)))
+    assert fiscal.origins["origin_period"].to_pylist() == [
+        dt.date(o.year, 7, 1) for o in RAA_ORIGINS
+    ]
+    assert fiscal.origins["origin"].to_pylist() == ends
+    assert fiscal.as_of == dt.date(1991, 6, 30)
+    # the same cells, so the same numbers: only the calendar moved
+    for column in ("latest", "ultimate", "ibnr", "mack_se"):
+        assert fiscal.origins[column].equals(calendar.origins[column])
+    assert fiscal.totals.equals(calendar.totals)
+
+
+@pytest.mark.parametrize(
+    ("cells", "premium"),
+    [
+        (spelled(lambda o: o.year), {year_end(o): p for o, p in RAA_PREMIUM.items()}),
+        (spelled(year_end), {o.year: p for o, p in RAA_PREMIUM.items()}),
+        (spelled(lambda o: o.year), {str(o.year): p for o, p in RAA_PREMIUM.items()}),
+        (
+            spelled(lambda o: o.year),
+            pa.table(
+                {
+                    "origin_period": [f"{o.year}-12-31" for o in RAA_PREMIUM],
+                    "premium": list(RAA_PREMIUM.values()),
+                }
+            ),
+        ),
+        (
+            spelled(lambda o: o.isoformat()),
+            pa.table({"origin_period": RAA_YEARS, "premium": list(RAA_PREMIUM.values())}),
+        ),
+    ],
+    ids=[
+        "years_by_year_end",
+        "year_ends_by_year",
+        "years_by_label",
+        "years_by_table_of_ends",
+        "strings_by_table_of_years",
+    ],
+)
+@pytest.mark.parametrize("method", ["bornhuetter_ferguson", "cape_cod"])
+def test_premium_may_be_written_differently_from_the_cells(method, cells, premium):
+    expected = run(method)
+    extra = {"expected_loss_ratio": 0.7} if method == "bornhuetter_ferguson" else {}
+    result = getattr(methods, method)(cells, premium=premium, **extra)
+    assert_same_numbers(result, expected)
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [1982, np.int64(1982), "1982", "1982-12-31", dt.date(1982, 12, 31), dt.datetime(1982, 1, 1, 6)],
+    ids=["int", "numpy_int", "year_string", "year_end_string", "year_end_date", "datetime"],
+)
+def test_an_exclusion_origin_may_be_written_any_way(origin):
+    expected = methods.chain_ladder(arrow_cells(), exclude=[(dt.date(1982, 1, 1), 12)])
+    for cells in (arrow_cells(), spelled(lambda o: o.year)):
+        result = methods.chain_ladder(cells, exclude=[(origin, 12)])
+        assert_same_numbers(result, expected)
+
+
+LABEL_FORMS = (
+    r"write it as a year \(2020\), a quarter \(2020Q3\), a month \(2020-03\), or a date that "
+    r"is the period's first day \(2020-01-01\) or last day \(2020-12-31\)"
+)
+NOT_FIRST_OR_LAST = "is neither the first nor the last day of a month"
+
+
+@pytest.mark.parametrize(
+    ("cells", "match"),
+    [
+        (
+            spelled(lambda o: str(o.year), bad="1984Q5"),
+            f"origin_period '1984Q5' is not an origin period: {LABEL_FORMS}",
+        ),
+        (
+            spelled(lambda o: str(o.year), bad="FY84"),
+            "origin_period 'FY84' is not an origin period",
+        ),
+        (
+            spelled(lambda o: str(o.year), bad="1984-13"),
+            "origin_period '1984-13' is not an origin period",
+        ),
+        (
+            spelled(lambda o: str(o.year), bad="1984-02-30"),
+            "origin_period '1984-02-30' is not an origin period",
+        ),
+        (
+            spelled(lambda o: o.isoformat(), bad="1984-06-15"),
+            f"origin_period '1984-06-15' {NOT_FIRST_OR_LAST}",
+        ),
+        (
+            spelled(lambda o: o, pa.date32(), bad=dt.date(1984, 6, 15)),
+            f"origin_period 1984-06-15 {NOT_FIRST_OR_LAST}. A date must be an origin period's "
+            r"first day \(2020-01-01\) or its last day \(2020-12-31\), read with "
+            "dev_grain_months=12",
+        ),
+        (
+            spelled(
+                lambda o: dt.datetime(o.year, 1, 1),
+                pa.timestamp("s"),
+                bad=dt.datetime(1984, 6, 15, 6),
+            ),
+            f"origin_period 1984-06-15 06:00:00 falls on 1984-06-15, which {NOT_FIRST_OR_LAST}",
+        ),
+        (spelled(lambda o: o.year, bad=0), "origin_period 0 is not a four-digit year"),
+        (spelled(lambda o: o.year, bad=10000), "origin_period 10000 is not a four-digit year"),
+        (
+            spelled(lambda o: o.year % 100, pa.int8()),
+            r"origin_period 81 is not a four-digit year: write a year with its century "
+            r"\(1997, not 97\)",
+        ),
+        (
+            spelled(lambda o: o.year, pa.uint64(), bad=2**64 - 1),
+            f"origin_period {2**64 - 1} is not a four-digit year",
+        ),
+        (
+            spelled(lambda o: o, pa.date32(), bad=dt.date(1984, 2, 28)),
+            f"origin_period 1984-02-28 {NOT_FIRST_OR_LAST}",
+        ),
+        (
+            spelled(lambda o: o, pa.date32(), bad=dt.date(1984, 4, 29)),
+            f"origin_period 1984-04-29 {NOT_FIRST_OR_LAST}",
+        ),
+        (
+            spelled(lambda o: o, pa.date32(), bad=dt.date(1984, 1, 30)),
+            f"origin_period 1984-01-30 {NOT_FIRST_OR_LAST}",
+        ),
+        (
+            spelled(lambda o: o, pa.date32(), bad=dt.date(9999, 12, 31)),
+            "origin_period 9999-12-31 would end an origin period of 12 months that starts or "
+            "ends outside the years 1 to 9999",
+        ),
+        (
+            spelled(lambda o: o, pa.date32(), bad=dt.date(1, 1, 31)),
+            "origin_period 0001-01-31 would end an origin period of 12 months",
+        ),
+        (
+            spelled(lambda o: str(o.year), bad="1984-12-31"),
+            "origin_period writes the origin period starting 1984-01-01 in 2 ways: "
+            "'1984-12-31', '1984'. Write each period one way throughout the column, because "
+            "the results echo its label back",
+        ),
+        (
+            spelled(lambda o: o, pa.date32(), bad=dt.date(1984, 12, 31)),
+            "starting 1984-01-01 in 2 ways: 1984-12-31, 1984-01-01",
+        ),
+        (
+            spelled(
+                lambda o: dt.datetime(o.year, 1, 1),
+                pa.timestamp("s"),
+                bad=dt.datetime(1984, 1, 1, 6),
+            ),
+            "starting 1984-01-01 in 2 ways: 1984-01-01 06:00:00, 1984-01-01 00:00:00",
+        ),
+        (
+            spelled(lambda o: f"{o.year}Q1"),
+            r"origin_period '1981Q1' is a quarter, 3 months long, but dev_grain_months=12\. "
+            "The methods need origin periods one development step long: pass "
+            "dev_grain_months=3 if the triangle develops 3 months at a time",
+        ),
+        (
+            spelled(lambda o: f"{o.year}-01"),
+            "origin_period '1981-01' is a month, 1 month long, but dev_grain_months=12",
+        ),
+    ],
+    ids=[
+        "quarter_5",
+        "fiscal_label",
+        "month_13",
+        "february_30",
+        "mid_month_string",
+        "mid_month_date",
+        "mid_month_timestamp",
+        "year_0",
+        "year_10000",
+        "two_digit_years",
+        "uint64_past_int64",
+        "leap_february_28",
+        "april_29",
+        "january_30",
+        "last_day_of_9999",
+        "end_of_january_1",
+        "year_written_two_ways",
+        "date_written_two_ways",
+        "timestamp_written_two_ways",
+        "quarters_on_an_annual_step",
+        "months_on_an_annual_step",
+    ],
+)
+def test_an_origin_label_that_names_no_period_is_refused(cells, match):
+    with pytest.raises(ValueError, match=match):
+        methods.chain_ladder(cells)
+
+
+@pytest.mark.parametrize(
+    "origins",
+    [[2020, 2021, 2022], [2020]],
+    ids=["three_years", "one_year"],
+)
+@pytest.mark.parametrize(("spell", "shown"), [(int, "2020"), (str, "'2020'")], ids=["int", "text"])
+def test_years_on_a_quarterly_step_are_refused_by_name(origins, spell, shown):
+    # one origin has no neighbour to be 12 months away from, so only the label can tell
+    rows = [[1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 2, 3, 4, 5], [1]][: len(origins)]
+    cells = arrow_cells(rows, years(*origins), step=3)
+    labelled = cells.set_column(
+        0, "origin_period", pa.array([spell(o.year) for o in cells["origin_period"].to_pylist()])
+    )
+    with pytest.raises(
+        ValueError,
+        match=rf"origin_period {shown} is a year, 12 months long, but dev_grain_months=3\. The "
+        "methods need origin periods one development step long: pass dev_grain_months=12 if "
+        r"the triangle develops 12 months at a time\. Origin periods longer than a development "
+        r"step \(annual origins developed quarterly, for example\) are not supported yet",
+    ):
+        methods.chain_ladder(labelled, dev_grain_months=3)
+
+
+YEAR_PREMIUM = {o.year: p for o, p in RAA_PREMIUM.items()}
+
+
+@pytest.mark.parametrize(
+    ("premium", "match"),
+    [
+        (
+            {**YEAR_PREMIUM, "1981-12-31": 1.0},
+            r"premium has more than one amount for origin period\(s\) 1981 and '1981-12-31'$",
+        ),
+        (
+            pa.table(
+                {
+                    "origin_period": [*map(str, RAA_YEARS), "1981-01-01"],
+                    "premium": [*RAA_PREMIUM.values(), 1.0],
+                }
+            ),
+            r"premium has more than one row for origin period\(s\) '1981' and '1981-01-01'$",
+        ),
+        ({**YEAR_PREMIUM, "FY81": 1.0}, "premium origin 'FY81' is not an origin period"),
+        (
+            {**YEAR_PREMIUM, dt.date(1981, 6, 15): 1.0},
+            f"premium origin 1981-06-15 {NOT_FIRST_OR_LAST}",
+        ),
+        ({**YEAR_PREMIUM, True: 1.0}, "premium origin True is not an origin period"),
+        (
+            {**YEAR_PREMIUM, 1.5: 1.0},
+            "premium origin 1.5 is not an origin period",
+        ),
+        (
+            {y: p for y, p in YEAR_PREMIUM.items() if y not in (1981, 1985)},
+            r"premium has no amount for origin\(s\) 1981, 1985$",
+        ),
+        (
+            {**{str(y): p for y, p in YEAR_PREMIUM.items()}, "1991-12-31": 1.0},
+            r"premium has amounts for origin\(s\) '1991-12-31' that are not in the triangle",
+        ),
+        (
+            pa.table({"origin_period": [1981.0] * 10, "premium": list(RAA_PREMIUM.values())}),
+            "premium origin_period must be a column of integer years, text labels, dates or "
+            "timestamps, got double",
+        ),
+        (
+            pa.table(
+                {
+                    "origin_period": [f"{y}Q1" for y in RAA_YEARS],
+                    "premium": list(RAA_PREMIUM.values()),
+                }
+            ),
+            r"premium origin_period '1981Q1' is a quarter, 3 months long, but the triangle's "
+            r"origin periods are 12 months long \(dev_grain_months=12\)\. Write it as one of "
+            "the triangle's origin periods",
+        ),
+    ],
+    ids=[
+        "dict_two_ways",
+        "table_two_ways",
+        "dict_unparseable",
+        "dict_mid_month",
+        "dict_bool",
+        "dict_float",
+        "missing_in_the_cells_labels",
+        "extra_in_premiums_labels",
+        "table_float",
+        "table_quarters",
+    ],
+)
+def test_premium_origins_are_refused_in_the_callers_labels(premium, match):
+    with pytest.raises(ValueError, match=match):
+        methods.cape_cod(spelled(lambda o: o.year), premium=premium)
+
+
+@pytest.mark.parametrize(
+    ("origin", "match"),
+    [
+        ("FY82", "exclude origin 'FY82' is not an origin period"),
+        (dt.date(1982, 6, 15), f"exclude origin 1982-06-15 {NOT_FIRST_OR_LAST}"),
+        ("1982Q1", "exclude origin '1982Q1' is a quarter"),
+        (None, "exclude origin None is not an origin period"),
+    ],
+    ids=["unparseable", "mid_month", "quarter", "none"],
+)
+def test_an_exclusion_origin_that_names_no_period_is_refused(origin, match):
+    with pytest.raises(ValueError, match=match):
+        methods.chain_ladder(arrow_cells(), exclude=[(origin, 12)])
 
 
 # -- every option is delivered ----------------------------------------------------
@@ -885,6 +1618,7 @@ def test_dev_grain_months_is_delivered(method):
 # -- the result's tables -----------------------------------------------------------
 
 BASE_ORIGINS = [
+    ("origin", pa.date32()),  # the cells' own labels, which arrow_cells writes as dates
     ("origin_period", pa.date32()),
     ("latest_dev_lag", pa.int64()),
     ("latest", pa.float64()),
@@ -904,6 +1638,7 @@ SELECTION = [
 ]
 LINK_RATIOS = pa.schema(
     [
+        ("origin", pa.date32()),
         ("origin_period", pa.date32()),
         ("from_dev_lag", pa.int64()),
         ("previous", pa.float64()),

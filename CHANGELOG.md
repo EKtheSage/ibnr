@@ -28,10 +28,20 @@ and `methods.mack`. Import it with `from ibnr import methods`; a bare
   DataFrame, a pyarrow Table or RecordBatch, anything with
   `__arrow_c_stream__`) with columns `origin_period`, `dev_lag` (months) and
   `value` (cumulative loss). ibnr reads it with pyarrow and never imports
-  polars to do so. `origin_period` may be a date, a timestamp (with or without
-  a time zone; the date read is the one in that zone, and a time of day is
-  dropped) or an ISO string, and may be dictionary-encoded (a polars
-  Categorical or Enum).
+  polars to do so.
+- `origin_period` is written the way the caller writes it: an integer year
+  (`2020`), a text label for a year, quarter or month (`"2020"`, `"2020Q3"`,
+  `"2020-03"`), or a date, timestamp (with or without a time zone; the date
+  read is the one in that zone, and a time of day is dropped) or ISO date
+  string, any of them dictionary-encoded (a polars Categorical or Enum). A date
+  is read with `dev_grain_months`, which is also the origin period's length:
+  the first day of a month starts a period and the last day of a month ends
+  one, so `2020-12-31` is the accident year 2020 and, annually, `2021-06-30` is
+  the year from July 2020 to June 2021. Premium's origins and the origins in
+  `exclude` take the same forms and need not match the cells' spelling. The
+  results echo the caller's label in a new first column `origin` of `origins`
+  and `link_ratios` (int64, string, date32 or the input's timestamp type),
+  beside `origin_period`, which stays the first day of the period.
 - Each returns a `methods.ReserveResult` holding pyarrow Tables with fixed
   column types: `origins` (latest, ultimate, ibnr per origin; Mack adds
   `mack_se`, `parameter_se`, `process_se`), `development` (factor, cdf,
@@ -51,26 +61,35 @@ and `methods.mack`. Import it with `from ibnr import methods`; a bare
   and defaults to `sigma_rule="log_linear"`, chainladder-python's default;
   `kernels.fit_mack` keeps `"mack"`, so published numbers do not move.
 - Refused by name: a missing column, a `dev_lag` that is not whole months, a
-  null or NaN `value` (an unobserved cell is left out, not null), a null or
-  non-date `origin_period`, two rows for one cell (the message says the methods
-  fit one cohort at a time; ibnr refuses rather than sums them), premium
-  without `origin_period` and `premium` columns or with two rows for one
-  origin, and an `exclude` pair that names no link ratio of the triangle. Also
-  refused, each with a message in the caller's terms: `dev_lag` values that are
+  null or NaN `value` (an unobserved cell is left out, not null), a null
+  `origin_period` or one that names no period (`"2020Q5"`, `"FY20"`, a date
+  that is neither a month's first day nor its last, an integer year without
+  its century such as `97`), a year, quarter or month label whose length is
+  not `dev_grain_months` (checked on the label, so even a one-origin triangle
+  cannot be misread; a premium or `exclude` origin of the wrong length is told
+  to follow the cells), one period written two ways in one column (the label
+  is echoed back, so it must be one), two rows for one cell (the message says
+  the methods fit one cohort at a time; ibnr refuses rather than sums them),
+  premium without `origin_period` and `premium` columns, with two rows for one
+  origin, missing an origin or carrying an extra one, an `exclude` pair that
+  names no link ratio of the triangle, and one link ratio excluded twice (two
+  spellings of one origin included). Also refused: `dev_lag` values that are
   not multiples of `dev_grain_months` (quarterly ages with the default annual
   grain are told to pass `dev_grain_months=3`), a negative cumulative (naming
   the cells), a missing origin period or origin periods longer than a
-  development step (naming the periods), an integer `origin_period` (with how
-  to make a date of an accident year), and a `methods.mack` triangle with at
+  development step (naming the periods), and a `methods.mack` triangle with at
   most one link ratio at every age, where every sigma would be 0 and the
-  standard errors would read as no uncertainty.
+  standard errors would read as no uncertainty. Every message names an origin
+  as the caller wrote it; a missing origin period, which has no label, is
+  named by its first day.
 - Tied out from polars frames to chainladder-python 0.9.2 on raa and genins,
   to a relative 1e-9: chain-ladder ultimates, factors and cdfs; Mack's
   per-origin and total standard errors with the parameter and process parts,
   sigma and std_err; Bornhuetter-Ferguson with a premium that rises across the
   origins; Cape Cod with `decay=1` and `trend=0`; and on raa, the chain-ladder
   factors under `history_periods`, `average="simple"`, `drop_high`, both drops
-  and `exclude`.
+  and `exclude`. The chain ladder and Mack's total standard error also tie out
+  from integer accident years.
 - `docs/coming-from-chainladder.md`: a lookup table from chainladder-python's
   classes and attributes to these functions, what is not there yet, and the
   behaviours that differ on purpose.
