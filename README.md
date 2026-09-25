@@ -235,6 +235,13 @@ cumulative of zero as a missing cell, as chainladder-python does, and
 `methods.tweedie_glm(cells, power=1.5)` fits a Tweedie GLM to the increments
 (power 1, the default, is the over-dispersed Poisson model and gives the chain
 ladder's ultimates) and adds `cells` and `coefficients` tables to the result.
+All five link-ratio methods take a tail too:
+`tail="constant", tail_factor=1.05`, or a curve fitted to the link factors
+(`tail="exponential"`, `"inverse_power"` or `"weibull"`), with `tail_decay`,
+`tail_attach_lag`, `tail_fit_lags`, `tail_steps` and `tail_rows`; `mack`
+carries the tail in its standard errors and also takes `tail_sigma` and
+`tail_std_err`. With a tail, `development` goes on past the last observed age
+and `totals` has the tail factor.
 Coming from chainladder-python,
 [this lookup table](https://github.com/EKtheSage/ibnr/blob/main/docs/coming-from-chainladder.md) maps its classes and
 attributes onto these functions. Import it with `from ibnr import methods`: a

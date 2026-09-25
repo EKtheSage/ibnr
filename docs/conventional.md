@@ -39,7 +39,10 @@ default grid purporting to reproduce every published example.
 
 Let `C_i` be the latest cumulative loss, `P_i` premium, and `beta_j` the
 proportion developed at age `j`: the reciprocal product of subsequent selected
-factors, ending at `beta_horizon = 1`.
+factors, ending at `beta_horizon = 1`. A candidate with a `tail` (a
+`kernels.TailSpec`) divides every `beta_j` by the tail factor, so the last age
+has `beta = 1 / tail_factor` and every method below reads the tail through
+`beta`; a tail cannot be combined with `horizon`.
 
 - **CL:** prior ultimate `A_i = C_i / beta_i`.
 - **BF:** `A_i = P_i × expected_loss_ratio`.
@@ -144,7 +147,8 @@ observed in a standalone fit. An explicit horizon cannot omit observed ages, so
 a replay has to stop before the data develops past the declared horizon: a fit
 refuses a horizon shorter than the development it can see. An age beyond the
 available data requires the explicit unity policy. There is no fitted tail
-beyond the horizon.
+beyond the horizon: a candidate with a `tail` and a `horizon` is refused
+(`not_supported`), so replay and selection run untailed.
 
 The paper does not prescribe all of these boundary conventions, so this package
 declares its own and documents them here: the pair, window and tie rules above,
