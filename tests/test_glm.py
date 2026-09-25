@@ -171,7 +171,12 @@ def test_every_power_matches_r(name, index):
     reserve = np.asarray(fit_r["reserve_by_origin"])
     got = column(result.origins, "model_ibnr")
     assert np.max(np.abs(got - reserve)) <= 1e-6 * np.max(np.abs(reserve))
-    np.testing.assert_allclose(column(result.origins, "ibnr"), got, rtol=1e-12)
+    # the two routes sum the same increments in different orders: on Linux
+    # MW2014's second origin (a reserve of about 1.09) differs by 1.2e-12 of
+    # itself, so the tolerance is scaled to the largest origin's reserve
+    np.testing.assert_allclose(
+        column(result.origins, "ibnr"), got, rtol=1e-12, atol=1e-12 * np.max(np.abs(got))
+    )
     coefficients = result.coefficients
     assert coefficients.num_rows == len(fit_r["coefficient_names"])
     np.testing.assert_allclose(column(coefficients, "estimate"), fit_r["coefficients"], atol=2e-6)
