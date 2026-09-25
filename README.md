@@ -230,7 +230,9 @@ as chainladder-python does, and `zero_cells="observed"` keeps it as data.
 Coming from chainladder-python,
 [this lookup table](https://github.com/EKtheSage/ibnr/blob/main/docs/coming-from-chainladder.md) maps its classes and
 attributes onto these functions. Import it with `from ibnr import methods`: a
-bare `import ibnr` does not load it.
+bare `import ibnr` does not load it. `ibnr.methods` loads numpy and pyarrow but
+not ibis, pandas or scipy, on import or when a method runs, which keeps the cold
+start of a service that calls it short.
 
 ## Building a Triangle from your own data
 

@@ -10,18 +10,26 @@ from __future__ import annotations
 
 import datetime as dt
 import numbers
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import product
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
-import pandas as pd
 
-# as_date lives in contract so the grid check can read origin periods with it;
-# it stays importable from here, where replay and selection read it.
-from ibnr.kernels.contract import ZERO_CELLS, as_date, check_grid, cohort_grid
-from ibnr.triangle import Triangle
+# as_date lives in kernels/grid.py so the grid check can read origin periods with
+# it; it stays importable from here, where replay and selection read it. Nothing
+# at module level here imports pandas or the Triangle layer, because
+# ibnr.methods imports this module and must not load ibis, pandas or scipy. The
+# Triangle path (fit_conventional) and the pandas tables of ConventionalFit
+# import what they need when they run.
+from ibnr.kernels.grid import ZERO_CELLS, as_date, check_grid
+
+if TYPE_CHECKING:
+    import pandas as pd
+
+    from ibnr.triangle import Triangle
 
 #: One row per observed link ratio, whether or not it was used.
 SELECTION_COLUMNS = [
@@ -187,6 +195,8 @@ def fit_conventional(
     is supplied by the caller: it must have been available then too. Negative
     increments are permitted; cumulative amounts must be finite/non-negative.
     """
+    from ibnr.kernels.contract import cohort_grid
+
     cutoff = as_date(as_of)
     train = triangle.as_of(cutoff)
     if triangle.meta.origin_grain != triangle.meta.dev_grain:
@@ -211,9 +221,10 @@ def fit_conventional_grid(
     development proportions and ultimates for the same cells, but starting from
     arrays rather than a ``Triangle``. It is meant for a service that fits one
     small triangle per request, where the database queries inside
-    :func:`fit_conventional` take longer than the fit itself. Importing it still
-    imports ibis, because the kernels modules import the Triangle layer; only
-    the queries are gone.
+    :func:`fit_conventional` take longer than the fit itself. Importing this
+    module does not import ibis or pandas; the result's three tables are pandas
+    DataFrames, so this function imports pandas when it builds them.
+    ``ibnr.methods`` returns the same numbers as Arrow tables without pandas.
 
     ``grid`` is the one-cohort dict that ``kernels.cohort_grid_frame`` builds
     from a pandas frame with columns ``origin_period``, ``dev_lag`` (months) and
@@ -267,6 +278,21 @@ def fit_conventional_grid(
     Everything else (the horizon, exclusions, factor fallbacks) is refused
     exactly as :func:`fit_conventional` refuses it.
     """
+    return _estimate_grid(grid, candidate, premium=premium).fit()
+
+
+def _estimate_grid(
+    grid: dict[str, Any],
+    candidate: ConventionalCandidate,
+    *,
+    premium: Mapping | pd.Series | None = None,
+) -> _Estimate:
+    """:func:`fit_conventional_grid` without the pandas tables.
+
+    The same checks, in the same order, and the same numbers, held in numpy
+    arrays and lists. ``ibnr.methods`` reads this, so a fit through the front
+    door never imports pandas.
+    """
     origins, valuation = check_grid(grid)
     n_w = grid["n_w"]
     fitted = dict(grid, origin_periods=origins)
@@ -298,12 +324,22 @@ def fit_conventional_grid(
             raise ValueError(
                 f"grid premium must be a float array with one value per origin, {n_w} in all"
             )
-    return _fit_grid(fitted, candidate, valuation)
+    return _estimate(fitted, candidate, valuation)
+
+
+def _is_series(value) -> bool:
+    """Whether ``value`` is a pandas Series, without importing pandas.
+
+    A Series can exist only once pandas has been imported, so when pandas is
+    not in ``sys.modules`` the answer is no and pandas stays unloaded.
+    """
+    pandas = sys.modules.get("pandas")
+    return pandas is not None and isinstance(value, pandas.Series)
 
 
 def _premium_by_origin(premium, origins: list[dt.date]) -> np.ndarray:
     """Premium keyed by origin period as an array in grid order, or a refusal."""
-    if not isinstance(premium, Mapping | pd.Series):
+    if not (isinstance(premium, Mapping) or _is_series(premium)):
         raise ValueError(
             "premium must be keyed by origin period (a dict, or a pandas Series indexed by "
             f"origin period), not {type(premium).__name__}; a plain sequence is refused "
@@ -340,10 +376,52 @@ def _premium_by_origin(premium, origins: list[dt.date]) -> np.ndarray:
     return np.array([by_origin[o] for o in origins], dtype=float)
 
 
+@dataclass(frozen=True)
+class _Estimate:
+    """A conventional fit held in numpy arrays and lists, before any pandas table.
+
+    ``origins`` maps each column of ``ConventionalFit.origins`` to its values;
+    ``selection`` and ``summary`` are the rows of ``factor_selection`` and
+    ``factor_summary``. :meth:`fit` builds the pandas tables.
+    """
+
+    candidate: ConventionalCandidate
+    as_of: dt.date
+    grid: dict[str, Any]
+    factors: np.ndarray
+    beta: np.ndarray
+    origins: dict[str, Any]
+    selection: list[dict[str, Any]]
+    summary: list[dict[str, Any]]
+
+    def fit(self) -> ConventionalFit:
+        import pandas as pd
+
+        # Explicit columns: an age range with no observed pair at all leaves these
+        # lists empty, and a frame built from an empty list has no columns, so a
+        # caller reading factor_selection['ratio'] met a KeyError rather than an
+        # empty column.
+        return ConventionalFit(
+            self.candidate,
+            self.as_of,
+            self.grid,
+            self.factors,
+            self.beta,
+            pd.DataFrame(self.origins),
+            pd.DataFrame(self.selection, columns=SELECTION_COLUMNS),
+            pd.DataFrame(self.summary, columns=SUMMARY_COLUMNS),
+        )
+
+
 def _fit_grid(
     grid: dict[str, Any], candidate: ConventionalCandidate, cutoff: dt.date
 ) -> ConventionalFit:
     """Shared estimator for already sliced/validated grids (also used by replay)."""
+    return _estimate(grid, candidate, cutoff).fit()
+
+
+def _estimate(grid: dict[str, Any], candidate: ConventionalCandidate, cutoff: dt.date) -> _Estimate:
+    """The estimator behind :func:`_fit_grid`, with no pandas."""
     step = grid["dev_grain_months"]
     horizon = candidate.horizon or grid["n_d"] * step
     if horizon % step or horizon < grid["n_d"] * step:
@@ -376,21 +454,20 @@ def _fit_grid(
             elr = (weights @ latest) / (weights @ (premium * developed))
         prior = premium * elr
     reserve = prior * (1 - developed)
-    origins = pd.DataFrame(
-        {
-            "origin_period": grid["origin_periods"],
-            "latest_dev_lag": (grid["latest_dev"] + 1) * step,
-            "latest": latest,
-            "beta": developed,
-            "expected_loss_ratio": elr,
-            "prior_ultimate": prior,
-            "ultimate": latest + reserve,
-            "reserve": reserve,
-        }
-    )
-    if not np.isfinite(origins[["prior_ultimate", "ultimate", "reserve"]]).all().all():
+    ultimate = latest + reserve
+    origins = {
+        "origin_period": grid["origin_periods"],
+        "latest_dev_lag": (grid["latest_dev"] + 1) * step,
+        "latest": latest,
+        "beta": developed,
+        "expected_loss_ratio": elr,
+        "prior_ultimate": prior,
+        "ultimate": ultimate,
+        "reserve": reserve,
+    }
+    if not all(np.isfinite(values).all() for values in (prior, ultimate, reserve)):
         raise ValueError("conventional forecast is not finite")
-    return ConventionalFit(candidate, cutoff, grid, factors, beta, origins, selection, summary)
+    return _Estimate(candidate, cutoff, grid, factors, beta, origins, selection, summary)
 
 
 def _factors(grid, candidate, n_dev):
@@ -495,15 +572,7 @@ def _factors(grid, candidate, n_dev):
                 "extreme_trimming_skipped": skipped,
             }
         )
-    # Explicit columns: an age range with no observed pair at all leaves these
-    # lists empty, and a frame built from an empty list has no columns, so a
-    # caller reading factor_selection['ratio'] met a KeyError rather than an
-    # empty column.
-    return (
-        factors,
-        pd.DataFrame(selection, columns=SELECTION_COLUMNS),
-        pd.DataFrame(summary, columns=SUMMARY_COLUMNS),
-    )
+    return factors, selection, summary
 
 
 def conventional_grid(
