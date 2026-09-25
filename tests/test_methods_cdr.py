@@ -5,8 +5,9 @@ Four things are checked.
 1. **The draws are the gallery's.** For the same seed, draw count and options,
    the front door's draws equal, byte for byte, the ones the gallery's ``mack``
    entry gives for a Triangle with the one segment ``Total`` and the field
-   ``values``, which is what the Reserving app's ``/cdr`` route fits today.
-   Once through chainladder, exactly as the app builds it (``tieout``), and
+   ``values``, which is what the Reserving app's ``/cdr`` route fits today,
+   except that an origin at its last age has 0.0 where the entry's negated
+   draws have -0.0. Once through chainladder, exactly as the app builds it (``tieout``), and
    once through ibnr's own Triangle, so the core leg checks it too.
 2. **The analytic figures are the kernel's**, and through the kernel R's
    published MW2014 numbers.
@@ -69,6 +70,8 @@ SETTINGS = [
     ("log_linear", "lognormal", False, 7, 1_500),
     ("mack", "normal", True, 12345, 1_000),
     ("log_linear", "gamma", True, 0, 3),
+    # the fewest draws with a standard deviation (ddof=1), as the app reports it
+    ("log_linear", "gamma", True, 0, 2),
 ]
 
 
@@ -136,7 +139,11 @@ def assert_same_as_the_app(result, app, *, n_draws, percentiles) -> None:
     """Every number the app's ``/cdr`` response carries, equal to the last bit."""
     n_w = app["per_origin"].shape[1]
     draws = result.draws.column("ultimate_change").to_numpy().reshape(n_draws, n_w)
-    assert draws.tobytes() == np.ascontiguousarray(app["per_origin"]).tobytes()
+    # The one difference: the app's negated draws hold -0.0 for an origin at its
+    # last age, so the app shows its per-origin mean as -0.0; the front door has
+    # 0.0 there. Adding 0.0 changes no other bit.
+    assert np.signbit(app["per_origin"][:, 0]).all()
+    assert draws.tobytes() == np.ascontiguousarray(app["per_origin"] + 0.0).tobytes()
     assert result.draws.column("draw").to_pylist() == np.repeat(np.arange(n_draws), n_w).tolist()
 
     totals = result.totals.to_pylist()[0]
@@ -258,7 +265,8 @@ def test_the_draws_are_the_kernels_for_the_derived_stream():
     pred = simulate_one_year_cdr(fit, n_draws=500, seed=stream)
     result = methods.one_year_cdr(arrow_cells(), n_draws=500, seed=5)
     draws = result.draws.column("ultimate_change").to_numpy().reshape(500, fit.n_w)
-    assert draws.tobytes() == (-pred.samples[:, : fit.n_w]).tobytes()
+    # + 0.0: a closed origin's change is 0.0 at the front door, not -0.0
+    assert draws.tobytes() == (-pred.samples[:, : fit.n_w] + 0.0).tobytes()
     # a plain integer seed handed to the kernel is a different stream
     plain = simulate_one_year_cdr(fit, n_draws=500, seed=5)
     assert not np.array_equal(-plain.samples[:, : fit.n_w], draws)
@@ -298,6 +306,29 @@ def test_the_standard_errors_are_the_kernels(rule):
     mack = methods.mack(arrow_cells(), sigma_rule=rule, zero_cells="observed")
     assert result.origins.column("runoff_se").equals(mack.origins.column("mack_se"))
     assert result.totals["runoff_se"].equals(mack.totals["mack_se"])
+
+
+SMALL = [[100, 150, 160], [90, 140], [120]]
+
+
+@pytest.mark.parametrize("rows", [SMALL, RAA], ids=["small", "raa"])
+@pytest.mark.parametrize("scale", [1e-112, 1e-140, 1e120])
+def test_the_standard_errors_do_not_depend_on_the_units(rows, scale):
+    """Multiply every amount by ``scale`` and each standard error is multiplied
+    by ``scale`` too. The total's own-process term once multiplied an ultimate
+    squared by a sigma before dividing by an amount, a number on the scale of
+    an amount cubed, which reads 0 below about 1e-103 (the total came out 16%
+    low on the small triangle, with nothing refused) and infinite above about
+    1e103."""
+    base = methods.one_year_cdr(year_cells(rows, 2001), n_draws=5, seed=1)
+    scaled = methods.one_year_cdr(
+        year_cells([[amount * scale for amount in row] for row in rows], 2001), n_draws=5, seed=1
+    )
+    for table in ("origins", "totals"):
+        for column in ("cdr_se", "runoff_se"):
+            want = getattr(base, table)[column].to_numpy()
+            got = getattr(scaled, table)[column].to_numpy() / scale
+            np.testing.assert_allclose(got, want, rtol=1e-12, err_msg=f"{table}.{column}")
 
 
 @pytest.mark.tieout
@@ -503,6 +534,17 @@ def test_ultimate_change_is_adverse_positive():
     result = methods.one_year_cdr(arrow_cells(), n_draws=2000, seed=9)
     draws = _draws(result).reshape(2000, 10)
     assert (draws[:, 0] == 0.0).all()  # 1981 is at its last age
+    # and its change is 0.0 wherever it is shown, never the -0.0 that negating
+    # the kernel's 0.0 gives
+    assert not np.signbit(draws[:, 0]).any()
+    closed = result.quantiles.filter(
+        pc.equal(result.quantiles["origin_period"], dt.date(1981, 1, 1))
+    )
+    assert closed.num_rows == 7
+    for name in ("ultimate_change", "tvar"):
+        assert not np.signbit(closed[name].to_numpy()).any(), name
+    for name in ("mean_ultimate_change", "sd_ultimate_change"):
+        assert not np.signbit(result.origins[name][0].as_py()), name
     stream = cohort_stream(
         9, label="cdr_distribution", cohorts=[{"Total": "Total"}], field="values"
     )
