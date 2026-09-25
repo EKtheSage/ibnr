@@ -42,9 +42,11 @@ ultimate is perfectly well defined and whose sigma simply has one fewer
 observation behind it. `MackFit.n_obs` and `MackFit.n_pos` report the two counts
 separately, so the divergence is visible rather than inferred.
 
-`alpha = 1` is not a default but a requirement: both Mack's and
-Merz-Wuthrich's variance formulas are derived for the volume-weighted factor,
-so no other averaging is offered.
+`alpha = 1` is not a default but a requirement here: Merz-Wuthrich's
+one-year formulas are derived for the volume-weighted factor over every link
+ratio, so this entry fits no other averaging. `kernels.fit_mack_grid` takes
+Mack's alpha 0 and 2 and the development options (Mack 1999), and every
+one-year route refuses such a fit by name.
 
 **Last-step variance** (`sigma_rule=`). The final step has one observation and
 no residual degrees of freedom:

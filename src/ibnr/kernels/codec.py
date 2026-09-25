@@ -45,7 +45,9 @@ cross this boundary bit for bit or not at all; the tests compare
 ``samples.view(np.uint8)``, because an ``allclose`` assertion passes cleanly
 against a float32 encoder and would therefore be worthless.
 
-Envelope, version 1. One Arrow IPC **stream** per artifact:
+Envelope, version 1 (version 2 is the same layout, written only by a
+``MackFit`` with development options, whose header and arrays carry them; see
+``CODEC_VERSION``). One Arrow IPC **stream** per artifact:
 
     body table          the artifact's largest rectangular array
     schema metadata     b"ibnr.kind"            artifact type name
@@ -100,13 +102,22 @@ import pyarrow as pa
 
 from ibnr.kernels.cdr import CDRResult
 from ibnr.kernels.forecast import ForecastPanel
+from ibnr.kernels.links import LinkRules, LinkSelection
 from ibnr.kernels.mack import MackFit, MackFitPanel
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.triangle.core import Triangle
 
-#: Envelope version, written into every payload and checked on the way back in.
-#: A payload from a NEWER codec is refused rather than partly decoded.
-CODEC_VERSION: int = 1
+#: The newest envelope version this build reads, checked on the way back in. A
+#: payload from a NEWER codec is refused rather than partly decoded.
+#:
+#: Each payload carries the lowest version that reads it completely, so a
+#: payload that needs nothing new keeps version 1 and its bytes: 2 is written
+#: only by a MackFit made with development options (``average`` and ``links``),
+#: which a version-1 reader would otherwise decode as a fit without them.
+CODEC_VERSION: int = 2
+
+#: The version of every payload that needs nothing added after it.
+_FIRST_VERSION = 1
 
 #: MIME type for :func:`to_arrow` output, for an HTTP layer's ``Content-Type``
 #: and ``Accept`` negotiation.
@@ -184,8 +195,12 @@ def _pack(
     arrays: dict[str, np.ndarray] | None = None,
     nested: dict[str, bytes] | None = None,
     compression: str | None = None,
+    version: int = _FIRST_VERSION,
 ) -> bytes:
-    """Assemble one envelope. The only writer in the package."""
+    """Assemble one envelope. The only writer in the package.
+
+    ``version`` is the lowest codec version that reads this payload completely.
+    """
     header = dict(header)
     if arrays:
         # Shape and dtype are recorded, not inferred: the payload is flattened
@@ -197,7 +212,7 @@ def _pack(
         }
     metadata: dict[bytes, bytes] = {
         _KIND: kind.encode("utf-8"),
-        _VERSION: str(CODEC_VERSION).encode("ascii"),
+        _VERSION: str(version).encode("ascii"),
         _HEADER: json.dumps(header, allow_nan=False).encode("utf-8"),
     }
     for name, frame in (frames or {}).items():
@@ -543,6 +558,33 @@ def _decode_triangle(body: pa.Table, header: dict, frames, arrays, nested, *, ba
 #: months keep its chain-ladder ultimate.
 _MACK_ARRAYS = ("obs_mask", "latest_dev", "f", "sigma2", "s", "n_obs", "n_pos")
 
+#: The link selection a fit with development options carries, as ``sel_<name>``.
+_SELECTION_ARRAYS = (
+    "previous",
+    "following",
+    "ratio",
+    "observed",
+    "used",
+    "reason",
+    "bounds_skipped",
+    "trimming_skipped",
+)
+
+#: The fields of a fit's link rules, in the order ``LinkRules`` takes them.
+_LINK_FIELDS = (
+    "history_periods",
+    "exclude",
+    "exclude_valuations",
+    "drop_above",
+    "drop_below",
+    "drop_high",
+    "drop_low",
+    "preserve",
+    "trim_ties",
+    "exhausted_exclusions",
+    "zero_cells",
+)
+
 
 def _encode_mack_fit(obj: MackFit, compression: str | None) -> bytes:
     body = pa.table({f"d{j}": obj.cum[:, j] for j in range(obj.n_d)})
@@ -566,7 +608,19 @@ def _encode_mack_fit(obj: MackFit, compression: str | None) -> bytes:
         "zero_cells": obj.zero_cells,
     }
     arrays = {name: getattr(obj, name) for name in _MACK_ARRAYS}
-    return _pack("MackFit", body, header, arrays=arrays, compression=compression)
+    if obj.links is None:
+        # a fit without development options: the header and arrays of 0.7.2, byte
+        # for byte, which any version-1 reader decodes completely
+        return _pack("MackFit", body, header, arrays=arrays, compression=compression)
+    # The development options. The arrays alone would decode to the right
+    # factors, but msep_runoff reads the average (the process term's exponent),
+    # the one-year result refuses by the options themselves, and the link_ratios
+    # table reads the selection.
+    header["average"] = obj.average
+    header["links"] = {name: _tag(getattr(obj.links, name)) for name in _LINK_FIELDS}
+    for name in _SELECTION_ARRAYS:
+        arrays[f"sel_{name}"] = getattr(obj.selection, name)
+    return _pack("MackFit", body, header, arrays=arrays, compression=compression, version=2)
 
 
 def _decode_mack_fit(body: pa.Table, header: dict, frames, arrays, nested) -> MackFit:
@@ -574,6 +628,14 @@ def _decode_mack_fit(body: pa.Table, header: dict, frames, arrays, nested) -> Ma
     cum = np.empty((n_w, n_d), dtype=np.dtype(header["cum_dtype"]))
     for j in range(n_d):
         cum[:, j] = body.column(f"d{j}").to_numpy(zero_copy_only=False)
+    options = {}
+    if "links" in header:
+        options["links"] = LinkRules(
+            **{name: _untag(value) for name, value in header["links"].items()}
+        )
+        options["selection"] = LinkSelection(
+            **{name: arrays[f"sel_{name}"] for name in _SELECTION_ARRAYS}
+        )
     return MackFit(
         cum=cum,
         origin_periods=[_untag(p) for p in header["origin_periods"]],
@@ -583,6 +645,10 @@ def _decode_mack_fit(body: pa.Table, header: dict, frames, arrays, nested) -> Ma
         loss_field=header["loss_field"],
         # a payload written before the setting existed was always "observed"
         zero_cells=header.get("zero_cells", "observed"),
+        # a payload written before development options existed was always the
+        # volume average over every link ratio
+        average=header.get("average", "volume"),
+        **options,
         **{name: arrays[name] for name in _MACK_ARRAYS},
     )
 
@@ -872,7 +938,7 @@ def to_summary(obj, *, quantiles: Sequence[float] = DEFAULT_QUANTILES) -> dict:
         grid = [[_finite(v) for v in row] for row in q.T]
     return {
         "kind": "PredictiveDistribution",
-        "version": CODEC_VERSION,
+        "version": _FIRST_VERSION,
         "units": obj.units,
         "n_draws": obj.n_draws,
         "targets": [

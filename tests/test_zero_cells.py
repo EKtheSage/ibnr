@@ -942,10 +942,14 @@ def test_an_age_the_rule_empties_names_the_rule_and_the_ways_out():
 def test_an_unknown_setting_is_refused_by_name(bad):
     with pytest.raises(ValueError, match="zero_cells must be 'observed' or 'missing'"):
         ConventionalCandidate(zero_cells=bad)
-    with pytest.raises(ValueError, match="zero_cells must be 'observed' or 'missing'"):
-        fit_mack_grid(grid(), zero_cells=bad)
-    with pytest.raises(ValueError, match="zero_cells must be 'observed' or 'missing'"):
-        fit_mack(triangle(), loss_field="paid_loss", zero_cells=bad)
+    if bad is None:
+        # the Mack kernels read None as "observed", or as the rule their links carry
+        assert fit_mack_grid(grid(), zero_cells=None).zero_cells == "observed"
+    else:
+        with pytest.raises(ValueError, match="zero_cells must be 'observed' or 'missing'"):
+            fit_mack_grid(grid(), zero_cells=bad)
+        with pytest.raises(ValueError, match="zero_cells must be 'observed' or 'missing'"):
+            fit_mack(triangle(), loss_field="paid_loss", zero_cells=bad)
     for method, kwargs in METHODS.items():
         with pytest.raises(ValueError, match="zero_cells must be 'observed' or 'missing'"):
             getattr(methods, method)(cells(), zero_cells=bad, **kwargs)

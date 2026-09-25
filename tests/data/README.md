@@ -62,3 +62,32 @@ paid triangles, and 50 of those are zero in every cell; chainladder stores a
 zero as a missing cell, so it holds no cells for them, and the 681 are the
 rest. Found by running both on every triangle;
 `tests/test_development_options.py` requires the default rule to match chainladder on each, and 0.7.2's rule still not to.
+
+## `r_mack_alpha_weights.json`
+
+R ChainLadder 0.2.21's `MackChainLadder(Triangle, weights, alpha, est.sigma)`
+on RAA, GenIns, UKMotor, ABC and MW2014 under 27 development settings each
+(alpha 0, 1 and 2; every link ratio, the latest 5 or the latest 3, with and
+without the second origin's first ratio left out; the highest or the lowest
+ratio dropped at every age), under both `est.sigma = "Mack"` and
+`"log-linear"`: 270 fits, with the triangles, the 0/1 weights, the factors,
+sigmas, factor standard errors and the standard errors per origin and in
+total. A fit R answers with an infinite standard error is recorded as
+`"finite": false`, and one where R switched the log-linear rule to Mack's as
+`"switched": true`. Written by `scripts/r_mack_alpha_weights.R` (R 4.5.3),
+because CI has no R. Read by `tests/test_generalized_mack.py`, which requires
+`methods.mack` with the same options to choose the same link ratios and give
+the same numbers.
+
+## `mack_default_pin.json`
+
+Mack's answers before development options: digests of the raw bytes of
+`kernels.fit_mack_grid`'s arrays, `msep_runoff` and the `to_arrow()` payload
+with no `average` and no `links`, under both sigma rules and both zero rules
+(256 cases), and `methods.mack`'s numbers under its defaults,
+`sigma_rule="mack"` and `zero_cells="observed"` (192 cases), on the five
+public triangles, the same five with one zero cell, a 30 x 30 triangle and 53
+clrd paid triangles. Written by `scripts/freeze_mack_pin.py` run against the
+source of the branch before this change (`feat/development-options`); running
+it against that source again writes the same file. Read by
+`tests/test_generalized_mack.py`.

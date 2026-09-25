@@ -9,7 +9,10 @@ and Cape Cod match chainladder-python to a relative 1e-9, which
 `tests/test_methods.py` checks, and `tests/test_zero_cells.py` checks the same
 on triangles with zero cells. `tests/test_development_options.py` checks the
 development options, Benktander and Cape Cod's trend against chainladder on
-raa, genins, ukmotor, abc, mw2014, a 40 x 40 quarterly triangle and clrd.
+raa, genins, ukmotor, abc, mw2014, a 40 x 40 quarterly triangle and clrd, and
+`tests/test_generalized_mack.py` checks Mack with development options against
+R's `MackChainLadder` and chainladder (see
+[Mack with development options](#mack-with-development-options)).
 
 ## The shape of a call
 
@@ -51,6 +54,9 @@ chain_ladder.to_polars("development")  # ldf_, cdf_, and 1 / cdf_
 mack = methods.mack(cells)
 mack.to_polars("totals")  # total_mack_std_err_, with its parameter and process parts
 
+# cl.MackChainladder().fit(cl.Development(average="simple", n_periods=3).fit_transform(tri))
+mack = methods.mack(cells, average="simple", history_periods=3)
+
 # cl.BornhuetterFerguson(apriori=0.6).fit(tri, sample_weight=premium_triangle)
 bf = methods.bornhuetter_ferguson(cells, premium=premium, expected_loss_ratio=0.6)
 
@@ -69,6 +75,7 @@ cape_cod.to_polars()["expected_loss_ratio"]  # detrended_apriori_
 |---|---|
 | `cl.Chainladder()` | `methods.chain_ladder(cells)` |
 | `cl.MackChainladder()` | `methods.mack(cells)` |
+| `cl.MackChainladder()` on `cl.Development(**options)`'s output | `methods.mack(cells, **options)`, with the options below (not `average="median"`) |
 | `cl.BornhuetterFerguson(apriori=r)` with `sample_weight=` a premium triangle | `methods.bornhuetter_ferguson(cells, premium=..., expected_loss_ratio=r)` |
 | `cl.Benktander(apriori=r, n_iters=n)` with `sample_weight=` | `methods.benktander(cells, premium=..., expected_loss_ratio=r, n_iters=n)` |
 | `cl.CapeCod(decay=d, trend=t, n_iters=n)` with `sample_weight=` | `methods.cape_cod(cells, premium=..., decay=d, trend=t, n_iters=n)` |
@@ -234,6 +241,84 @@ published numbers do not move.)
   infinite cumulative and reports a finite, wrong total. ibnr refuses it and
   names the cells.
 
+## Mack with development options
+
+`methods.mack` takes the chain ladder's development options: `average`,
+`history_periods`, `drop_high`, `drop_low`, `preserve`, `drop_above`,
+`drop_below`, `exclude`, `exclude_valuations`, `trim_ties` and
+`exhausted_exclusions`. The same options choose the same link ratios and give
+the same factors, bit for bit, as `methods.chain_ladder`, and the result carries
+the same `link_ratios` table. `average` is Mack's alpha: `"simple"` is 0,
+`"volume"` 1 and `"regression"` 2, so a link ratio is weighted by the amount it
+starts from to that power, and a step's variance is sigma squared times the
+amount to the power 2 - alpha (Mack 1999). R ChainLadder's
+`MackChainLadder(Triangle, weights, alpha, est.sigma)` is the reference: on
+raa, genins, ukmotor, abc and mw2014 under 27 settings each (every average;
+all link ratios, the latest 5 or the latest 3; with and without an exclusion;
+the highest or the lowest dropped), the 224 fits R answers under its own rules
+agree with ibnr to a relative 1e-12 on the total standard error.
+chainladder-python agrees too, except in three places, each a difference on
+purpose:
+
+- **Future development keeps its full variance.** chainladder multiplies the
+  process variance of each projected cell by the estimation weight of the cell
+  it starts from. The first projected step starts from the latest diagonal,
+  which has no link ratio, and any `drop_high`, `drop_low`, `drop_above` or
+  `drop_below`, or a `drop_valuation` naming the latest valuation, sets that
+  weight to 0, so a whole year of process variance goes missing. On raa,
+  `drop_above=100` leaves out no link ratio at all and still takes the total
+  standard error from 26,880.74 to 13,037.79; `drop_high=1` gives 7,796.95
+  where the right figure is 14,811.95, `drop_high=2` 7,658.91 for 11,359.79,
+  and `drop_low=1` 15,115.94 for 31,377.00. On the example workbook's triangle
+  (New Jersey Manufacturers, workers' compensation paid, 1988-1997)
+  `drop_high=1` gives 10,329.10 here, where chainladder, and so the Reserving
+  app's `/reserve` today, gives 5,914.68. R has no such step: its weights
+  choose link ratios, and the latest diagonal keeps a weight of 1.
+- **A factor kept from one link ratio has that ratio's standard error.** When
+  the options leave one link ratio at an age, chainladder computes the
+  factor's standard error from the first origin's amount there, whichever
+  ratio was kept (R does the same, and answers infinity when the first
+  origin's ratio was left out). On raa with `drop_high=2`, 84 to 96 months
+  keeps 1983's ratio only: its standard error is 0.01901 here and 0.02142 in
+  chainladder.
+- **A sigma of exactly 0 is not read as 1e-320.** When every link ratio kept
+  at an age is equal, sigma there is 0. When another age's sigma has to be
+  filled in, chainladder's log-linear fill takes the logarithm of 1e-320 for
+  it, which drags the fill toward 0; ibnr, like R, fits the line through the
+  positive sigmas only, and when only the last age is filled uses Mack's rule,
+  as it did before. Whole-thousand amounts make equal ratios common: with
+  `drop_high=1`, of the 353 clrd paid triangles that are full positive
+  staircases, ibnr answers 348, and this is the difference on 108 of them; the
+  other 240 agree with chainladder once its two defects above are patched. On
+  one more (clrd triangle 377, `drop_low=1`) chainladder projects the 1990
+  origin's 108-month cell at 1365 rather than 1365 x 1.001203, and R's total,
+  331.554588864, is ibnr's.
+
+Two more things differ from chainladder:
+
+- `history_periods=1` is refused by name: one link ratio at every age leaves
+  no sigma to estimate, and chainladder answers NaN with a warning. So are any
+  options that leave at most one link ratio at every age.
+- An age the options leave with no link ratio is refused (`no_link_ratio`).
+  chainladder projects it at 1.0 and gives NaN standard errors for every
+  origin; `methods.chain_ladder(..., unsupported_factor="unity")` gives the
+  ultimates at 1.0 if that is what you want, and `methods.mack` has no
+  `unsupported_factor`.
+
+`average="median"` is refused for Mack (`not_supported`): a median is not a
+weighted mean of the link ratios, so Mack's variance does not exist for it.
+chainladder has no geometric average, and ibnr refuses `"geometric"` for the
+same reason. With `drop_high`, `drop_low`, `drop_above` or `drop_below` the
+ratios are chosen after looking at them, which Mack's formulas do not allow
+for, so the standard errors are approximate and tend to be low; R and
+chainladder apply the formulas the same way. `development` gains
+`n_selected`, `extreme_trimming_skipped`, `bounds_skipped` and
+`sigma_extrapolated` (the sigma came from `sigma_rule`, because the age kept
+fewer than two link ratios). The one-year claims development result in
+`ibnr.kernels` refuses a fit with any development option, naming each: the
+Merz-Wuthrich formulas are derived for the volume average over every link
+ratio, and the re-reserving re-runs that estimator on next year's triangle.
+
 ## When a method refuses
 
 chainladder-python has no error class of its own: bad input raises whatever
@@ -297,6 +382,8 @@ What some of chainladder-python's answers become:
 | a cell sent twice: summed | `duplicate`, one entry in `cells` per row |
 | `dev_lag` 18 on an annual triangle: regridded | `grain_mismatch`, `column="dev_lag"` |
 | `MackChainladder` on two origins: NaN standard error | `variance_not_estimable` |
+| `Development(n_periods=1)`, then `MackChainladder`: NaN standard errors | `variance_not_estimable`, `option="history_periods"` |
+| `Development(drop=("1981", 108))` on raa, then `MackChainladder`: factor 1.0, NaN standard errors | `no_link_ratio`, `option="exclude"` |
 
 ## Origin labels
 
@@ -363,9 +450,6 @@ year written `2020-12-31` has its first cell at `dev_lag` 12, valued
   cumulatives.
 - Origin periods longer than a development step, such as annual origins
   developed quarterly: `dev_grain_months` must equal the origin period length.
-- Development options under Mack: `methods.mack` uses every link ratio,
-  volume-weighted, because Mack's standard-error formulas are derived for that
-  estimator.
 - The bootstrap (`cl.BootstrapODPSample`) through `ibnr.methods`. An
   over-dispersed Poisson bootstrap of next year's diagonal is in
   `ibnr.kernels` for the one-year claims development result.

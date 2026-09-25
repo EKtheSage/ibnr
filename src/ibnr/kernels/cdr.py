@@ -89,6 +89,7 @@ import numpy as np
 import pandas as pd
 
 from ibnr.errors import Refusal, RefusedCell, _literal
+from ibnr.kernels.links import settings_named
 from ibnr.kernels.mack import PROCESS_LAWS, MackFit, _next_step_draws, _refuse_n_draws
 from ibnr.kernels.odp_bootstrap import ODP_PROCESS_LAWS, draw_next_increments, fit_odp_bootstrap
 from ibnr.kernels.predictive import PredictiveDistribution
@@ -283,6 +284,39 @@ def _require_zero_cells_unused(fit: MackFit) -> None:
     )
 
 
+def _require_all_history_volume(fit: MackFit) -> None:
+    """Refuse a fit made with development options: another average, a window,
+    exclusions, bounds or drops.
+
+    The Merz-Wuthrich formulas are derived for the volume-weighted chain ladder
+    over every link ratio (every term is ``sigma_j^2 / f_j^2`` with ``S_j`` the
+    column total), and :func:`rereserve` re-runs exactly that estimator on next
+    year's triangle. The check reads the SETTINGS, not what they removed:
+    ``history_periods=9`` removes nothing from a 9 x 9 triangle and a ratio
+    from next year's, which is the triangle ``rereserve`` fits.
+
+    Called beside :func:`_require_zero_cells_unused`, in the same three places.
+    """
+    if fit.all_history_volume:
+        return
+    named = [("average", f"average={fit.average!r}")] if fit.average != "volume" else []
+    if fit.links is not None:
+        named.extend(settings_named(fit.links))
+    options = [option for option, _ in named]
+    phrases = [phrase for _, phrase in named]
+    listed = phrases[0] if len(phrases) == 1 else f"{', '.join(phrases[:-1])} and {phrases[-1]}"
+    raise Refusal(
+        "not_supported",
+        "the one-year claims development result needs the volume-weighted chain ladder over "
+        "every link ratio: the Merz-Wuthrich formulas are derived for that estimator and "
+        f"rereserve() re-runs it on next year's triangle. This fit used {listed}. Refit "
+        "without development options for a one-year result, or read the run-off uncertainty "
+        "of this fit from MackFit.msep_runoff()",
+        option=options[0],
+        options=tuple(options),
+    )
+
+
 def _open_years(fit: MackFit) -> np.ndarray:
     """(n_w,) bool: origins that are not yet fully developed, i.e. the ones that
     still have a next diagonal cell to observe and therefore a CDR."""
@@ -369,6 +403,7 @@ def one_year_cdr(fit: MackFit) -> CDRResult:
     # term below is one step wide.
     _require_annual_step(fit)
     _require_zero_cells_unused(fit)
+    _require_all_history_volume(fit)
     # Phi_i divides by C_{i,k_i} - the latest diagonal, the one cell class no
     # factor-side guard can see. Checked here as well as inside msep_runoff()
     # below so the failure is named before the loop builds a page of NaN.
@@ -494,6 +529,7 @@ def rereserve(fit: MackFit, next_diagonal: np.ndarray) -> np.ndarray:
     # far forward it is, and one step forward is one year only on an annual fit.
     _require_annual_step(fit)
     _require_zero_cells_unused(fit)
+    _require_all_history_volume(fit)
     n_draws = x.shape[0]
     n_w, n_d = fit.n_w, fit.n_d
     k = fit.latest_dev
@@ -630,6 +666,7 @@ class MackDiagonal(DiagonalGenerator):
         point mass rather than an error, which is the one failure a simulation
         cannot surface on its own."""
         _require_zero_cells_unused(fit)
+        _require_all_history_volume(fit)
         fit.require_positive_open_diagonals()
 
     def draw(self, fit: MackFit, *, n_draws: int, rng: np.random.Generator) -> np.ndarray:
@@ -707,6 +744,7 @@ class ODPBootstrapDiagonal(DiagonalGenerator):
         where the negative-increment refusal and the degrees-of-freedom check
         live, and both are cheap enough to pay twice."""
         _require_zero_cells_unused(fit)
+        _require_all_history_volume(fit)
         fit_odp_bootstrap(
             fit.cum,
             fit.obs_mask,
@@ -789,6 +827,10 @@ _ZERO_CELLS_REQUIREMENT = (
     "; and, for a fit made with zero_cells='missing', no link ratio left out for a zero "
     "cell and no open origin whose latest amount is zero"
 )
+#: the estimator every route assumes; see _require_all_history_volume
+_SETTINGS_REQUIREMENT = (
+    "; and a fit with no development options: the volume average over every link ratio"
+)
 
 CDR_METHODS: dict[str, CDRMethod] = {
     "merz_wuthrich": CDRMethod(
@@ -801,6 +843,7 @@ CDR_METHODS: dict[str, CDRMethod] = {
         requires=(
             "a MackFit on an annual development grain, with a strictly positive open diagonal"
             + _ZERO_CELLS_REQUIREMENT
+            + _SETTINGS_REQUIREMENT
         ),
         validated=(
             "golden tie-out: R ChainLadder CDR(MackChainLadder(MW2014, "
@@ -824,6 +867,7 @@ CDR_METHODS: dict[str, CDRMethod] = {
         requires=(
             "a MackFit on an annual development grain, with a strictly positive open diagonal"
             + _ZERO_CELLS_REQUIREMENT
+            + _SETTINGS_REQUIREMENT
         ),
         validated=(
             "agrees with the merz_wuthrich closed form to Monte Carlo error, "
@@ -841,7 +885,7 @@ CDR_METHODS: dict[str, CDRMethod] = {
         entry_point='simulate_one_year_cdr(fit, generator="odp_bootstrap")',
         requires=(
             "a MackFit on an annual development grain, whose observed increments "
-            "are all non-negative" + _ZERO_CELLS_REQUIREMENT
+            "are all non-negative" + _ZERO_CELLS_REQUIREMENT + _SETTINGS_REQUIREMENT
         ),
         validated=(
             "NO published digits exist - R's CDR.BootChainLadder example prints "
@@ -872,7 +916,7 @@ CDR_METHODS: dict[str, CDRMethod] = {
         requires=(
             "a MackFit on an annual development grain, and a HoldoutCells "
             "describing the SAME cohort, field and cutoff, with one scorable cell "
-            "for every open origin of the fit" + _ZERO_CELLS_REQUIREMENT
+            "for every open origin of the fit" + _ZERO_CELLS_REQUIREMENT + _SETTINGS_REQUIREMENT
         ),
         validated=(
             "the wiring, not the model: a generator that reproduces Mack's own "
@@ -1046,6 +1090,7 @@ def simulate_one_year_cdr(
     # property of the fit, so no generator can make a non-annual step a year.
     _require_annual_step(fit)
     _require_zero_cells_unused(fit)
+    _require_all_history_volume(fit)
     gen.check(fit)
     rng = np.random.default_rng(seed)
     cdr = rereserve(fit, gen.draw(fit, n_draws=gen.resolve_n_draws(n_draws), rng=rng))

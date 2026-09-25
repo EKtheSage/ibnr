@@ -1431,6 +1431,128 @@ CASES = [
         [],
         {},
     ),
+    # Mack with development options
+    (
+        "mack_average_median",
+        lambda: mk(T, average="median"),
+        "not_supported",
+        "average",
+        None,
+        [],
+        [],
+        [],
+        {"given": "median"},
+    ),
+    (
+        "mack_average_geometric",
+        lambda: mk(T, average="geometric"),
+        "not_supported",
+        "average",
+        None,
+        [],
+        [],
+        [],
+        {"given": "geometric"},
+    ),
+    (
+        "mack_average_number",
+        lambda: mk(T, average=1),
+        "invalid_option",
+        "average",
+        None,
+        [],
+        [],
+        [],
+        {"given": 1},
+    ),
+    (
+        "mack_history_periods_1",
+        lambda: mk(T, history_periods=1),
+        "variance_not_estimable",
+        "history_periods",
+        None,
+        [],
+        [],
+        [],
+        {"given": 1},
+    ),
+    (
+        "mack_age_left_with_no_ratio",
+        lambda: mk(T, exclude=[(2001, 36)]),
+        "no_link_ratio",
+        "exclude",
+        None,
+        [],
+        [(36, 48)],
+        [],
+        {},
+    ),
+    (
+        "mack_options_leave_one_ratio_everywhere",
+        lambda: mk(T, exclude=[(2001, 24)], drop_high=2),
+        "variance_not_estimable",
+        "exclude",
+        None,
+        [],
+        [(12, 24), (24, 36), (36, 48)],
+        [],
+        {"options": ("exclude", "drop_high")},
+    ),
+    (
+        "mack_sigma_gap_left_by_a_drop",
+        lambda: mk(T, drop_low=2, sigma_rule="mack"),
+        "variance_not_estimable",
+        "sigma_rule",
+        None,
+        [],
+        [(12, 24)],
+        [],
+        {"options": ("sigma_rule", "drop_low")},
+    ),
+    (
+        "mack_observed_zero_with_an_option",
+        lambda: mk(tri(replace(BASE, (2002, 12), 0.0)), zero_cells="observed", average="simple"),
+        "not_supported",
+        "zero_cells",
+        None,
+        [c(2002, 12, 0.0)],
+        [],
+        [],
+        {},
+    ),
+    (
+        "mack_regression_zero_latest",
+        lambda: mk(tri(replace(BASE, (2004, 12), 0.0)), average="regression"),
+        "not_supported",
+        "average",
+        None,
+        [c(2004, 12, 0.0)],
+        [],
+        [],
+        {"options": ("average", "zero_cells")},
+    ),
+    (
+        "mack_trims_exhausted",
+        lambda: mk(T, drop_high=1, exhausted_exclusions="raise"),
+        "exclusions_exhausted",
+        "exhausted_exclusions",
+        None,
+        [],
+        [(36, 48)],
+        [],
+        {"options": ("exhausted_exclusions", "drop_high")},
+    ),
+    (
+        "mack_exclusion_not_in_triangle",
+        lambda: mk(T, exclude=[(2004, 12)]),
+        "not_in_triangle",
+        "exclude",
+        None,
+        [c(2004, 12)],
+        [],
+        [],
+        {},
+    ),
     (
         "dev_lag_past_whole_numbers",
         lambda: cl(pa.table({"origin_period": [2001], "dev_lag": [1e30], "value": [1.0]})),
@@ -1453,17 +1575,6 @@ CASES = [
         [],
         [],
         {"given": "nope"},
-    ),
-    (
-        "to_polars_mack_link_ratios",
-        lambda: mk(T).to_polars("link_ratios"),
-        "invalid_option",
-        "table",
-        None,
-        [],
-        [],
-        [],
-        {"given": "link_ratios"},
     ),
 ]
 
@@ -1535,7 +1646,7 @@ def test_the_method_is_named_on_every_refusal():
     assert refusal_of(lambda: cc(T, premium=PREM, decay=5)).method == "cape_cod"
     assert refusal_of(lambda: mk(tri(Z3))).method == "mack"
     assert refusal_of(lambda: cl(T, exclude=[(2001, 36)])).method == "chain_ladder"
-    assert refusal_of(lambda: mk(T).to_polars("link_ratios")).method == "mack"
+    assert refusal_of(lambda: mk(T).to_polars("x")).method == "mack"
 
 
 # -- the caller's labels, in every form -----------------------------------------------
@@ -2090,7 +2201,21 @@ _PER_METHOD = {
         "zero_cells",
         "dev_grain_months",
     ),
-    "mack": ("sigma_rule", "zero_cells", "dev_grain_months"),
+    "mack": (
+        "sigma_rule",
+        "zero_cells",
+        "dev_grain_months",
+        "average",
+        "history_periods",
+        "drop_high",
+        "drop_low",
+        "preserve",
+        "drop_above",
+        "drop_below",
+        "exclude_valuations",
+        "trim_ties",
+        "exhausted_exclusions",
+    ),
 }
 _PER_METHOD["bornhuetter_ferguson"] = (*_PER_METHOD["chain_ladder"], "expected_loss_ratio")
 _PER_METHOD["benktander"] = (*_PER_METHOD["bornhuetter_ferguson"], "n_iters")
@@ -2175,7 +2300,7 @@ def _numbers_are_finite(result) -> None:
 
 
 def test_a_seeded_fuzz_meets_nothing_but_refusals():
-    """2,000 cases from five public triangles with one to three random edits and
+    """2,500 cases from five public triangles with one to three random edits and
     random options, valid and not. An edit may scale the whole triangle to near
     the smallest or the largest double, and a premium may be 1e-320 or 1e308.
     Every call returns a result whose numbers are all finite (a missing one is
@@ -2185,7 +2310,7 @@ def test_a_seeded_fuzz_meets_nothing_but_refusals():
     rng = np.random.default_rng(20260924)
     names = sorted(_FUZZ)
     outcomes: dict[str, int] = {}
-    for _ in range(2000):
+    for _ in range(2500):
         rows = _FUZZ[names[int(rng.integers(0, len(names)))]]
         edited = _fuzz_case(rng, rows)
         method = ("chain_ladder", "bornhuetter_ferguson", "benktander", "cape_cod", "mack")[

@@ -1717,8 +1717,16 @@ SCHEMAS = {
     "cape_cod": (BASE_ORIGINS + ELR + TREND, PATTERN + SELECTION, LINK_RATIOS, TOTALS),
     "mack": (
         BASE_ORIGINS + MACK_SE,
-        PATTERN + [("sigma", pa.float64()), ("std_err", pa.float64())],
-        None,
+        PATTERN
+        + [
+            ("n_selected", pa.int64()),
+            ("extreme_trimming_skipped", pa.bool_()),
+            ("bounds_skipped", pa.bool_()),
+            ("sigma", pa.float64()),
+            ("std_err", pa.float64()),
+            ("sigma_extrapolated", pa.bool_()),
+        ],
+        LINK_RATIOS,
         TOTALS + MACK_SE,
     ),
 }
@@ -1737,11 +1745,9 @@ def run(method: str, cells=None):
 
 def run_with_options(method: str):
     """``run``, with every option that adds or fills a column set away from its default."""
-    if method == "mack":
-        return run(method)
     options = {"drop_above": 4.0, "drop_high": 2, "preserve": 2, "exclude_valuations": [1989]}
     extra = {}
-    if method != "chain_ladder":
+    if method not in ("chain_ladder", "mack"):
         extra["premium"] = RAA_PREMIUM
     if method in ("bornhuetter_ferguson", "benktander"):
         extra["expected_loss_ratio"] = 0.7
@@ -1764,11 +1770,8 @@ def test_the_result_schema_is_pinned(method, options):
     assert result.totals.num_rows == 1
     assert result.origins.num_rows == 10
     assert result.development.num_rows == 10
-    if link_ratios is None:
-        assert result.link_ratios is None
-    else:
-        assert result.link_ratios.schema.equals(link_ratios)
-        assert result.link_ratios.num_rows == 45
+    assert result.link_ratios.schema.equals(link_ratios)
+    assert result.link_ratios.num_rows == 45
 
 
 @pytest.mark.parametrize("options", [False, True], ids=["defaults", "options"])
@@ -1822,9 +1825,10 @@ def test_to_polars_refuses_an_unknown_table():
         run("chain_ladder").to_polars("origin")
 
 
-def test_to_polars_refuses_link_ratios_on_a_mack_result():
-    with pytest.raises(ValueError, match="a mack result has no link_ratios table"):
-        run("mack").to_polars("link_ratios")
+def test_to_polars_gives_a_mack_results_link_ratios(pl):
+    # 0.7.2 refused this: a Mack result had no link_ratios table
+    result = run("mack")
+    assert result.to_polars("link_ratios").equals(pl.from_arrow(result.link_ratios))
 
 
 def test_to_polars_names_the_extra_when_polars_is_missing(monkeypatch):
