@@ -4,7 +4,9 @@
 
 - :func:`chain_ladder`
 - :func:`bornhuetter_ferguson`
-- :func:`cape_cod` (Gluck's generalized Cape Cod; ``decay=1`` is the classic one)
+- :func:`benktander` (Bornhuetter-Ferguson iterated; ``n_iters=1`` is Bornhuetter-Ferguson)
+- :func:`cape_cod` (Gluck's generalized Cape Cod, with a trend; ``decay=1`` is the
+  classic one)
 - :func:`mack` (the chain ladder with Mack's standard errors)
 
 Each takes the cells of ONE triangle as a table with three columns, one row per
@@ -37,8 +39,35 @@ whose tables are pyarrow Tables, so a service needs no DataFrame library at
 all; for analysis, ``result.to_polars()`` turns any of them into a polars
 DataFrame (``pip install "ibnr[polars]"``).
 
+The ``development`` table has one row per observed development age, and the
+same columns for every method that carries them, in this order:
+
+======================== ======== ======================================= =====================
+column                   type     meaning                                 methods
+======================== ======== ======================================= =====================
+dev_lag                  int64    the age, in months                      all
+factor                   float64  the link factor to the next age; null   all
+                                  at the last age
+cdf                      float64  the factor to the last observed age     all
+pct_reported             float64  ``1 / cdf``                             all
+n_selected               int64    link ratios behind the factor           chain_ladder,
+                                                                          bornhuetter_ferguson,
+                                                                          benktander, cape_cod
+unity_fallback           bool     no ratio was left and 1.0 was used      the same four
+extreme_trimming_skipped bool     ``preserve`` stopped ``drop_high`` and  the same four
+                                  ``drop_low`` at this age
+bounds_skipped           bool     ``preserve`` stopped ``drop_above`` and the same four
+                                  ``drop_below`` at this age
+sigma                    float64  Mack's sigma                            mack
+std_err                  float64  the factor's standard error             mack
+======================== ======== ======================================= =====================
+
+Every column but ``dev_lag``, ``cdf`` and ``pct_reported`` is null at the last
+age, which has no next age. A method carries exactly the columns listed for
+it, whatever options it is given, so a service can read each table by name.
+
 Importing this module loads numpy and pyarrow, and not ibis, pandas or scipy,
-and none of the four methods loads them when it runs, so a service that starts
+and none of the methods loads them when it runs, so a service that starts
 a new process for a request does not pay for them (the CHANGELOG has the
 times). That holds for every input above except two, which make pyarrow load
 pandas: a pandas DataFrame, and a dict with a list that is not all strings,
@@ -85,12 +114,13 @@ import pyarrow.compute as pc
 from ibnr import _arrow
 from ibnr.errors import Refusal, RefusedCell, _literal
 from ibnr.kernels.conventional import ConventionalCandidate, _estimate_grid
-from ibnr.kernels.grid import as_date, check_grid, grid_from_columns
+from ibnr.kernels.grid import as_date, check_grid, grid_from_columns, month_end
 from ibnr.kernels.mack import fit_mack_grid
 
 __all__ = [
     "Refusal",
     "ReserveResult",
+    "benktander",
     "bornhuetter_ferguson",
     "cape_cod",
     "chain_ladder",
@@ -129,8 +159,12 @@ class ReserveResult:
         ``origin_period`` (date32, always the first day of the period),
         ``latest_dev_lag`` (int64, months), ``latest``, ``ultimate`` and
         ``ibnr`` (float64; ``ibnr`` is ``ultimate - latest``).
-        Bornhuetter-Ferguson and Cape Cod add ``expected_loss_ratio``; Mack adds
-        ``mack_se`` and its two parts, ``parameter_se`` and ``process_se``.
+        Bornhuetter-Ferguson, Benktander and Cape Cod add
+        ``expected_loss_ratio``, the loss ratio applied to the origin's premium;
+        Cape Cod also adds ``trended_loss_ratio`` (the loss ratio at the
+        valuation date's level, chainladder-python's ``apriori_``) and
+        ``trend_factor`` (1.0 at ``trend=0``); Mack adds ``mack_se`` and its
+        two parts, ``parameter_se`` and ``process_se``.
         An origin whose latest cumulative is zero keeps 0 as its latest amount,
         so its chain-ladder ultimate is 0 and, under Mack with
         ``zero_cells="missing"``, its ``mack_se`` is 0 too; chainladder-python
@@ -141,11 +175,12 @@ class ReserveResult:
         ``cdf`` (the factor to the last observed age, 1.0 there) and
         ``pct_reported`` (``1 / cdf``). There is no tail factor, so
         ``pct_reported`` is 1.0 at the last observed age by construction rather
-        than by measurement. The chain ladder, Bornhuetter-Ferguson and Cape Cod
-        add ``n_selected`` (int64, the link ratios behind the factor),
-        ``unity_fallback`` and ``extreme_trimming_skipped`` (bool); Mack adds
-        ``sigma`` and ``std_err`` (the factor's standard error), null at the
-        last age.
+        than by measurement. The chain ladder, Bornhuetter-Ferguson, Benktander
+        and Cape Cod add ``n_selected`` (int64, the link ratios behind the
+        factor), ``unity_fallback``, ``extreme_trimming_skipped`` and
+        ``bounds_skipped`` (bool); Mack adds ``sigma`` and ``std_err`` (the
+        factor's standard error), null at the last age. The module docstring
+        has the table of every column and the methods that carry it.
     link_ratios : pyarrow.Table or None
         Every observed link ratio, one row each: ``origin`` and
         ``origin_period`` (as in ``origins``), ``from_dev_lag`` (int64, the age
@@ -156,7 +191,9 @@ class ReserveResult:
         ``included``, ``zero_cell`` (a zero at either end, left out under
         ``zero_cells="missing"``), ``undefined_ratio`` (``previous`` is 0, under
         ``zero_cells="observed"``), ``history_window``, ``explicit_exclusion``,
-        ``drop_low`` or ``drop_high``). ``None`` for Mack, whose factors use
+        ``valuation_exclusion``, ``drop_above``, ``drop_below``, ``drop_low``
+        or ``drop_high``: the first rule that left it out, in the order the
+        rules run). ``None`` for Mack, whose factors use
         every ratio except, under ``zero_cells="missing"``, those with a zero
         at either end.
     totals : pyarrow.Table
@@ -217,9 +254,14 @@ def chain_ladder(
     dev_grain_months: int = 12,
     average: str = "volume",
     history_periods: int | None = None,
-    drop_high: bool = False,
-    drop_low: bool = False,
+    drop_high: bool | int = False,
+    drop_low: bool | int = False,
+    preserve: int = 1,
+    drop_above: float | None = None,
+    drop_below: float | None = None,
     exclude=(),
+    exclude_valuations=(),
+    trim_ties: str = "volume",
     unsupported_factor: str = "raise",
     exhausted_exclusions: str = "keep",
     zero_cells: str = "missing",
@@ -259,37 +301,72 @@ def chain_ladder(
     the first day of the period. ``dev_lag`` still counts from the period's
     first day, whichever day names it.
 
-    The development options, shared with :func:`bornhuetter_ferguson` and
-    :func:`cape_cod`:
+    The development options, shared with :func:`bornhuetter_ferguson`,
+    :func:`benktander` and :func:`cape_cod`. The rules that leave link ratios
+    out run in this order, each on the ratios the ones before it left:
+    ``zero_cells``, ``history_periods``, ``exclude``, ``exclude_valuations``,
+    ``drop_above``/``drop_below``, then ``drop_high``/``drop_low``. Each ratio
+    left out is listed in ``link_ratios`` with the first rule that removed it.
 
     - ``dev_grain_months``: months per development step, 12 for an annual
       triangle, 3 for a quarterly one. Origin periods must be the same length.
     - ``average``: how link ratios become a factor. ``"volume"`` (the default)
       divides the sum of the later cumulatives by the sum of the earlier ones;
-      ``"simple"`` is the plain mean of the ratios and ``"median"`` their median.
+      ``"simple"`` is the plain mean of the ratios; ``"regression"`` is least
+      squares through the origin, ``sum(previous * following) /
+      sum(previous ** 2)``; ``"median"`` is their median. (In Mack's terms each
+      ratio is weighted by ``previous ** alpha``, with alpha 1 for volume, 0 for
+      simple and 2 for regression.)
     - ``history_periods``: use only the latest this many link ratios at each age
       (``None``, the default, uses them all). Under ``zero_cells="missing"`` a
       ratio left out for a zero cell still counts as one of them, as in
       chainladder-python's ``n_periods``, so the window then holds fewer.
-    - ``drop_high`` / ``drop_low``: leave out the highest and/or lowest link
-      ratio at each age.
     - ``exclude``: link ratios to leave out, as ``(origin_period, dev_lag)``
       pairs, where ``dev_lag`` is the age the ratio develops FROM in whole
       months; ``(2010, 12)`` leaves out the 2010 ratio from 12 to 24 months.
       The origin may be written in any of the ways ``origin_period`` may, not
       necessarily the way the cells write it. A pair that names no link ratio
       of the triangle is refused.
+    - ``exclude_valuations``: whole diagonals to leave out. Each valuation
+      leaves out every link ratio that develops INTO it, so excluding 2020
+      removes the development that happened during 2020 (a year distorted by
+      COVID, say), and the latest valuation may be excluded too. Write each as
+      the evaluation date, the last day of a development period
+      (``"2020-12-31"`` or a date), or as the one period it ends: a year
+      (``2020`` or ``"2020"``) on an annual triangle, a quarter (``"2020Q4"``)
+      on a quarterly one, a month (``"2020-12"``) on a monthly one. A valuation
+      no link ratio develops into (the first diagonal, or a date after the
+      latest one) is refused. chainladder-python's ``drop_valuation`` names
+      the EARLIER end of the link ratio instead, so its ``drop_valuation=2019``
+      is ``exclude_valuations=[2020]`` here.
+    - ``drop_above`` / ``drop_below``: leave out every link ratio strictly
+      above ``drop_above`` or strictly below ``drop_below``; a ratio equal to a
+      bound is kept (chainladder-python leaves it out).
+    - ``drop_high`` / ``drop_low``: leave out this many of the highest and the
+      lowest link ratios at each age. ``True`` means 1 and ``False`` 0.
+    - ``trim_ties``: which of two equal link ratios ``drop_high``/``drop_low``
+      leave out. ``"volume"`` (the default here, chainladder-python's rule)
+      ranks equal ratios by the earlier cumulative: ``drop_high`` leaves out the
+      one with the larger amount and ``drop_low`` the smaller; equal amounts
+      too go by origin, ``drop_high`` the newer and ``drop_low`` the older.
+      ``"origin"`` ranks equal ratios by origin alone, the rule of ibnr 0.7.2
+      and the default of ``kernels.ConventionalCandidate``.
+    - ``preserve``: the fewest link ratios the bounds may leave at an age, and
+      the fewest the trims may leave (1 by default). Each rule is all or
+      nothing at an age: if it would leave fewer, ``exhausted_exclusions``
+      decides.
     - ``unsupported_factor``: what to do at an age where no link ratio is left
       to average: ``"raise"`` (the default) refuses; ``"unity"`` uses a factor
       of 1.0 and marks the age in ``development.unity_fallback``.
-    - ``exhausted_exclusions``: what to do when ``drop_high``/``drop_low``
-      would leave no ratio at an age. ``"keep"`` (the default here) keeps the
-      ratios untrimmed at that age and marks it in
-      ``development.extreme_trimming_skipped``; ``"raise"`` refuses. The
-      default differs from ``kernels.ConventionalCandidate``'s ``"raise"``
-      because on a complete triangle the last age has a single link ratio, so
-      ``drop_high=True`` would always be refused; chainladder-python users
-      expect it to work, and the result records the skip.
+    - ``exhausted_exclusions``: what to do when the bounds, or the trims, would
+      leave fewer than ``preserve`` ratios at an age. ``"keep"`` (the default
+      here) does not apply that rule at that age and marks it in
+      ``development.bounds_skipped`` or ``development.extreme_trimming_skipped``;
+      ``"raise"`` refuses. The default differs from
+      ``kernels.ConventionalCandidate``'s ``"raise"`` because on a complete
+      triangle the last age has a single link ratio, so ``drop_high=True``
+      would always be refused; chainladder-python users expect it to work, and
+      the result records the skip.
     - ``zero_cells``: what a cumulative of exactly zero is. ``"missing"`` (the
       default here) follows chainladder-python, which stores a zero cell as
       missing: a link ratio is used only when neither of its two cells is zero,
@@ -317,7 +394,12 @@ def chain_ladder(
             history_periods=history_periods,
             drop_high=drop_high,
             drop_low=drop_low,
+            preserve=preserve,
+            drop_above=drop_above,
+            drop_below=drop_below,
             exclude=exclude,
+            exclude_valuations=exclude_valuations,
+            trim_ties=trim_ties,
             unsupported_factor=unsupported_factor,
             exhausted_exclusions=exhausted_exclusions,
             zero_cells=zero_cells,
@@ -333,9 +415,14 @@ def bornhuetter_ferguson(
     dev_grain_months: int = 12,
     average: str = "volume",
     history_periods: int | None = None,
-    drop_high: bool = False,
-    drop_low: bool = False,
+    drop_high: bool | int = False,
+    drop_low: bool | int = False,
+    preserve: int = 1,
+    drop_above: float | None = None,
+    drop_below: float | None = None,
     exclude=(),
+    exclude_valuations=(),
+    trim_ties: str = "volume",
     unsupported_factor: str = "raise",
     exhausted_exclusions: str = "keep",
     zero_cells: str = "missing",
@@ -357,7 +444,7 @@ def bornhuetter_ferguson(
     amount for each origin of the triangle and no others.
 
     ``expected_loss_ratio`` is the a priori loss ratio, one number for every
-    origin, applied to premium.
+    origin, applied to premium. :func:`benktander` iterates this method.
     """
     with _CallersTerms("bornhuetter_ferguson") as terms:
         grid, origins = terms.read(cells, dev_grain_months)
@@ -369,7 +456,12 @@ def bornhuetter_ferguson(
             history_periods=history_periods,
             drop_high=drop_high,
             drop_low=drop_low,
+            preserve=preserve,
+            drop_above=drop_above,
+            drop_below=drop_below,
             exclude=exclude,
+            exclude_valuations=exclude_valuations,
+            trim_ties=trim_ties,
             unsupported_factor=unsupported_factor,
             exhausted_exclusions=exhausted_exclusions,
             zero_cells=zero_cells,
@@ -379,17 +471,84 @@ def bornhuetter_ferguson(
         )
 
 
+def benktander(
+    cells,
+    *,
+    premium,
+    expected_loss_ratio: float,
+    n_iters: int = 1,
+    dev_grain_months: int = 12,
+    average: str = "volume",
+    history_periods: int | None = None,
+    drop_high: bool | int = False,
+    drop_low: bool | int = False,
+    preserve: int = 1,
+    drop_above: float | None = None,
+    drop_below: float | None = None,
+    exclude=(),
+    exclude_valuations=(),
+    trim_ties: str = "volume",
+    unsupported_factor: str = "raise",
+    exhausted_exclusions: str = "keep",
+    zero_cells: str = "missing",
+) -> ReserveResult:
+    """Benktander: Bornhuetter-Ferguson repeated, each time from the last ultimate.
+
+    Mack (2000), "Credible claims reserves: the Benktander method". With
+    ``q = 1 - pct_reported`` at each origin's latest age, ``L`` its latest
+    cumulative loss and ``E = premium * expected_loss_ratio``, the ultimate
+    after ``n`` iterations is ``U_n = L + q * U_(n-1)``, starting from
+    ``U_0 = E``. ``n_iters=1`` is :func:`bornhuetter_ferguson` exactly, and as
+    ``n_iters`` grows the ultimate moves to the chain ladder's. ``n_iters`` must
+    be a whole number of 1 or more; 0 would be the expected loss method, which
+    ignores the reported losses and is refused.
+
+    ``cells`` and the development options are as in :func:`chain_ladder`, and
+    ``premium`` and ``expected_loss_ratio`` as in :func:`bornhuetter_ferguson`.
+    The result has the same tables and columns as Bornhuetter-Ferguson's.
+    """
+    with _CallersTerms("benktander") as terms:
+        grid, origins = terms.read(cells, dev_grain_months)
+        candidate = _candidate(
+            "bf",
+            origins,
+            expected_loss_ratio=expected_loss_ratio,
+            n_iters=n_iters,
+            average=average,
+            history_periods=history_periods,
+            drop_high=drop_high,
+            drop_low=drop_low,
+            preserve=preserve,
+            drop_above=drop_above,
+            drop_below=drop_below,
+            exclude=exclude,
+            exclude_valuations=exclude_valuations,
+            trim_ties=trim_ties,
+            unsupported_factor=unsupported_factor,
+            exhausted_exclusions=exhausted_exclusions,
+            zero_cells=zero_cells,
+        )
+        return _conventional_result("benktander", grid, origins, candidate, premium=premium)
+
+
 def cape_cod(
     cells,
     *,
     premium,
     decay: float = 1.0,
+    trend: float = 0.0,
+    n_iters: int = 1,
     dev_grain_months: int = 12,
     average: str = "volume",
     history_periods: int | None = None,
-    drop_high: bool = False,
-    drop_low: bool = False,
+    drop_high: bool | int = False,
+    drop_low: bool | int = False,
+    preserve: int = 1,
+    drop_above: float | None = None,
+    drop_below: float | None = None,
     exclude=(),
+    exclude_valuations=(),
+    trim_ties: str = "volume",
     unsupported_factor: str = "raise",
     exhausted_exclusions: str = "keep",
     zero_cells: str = "missing",
@@ -402,11 +561,28 @@ def cape_cod(
     weighted by ``decay ** k``. ``decay=1`` (the default) weights every origin
     equally, which is the classic Cape Cod and one loss ratio for the whole
     triangle; ``decay=0`` uses each origin's own experience only, which is the
-    chain ladder. There is no trend: amounts are compared as they are.
+    chain ladder.
+
+    ``trend`` is an annual rate, such as 0.05 for 5% a year (0, the default,
+    compares amounts as they are). Each origin's losses are first brought to
+    the valuation date's level, multiplied by ``trend_factor = (1 + trend) **
+    (m / 12)``, where ``m`` is the whole months from the end of the origin
+    period to ``as_of``. The weighted ratio of those to used-up premium is the
+    ``trended_loss_ratio``, the loss ratio at the valuation date's level
+    (chainladder-python's ``apriori_``). Each origin's ``expected_loss_ratio``,
+    applied to its own premium, is that divided by its own ``trend_factor``
+    (chainladder-python's ``detrended_apriori_``). With ``decay=1`` the
+    trended loss ratio is one number for the whole triangle; with ``decay=0``
+    the trend cancels and the answer is the chain ladder's.
+
+    ``n_iters`` iterates the result as :func:`benktander` does, with each
+    origin's ``premium * expected_loss_ratio`` as the first a priori ultimate;
+    1 (the default) is Cape Cod itself, and 0 is refused.
 
     ``cells`` and the development options are as in :func:`chain_ladder`, and
-    ``premium`` as in :func:`bornhuetter_ferguson`. The estimated loss ratios
-    are in ``origins.expected_loss_ratio``.
+    ``premium`` as in :func:`bornhuetter_ferguson`. The loss ratios are in
+    ``origins.expected_loss_ratio`` and ``origins.trended_loss_ratio``, and
+    ``origins.trend_factor`` is each origin's factor (1.0 at trend 0).
     """
     with _CallersTerms("cape_cod") as terms:
         grid, origins = terms.read(cells, dev_grain_months)
@@ -414,11 +590,18 @@ def cape_cod(
             "gcc",
             origins,
             decay=decay,
+            trend=trend,
+            n_iters=n_iters,
             average=average,
             history_periods=history_periods,
             drop_high=drop_high,
             drop_low=drop_low,
+            preserve=preserve,
+            drop_above=drop_above,
+            drop_below=drop_below,
             exclude=exclude,
+            exclude_valuations=exclude_valuations,
+            trim_ties=trim_ties,
             unsupported_factor=unsupported_factor,
             exhausted_exclusions=exhausted_exclusions,
             zero_cells=zero_cells,
@@ -711,9 +894,14 @@ class _Candidate:
     kernel: ConventionalCandidate
     #: each exclusion as passed, with the (period start, dev_lag) it names
     exclusions: tuple[tuple[Any, tuple[dt.date, Any]], ...]
+    #: each excluded valuation as passed, with the evaluation date it names
+    valuations: tuple[tuple[Any, dt.date], ...] = ()
 
 
-def _candidate(method: str, origins: _Origins, *, exclude, **settings) -> _Candidate:
+def _candidate(
+    method: str, origins: _Origins, *, exclude, exclude_valuations=(), **settings
+) -> _Candidate:
+    valuations = _valuations(exclude_valuations, origins.step)
     if isinstance(exclude, str | bytes) or not hasattr(exclude, "__iter__"):
         raise Refusal(
             "invalid_option",
@@ -771,14 +959,147 @@ def _candidate(method: str, origins: _Origins, *, exclude, **settings) -> _Candi
                 cells=[RefusedCell(earlier[0], start, lag), RefusedCell(pair[0], start, lag)],
                 quoted=True,
             )
-    kernel = ConventionalCandidate(method, exclude=tuple(key for _, key in exclusions), **settings)
-    return _Candidate(kernel, tuple(exclusions))
+    kernel = ConventionalCandidate(
+        method,
+        exclude=tuple(key for _, key in exclusions),
+        exclude_valuations=tuple(day for _, day in valuations),
+        **settings,
+    )
+    return _Candidate(kernel, tuple(exclusions), valuations)
+
+
+#: How an excluded valuation may be written, for the messages.
+_VALUATION_FORMS = (
+    "write it as the evaluation date, the last day of a development period (2020-12-31), or "
+    "as the one development period it ends: a year (2020) on an annual triangle, a quarter "
+    "(2020Q4) on a quarterly one, a month (2020-12) on a monthly one"
+)
+
+
+def _valuations(values, step: int) -> tuple[tuple[Any, dt.date], ...]:
+    """Each excluded valuation as written, with the evaluation date it names, or a refusal.
+
+    A date is taken as it is; a year, quarter or month label names the last day
+    of that period, and must be one development period long. A valuation named
+    twice is refused here; one that is not a diagonal of the triangle, or that
+    no link ratio develops into, is refused once the grid is known.
+    """
+    if isinstance(values, str | bytes) or not hasattr(values, "__iter__"):
+        raise Refusal(
+            "invalid_option",
+            "exclude_valuations must be a sequence of valuations, such as [2020] or "
+            "['2020-12-31'], got {given}",
+            option="exclude_valuations",
+            given=values,
+        )
+    read = []
+    for value in values:
+        read.append((value, _valuation(value, step)))
+    first_written: dict[dt.date, Any] = {}
+    for value, day in read:
+        if day in first_written:
+            earlier = first_written[day]
+            raise Refusal(
+                "duplicate",
+                f"exclude_valuations names {day.isoformat()} twice, as {_show(earlier)} and "
+                f"{_show(value)}; list each valuation once",
+                option="exclude_valuations",
+                given=value,
+            )
+        first_written[day] = value
+    return tuple(read)
+
+
+def _valuation(value, step: int) -> dt.date:
+    """The evaluation date one excluded valuation names, or a refusal."""
+    shown = _show(value)
+    where = {"option": "exclude_valuations", "given": value}
+    unreadable = Refusal(
+        "unreadable_label",
+        f"exclude_valuations {shown} is not a valuation: {_VALUATION_FORMS}",
+        **where,
+    )
+    start, months = None, None
+    if isinstance(value, numbers.Integral) and not isinstance(value, bool | np.bool_):
+        if not 1000 <= value <= 9999:
+            raise unreadable
+        start, months = dt.date(int(value), 1, 1), 12
+    elif isinstance(value, str) and not _ISO_DATE.fullmatch(value):
+        try:
+            start, months = _label_period(value, "exclude_valuations")
+        except Refusal:
+            raise unreadable from None
+    if months is not None:
+        if months != step:
+            length = "1 month" if months == 1 else f"{months} months"
+            raise Refusal(
+                "grain_mismatch",
+                f"exclude_valuations {shown} is {_PERIOD_WORD[months]}, {length} long, but the "
+                f"development periods are {step} months long (dev_grain_months={step}). "
+                f"{_VALUATION_FORMS[0].upper()}{_VALUATION_FORMS[1:]}",
+                **where,
+            )
+        return _add_months(start, months) - dt.timedelta(days=1)
+    if isinstance(value, bool | np.bool_ | float | np.floating):
+        raise unreadable  # as_date would not read these either, but say so in these terms
+    try:
+        day = as_date(value)
+    except (TypeError, ValueError):
+        raise unreadable from None
+    if (day + dt.timedelta(days=1)).day != 1:
+        raise Refusal(
+            "unreadable_label",
+            f"exclude_valuations {shown} is not the last day of a month, so it ends no "
+            f"development period: {_VALUATION_FORMS}",
+            **where,
+        )
+    return day
+
+
+def _require_valuations_in_triangle(grid, valuations) -> None:
+    """Refuse an excluded valuation that no link ratio of the triangle develops into."""
+    if not valuations:
+        return
+    step = grid["dev_grain_months"]
+    origins, mask = grid["origin_periods"], grid["obs_mask"]
+    into = sorted(
+        {
+            month_end(origins[i], (j + 2) * step)
+            for i, j in zip(*np.nonzero(mask[:, :-1] & mask[:, 1:]), strict=True)
+        }
+    )
+    have = (
+        f"the link ratios develop into {into[0]} to {into[-1]}, every {step} months"
+        if into
+        else "the triangle has no link ratio"
+    )
+    first = origins[0]
+    for value, day in valuations:
+        if day in into:
+            continue
+        following = day + dt.timedelta(days=1)
+        months = (following.year - first.year) * 12 + following.month - first.month
+        if months % step:
+            raise Refusal(
+                "grain_mismatch",
+                f"exclude_valuations {_show(value)} is not the last day of a development period "
+                f"of this triangle; {have}",
+                option="exclude_valuations",
+                given=value,
+            )
+        raise Refusal(
+            "not_in_triangle",
+            f"exclude_valuations names {day}, but no link ratio develops into that date; {have}",
+            option="exclude_valuations",
+            given=value,
+        )
 
 
 def _conventional_result(
     name: str, grid, origins: _Origins, wrapped: _Candidate, *, premium
 ) -> ReserveResult:
     candidate = wrapped.kernel
+    _require_valuations_in_triangle(grid, wrapped.valuations)
     keyed = None if candidate.method == "cl" else _premium(premium, origins, name)
     # fit_conventional_grid without its three pandas tables: the same checks and
     # numbers, held in numpy arrays and lists, so a fit here never loads pandas.
@@ -823,6 +1144,9 @@ def _conventional_result(
     }
     if candidate.method != "cl":
         columns["expected_loss_ratio"] = _arrow.float64(table["expected_loss_ratio"])
+    if candidate.method == "gcc":
+        columns["trended_loss_ratio"] = _arrow.float64(table["trended_loss_ratio"])
+        columns["trend_factor"] = _arrow.float64(table["trend_factor"])
 
     def summary(key: str) -> list:
         return [row[key] for row in fit.summary]
@@ -835,6 +1159,7 @@ def _conventional_result(
             "extreme_trimming_skipped": _with_last_null(
                 summary("extreme_trimming_skipped"), pa.bool_()
             ),
+            "bounds_skipped": _with_last_null(summary("bounds_skipped"), pa.bool_()),
         }
     )
 
@@ -855,9 +1180,15 @@ def _conventional_result(
             "reason": _arrow.string(link("reason")),
         }
     )
+    per_origin = {"ultimate": ultimate, "ibnr": ibnr}
+    if candidate.method == "gcc":
+        # a trend near -1, or far above it, can take these past a double while the
+        # ultimates stay finite
+        per_origin["trended_loss_ratio"] = table["trended_loss_ratio"]
+        per_origin["trend_factor"] = table["trend_factor"]
     _require_finite(
         table["origin_period"],
-        {"ultimate": ultimate, "ibnr": ibnr},
+        per_origin,
         np.concatenate([*pattern, ratio[~np.isnan(ratio)]]),
         sums,
     )

@@ -61,12 +61,15 @@ def drop(rows, key):
 
 
 T = tri(BASE)
+# the same staircase with quarterly origins and quarterly ages
+QT = tri([(f"2001Q{o - 2000}", d // 4, v) for o, d, v in BASE])
 ZERO_COL = [(o, d, 0.0 if d == 12 else v) for o, d, v in BASE]
 Z2 = replace(replace(BASE, (2002, 12), 0.0), (2003, 12), 0.0)
 Z3 = replace(replace(BASE, (2002, 36), 0.0), (2002, 24), 0.0)
-cl, bf, cc, mk = (
+cl, bf, bk, cc, mk = (
     methods.chain_ladder,
     methods.bornhuetter_ferguson,
+    methods.benktander,
     methods.cape_cod,
     methods.mack,
 )
@@ -731,18 +734,104 @@ CASES = [
             {"given": value},
         )
         for name, value in [
-            ("average", "regression"),
+            ("average", "least_squares"),
+            ("average", "Regression"),
             ("average", 1.0),
             ("history_periods", 0),
             ("history_periods", 2.5),
             ("history_periods", True),
-            ("drop_high", 1),
+            ("drop_high", -1),
+            ("drop_high", 1.5),
+            ("drop_high", [1, 0, 0]),
             ("drop_low", "yes"),
+            ("preserve", 0),
+            ("preserve", True),
+            ("preserve", 2.0),
+            ("drop_above", math.nan),
+            ("drop_above", True),
+            ("drop_below", "1.0"),
+            ("drop_below", [1.0]),
+            ("trim_ties", "ratio"),
+            ("exclude_valuations", "2002"),
+            ("exclude_valuations", 2002),
             ("unsupported_factor", "x"),
             ("exhausted_exclusions", "x"),
             ("zero_cells", "x"),
         ]
     ],
+    (
+        "bounds_crossed",
+        lambda: cl(T, drop_below=1.5, drop_above=1.5),
+        "invalid_option",
+        "drop_below",
+        None,
+        [],
+        [],
+        [],
+        {"options": ("drop_below", "drop_above")},
+    ),
+    (
+        "bounds_exhausted_raise",
+        lambda: cl(T, drop_above=1.2, exhausted_exclusions="raise"),
+        "exclusions_exhausted",
+        "exhausted_exclusions",
+        None,
+        [],
+        [(12, 24)],
+        [],
+        {"options": ("exhausted_exclusions", "drop_above", "preserve")},
+    ),
+    (
+        "trims_below_preserve_raise",
+        lambda: cl(T, drop_high=1, preserve=2, exhausted_exclusions="raise"),
+        "exclusions_exhausted",
+        "exhausted_exclusions",
+        None,
+        [],
+        [(24, 36)],
+        [],
+        {"options": ("exhausted_exclusions", "drop_high", "preserve")},
+    ),
+    *[
+        (
+            f"valuation_{label}",
+            lambda value=value, dev_grain=dev_grain: cl(
+                T if dev_grain == 12 else QT,
+                dev_grain_months=dev_grain,
+                exclude_valuations=[value],
+            ),
+            reason,
+            "exclude_valuations",
+            None,
+            [],
+            [],
+            [],
+            {"given": value},
+        )
+        for label, value, dev_grain, reason in [
+            ("text", "abc", 12, "unreadable_label"),
+            ("two_digit_year", 97, 12, "unreadable_label"),
+            ("float_year", 2002.0, 12, "unreadable_label"),
+            ("bool", True, 12, "unreadable_label"),
+            ("mid_month", dt.date(2002, 6, 15), 12, "unreadable_label"),
+            ("off_diagonal", "2002-06-30", 12, "grain_mismatch"),
+            ("quarter_on_annual", "2002Q4", 12, "grain_mismatch"),
+            ("year_on_quarterly", 2001, 3, "grain_mismatch"),
+            ("first_diagonal", 2001, 12, "not_in_triangle"),
+            ("after_the_latest", "2005-12-31", 12, "not_in_triangle"),
+        ]
+    ],
+    (
+        "valuation_twice",
+        lambda: cl(T, exclude_valuations=[2002, "2002-12-31"]),
+        "duplicate",
+        "exclude_valuations",
+        None,
+        [],
+        [],
+        [],
+        {"given": "2002-12-31"},
+    ),
     (
         "exclude_string",
         lambda: cl(T, exclude="2001,12"),
@@ -914,6 +1003,38 @@ CASES = [
             {"given": value},
         )
         for value in (2.0, -0.5, math.nan, None, "0.5", True)
+    ],
+    *[
+        (
+            f"n_iters_{name}_{value!r}",
+            lambda call=call, value=value: call(n_iters=value),
+            "invalid_option",
+            "n_iters",
+            None,
+            [],
+            [],
+            [],
+            {"given": value},
+        )
+        for name, call in (
+            ("benktander", lambda **o: bk(T, premium=PREM, expected_loss_ratio=0.7, **o)),
+            ("cape_cod", lambda **o: cc(T, premium=PREM, **o)),
+        )
+        for value in (0, -1, 2.5, True, "2", None)
+    ],
+    *[
+        (
+            f"trend_{value!r}",
+            lambda value=value: cc(T, premium=PREM, trend=value),
+            "invalid_option",
+            "trend",
+            None,
+            [],
+            [],
+            [],
+            {"given": value},
+        )
+        for value in (-1.0, -1.5, math.inf, math.nan, "0.05", True, None)
     ],
     (
         "premium_none",
@@ -1357,9 +1478,24 @@ _DATES_EXPECTED = {
     "annual_dates_on_a_quarterly_step",
     "origin_gap_between_two_years",
     "origin_gap_between_dates",
+    # an excluded valuation is an evaluation date, and the refusal lists the triangle's
+    "valuation_mid_month",
+    "valuation_off_diagonal",
+    "valuation_first_diagonal",
+    "valuation_after_the_latest",
+    "valuation_twice",
+    # the message gives ['2020-12-31'] as an example of a list of valuations
+    "exclude_valuations_'2002'",
+    "exclude_valuations_2002",
 }
 
-_METHOD_OF = {cl: "chain_ladder", bf: "bornhuetter_ferguson", cc: "cape_cod", mk: "mack"}
+_METHOD_OF = {
+    cl: "chain_ladder",
+    bf: "bornhuetter_ferguson",
+    bk: "benktander",
+    cc: "cape_cod",
+    mk: "mack",
+}
 
 
 @pytest.mark.parametrize(
@@ -1732,7 +1868,37 @@ def test_no_message_uses_a_kernel_word_or_a_kernel_date(case):
             "expected_loss_ratio must be a finite number of 0 or more, got True",
         ),
         (lambda: cl(T, dev_grain_months=np.int64(0)), "got 0"),
-        (lambda: cl(T, average=np.str_("regression")), "got 'regression'"),
+        (lambda: cl(T, average=np.str_("least_squares")), "got 'least_squares'"),
+        (lambda: cl(T, drop_high=np.float64(1.5)), "got 1.5"),
+        (
+            lambda: cl(T, drop_high=2, drop_low=1, preserve=2, exhausted_exclusions="raise"),
+            "drop_high=2 and drop_low would leave 0 of the 3 link ratio(s) from 12 to 24 "
+            "months, fewer than preserve=2",
+        ),
+        (
+            lambda: cl(T, drop_above=1.2, exhausted_exclusions="raise"),
+            "drop_above=1.2 would leave 0 of the 3 link ratio(s) from 12 to 24 months, fewer "
+            "than preserve=1; pass exhausted_exclusions='keep' to apply neither bound",
+        ),
+        (
+            lambda: bk(T, premium=PREM, expected_loss_ratio=0.7, n_iters=0),
+            "n_iters=0 would ignore the reported losses",
+        ),
+        (lambda: cc(T, premium=PREM, trend=-1.0), "trend is an annual rate above -1"),
+        (
+            lambda: cl(QT, dev_grain_months=3, exclude_valuations=[2001]),
+            "exclude_valuations 2001 is a year, 12 months long, but the development periods "
+            "are 3 months long",
+        ),
+        (
+            lambda: cl(T, exclude_valuations=["2005"]),
+            "exclude_valuations names 2005-12-31, but no link ratio develops into that date; "
+            "the link ratios develop into 2002-12-31 to 2004-12-31, every 12 months",
+        ),
+        (
+            lambda: cl(T, exclude_valuations=[2002, "2002-12-31"]),
+            "exclude_valuations names 2002-12-31 twice, as 2002 and '2002-12-31'",
+        ),
         (
             lambda: bf(T, premium={**PREM, 2003: np.float64(-5.0)}, expected_loss_ratio=0.7),
             "it is -5.0 for 2003",
@@ -1873,10 +2039,17 @@ _FUZZ = json.loads(
 )
 
 _OPTION_POOL = {
-    "average": ["volume", "simple", "median", "x", 1, None, True],
+    "average": ["volume", "simple", "regression", "median", "x", 1, None, True],
     "history_periods": [None, 1, 3, 0, -1, 2.5, True, "3", 10**12],
-    "drop_high": [False, True, 1, "yes", None],
-    "drop_low": [False, True, 0, None],
+    "drop_high": [False, True, 1, 2, 3, -1, 1.0, "yes", None],
+    "drop_low": [False, True, 0, 2, None],
+    "preserve": [1, 1, 2, 3, 0, True, None],
+    "drop_above": [None, 1.05, 1.5, 3.0, 1.0, math.nan, "x"],
+    "drop_below": [None, 0.99, 1.0, 1.2, math.inf],
+    "exclude_valuations": [(), [1990], ["1995-12-31"], [2030], "1990", [1990, 1990], [2.5]],
+    "trim_ties": ["volume", "origin", "x"],
+    "n_iters": [1, 2, 5, 0, -1, 2.5, True],
+    "trend": [0.0, 0.05, -0.03, -1.0, math.inf, "0.05", 1e10],
     "unsupported_factor": ["raise", "unity", "x", None],
     "exhausted_exclusions": ["keep", "raise", "x"],
     "zero_cells": ["missing", "observed", "x", True],
@@ -1891,6 +2064,11 @@ _PER_METHOD = {
         "history_periods",
         "drop_high",
         "drop_low",
+        "preserve",
+        "drop_above",
+        "drop_below",
+        "exclude_valuations",
+        "trim_ties",
         "unsupported_factor",
         "exhausted_exclusions",
         "zero_cells",
@@ -1899,7 +2077,19 @@ _PER_METHOD = {
     "mack": ("sigma_rule", "zero_cells", "dev_grain_months"),
 }
 _PER_METHOD["bornhuetter_ferguson"] = (*_PER_METHOD["chain_ladder"], "expected_loss_ratio")
-_PER_METHOD["cape_cod"] = (*_PER_METHOD["chain_ladder"], "decay")
+_PER_METHOD["benktander"] = (*_PER_METHOD["bornhuetter_ferguson"], "n_iters")
+_PER_METHOD["cape_cod"] = (*_PER_METHOD["chain_ladder"], "decay", "trend", "n_iters")
+#: Drawn at half the rate of the others, so that with thirteen options a method
+#: takes, enough cases still carry no bad value and are answered.
+_DRAWN_LESS_OFTEN = {
+    "preserve",
+    "drop_above",
+    "drop_below",
+    "exclude_valuations",
+    "trim_ties",
+    "n_iters",
+    "trend",
+}
 
 
 def _fuzz_case(rng, rows):
@@ -1982,15 +2172,15 @@ def test_a_seeded_fuzz_meets_nothing_but_refusals():
     for _ in range(2000):
         rows = _FUZZ[names[int(rng.integers(0, len(names)))]]
         edited = _fuzz_case(rng, rows)
-        method = ("chain_ladder", "bornhuetter_ferguson", "cape_cod", "mack")[
-            int(rng.integers(0, 4))
+        method = ("chain_ladder", "bornhuetter_ferguson", "benktander", "cape_cod", "mack")[
+            int(rng.integers(0, 5))
         ]
         options = {}
         for name in _PER_METHOD[method]:
-            if rng.random() < 0.25:
+            if rng.random() < (0.12 if name in _DRAWN_LESS_OFTEN else 0.25):
                 pool = _OPTION_POOL[name]
                 options[name] = pool[int(rng.integers(0, len(pool)))]
-        if method in ("bornhuetter_ferguson", "cape_cod"):
+        if method in ("bornhuetter_ferguson", "benktander", "cape_cod"):
             origins = sorted({r[0] for r in rows})
             premium = {o: 1000.0 * (1 + k) for k, o in enumerate(origins)}
             if rng.random() < 0.2:
@@ -2005,7 +2195,7 @@ def test_a_seeded_fuzz_meets_nothing_but_refusals():
                     1e308,
                 ][int(rng.integers(0, 8))]
             options["premium"] = premium
-        if method == "bornhuetter_ferguson":
+        if method in ("bornhuetter_ferguson", "benktander"):
             options.setdefault("expected_loss_ratio", 0.7)
         function = getattr(methods, method)
         with warnings.catch_warnings():

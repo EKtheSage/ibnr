@@ -1,0 +1,1070 @@
+{
+ "source": "clrd paid cohorts (chainladder 0.9.2's clrd.csv, zeros kept) on which ibnr 0.7.2's tie rule, trim_ties='origin', gives factors different from chainladder-python's under at least one of the four options; found by comparing all 681 cohorts both answer",
+ "options": {
+  "drop_high": {
+   "drop_high": 1
+  },
+  "drop_low": {
+   "drop_low": 1
+  },
+  "both": {
+   "drop_high": 1,
+   "drop_low": 1
+  },
+  "high2_preserve2": {
+   "drop_high": 2,
+   "preserve": 2
+  }
+ },
+ "compared": 681,
+ "cohorts": {
+  "drop_high": [
+   [
+    "Agway Ins Co",
+    "othliab"
+   ],
+   [
+    "Auto Club Ins Assn",
+    "othliab"
+   ],
+   [
+    "Brethren Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Chicago Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Clinic Mut Ins Co RRG",
+    "medmal"
+   ],
+   [
+    "College Liability Ins Co Ltd RRG",
+    "comauto"
+   ],
+   [
+    "Distributors Ins Co",
+    "comauto"
+   ],
+   [
+    "Farmers Home Mut Fire Ins Co",
+    "othliab"
+   ],
+   [
+    "Farmers Mut Of TN",
+    "othliab"
+   ],
+   [
+    "Health Care Ind Inc",
+    "comauto"
+   ],
+   [
+    "Island Ins Cos Grp",
+    "othliab"
+   ],
+   [
+    "Mapfre Reins Corp",
+    "othliab"
+   ],
+   [
+    "National American Ins Co",
+    "othliab"
+   ],
+   [
+    "Nissan Fire & Marine Ins Co Us Br",
+    "othliab"
+   ],
+   [
+    "Nissan Fire & Marine Ins Co Us Br",
+    "ppauto"
+   ],
+   [
+    "Paratransit RRG Grp Ins Co",
+    "comauto"
+   ],
+   [
+    "Scpie Indemnity Co",
+    "othliab"
+   ],
+   [
+    "Seguros Triples Inc",
+    "othliab"
+   ],
+   [
+    "Southwest General Ins Co",
+    "ppauto"
+   ],
+   [
+    "Standard Cas Co",
+    "othliab"
+   ],
+   [
+    "Standard Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "United Educators Ins RRG Inc",
+    "othliab"
+   ],
+   [
+    "Wawanesa Ins Grp",
+    "ppauto"
+   ]
+  ],
+  "drop_low": [
+   [
+    "Agway Ins Co",
+    "othliab"
+   ],
+   [
+    "Alliance Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "American Agricultural Ins Co",
+    "othliab"
+   ],
+   [
+    "American Hallmark Ins Co Of TX",
+    "ppauto"
+   ],
+   [
+    "Amerisafe Grp",
+    "comauto"
+   ],
+   [
+    "Amerisafe Grp",
+    "ppauto"
+   ],
+   [
+    "Amguard Norguard & Eastguard Grp",
+    "othliab"
+   ],
+   [
+    "Antilles Ins Co",
+    "ppauto"
+   ],
+   [
+    "Antilles Ins Co",
+    "prodliab"
+   ],
+   [
+    "Armed Forces Ins Exchange",
+    "othliab"
+   ],
+   [
+    "Atlantic Mut Grp",
+    "prodliab"
+   ],
+   [
+    "Auto Club Ins Assn",
+    "othliab"
+   ],
+   [
+    "Battle Creek Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Brethren Mut Ins Co",
+    "comauto"
+   ],
+   [
+    "Brotherhood Mut Ins Co",
+    "ppauto"
+   ],
+   [
+    "California Cas Grp",
+    "othliab"
+   ],
+   [
+    "California Cas Grp",
+    "prodliab"
+   ],
+   [
+    "Catholic Relief Ins Co Of Amer",
+    "comauto"
+   ],
+   [
+    "Catholic Relief Ins Co Of Amer",
+    "othliab"
+   ],
+   [
+    "Catholic Relief Ins Co Of Amer",
+    "wkcomp"
+   ],
+   [
+    "Celina Mut Grp",
+    "prodliab"
+   ],
+   [
+    "Center Mut Ins Co",
+    "comauto"
+   ],
+   [
+    "Center Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Chicago Mut Ins Co",
+    "comauto"
+   ],
+   [
+    "Chicago Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Chicago Mut Ins Co",
+    "ppauto"
+   ],
+   [
+    "Chicago Mut Ins Co",
+    "wkcomp"
+   ],
+   [
+    "Church Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Co-Operative Ins Co",
+    "othliab"
+   ],
+   [
+    "Colorado Farm Bureau Mut Ins Co",
+    "comauto"
+   ],
+   [
+    "Commercial Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Constitutional Cas Co",
+    "prodliab"
+   ],
+   [
+    "Continental Natl Ind Co",
+    "othliab"
+   ],
+   [
+    "Continental Natl Ind Co",
+    "prodliab"
+   ],
+   [
+    "Dorinco Rein Co",
+    "prodliab"
+   ],
+   [
+    "Dowa Fire & Marine Ins Co Ltd Us Br",
+    "wkcomp"
+   ],
+   [
+    "Dryden Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Evergreen USA RRG Inc",
+    "comauto"
+   ],
+   [
+    "Evergreen USA RRG Inc",
+    "othliab"
+   ],
+   [
+    "Farmers Alliance Mut & Affiliates",
+    "prodliab"
+   ],
+   [
+    "Farmers Fire Ins Co",
+    "othliab"
+   ],
+   [
+    "Farmers Home Mut Fire Ins Co",
+    "othliab"
+   ],
+   [
+    "Farmers Mech Mut Fire Ins Of WV",
+    "othliab"
+   ],
+   [
+    "Farmers Mut Ins Co Of NE",
+    "comauto"
+   ],
+   [
+    "Farmers Mut Ins Co Of NE",
+    "othliab"
+   ],
+   [
+    "Farmers Mut Of TN",
+    "othliab"
+   ],
+   [
+    "Finger Lakes Fire & Cas Ins Co",
+    "othliab"
+   ],
+   [
+    "First American Specilaty Ins Co",
+    "comauto"
+   ],
+   [
+    "First Nonprofit Mut Ins Co",
+    "comauto"
+   ],
+   [
+    "Fitchburg Mut Ins Co",
+    "comauto"
+   ],
+   [
+    "Fitchburg Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Fremont Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Germania Ins Grp",
+    "othliab"
+   ],
+   [
+    "Goodville Mut Cas Co",
+    "ppauto"
+   ],
+   [
+    "Gulf States Ins Co",
+    "ppauto"
+   ],
+   [
+    "Hannahstown Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Harco Natl Ins Co",
+    "othliab"
+   ],
+   [
+    "Haulers Ins Co Inc",
+    "comauto"
+   ],
+   [
+    "Health Care Ind Inc",
+    "comauto"
+   ],
+   [
+    "Hochheim Prairie Ins Grp",
+    "othliab"
+   ],
+   [
+    "Homestead Ins Co",
+    "comauto"
+   ],
+   [
+    "Homestead Ins Co",
+    "ppauto"
+   ],
+   [
+    "IMT Ins Co Mut",
+    "comauto"
+   ],
+   [
+    "IMT Ins Co Mut",
+    "prodliab"
+   ],
+   [
+    "Juniata Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Maine Mut Fire Ins Co",
+    "othliab"
+   ],
+   [
+    "Mapfre Reins Corp",
+    "othliab"
+   ],
+   [
+    "Merced Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Mid-Continent Ins Co",
+    "othliab"
+   ],
+   [
+    "Midstate Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Midstates Rein Corp",
+    "comauto"
+   ],
+   [
+    "Midwest Family Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Millers Mut Ins Assoc",
+    "prodliab"
+   ],
+   [
+    "Millville Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Montour Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Motor Club Ins Assoc",
+    "ppauto"
+   ],
+   [
+    "Mountain West Farm Bu Mut Ins Co",
+    "comauto"
+   ],
+   [
+    "Mountain West Farm Bu Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "National American Ins Co",
+    "ppauto"
+   ],
+   [
+    "National Automotive Ins",
+    "ppauto"
+   ],
+   [
+    "National Catholic RRG",
+    "othliab"
+   ],
+   [
+    "Nazareth Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Nichido Fire & Marine Ins Co Ltd",
+    "comauto"
+   ],
+   [
+    "Nichido Fire & Marine Ins Co Ltd",
+    "othliab"
+   ],
+   [
+    "Northwest Gf Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Omega Ins Co",
+    "wkcomp"
+   ],
+   [
+    "Oregon Mut Grp",
+    "prodliab"
+   ],
+   [
+    "Partners Mut Ins Co",
+    "comauto"
+   ],
+   [
+    "Partners Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Preferred Mut Ins Co",
+    "comauto"
+   ],
+   [
+    "Preferred Mut Ins Co",
+    "prodliab"
+   ],
+   [
+    "Preferred Professional Ins Co",
+    "othliab"
+   ],
+   [
+    "Protective Ins Grp",
+    "othliab"
+   ],
+   [
+    "Rockford Mut Ins Co",
+    "comauto"
+   ],
+   [
+    "Samsung Fire & Marine Ins Co Ltd",
+    "comauto"
+   ],
+   [
+    "San Antonio Reins Co",
+    "othliab"
+   ],
+   [
+    "Seguros Triples Inc",
+    "othliab"
+   ],
+   [
+    "Sheboygan Falls Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Sheboygan Falls Mut Ins Co",
+    "wkcomp"
+   ],
+   [
+    "Shelter Ins Cos Grp",
+    "prodliab"
+   ],
+   [
+    "Southern Group Ind Inc",
+    "comauto"
+   ],
+   [
+    "Southwest General Ins Co",
+    "comauto"
+   ],
+   [
+    "Southwest General Ins Co",
+    "ppauto"
+   ],
+   [
+    "Spartan Ins Co",
+    "ppauto"
+   ],
+   [
+    "Springfield Fire & Cas Co",
+    "comauto"
+   ],
+   [
+    "Springfield Fire & Cas Co",
+    "ppauto"
+   ],
+   [
+    "Standard Cas Co",
+    "othliab"
+   ],
+   [
+    "Standard Mut Ins Co",
+    "comauto"
+   ],
+   [
+    "Standard Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Standard Mut Ins Co",
+    "wkcomp"
+   ],
+   [
+    "State Volunteer Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "State-Wide Ins Co",
+    "comauto"
+   ],
+   [
+    "THE Ins Co",
+    "comauto"
+   ],
+   [
+    "Traders Ins Co",
+    "othliab"
+   ],
+   [
+    "Transit Mut Ins Corp Of WI",
+    "comauto"
+   ],
+   [
+    "US Lloyds Ins Co",
+    "ppauto"
+   ],
+   [
+    "United Educators Ins RRG Inc",
+    "othliab"
+   ],
+   [
+    "Vermont Mut Ins Co Grp",
+    "othliab"
+   ],
+   [
+    "Virginia Mut Ins Co",
+    "prodliab"
+   ],
+   [
+    "Wayne Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Wisconsin American Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Wisconsin Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Wolverine Mut Ins Co",
+    "comauto"
+   ],
+   [
+    "Wolverine Mut Ins Co",
+    "othliab"
+   ]
+  ],
+  "both": [
+   [
+    "Agway Ins Co",
+    "othliab"
+   ],
+   [
+    "Alliance Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "American Hallmark Ins Co Of TX",
+    "ppauto"
+   ],
+   [
+    "Amerisafe Grp",
+    "ppauto"
+   ],
+   [
+    "Antilles Ins Co",
+    "ppauto"
+   ],
+   [
+    "Antilles Ins Co",
+    "prodliab"
+   ],
+   [
+    "Atlantic Mut Grp",
+    "prodliab"
+   ],
+   [
+    "Brotherhood Mut Ins Co",
+    "ppauto"
+   ],
+   [
+    "California Cas Grp",
+    "prodliab"
+   ],
+   [
+    "Celina Mut Grp",
+    "prodliab"
+   ],
+   [
+    "Center Mut Ins Co",
+    "comauto"
+   ],
+   [
+    "Center Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Chicago Mut Ins Co",
+    "comauto"
+   ],
+   [
+    "Chicago Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Chicago Mut Ins Co",
+    "ppauto"
+   ],
+   [
+    "Chicago Mut Ins Co",
+    "wkcomp"
+   ],
+   [
+    "Church Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Co-Operative Ins Co",
+    "othliab"
+   ],
+   [
+    "College Liability Ins Co Ltd RRG",
+    "comauto"
+   ],
+   [
+    "Colorado Farm Bureau Mut Ins Co",
+    "comauto"
+   ],
+   [
+    "Dorinco Rein Co",
+    "prodliab"
+   ],
+   [
+    "Evergreen USA RRG Inc",
+    "comauto"
+   ],
+   [
+    "Farmers Alliance Mut & Affiliates",
+    "prodliab"
+   ],
+   [
+    "Farmers Home Mut Fire Ins Co",
+    "othliab"
+   ],
+   [
+    "Farmers Mech Mut Fire Ins Of WV",
+    "othliab"
+   ],
+   [
+    "Farmers Mut Ins Co Of NE",
+    "comauto"
+   ],
+   [
+    "Finger Lakes Fire & Cas Ins Co",
+    "othliab"
+   ],
+   [
+    "First American Specilaty Ins Co",
+    "comauto"
+   ],
+   [
+    "Fitchburg Mut Ins Co",
+    "comauto"
+   ],
+   [
+    "Fitchburg Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Fremont Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Goodville Mut Cas Co",
+    "ppauto"
+   ],
+   [
+    "Hannahstown Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Harco Natl Ins Co",
+    "othliab"
+   ],
+   [
+    "Haulers Ins Co Inc",
+    "comauto"
+   ],
+   [
+    "Health Care Ind Inc",
+    "comauto"
+   ],
+   [
+    "Hochheim Prairie Ins Grp",
+    "othliab"
+   ],
+   [
+    "Homestead Ins Co",
+    "comauto"
+   ],
+   [
+    "Homestead Ins Co",
+    "ppauto"
+   ],
+   [
+    "IMT Ins Co Mut",
+    "prodliab"
+   ],
+   [
+    "Juniata Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Mapfre Reins Corp",
+    "othliab"
+   ],
+   [
+    "Merced Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Mid-Continent Ins Co",
+    "othliab"
+   ],
+   [
+    "Midstate Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Midwest Family Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Millville Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Montour Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Mountain West Farm Bu Mut Ins Co",
+    "comauto"
+   ],
+   [
+    "Mountain West Farm Bu Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "National American Ins Co",
+    "ppauto"
+   ],
+   [
+    "National Automotive Ins",
+    "ppauto"
+   ],
+   [
+    "Nazareth Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Nichido Fire & Marine Ins Co Ltd",
+    "comauto"
+   ],
+   [
+    "Nichido Fire & Marine Ins Co Ltd",
+    "othliab"
+   ],
+   [
+    "Northwest Gf Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Omega Ins Co",
+    "wkcomp"
+   ],
+   [
+    "Oregon Mut Grp",
+    "prodliab"
+   ],
+   [
+    "Partners Mut Ins Co",
+    "comauto"
+   ],
+   [
+    "Preferred Mut Ins Co",
+    "comauto"
+   ],
+   [
+    "Preferred Mut Ins Co",
+    "prodliab"
+   ],
+   [
+    "Rockford Mut Ins Co",
+    "comauto"
+   ],
+   [
+    "Samsung Fire & Marine Ins Co Ltd",
+    "comauto"
+   ],
+   [
+    "San Antonio Reins Co",
+    "othliab"
+   ],
+   [
+    "Seguros Triples Inc",
+    "othliab"
+   ],
+   [
+    "Sheboygan Falls Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Shelter Ins Cos Grp",
+    "prodliab"
+   ],
+   [
+    "Southwest General Ins Co",
+    "ppauto"
+   ],
+   [
+    "Springfield Fire & Cas Co",
+    "comauto"
+   ],
+   [
+    "Springfield Fire & Cas Co",
+    "ppauto"
+   ],
+   [
+    "Standard Cas Co",
+    "othliab"
+   ],
+   [
+    "Standard Mut Ins Co",
+    "comauto"
+   ],
+   [
+    "Standard Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Standard Mut Ins Co",
+    "wkcomp"
+   ],
+   [
+    "State Volunteer Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "State-Wide Ins Co",
+    "comauto"
+   ],
+   [
+    "US Lloyds Ins Co",
+    "ppauto"
+   ],
+   [
+    "United Educators Ins RRG Inc",
+    "othliab"
+   ],
+   [
+    "Wayne Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Wisconsin American Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Wisconsin Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Wolverine Mut Ins Co",
+    "comauto"
+   ],
+   [
+    "Wolverine Mut Ins Co",
+    "othliab"
+   ]
+  ],
+  "high2_preserve2": [
+   [
+    "Brethren Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Capacity Ins Co",
+    "othliab"
+   ],
+   [
+    "Chicago Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Continental Natl Ind Co",
+    "prodliab"
+   ],
+   [
+    "Distributors Ins Co",
+    "comauto"
+   ],
+   [
+    "Farmers Home Mut Fire Ins Co",
+    "othliab"
+   ],
+   [
+    "Farmers Mech Mut Fire Ins Of WV",
+    "othliab"
+   ],
+   [
+    "Farmers Mut Of TN",
+    "othliab"
+   ],
+   [
+    "German Mut Ins Co",
+    "comauto"
+   ],
+   [
+    "Germania Ins Grp",
+    "othliab"
+   ],
+   [
+    "Health Care Ind Inc",
+    "comauto"
+   ],
+   [
+    "IMT Ins Co Mut",
+    "prodliab"
+   ],
+   [
+    "Juniata Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Leatherstocking Coop Ins  Co",
+    "othliab"
+   ],
+   [
+    "Midstates Rein Corp",
+    "comauto"
+   ],
+   [
+    "Missouri Valley Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Montour Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "National American Ins Co",
+    "ppauto"
+   ],
+   [
+    "Nissan Fire & Marine Ins Co Us Br",
+    "othliab"
+   ],
+   [
+    "Nissan Fire & Marine Ins Co Us Br",
+    "ppauto"
+   ],
+   [
+    "Otsego Mut Fire Ins Co",
+    "othliab"
+   ],
+   [
+    "Partners Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Preferred Mut Ins Co",
+    "prodliab"
+   ],
+   [
+    "Shelter Ins Cos Grp",
+    "prodliab"
+   ],
+   [
+    "Southwest General Ins Co",
+    "ppauto"
+   ],
+   [
+    "Standard Cas Co",
+    "othliab"
+   ],
+   [
+    "Standard Mut Ins Co",
+    "comauto"
+   ],
+   [
+    "Standard Mut Ins Co",
+    "othliab"
+   ],
+   [
+    "Standard Mut Ins Co",
+    "wkcomp"
+   ],
+   [
+    "United Educators Ins RRG Inc",
+    "othliab"
+   ]
+  ]
+ }
+}

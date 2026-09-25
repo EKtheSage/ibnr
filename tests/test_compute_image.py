@@ -114,6 +114,12 @@ NOT_PROMISED = {
         "chainladder's samples. It is a development tool that needs chainladder, "
         "which the image does not install, and it computes no result."
     ),
+    "freeze_conventional_pin.py": (
+        "rewrites a test fixture (tests/data/conventional_selection_pin.json) "
+        "from an older checkout's source and chainladder's clrd sample. It is a "
+        "development tool that needs chainladder, which the image does not "
+        "install, and it computes no result."
+    ),
 }
 
 #: (script file, top-level module) pairs the static scan may find outside the

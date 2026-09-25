@@ -367,9 +367,12 @@ def test_a_numpy_count_makes_the_same_candidate_as_a_builtin_one(name):
 
 
 def test_numpy_booleans_are_accepted_as_trimming_flags():
+    # drop_high and drop_low are counts: True is one ratio, stored as the int 1
     spec = ConventionalCandidate(drop_high=np.bool_(True), drop_low=np.bool_(False))
-    assert spec == ConventionalCandidate(drop_high=True)
-    assert spec.drop_high is True and spec.drop_low is False
+    assert spec == ConventionalCandidate(drop_high=True) == ConventionalCandidate(drop_high=1)
+    assert hash(spec) == hash(ConventionalCandidate(drop_high=np.int64(1)))
+    assert type(spec.drop_high) is int and spec.drop_high == 1
+    assert type(spec.drop_low) is int and spec.drop_low == 0
 
 
 @pytest.mark.parametrize("bad", [0, -1, np.int64(0), 3.0, np.float64(3.0), True, np.bool_(True)])

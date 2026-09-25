@@ -178,11 +178,29 @@ calls = {{
     "bornhuetter_ferguson_table": lambda: methods.bornhuetter_ferguson(
         cells, premium=premium_table, expected_loss_ratio=0.7, average="median"
     ),
+    "chain_ladder_selection": lambda: methods.chain_ladder(
+        cells,
+        average="regression",
+        drop_high=2,
+        drop_low=1,
+        preserve=2,
+        drop_above=5.0,
+        drop_below=1.001,
+        exclude_valuations=[1989, "1985-12-31"],
+        trim_ties="origin",
+    ),
+    "benktander": lambda: methods.benktander(
+        cells, premium=premium, expected_loss_ratio=0.7, n_iters=3, average="simple"
+    ),
     "cape_cod": lambda: methods.cape_cod(cells, premium=premium_table, decay=0.5),
+    "cape_cod_trend": lambda: methods.cape_cod(
+        cells, premium=premium_table, trend=0.05, n_iters=2, exclude_valuations=["1988"]
+    ),
     "mack": lambda: methods.mack(cells),
     "mack_options": lambda: methods.mack(cells, sigma_rule="mack", zero_cells="observed"),
     "refused_grain": lambda: methods.chain_ladder(cells, dev_grain_months=5),
     "refused_exclusion": lambda: methods.chain_ladder(cells, exclude=[(1990, 12)]),
+    "refused_valuation": lambda: methods.chain_ladder(cells, exclude_valuations=["1990Q4"]),
 }}
 out = {{}}
 for name, call in calls.items():
@@ -257,7 +275,7 @@ def test_every_method_runs_without_loading_ibis_pandas_scipy_or_sklearn(tmp_path
         assert got["answer"] == expected[name]["answer"], name
     # the two refusals were refusals, and every other call answered
     refused = {name for name, got in answers.items() if isinstance(got["answer"], str)}
-    assert refused == {"refused_grain", "refused_exclusion"}
+    assert refused == {"refused_grain", "refused_exclusion", "refused_valuation"}
 
 
 def test_every_column_type_the_methods_read_loads_no_pandas(tmp_path):

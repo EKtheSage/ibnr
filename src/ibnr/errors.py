@@ -42,8 +42,9 @@ Kind ``"model"``:
 - ``no_link_ratio``: no link ratio is left at an age to estimate a factor from,
   or the ones left give a factor of 0 (every origin closing at zero), and the
   options ask to refuse rather than use 1.0.
-- ``exclusions_exhausted``: the trimming options would leave too few link
-  ratios at an age.
+- ``exclusions_exhausted``: the trims (``drop_high``/``drop_low``) or the bounds
+  (``drop_above``/``drop_below``) would leave fewer link ratios at an age than
+  ``preserve`` allows.
 - ``variance_not_estimable``: Mack's sigma (or a tail's) cannot be estimated.
 - ``negative_increment``: a negative incremental amount where the model needs
   zero or more.

@@ -441,6 +441,7 @@ def test_the_public_names_are_pinned():
     assert sorted(methods.__all__) == [
         "Refusal",
         "ReserveResult",
+        "benktander",
         "bornhuetter_ferguson",
         "cape_cod",
         "chain_ladder",
@@ -1690,6 +1691,7 @@ SELECTION = [
     ("n_selected", pa.int64()),
     ("unity_fallback", pa.bool_()),
     ("extreme_trimming_skipped", pa.bool_()),
+    ("bounds_skipped", pa.bool_()),
 ]
 LINK_RATIOS = pa.schema(
     [
@@ -1706,11 +1708,13 @@ LINK_RATIOS = pa.schema(
 TOTALS = [("latest", pa.float64()), ("ultimate", pa.float64()), ("ibnr", pa.float64())]
 MACK_SE = [("mack_se", pa.float64()), ("parameter_se", pa.float64()), ("process_se", pa.float64())]
 ELR = [("expected_loss_ratio", pa.float64())]
+TREND = [("trended_loss_ratio", pa.float64()), ("trend_factor", pa.float64())]
 
 SCHEMAS = {
     "chain_ladder": (BASE_ORIGINS, PATTERN + SELECTION, LINK_RATIOS, TOTALS),
     "bornhuetter_ferguson": (BASE_ORIGINS + ELR, PATTERN + SELECTION, LINK_RATIOS, TOTALS),
-    "cape_cod": (BASE_ORIGINS + ELR, PATTERN + SELECTION, LINK_RATIOS, TOTALS),
+    "benktander": (BASE_ORIGINS + ELR, PATTERN + SELECTION, LINK_RATIOS, TOTALS),
+    "cape_cod": (BASE_ORIGINS + ELR + TREND, PATTERN + SELECTION, LINK_RATIOS, TOTALS),
     "mack": (
         BASE_ORIGINS + MACK_SE,
         PATTERN + [("sigma", pa.float64()), ("std_err", pa.float64())],
@@ -1724,14 +1728,34 @@ def run(method: str, cells=None):
     cells = arrow_cells() if cells is None else cells
     if method == "bornhuetter_ferguson":
         return methods.bornhuetter_ferguson(cells, premium=RAA_PREMIUM, expected_loss_ratio=0.7)
+    if method == "benktander":
+        return methods.benktander(cells, premium=RAA_PREMIUM, expected_loss_ratio=0.7)
     if method == "cape_cod":
         return methods.cape_cod(cells, premium=RAA_PREMIUM)
     return getattr(methods, method)(cells)
 
 
+def run_with_options(method: str):
+    """``run``, with every option that adds or fills a column set away from its default."""
+    if method == "mack":
+        return run(method)
+    options = {"drop_above": 4.0, "drop_high": 2, "preserve": 2, "exclude_valuations": [1989]}
+    extra = {}
+    if method != "chain_ladder":
+        extra["premium"] = RAA_PREMIUM
+    if method in ("bornhuetter_ferguson", "benktander"):
+        extra["expected_loss_ratio"] = 0.7
+    if method == "benktander":
+        extra["n_iters"] = 3
+    if method == "cape_cod":
+        extra.update(trend=0.05, n_iters=2, decay=0.5)
+    return getattr(methods, method)(arrow_cells(), **options, **extra)
+
+
+@pytest.mark.parametrize("options", [False, True], ids=["defaults", "options"])
 @pytest.mark.parametrize("method", list(SCHEMAS))
-def test_the_result_schema_is_pinned(method):
-    result = run(method)
+def test_the_result_schema_is_pinned(method, options):
+    result = run_with_options(method) if options else run(method)
     origins, development, link_ratios, totals = SCHEMAS[method]
     assert result.method == method
     assert result.origins.schema.equals(pa.schema(origins))
@@ -1747,9 +1771,10 @@ def test_the_result_schema_is_pinned(method):
         assert result.link_ratios.num_rows == 45
 
 
+@pytest.mark.parametrize("options", [False, True], ids=["defaults", "options"])
 @pytest.mark.parametrize("method", list(SCHEMAS))
-def test_missing_numbers_are_nulls_never_nan(method):
-    result = run(method)
+def test_missing_numbers_are_nulls_never_nan(method, options):
+    result = run_with_options(method) if options else run(method)
     development = result.development
     # the last age has no next age: its factor is null
     assert development["factor"].to_pylist()[-1] is None
