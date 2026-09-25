@@ -1182,12 +1182,15 @@ def _read_origins(
         )
     labels = pc.unique(column)
     row_label = _arrow.to_numpy(pc.index_in(column, value_set=labels)).astype(np.int64)
-    values = labels.to_pylist()
     if pa.types.is_timestamp(labels.type):
         shown = labels.cast(pa.string()).to_pylist()
         # a timestamp with a time zone is read as the date in that zone
         days = labels.cast(pa.date32(), safe=False).to_pylist()
+        # never as Python datetimes: from pyarrow 25, to_pylist on a timestamp
+        # with a time zone imports pandas
+        values = shown
     else:
+        values = labels.to_pylist()
         shown = [_show(value) for value in values]
     starts = []
     lengths_known = True
