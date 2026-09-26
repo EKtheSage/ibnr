@@ -170,6 +170,16 @@ bayesian = [
     "bayesblend>=0.0.8,<0.1",
 ]
 nn = ["torch>=2.2"]
+# scikit-learn, for methods.ml_development (a random forest or gradient boosting
+# fitted to a triangle's increments). It is imported inside the fit only, so
+# `from ibnr import methods` stays free of it and of the scipy and pandas it
+# loads. The floor is the oldest release measured running the same design:
+# 1.4.2, 1.6.1 and 1.9.0 all do, and a forest's predictions were byte-identical
+# across the three. Boosting's moved in the last bits between 1.6.1 and 1.9.0,
+# which is why the result echoes the version. The chainladder tie-outs run on
+# the locked version only. <2 because a major release is free to change the
+# estimators' defaults, which would change every answer.
+ml = ["scikit-learn>=1.4,<2"]
 viz = ["altair"]
 # Needed only to convert OUT to these libraries (`to_chainladder`/`to_bermuda`).
 # Reading FROM them takes a foreign object the caller already built, so it needs
@@ -315,7 +325,7 @@ addopts = "-m \"not slow and not network\""
 markers = [
     "tieout: results match an external reference - chainladder-python on raa/clrd, or R ChainLadder's published CDR output",
     "parity: cross-backend posterior matching",
-    "slow: cmdstan compilation; separate CI job",
+    "slow: cmdstan compilation, or a sweep that takes minutes (the clrd tree-model tie-outs); separate CI job",
     "mart: requires the local CAS Schedule P gold mart",
     "network: really talks to the internet; deselected by default via addopts",
 ]

@@ -50,7 +50,7 @@ name: Tests
 #
 # The matrix has three parts that do different jobs:
 #
-#   * The isolated legs (core, core-py311, polars, nn, bayesian, interop)
+#   * The isolated legs (core, core-py311, polars, nn, bayesian, interop, ml)
 #     install the core dependencies plus exactly ONE extra. This is CLAUDE.md's
 #     "CI matrix runs core and each extra in isolation to catch hidden imports".
 #     The core leg asserts the optional packages really are absent, so a
@@ -277,7 +277,7 @@ jobs:
             cache: "false"
             sync_args: "--no-default-groups --group test"
             expect_imports: ""
-            absent_imports: "torch;polars;pymc;numpyro;arviz;bayesblend;chainladder;bermuda;altair"
+            absent_imports: "torch;polars;pymc;numpyro;arviz;bayesblend;chainladder;bermuda;altair;sklearn"
             forbid_skips: ""
             allow_skips: ""
             strict_skips: "false"
@@ -319,7 +319,7 @@ jobs:
             cache: "false"
             sync_args: "--no-default-groups --group test"
             expect_imports: ""
-            absent_imports: "torch;polars;pymc;numpyro;arviz;bayesblend;chainladder;bermuda;altair"
+            absent_imports: "torch;polars;pymc;numpyro;arviz;bayesblend;chainladder;bermuda;altair;sklearn"
             forbid_skips: ""
             allow_skips: ""
             strict_skips: "false"
@@ -453,12 +453,15 @@ jobs:
             python: "3.12"
             cache: "false"
             sync_args: "--no-default-groups --group test --extra interop"
-            expect_imports: "chainladder;bermuda"
+            # sklearn comes with chainladder, and this is the leg where the
+            # ml_development tie-outs to chainladder's DevelopmentML run, so a
+            # skip for a missing sklearn fails it.
+            expect_imports: "chainladder;bermuda;sklearn"
             absent_imports: "torch;polars;pymc"
             forbid_skips: ""
             allow_skips: ""
             strict_skips: "false"
-            required_files: "tests/test_clark.py;tests/test_odp_contract.py;tests/test_tieout_chainladder.py;tests/test_interop_bermuda.py"
+            required_files: "tests/test_clark.py;tests/test_odp_contract.py;tests/test_tieout_chainladder.py;tests/test_interop_bermuda.py;tests/test_ml_development.py"
             # measured one base earlier (core 553 there): 582 passed, 207
             # skipped. Only +29 over core, and the skip count goes UP (204 ->
             # 207) because
@@ -466,6 +469,31 @@ jobs:
             # skip a few tests individually. required_files is what protects
             # this leg; the floor alone could not.
             min_tests: "530"
+
+          # ---------------------------------------------------------------
+          # ml: scikit-learn alone, for methods.ml_development. The leg that
+          # proves the extra is enough by itself: no chainladder here, so the
+          # tie-outs skip (chainladder is not in expect_imports) and the
+          # totals pinned without chainladder in tests/test_ml_development.py
+          # are what catch a design or row-order defect. A skip for a missing
+          # sklearn fails the job.
+          - name: ml
+            python: "3.12"
+            cache: "false"
+            sync_args: "--no-default-groups --group test --extra ml"
+            expect_imports: "sklearn"
+            absent_imports: "torch;polars;pymc;chainladder;bermuda"
+            forbid_skips: ""
+            allow_skips: ""
+            strict_skips: "false"
+            required_files: "tests/test_ml_development.py;tests/test_refusal.py;tests/test_import_purity.py"
+            # measured on the dev box with this leg's own sync line, on the
+            # branch that added it: 2,584 passed, 784 skipped (50 executed in
+            # tests/test_ml_development.py, whose chainladder tie-outs skip
+            # here), no skip for sklearn. The floor is a collapse detector with
+            # a cushion, like the others; required_files is what protects the
+            # file this leg exists for.
+            min_tests: "2300"
 
           # ---------------------------------------------------------------
           # all: everything installed, and the only leg where the cross-extra
@@ -501,13 +529,13 @@ jobs:
             cache: "true"
             sync_args: >-
               --no-default-groups --group test
-              --extra polars --extra nn --extra bayesian --extra interop --extra viz
-            expect_imports: "torch;polars;pymc;numpyro;arviz;bayesblend;chainladder;bermuda;altair"
+              --extra polars --extra nn --extra bayesian --extra interop --extra ml --extra viz
+            expect_imports: "torch;polars;pymc;numpyro;arviz;bayesblend;chainladder;bermuda;altair;sklearn"
             absent_imports: ""
             forbid_skips: ""
             allow_skips: "gold mart;cmdstan"
             strict_skips: "true"
-            required_files: "tests/test_transforms.py;tests/test_deeptriangle.py;tests/test_mdn.py;tests/test_resnet.py;tests/test_nn_heldout.py;tests/test_tlrn.py;tests/test_stacking.py;tests/test_tieout_chainladder.py;tests/test_clark.py;tests/test_interop_bermuda.py;tests/test_polars_extra.py;tests/test_import_purity.py;tests/test_codec.py"
+            required_files: "tests/test_transforms.py;tests/test_deeptriangle.py;tests/test_mdn.py;tests/test_resnet.py;tests/test_nn_heldout.py;tests/test_tlrn.py;tests/test_stacking.py;tests/test_tieout_chainladder.py;tests/test_clark.py;tests/test_interop_bermuda.py;tests/test_polars_extra.py;tests/test_import_purity.py;tests/test_codec.py;tests/test_ml_development.py"
             # measured one base earlier: 968 passed, 7 skipped - and the 7 are
             # the allowlisted gold-mart skips above, re-counted rather than
             # assumed. The 7 is the part that must not drift; the total is the
@@ -543,7 +571,7 @@ jobs:
             unlocked: "true"
             sync_args: '-e . --group test "numpy>=2" "pandas>=3"'
             expect_imports: ""
-            absent_imports: "torch;polars;pymc;numpyro;arviz;bayesblend;chainladder;bermuda;altair"
+            absent_imports: "torch;polars;pymc;numpyro;arviz;bayesblend;chainladder;bermuda;altair;sklearn"
             forbid_skips: ""
             allow_skips: ""
             strict_skips: "false"

@@ -12,6 +12,9 @@
 - :func:`tweedie_glm` (a Tweedie GLM fitted to the increments; power 1 with its
   defaults is the over-dispersed Poisson model, which reproduces the chain
   ladder)
+- :func:`ml_development` (a random forest or gradient boosting fitted to the
+  cells, chainladder-python's ``DevelopmentML``; needs the ``ml`` extra, and
+  usually overshoots the chain ladder by the method's nature)
 - :func:`one_year_cdr` (the one-year claims development result: how far next
   year's re-estimate of Mack's chain-ladder ultimate can move, as the
   Merz-Wuthrich standard error beside a simulation of next year)
@@ -61,8 +64,9 @@ cdf                      float64  the factor to the last observed age     all
 pct_reported             float64  ``1 / cdf``                             all
 n_selected               int64    link ratios behind the factor           link-ratio methods
 unity_fallback           bool     no ratio was left and 1.0 was used      chain_ladder,
-                                                                          bornhuetter_ferguson,
-                                                                          benktander, cape_cod
+                                  (for ml_development, no cell was left   bornhuetter_ferguson,
+                                  to fit)                                 benktander, cape_cod,
+                                                                          ml_development
 extreme_trimming_skipped bool     ``preserve`` stopped ``drop_high`` and  link-ratio methods
                                   ``drop_low`` at this age
 bounds_skipped           bool     ``preserve`` stopped ``drop_above`` and link-ratio methods
@@ -72,23 +76,26 @@ std_err                  float64  the factor's standard error             mack
 sigma_extrapolated       bool     sigma came from ``sigma_rule``: the     mack
                                   age kept fewer than two link ratios
 n_observed               int64    observed increments at the age          tweedie_glm
+n_trained                int64    training rows at the age                ml_development
 ======================== ======== ======================================= =====================
 
-The link-ratio methods are every method but :func:`tweedie_glm`, which fits
-the increments; its ``factor``, ``cdf`` and ``pct_reported`` are null where its
-fitted pattern differs by origin (each origin's is then in ``cells``). Every
-column but ``dev_lag``, ``cdf``, ``pct_reported`` and ``n_observed`` is null at
-the last age, which has no next age. A method carries exactly the columns
-listed for it, whatever options it is given, so a service can read each table
-by name.
+The link-ratio methods are every method but :func:`tweedie_glm` and
+:func:`ml_development`, which fit the cells; their ``factor``, ``cdf`` and
+``pct_reported`` are null where the fitted pattern differs by origin (each
+origin's is then in ``cells``). Every column but ``dev_lag``, ``cdf``,
+``pct_reported``, ``n_observed`` and ``n_trained`` is null at the last age,
+which has no next age. A method carries exactly the columns listed for it,
+whatever options it is given, so a service can read each table by name.
 
-Importing this module loads numpy and pyarrow, and not ibis, pandas or scipy,
-and none of the functions loads them when it runs, so a service that starts
-a new process for a request does not pay for them (the CHANGELOG has the
-times). That holds for every input above except two, which make pyarrow load
-pandas: a pandas DataFrame, and a dict with a list that is not all strings,
-all bools, all dates or all numbers (one holding a null or a datetime, for
-example), which is left to ``pa.table``.
+Importing this module loads numpy and pyarrow, and not ibis, pandas, scipy or
+scikit-learn, and seven of the eight functions do not load them when they run,
+so a service that starts a new process for a request does not pay for them
+(the CHANGELOG has the times). The eighth, :func:`ml_development`, fits a
+scikit-learn model: its first call imports scikit-learn, which loads scipy and
+pandas, never ibis. That holds for every input above except two, which make
+pyarrow load pandas: a pandas DataFrame, and a dict with a list that is not
+all strings, all bools, all dates or all numbers (one holding a null or a
+datetime, for example), which is left to ``pa.table``.
 
 Every input a function in this module will not answer is refused with
 :class:`Refusal`, a ``ValueError`` from ``ibnr.errors``. Its ``reason`` is a
@@ -138,6 +145,11 @@ from ibnr.kernels.grid import as_date, check_grid, grid_from_columns, month_end
 from ibnr.kernels.links import REASONS as LINK_REASONS
 from ibnr.kernels.links import is_all_history
 from ibnr.kernels.mack import PROCESS_LAWS, MackFit, _require_mack_average, fit_mack_grid
+from ibnr.kernels.ml_development import (
+    MLDevelopmentFit,
+    MLDevelopmentSpec,
+    fit_ml_development_grid,
+)
 from ibnr.kernels.rng import cohort_stream
 
 __all__ = [
@@ -149,6 +161,7 @@ __all__ = [
     "cape_cod",
     "chain_ladder",
     "mack",
+    "ml_development",
     "one_year_cdr",
     "tweedie_glm",
 ]
@@ -201,15 +214,18 @@ class ReserveResult:
         ``cdf`` (the factor to the last observed age, 1.0 there) and
         ``pct_reported`` (``1 / cdf``). There is no tail factor, so
         ``pct_reported`` is 1.0 at the last observed age by construction rather
-        than by measurement. Every method but :func:`tweedie_glm` adds
-        ``n_selected`` (int64, the link ratios behind the factor),
-        ``extreme_trimming_skipped`` and ``bounds_skipped`` (bool); the chain
-        ladder, Bornhuetter-Ferguson, Benktander and Cape Cod add
-        ``unity_fallback`` (bool); Mack adds ``sigma``, ``std_err`` (the
+        than by measurement. Every method but :func:`tweedie_glm` and
+        :func:`ml_development` adds ``n_selected`` (int64, the link ratios
+        behind the factor), ``extreme_trimming_skipped`` and ``bounds_skipped``
+        (bool); the chain ladder, Bornhuetter-Ferguson, Benktander and Cape Cod
+        add ``unity_fallback`` (bool); Mack adds ``sigma``, ``std_err`` (the
         factor's standard error) and ``sigma_extrapolated`` (bool), all null at
-        the last age; :func:`tweedie_glm` adds ``n_observed`` (int64). The
-        module docstring has the table of every column and the methods that
-        carry it.
+        the last age. :func:`tweedie_glm` adds ``n_observed`` (int64) and
+        :func:`ml_development` ``n_trained`` (int64) and ``unity_fallback``;
+        both fit a pattern that can differ by origin, and where it does,
+        ``factor``, ``cdf`` and ``pct_reported`` are null and each origin's are
+        in ``cells``. The module docstring has the table of every column and
+        the methods that carry it.
     link_ratios : pyarrow.Table or None
         Every observed link ratio, one row each: ``origin`` and
         ``origin_period`` (as in ``origins``), ``from_dev_lag`` (int64, the age
@@ -227,18 +243,19 @@ class ReserveResult:
         link ratio is ``included``, a ratio out of a zero too (null, with its
         following amount in the volume sum), as R's ``MackChainLadder`` reads
         it. Every link-ratio method returns this table; ``None`` for
-        :func:`tweedie_glm`, which fits the increments rather than link
-        ratios, and for a result built by hand.
+        :func:`tweedie_glm` and :func:`ml_development`, which fit the cells
+        rather than link ratios, and for a result built by hand.
     totals : pyarrow.Table
         One row with ``latest``, ``ultimate`` and ``ibnr`` summed over the
         origins. Mack adds ``mack_se``, ``parameter_se`` and ``process_se`` for
         the total, which is not the sum of the origins' standard errors: the
-        origins share the estimated factors. :func:`tweedie_glm` adds the
-        columns its docstring lists.
+        origins share the estimated factors. :func:`tweedie_glm` and
+        :func:`ml_development` add the columns their docstrings list.
     cells : pyarrow.Table or None
         One row per cell of the full rectangle, observed or not, from a method
-        that fits a model to the cells (:func:`tweedie_glm`); ``None`` for the
-        others. Its columns are listed in :func:`tweedie_glm`.
+        that fits a model to the cells (:func:`tweedie_glm`,
+        :func:`ml_development`); ``None`` for the others. Its columns are listed
+        in each of those functions.
     coefficients : pyarrow.Table or None
         One row per term of a fitted model (:func:`tweedie_glm`); ``None`` for
         the others.
@@ -272,8 +289,9 @@ class ReserveResult:
             )
         data = getattr(self, table)
         if data is None:
-            # tweedie_glm has no link_ratios, only tweedie_glm has cells and
-            # coefficients, and a result built by hand may lack any table
+            # tweedie_glm and ml_development have no link_ratios, only they have
+            # cells, only tweedie_glm has coefficients, and a result built by
+            # hand may lack any table
             raise Refusal(
                 "invalid_option",
                 f"a {self.method} result has no {table} table. {_absent(self.method, table)}",
@@ -296,15 +314,22 @@ def _to_polars(data: pa.Table):
 
 def _absent(method: str, table: str) -> str:
     """Why a result has no such table, and where its numbers are instead."""
+    if table == "link_ratios" and method == "ml_development":
+        return (
+            "The model is fitted to the cells, not to link ratios; each origin's fitted factors "
+            "are in cells, and in development when every origin shares one pattern"
+        )
     if table == "link_ratios" and method == "tweedie_glm":
         return (
             "The GLM is fitted to the increments, not to link ratios; its fitted factors are "
             "in development (under the log link) and, origin by origin, in cells"
         )
+    if table == "coefficients" and method == "ml_development":
+        return "A tree model has no coefficients; its fitted cells are in the cells table"
     if table in ("cells", "coefficients"):
         return (
-            "Only tweedie_glm fits a model to the cells, and its result carries the cells and "
-            "coefficients tables"
+            "Only tweedie_glm and ml_development fit a model to the cells, and their results "
+            "carry the cells table (tweedie_glm's the coefficients table too)"
         )
     return "This result was built by hand without it"
 
@@ -1388,6 +1413,297 @@ def _require_finite_tables(*tables: pa.Table) -> None:
                     "back",
                     option="cells",
                 )
+
+
+# -- machine-learning development ----------------------------------------------------
+
+
+def ml_development(
+    cells,
+    *,
+    estimator: str,
+    seed: int = 0,
+    n_estimators: int = 100,
+    max_depth: int | None = None,
+    min_samples_leaf: int | None = None,
+    learning_rate: float | None = None,
+    response: str = "incremental",
+    origin: str = "factor",
+    calendar: str = "none",
+    dev_grain_months: int = 12,
+    zero_cells: str = "observed",
+    unsupported_factor: str = "raise",
+    tail=None,
+) -> ReserveResult:
+    """A random forest or gradient boosting fitted to the cells, and each origin's ultimate.
+
+    This is chainladder-python's ``DevelopmentML`` followed by its
+    ``Chainladder``, without pandas or patsy. ``cells`` is as in
+    :func:`chain_ladder`: CUMULATIVE losses, one row per observed cell, zero or
+    more. The function fits a scikit-learn tree ensemble to one row per cell
+    (its increment by default) with an indicator for each development age and
+    each origin, predicts every cell of the rectangle, and projects each
+    origin's latest cumulative by its own fitted development from its latest
+    age to the last: ``ultimate = latest * fitted_cumulative[last age] /
+    fitted_cumulative[latest age]``. It needs scikit-learn, which the ``ml``
+    extra installs (``pip install "ibnr[ml]"``); importing ``ibnr.methods``
+    does not load it, and the first call does, with the scipy and pandas it
+    loads.
+
+    Read these before using the answer:
+
+    - It is a point estimate, with no standard error or distribution.
+    - **Tree models projected this way usually overshoot the chain ladder**,
+      often by a lot, and that comes from the method, not from a defect: the
+      youngest origin has one training row, the trees split it off by its
+      origin indicator, and its predicted increment stays near that one value
+      at every later age. On a 10 x 10 Schedule P paid triangle the forest
+      (seed 42) gives 2.7 times the chain ladder's IBNR and boosting 1.8
+      times; on MW2014 the forest gives 40 times. It is not a rule: on GenIns
+      the forest gives 0.93 times and boosting 0.87 times.
+    - A random forest's answer depends on ``seed`` (from 1.5% to 3.6% of the
+      total, as the standard deviation over 20 seeds on six public
+      triangles). Gradient boosting's does not with these settings: it looks
+      at every feature at every split and uses every row.
+    - ``response="cumulative"`` gave a negative total IBNR with the forest on
+      all six test triangles, because the fitted cumulatives fall with age.
+
+    Options:
+
+    - ``estimator``: ``"random_forest"`` or ``"gradient_boosting"``, required
+      (the two differ by 52% on the Schedule P triangle above). For a Tweedie
+      GLM, chainladder-python's third estimator, use :func:`tweedie_glm`.
+    - ``seed``: passed to scikit-learn as ``random_state``, unchanged, so the
+      same integer gives chainladder-python's numbers. A whole number from 0 to
+      4294967295; 0 by default. ``None`` is refused, because a forest with no
+      seed gives a different answer on every call.
+    - ``n_estimators`` (100), ``max_depth`` (``None``: unlimited for the
+      forest, 3 for boosting), ``min_samples_leaf`` (the forest only;
+      ``None`` is 1) and ``learning_rate`` (boosting only; ``None`` is 0.1):
+      scikit-learn's settings of the same names, the others at scikit-learn's
+      defaults. A setting that does not apply to the estimator is refused
+      rather than ignored.
+    - ``response``: ``"incremental"`` (the default) fits each cell's
+      increment, the first age's being its cumulative; ``"cumulative"`` fits
+      the cumulative.
+    - ``origin``: ``"factor"`` (the default) gives the model an indicator per
+      origin; ``"none"`` leaves origins out, so every origin shares one
+      fitted pattern.
+    - ``calendar``: ``"none"`` (the default) or ``"trend"``, the calendar
+      period (in development steps) as one numeric column. These two are
+      :func:`tweedie_glm`'s design words; the four designs are
+      chainladder-python's ``C(development) + C(origin)`` (the default),
+      ``C(development)``, ``C(development) + valuation`` and
+      ``C(development) + C(origin) + valuation``.
+    - ``zero_cells``: ``"observed"`` (the default here, unlike the link-ratio
+      methods) trains on every observed cell, a zero cumulative included.
+      ``"missing"`` leaves out every cell whose cumulative is zero, as
+      chainladder-python does. The default differs because under
+      ``"missing"`` an age whose cells are all zero leaves the model nothing
+      to fit there, which happens on 208 of the 722 clrd paid triangles with
+      losses; under ``"observed"`` it never happens.
+    - ``unsupported_factor``: under ``zero_cells="missing"``, what to do at an
+      age whose cells are all zero: ``"raise"`` (the default) refuses;
+      ``"unity"`` develops by a factor of 1 into it (a fitted increment of 0).
+      ``development.unity_fallback`` marks the factor INTO such an age, on
+      the row of the age before it, so an all-zero first age has no row to
+      show on and shows only as ``n_trained`` 0.
+    - ``dev_grain_months``: as in :func:`chain_ladder`.
+    - ``tail``: not supported yet; anything but ``None`` is refused. Each
+      origin is projected to the last observed development age.
+
+    Returns a :class:`ReserveResult` whose ``link_ratios`` and
+    ``coefficients`` are ``None``:
+
+    - ``origins``: ``origin``, ``origin_period``, ``latest_dev_lag``,
+      ``latest``, ``ultimate`` and ``ibnr`` (the projection above),
+      ``fitted_latest`` and ``fitted_ultimate`` (the fitted cumulative at the
+      latest age and at the last), ``cdf`` (their ratio; 1.0 at the last age)
+      and ``model_ibnr`` (the sum of the fitted future increments, which
+      differs from ``ibnr`` wherever the fitted cumulative at the latest age
+      differs from the actual one, for a tree model nearly always). These four
+      are null for an origin the model cannot place: with ``origin="factor"``
+      and ``zero_cells="missing"``, an origin whose cells are all zero, which
+      has no training row (its ultimate is 0). ``cdf`` is null too where the
+      fitted cumulative at the latest age is zero or less and the latest is 0.
+    - ``development``: ``dev_lag``; ``factor``, ``cdf`` and ``pct_reported``
+      when every origin shares one fitted pattern (as with ``origin="none"``
+      and ``calendar="none"``), null otherwise, when each origin's own are in
+      ``cells``; ``n_trained`` (int64, the training rows at the age); and
+      ``unity_fallback`` (bool, whether the factor from this age to the next
+      is the 1 of ``unsupported_factor="unity"``; null at the last age).
+    - ``cells``: one row per cell of the full rectangle, observed or not:
+      ``origin``, ``origin_period``, ``dev_lag``, ``observed`` and ``trained``
+      (bool), ``increment`` (null when not observed), ``fitted_increment``,
+      ``fitted_cumulative``, ``factor`` (the origin's fitted factor to the
+      next age; null at the last age or where the fitted cumulative is zero or
+      less) and ``cdf`` (to the last age; null where the fitted cumulative is
+      zero or less). The fitted columns are null for an origin the model
+      cannot place.
+    - ``totals``: ``latest``, ``ultimate``, ``ibnr``, ``model_ibnr``, and the
+      settings that produced the answer: ``estimator``, ``seed``,
+      ``n_estimators``, ``max_depth`` (null for an unlimited forest),
+      ``min_samples_leaf`` (null for boosting), ``learning_rate`` (null for the
+      forest), ``response``, ``origin_term``, ``calendar_term`` and
+      ``zero_cells`` (strings), ``n_training_rows`` and
+      ``scikit_learn_version``, because boosting's last digits changed between
+      scikit-learn 1.6.1 and 1.9.0.
+
+    Refused, besides the refusals of :func:`chain_ladder`'s ``cells``: a
+    setting outside its values or one that does not apply to the estimator
+    (``invalid_option``); a triangle whose cells are all zero, as
+    :func:`tweedie_glm` refuses it, and fewer than 2 cells to fit (both
+    ``not_identified``); under ``zero_cells="missing"`` with
+    ``unsupported_factor="raise"``, an age whose cells are all zero
+    (``no_link_ratio``); fitted values that are not finite numbers, from
+    amounts near the largest double (``result_not_finite``); a
+    still-developing origin with losses whose fitted cumulative at its latest
+    age is zero or less, so its factor to ultimate is undefined, and an
+    ultimate below zero (both ``negative_projection``), in that order; and a
+    tail (``not_supported``). Negative increments are fitted like any others.
+    ``docs/coming-from-chainladder.md`` lists where the answers differ from
+    chainladder-python's.
+    """
+    with _CallersTerms("ml_development") as terms:
+        grid, labels = terms.read(cells, dev_grain_months)
+        spec = MLDevelopmentSpec(
+            estimator=estimator,
+            seed=seed,
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            min_samples_leaf=min_samples_leaf,
+            learning_rate=learning_rate,
+            response=response,
+            origin=origin,
+            calendar=calendar,
+            zero_cells=zero_cells,
+            unsupported_factor=unsupported_factor,
+        )
+        if tail is not None:
+            raise Refusal(
+                "not_supported",
+                "ml_development takes no tail yet: each origin is projected to the last observed "
+                "development age. Pass tail=None",
+                option="tail",
+                given=tail,
+            )
+        # Amounts near the largest double: a sum of fitted values can overflow,
+        # and a number that is not finite is refused by name below.
+        with np.errstate(all="ignore"):
+            fit = fit_ml_development_grid(grid, spec)
+        return _ml_result(fit, labels)
+
+
+def _ml_result(fit: MLDevelopmentFit, labels: _Origins) -> ReserveResult:
+    step = fit.dev_grain_months
+    n_w, n_d = fit.cumulative.shape
+    periods = fit.origin_periods
+    observed, placed = fit.observed, fit.placed
+    unplaced = ~placed
+    with np.errstate(all="ignore"):
+        latest, ultimate = fit.latest, fit.ultimate
+        ibnr = ultimate - latest
+        model_ibnr = fit.model_ibnr
+        fitted, fitted_cum = fit.fitted, fit.fitted_cumulative
+        factors, cdf = fit.factors, fit.cdf
+        sums = {
+            **_sums(latest, ultimate),
+            "model_ibnr": _arrow.float64([float(model_ibnr[placed].sum())]),
+        }
+    ages = np.arange(1, n_d + 1, dtype=np.int64) * step
+
+    # the development table: one pattern for every origin, when there is one
+    reference = fit.pattern_cumulative
+    if reference is not None:
+        live = reference > 0
+        with np.errstate(all="ignore"):
+            pattern_cdf = np.where(live, reference[-1] / reference, 0.0)
+            pattern_factor = np.r_[np.where(live[:-1], reference[1:] / reference[:-1], 0.0), 0.0]
+            pattern_pct = np.where(live, 1.0 / pattern_cdf, 0.0)
+        no_cdf = ~live
+        no_factor = np.r_[~live[:-1], True]
+    else:
+        pattern_cdf = pattern_factor = pattern_pct = np.zeros(n_d)
+        no_cdf = no_factor = np.ones(n_d, dtype=bool)
+    development = pa.table(
+        {
+            "dev_lag": _arrow.int64(ages),
+            "factor": _nullable(pattern_factor, no_factor),
+            "cdf": _nullable(pattern_cdf, no_cdf),
+            "pct_reported": _nullable(pattern_pct, no_cdf),
+            "n_trained": _arrow.int64(fit.trained.sum(axis=0)),
+            "unity_fallback": _with_last_null(fit.unity_ages[1:], pa.bool_()),
+        }
+    )
+
+    # the cells table: every cell of the rectangle, origin by origin
+    cell_periods = [periods[i] for i in range(n_w) for _ in range(n_d)]
+    no_fit = np.repeat(unplaced, n_d)
+    cell_factor = np.c_[factors, np.zeros(n_w)]
+    no_cell_factor = np.c_[np.isnan(factors), np.ones(n_w, dtype=bool)]
+    cells = pa.table(
+        {
+            "origin": labels.labels_for(cell_periods),
+            "origin_period": _arrow.date32(cell_periods),
+            "dev_lag": _arrow.int64(np.tile(ages, n_w)),
+            "observed": _arrow.bool_(observed.ravel()),
+            "trained": _arrow.bool_(fit.trained.ravel()),
+            "increment": _nullable(fit.increments.ravel(), ~observed.ravel()),
+            "fitted_increment": _nullable(fitted.ravel(), no_fit),
+            "fitted_cumulative": _nullable(fitted_cum.ravel(), no_fit),
+            "factor": _nullable(cell_factor.ravel(), no_cell_factor.ravel()),
+            "cdf": _nullable(cdf.ravel(), np.isnan(cdf).ravel()),
+        }
+    )
+
+    spec = fit.spec
+    settings = spec.settings
+    forest = spec.estimator == "random_forest"
+    depth = settings["max_depth"]
+    totals = pa.table(
+        {
+            **sums,
+            "estimator": _arrow.string([spec.estimator]),
+            "seed": _arrow.int64([spec.seed]),
+            "n_estimators": _arrow.int64([settings["n_estimators"]]),
+            "max_depth": _arrow.int64([depth or 0], mask=np.array([depth is None])),
+            "min_samples_leaf": _arrow.int64(
+                [settings["min_samples_leaf"] or 0], mask=np.array([not forest])
+            ),
+            "learning_rate": _nullable([settings["learning_rate"] or 0.0], [forest]),
+            "response": _arrow.string([spec.response]),
+            "origin_term": _arrow.string([spec.origin]),
+            "calendar_term": _arrow.string([spec.calendar]),
+            "zero_cells": _arrow.string([spec.zero_cells]),
+            "n_training_rows": _arrow.int64([fit.n_training_rows]),
+            "scikit_learn_version": _arrow.string([fit.sklearn_version]),
+        }
+    )
+    origin_cdf = fit.origin_cdf
+    origins = pa.table(
+        {
+            "origin": labels.labels_for(periods),
+            "origin_period": _arrow.date32(periods),
+            "latest_dev_lag": _arrow.int64((fit.latest_dev + 1) * step),
+            "latest": _arrow.float64(latest),
+            "ultimate": _arrow.float64(ultimate),
+            "ibnr": _arrow.float64(ibnr),
+            "fitted_latest": _nullable(fit.fitted_latest, unplaced),
+            "fitted_ultimate": _nullable(fit.fitted_ultimate, unplaced),
+            "cdf": _nullable(origin_cdf, np.isnan(origin_cdf)),
+            "model_ibnr": _nullable(model_ibnr, unplaced),
+        }
+    )
+    _require_finite(
+        periods,
+        {"ultimate": ultimate, "ibnr": ibnr, "model_ibnr": np.where(placed, model_ibnr, 0.0)},
+        [],
+        {},
+    )
+    _require_finite_tables(origins, development, cells, totals)
+    return ReserveResult(
+        "ml_development", fit.as_of, step, origins, development, None, totals, cells=cells
+    )
 
 
 # -- the one-year claims development result ---------------------------------------

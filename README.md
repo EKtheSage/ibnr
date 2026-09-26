@@ -8,7 +8,8 @@ triangle data layer backed by duckdb and polars (via ibis). A companion to
 **Coming from chainladder-python?** `from ibnr import methods`, then
 `methods.chain_ladder(cells)`, `methods.mack(cells)`,
 `methods.bornhuetter_ferguson(...)`, `methods.benktander(...)`,
-`methods.cape_cod(...)`, `methods.tweedie_glm(cells, power=...)` or
+`methods.cape_cod(...)`, `methods.tweedie_glm(cells, power=...)`,
+`methods.ml_development(cells, estimator=...)` or
 `methods.one_year_cdr(cells)`: see [Run a chain
 ladder](#run-a-chain-ladder) and [the lookup table from chainladder-python to
 ibnr](https://github.com/EKtheSage/ibnr/blob/main/docs/coming-from-chainladder.md).
@@ -236,6 +237,11 @@ cumulative of zero as a missing cell, as chainladder-python does, and
 `methods.tweedie_glm(cells, power=1.5)` fits a Tweedie GLM to the increments
 (power 1, the default, is the over-dispersed Poisson model and gives the chain
 ladder's ultimates) and adds `cells` and `coefficients` tables to the result.
+`methods.ml_development(cells, estimator="gradient_boosting")` fits a random
+forest or gradient boosting to the cells, as chainladder-python's
+`DevelopmentML` does, and needs `pip install "ibnr[ml]"`; tree models
+projected this way overshoot the chain ladder, often by a lot
+([details](https://github.com/EKtheSage/ibnr/blob/main/docs/coming-from-chainladder.md#tree-models-developmentml)).
 `methods.one_year_cdr(cells, seed=42)` gives the one-year claims development
 result on Mack's chain ladder: the Merz-Wuthrich standard error beside a
 simulation of next year, with quantiles and every draw
@@ -245,7 +251,8 @@ Coming from chainladder-python,
 attributes onto these functions. Import it with `from ibnr import methods`: a
 bare `import ibnr` does not load it. `ibnr.methods` loads numpy and pyarrow but
 not ibis, pandas or scipy, on import or when a method runs, which keeps the cold
-start of a service that calls it short. Input a method will not answer is
+start of a service that calls it short (`ml_development` excepted: its fit is
+scikit-learn's, which loads scipy and pandas). Input a method will not answer is
 refused with `methods.Refusal`, a `ValueError` with a reason code (such as
 `"negative_cumulative"`) and the cells at fault in your own labels;
 [the chainladder page](https://github.com/EKtheSage/ibnr/blob/main/docs/coming-from-chainladder.md#when-a-method-refuses)

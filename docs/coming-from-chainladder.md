@@ -106,6 +106,17 @@ cape_cod.to_polars()["expected_loss_ratio"]  # detrended_apriori_
 | `TweedieGLM(design_matrix="C(development) + valuation")` | `origin="none", calendar="trend"` |
 | `TweedieGLM(max_iter=n)` | `max_iter=n` |
 | `TweedieGLM(alpha=...)`, `tol=` | no penalty, and a stopping rule relative to the amounts (see [The Tweedie GLM](#the-tweedie-glm)) |
+| `cl.DevelopmentML(RandomForestRegressor(...))` then `cl.Chainladder()` | `methods.ml_development(cells, estimator="random_forest")` |
+| `cl.DevelopmentML(GradientBoostingRegressor(...))` | `estimator="gradient_boosting"` |
+| `cl.DevelopmentML(TweedieRegressor(...))` | `methods.tweedie_glm(cells, power=...)`, with no penalty |
+| the regressor's `random_state=` | `seed=` (0 by default; `None` refused) |
+| the regressor's `n_estimators`, `max_depth`, `min_samples_leaf`, `learning_rate` | the same names |
+| `DevelopmentML(fit_incrementals=True / False)` | `response="incremental"` / `"cumulative"` |
+| `PatsyFormula("C(development) + C(origin)")` (the app's default) | `origin="factor"` (the default) |
+| `PatsyFormula("C(development)")` | `origin="none"` |
+| `PatsyFormula("C(development) + valuation")` | `origin="none", calendar="trend"` |
+| `PatsyFormula("C(development) + C(origin) + valuation")` | `origin="factor", calendar="trend"` |
+| `DevelopmentML(...).ldf_` (one row per origin) | `result.cells["factor"]`, each origin's own |
 
 Every link ratio, and whether the factor used it, is in `result.link_ratios`,
 with the reason for any that were left out: `zero_cell` when either cumulative
@@ -404,6 +415,117 @@ Where the answers differ from chainladder-python 0.9.2, and why:
   (`degenerate_fit`, or `did_not_converge` if the fit only ran out of
   iterations) with the age or origin named. `link="identity"` fits it.
 
+## Tree models: `DevelopmentML`
+
+`methods.ml_development` replaces `cl.DevelopmentML` with a random forest or
+gradient boosting, followed by `cl.Chainladder`. It needs scikit-learn, which
+the `ml` extra installs (`pip install "ibnr[ml]"`). It builds
+`DevelopmentML`'s rows (one per observed cell, origin by origin and age by age)
+and patsy's columns (a column of ones, one per age after the first, one per
+origin after the first) in numpy, fits the same scikit-learn estimator with
+the same `random_state`, predicts every cell, and projects each origin by its
+own fitted pattern, `latest * fitted_cumulative[last age] /
+fitted_cumulative[latest age]`, as `Chainladder` does after it. For the same
+estimator, seed and design, the ultimates and every fitted cell match
+chainladder's to 1e-12 on its five sample triangles and on raa relabelled as
+quarters, and the ultimates match to 1e-10 (the largest gap was 1.0e-15) on
+the 367 clrd paid triangles with no zero cell wherever ibnr answers: 14 of them
+have a negative cumulative, and boosting projects 20 below zero, which
+chainladder answers and ibnr refuses (both below).
+The column of ones and the row order both matter: a forest draws its features
+and its rows by position, so leaving the column out or ordering the rows by age
+moves its answer (GenIns from 17,326,134 to 17,198,277; raa from 75,269.77 to
+73,211.83).
+
+```python
+fit = methods.ml_development(cells, estimator="gradient_boosting", seed=42)
+fit.to_polars()  # ultimate, and the fitted cumulative at the latest age and the last
+fit.to_polars("cells")  # every cell's fitted increment and each origin's own factors
+```
+
+**Tree models usually overshoot the chain ladder, and that is the method, not
+a defect in either library.** The youngest origin has one training row. With
+an indicator per origin the trees split that origin off, so its predicted
+increment stays near its one 12-month value at every later age. On the
+Reserving app's workbook triangle (a 10 x 10 Schedule P paid triangle), the
+forest with seed 42 gives 2.7 times the chain ladder's IBNR (1,002,288.05
+against 373,346.30) and boosting 1.8 times (657,942.08); on MW2014 the forest
+gives 40 times. It is not a rule: on raa, UKMotor and ABC the forest gives 1.4
+to 2.6 times, and on GenIns 0.93 times (boosting 0.87 times). The two
+libraries give the same numbers here; read them as a property of the model
+before using them.
+
+Where the answers differ from chainladder-python 0.9.2, and why:
+
+- **Every origin's own pattern.** `DevelopmentML.ldf_` has one row per origin,
+  because each origin's fitted cumulatives differ. The app's `/ml` route showed
+  the first row, the oldest origin's, which produces no other origin's
+  ultimate (on the workbook with boosting, a 12-24 factor of 2.0558 where the
+  1992 origin's is 2.2201). Here each origin's factors are in `cells`, and
+  `development` carries a pattern only when every origin shares one (as with
+  `origin="none"`).
+- **Zeros are data by default.** chainladder stores a zero cumulative as
+  missing, so `DevelopmentML` leaves that cell out of training.
+  `ml_development` trains on it (`zero_cells="observed"`), unlike the
+  link-ratio methods, whose default is `"missing"`: under `"missing"` an age
+  whose cells are all zero leaves the model nothing to fit there, which happens
+  on 208 of the 722 clrd paid triangles with losses. `zero_cells="missing"`
+  trains on exactly chainladder's rows (checked cell for cell on the clrd
+  triangles where its fitted triangle keeps its shape), and an age with only
+  zeros is then refused (`no_link_ratio`) or, with
+  `unsupported_factor="unity"`, developed by 1. Three of chainladder's answers
+  on zeros are not copied:
+  - it leaves a zero cell's own fitted increment out of that origin's fitted
+    cumulative, which changes the origin's factors; here every fitted
+    increment counts;
+  - an origin whose latest cumulative is zero gets a NaN ultimate there (the
+    app showed it as a null ultimate and 0 IBNR); here its ultimate is 0;
+  - where a whole origin or age has no nonzero cell, chainladder's fitted
+    triangle loses that row or column and `Chainladder` then lines each
+    origin's factors up by position, against the wrong origins. On clrd
+    Pioneer State Mut's private passenger auto, only 1996 (2, then 75) and
+    1997 (328) have losses, and chainladder gives 1996 an ultimate of 2,807.76.
+    Here, with `zero_cells="missing", unsupported_factor="unity"`, it is 75;
+    with the default it is about 91 (boosting), because the zeros are trained
+    on. Of the 326 clrd paid triangles with a zero cell that chainladder
+    answers, 203 are hit by this.
+- **A negative ultimate is refused.** Neither the fitted cumulative at an
+  origin's latest age nor the one at the last age is held above zero, so the
+  projection can go negative from losses that are all zero or more (79 clrd
+  paid triangles get one from chainladder with boosting). Such an origin is
+  refused as `negative_projection`, and so is a still-developing origin with
+  losses whose fitted cumulative at its latest age is zero or less, where
+  chainladder's factor is undefined or enormous (a CDF of 31 from a fitted 2.6
+  against an actual 1.4).
+- **Settings that do nothing are refused.** The app passed `learning_rate` to
+  a forest and `min_samples_leaf` to boosting and ignored both; here each is
+  refused (`invalid_option`). An estimator must be named: the app's default
+  was the forest, 52% above boosting on its workbook.
+- **A seed is always set.** Without `random_state`, a forest gives a
+  different answer on every call. `seed` defaults to 0 and `None` is refused.
+  The forest's answer depends on it (1.5% to 3.6% of the total over 20 seeds);
+  boosting's does not with these settings. `totals` echoes the settings and
+  the scikit-learn version, because boosting's last digits changed between
+  scikit-learn 1.6.1 and 1.9.0.
+- **Shapes chainladder gets wrong are refused, as by every method.** Annual
+  origins on quarterly ages (chainladder returns IBNR 0 for every origin but
+  one and NaN for the newest, because it adds years to quarters when it looks
+  for the latest diagonal), an older origin a diagonal short (NaN), and a
+  triangle with fewer than 2 cells to fit (chainladder raises a `TypeError`
+  from scikit-learn, or a `PatsyError` on some sparse triangles; here
+  `not_identified`).
+- **A triangle with no losses is refused**, as `tweedie_glm` refuses it and in
+  the same words: "cells has no losses to fit" (`not_identified`). chainladder
+  raises `ValueError: negative dimensions are not allowed` there.
+- **The design is named, not written as a formula.** `origin` and `calendar`
+  give the four designs above. `C(valuation)` fails in chainladder on every
+  triangle (future calendar periods have no level), and other formulas are not
+  offered, since a patsy formula can run arbitrary code.
+- **The cumulative response is kept; the docstring warns against it.** No
+  Python warning is raised. With `response="cumulative"` the forest's fitted
+  cumulatives fall with age, and the total IBNR was below zero on all six test
+  triangles (raa -23,332; the workbook -250,298.82), in both libraries.
+
 ## The one-year claims development result
 
 chainladder-python has no one-year view. `methods.one_year_cdr` gives it: how
@@ -545,6 +667,9 @@ What some of chainladder-python's answers become:
 | `Development(drop=("1981", 108))` on raa, then `MackChainladder`: factor 1.0, NaN standard errors | `no_link_ratio`, `option="exclude"` |
 | `TweedieGLM` on raa: scikit-learn's `Some value(s) of y are out of the valid range` | `negative_increment`, the cell (1982, 84 months) in `cells` |
 | `TweedieGLM(link="identity")` at power 1: `ValueError: 1 is not in list` | answered, or `negative_fitted_mean` naming the cells |
+| `DevelopmentML` with one nonzero cell: scikit-learn's `TypeError: Input should have at least 1 dimension` | `not_identified` |
+| `DevelopmentML` then `Chainladder` projecting an origin below zero: answered | `negative_projection`, the origins in `cells` |
+| `DevelopmentML` with a regressor setting it does not use (`learning_rate` on a forest): ignored | `invalid_option`, naming the setting |
 
 ## Origin labels
 
@@ -613,6 +738,9 @@ year written `2020-12-31` has its first cell at `dev_lag` 12, valued
   developed quarterly: `dev_grain_months` must equal the origin period length.
 - A tail on `methods.tweedie_glm` (refused with `not_supported`), and the
   GLM's `drop`, `drop_valuation`, other design formulas and `sample_weight`.
+- A tail on `methods.ml_development` (refused with `not_supported`), and
+  `DevelopmentML`'s `drop`, `drop_valuation`, `weighted_step` and design
+  formulas other than the four above.
 - The bootstrap (`cl.BootstrapODPSample`) through `ibnr.methods`. An
   over-dispersed Poisson bootstrap of next year's diagonal is in
   `ibnr.kernels` for the one-year claims development result.
