@@ -4,7 +4,8 @@ Seven groups of checks:
 
 1. nothing untailed moved: every conventional fit, Mack fit and ``ibnr.methods``
    table has the same bytes as before tails (a frozen pin, from the source of
-   ``feat/generalized-mack``);
+   ``feat/generalized-mack``), except the cases that take log, exp or Cape Cod's
+   trend, which are the same numbers to 1e-14;
 2. the tail arithmetic against chainladder-python 0.9.2 (marker ``tieout``):
    every factor after the attachment, the steps shown beyond the triangle and
    the rest, on eight public triangles and every clrd triangle, and the four
@@ -140,33 +141,68 @@ def _public_triangles() -> dict[str, list]:
     return {**freeze_conventional_pin.public_triangles(), **freeze_mack_pin.with_zeros()}
 
 
-def _compare(frozen_part: dict, now: dict) -> list[str]:
-    return [key for key, value in now.items() if frozen_part[key] != value]
+def _close(now: list, before: list) -> bool:
+    """Numbers within 1e-14 relative, with an absolute tolerance of 1e-14 times
+    the largest value in the array, and nulls, NaN and infinities where they were.
+
+    The cases stored as numbers take log, exp or a power with an inexact result,
+    whose last bits differ between the Windows the pin was frozen on and Linux.
+    """
+    if len(now) != len(before) or [v is None for v in now] != [v is None for v in before]:
+        return False
+    a = np.array([np.nan if v is None else v for v in now], dtype=float)
+    b = np.array([np.nan if v is None else v for v in before], dtype=float)
+    finite = np.isfinite(b)
+    scale = np.abs(b[finite]).max() if finite.any() else 0.0
+    return bool(np.allclose(a, b, rtol=1e-14, atol=1e-14 * scale, equal_nan=True))
 
 
-def _compare_methods(now: dict) -> list[str]:
-    """Every column the pin has must match; a column added since is not in it."""
-    moved = []
-    for key, columns in now.items():
-        before = PIN["methods"][key]
-        if isinstance(before, str) or isinstance(columns, str):
-            if before != columns:
-                moved.append(key)
+def _moved(key: str, before: str | dict, now: str | dict) -> list[str]:
+    """What moved in one case. A digest (or a refusal) must be the same string. A
+    case stored as named parts must keep every part, each digest the same and
+    each list of numbers within :func:`_close`; a part added since is not in the
+    pin and is not compared."""
+    if isinstance(before, str) or isinstance(now, str):
+        return [] if before == now else [key]
+    missing = set(before) - set(now)
+    moved = [f"{key}: lost {sorted(missing)}"] if missing else []
+    for name, old in before.items():
+        if name not in now:
             continue
-        missing = set(before) - set(columns)
-        if missing:
-            moved.append(f"{key}: lost {sorted(missing)}")
-        moved += [
-            f"{key}: {name}" for name in before if name in columns and columns[name] != before[name]
-        ]
+        new = now[name]
+        same = _close(new, old) if isinstance(old, list) and isinstance(new, list) else new == old
+        if not same:
+            moved.append(f"{key}: {name}")
     return moved
+
+
+def _compare(frozen_part: dict, now: dict) -> list[str]:
+    return [moved for key, value in now.items() for moved in _moved(key, frozen_part[key], value)]
+
+
+def test_only_the_log_exp_and_trend_cases_are_pinned_as_numbers():
+    """Every case but those that take log, exp or ``(1 + trend) ** t`` is pinned by
+    its exact bits, so the looser comparison reaches only where it has to."""
+
+    def labels(part: str) -> set[str]:
+        return {
+            key.rsplit("|", 1)[1]
+            for key, value in PIN[part].items()
+            if isinstance(value, dict) and any(isinstance(v, list) for v in value.values())
+        }
+
+    assert labels("conventional") == set(frozen.NUMBER_CONVENTIONAL) == {"gcc_trend"}
+    assert labels("methods") == set(frozen.NUMBER_METHODS) == {"cape_cod", "mack", "mack_observed"}
+    assert all(isinstance(value, str) for value in PIN["mack"].values())
+    assert set(PIN["mack"]) == set(PIN["mack_log_linear"])
 
 
 def test_untailed_answers_did_not_move_on_the_public_triangles():
     now = frozen.pin(_public_triangles())
     assert _compare(PIN["conventional"], now["conventional"]) == []
     assert _compare(PIN["mack"], now["mack"]) == []
-    assert _compare_methods(now["methods"]) == []
+    assert _compare(PIN["mack_log_linear"], now["mack_log_linear"]) == []
+    assert _compare(PIN["methods"], now["methods"]) == []
     assert len(now["methods"]) == 8 * 11  # every method case of the eleven triangles ran
 
 
@@ -178,7 +214,8 @@ def test_untailed_answers_did_not_move_on_clrd():
     now = frozen.pin(freeze_conventional_pin.clrd_triangles())
     assert _compare(PIN["conventional"], now["conventional"]) == []
     assert _compare(PIN["mack"], now["mack"]) == []
-    assert _compare_methods(now["methods"]) == []
+    assert _compare(PIN["mack_log_linear"], now["mack_log_linear"]) == []
+    assert _compare(PIN["methods"], now["methods"]) == []
     assert len(now["mack"]) == 36 * 4  # every fourteenth clrd paid triangle, four settings
 
 

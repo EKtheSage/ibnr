@@ -142,12 +142,15 @@ chainladder with a Mack tail will see those numbers move.
 
 **No untailed number moved.** Every conventional fit (chain ladder,
 Bornhuetter-Ferguson, Cape Cod, under 18 option sets), every `fit_mack_grid`
-fit (four settings) with its `msep_runoff` and `to_arrow()` payload, and every
-column of every table of the five methods (eight calls), on the five public
-triangles, the same five with a zero cell, a 30 x 30 triangle and 36 clrd paid
-triangles, has the bytes the code before this change gave; digests are in
-`tests/data/untailed_pin.json`, written by `scripts/freeze_untailed_pin.py`
-against that code.
+fit (four settings, under both sigma rules) with its `msep_runoff` (and under
+Mack's rule its `to_arrow()` payload), and every column of every table of the five methods
+(eight calls), on the five public triangles, the same five with a zero cell, a
+30 x 30 triangle and 36 clrd paid triangles, has the bytes the code before this
+change gave; digests are in `tests/data/untailed_pin.json`, written by
+`scripts/freeze_untailed_pin.py` against that code. The answers that take log,
+exp or Cape Cod's trend (the log-linear sigma rule, which is `methods.mack`'s
+default, and `trend`) are pinned as numbers to 1e-14 rather than as bytes,
+because Windows and Linux differ in the last bits of those functions.
 
 **What can change for a caller:** every method's `development` table has three
 more columns and every `totals` table one more (Mack's four), whether a tail
