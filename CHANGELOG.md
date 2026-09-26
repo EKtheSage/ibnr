@@ -21,6 +21,131 @@ patch releases, and 0.8 comes when the roadmap's goals are done.
 
 ## Unreleased
 
+### The full run-off ODP bootstrap: `methods.odp_bootstrap`
+
+England and Verrall's over-dispersed Poisson residual bootstrap of the whole
+run-off, the method of R's `BootChainLadder` and chainladder-python's
+`BootstrapODPSample`, at the front door. Every simulated triangle is refitted
+with the chain ladder, Bornhuetter-Ferguson, Benktander or Cape Cod.
+
+**New in `ibnr.methods`:** `odp_bootstrap(cells, method=..., ...)` and
+`BootstrapResult`, both in `methods.__all__`. It takes the point methods'
+development options and tail options, their `premium`,
+`expected_loss_ratio`, `n_iters`, `decay` and `trend` (each only where the
+method reads it; `decay` and `trend` default to `None`, Cape Cod's 1.0 and
+0.0), and its own: `residual_adjustment` (`"hat"`, the default, `"dof"` or
+`"none"`), `residual_pool` (`"centred"`, the default, or `"all"`),
+`negative_increments` (`"refuse"`, the default, or `"reflect"`), `process`
+(`"gamma"`, the default, `"od_poisson"` or `"none"`), `prior_cv` (0 by
+default), `n_draws` (1,000), `seed` (`None`) and `quantiles` (0.5, 0.75, 0.9,
+0.95, 0.99). `BootstrapResult` has `central` (exactly what the point method
+returns for the same options) and five pyarrow Tables: `origins`, `totals`,
+`quantiles` (long, the total's rows first with a null origin; linear
+quantiles and the mean at or above each), `draws` (every draw of every
+origin) and `residuals` (one row per observed cell: increment, fitted,
+residual, leverage, the value resampled, whether it was, and why not). The
+`BootstrapResult` docstring lists every column.
+
+**One set of development options.** They make the central fit, whose
+factors (after the tail) give the fitted values, and they decide which
+residuals are resampled (the cell a left-out link ratio develops into, and
+for a link from the first age the first cell too: chainladder-python's
+rule). Every simulated triangle is refitted with the options that pick a
+ratio by where it is (`history_periods`, `exclude`, `exclude_valuations`,
+the zero rule), decided once on the real triangle. The options that pick a
+ratio by its size (`drop_high`, `drop_low`, `drop_above`, `drop_below`) act
+once, on the central fit and the pool: trimming each simulated triangle
+again pulls the simulated mean 3.5% (the Reserving app's workbook) to 22%
+(raa) below the central estimate, measured on chainladder-python itself.
+Tails follow the same rule: a curve is refitted to each draw's own factors,
+and a draw whose curve fails its checks uses the central fit's curve, counted
+in `totals.n_draws_tail_fallback`.
+
+**Different from chainladder-python 0.9.2, on purpose** (each is in
+`docs/coming-from-chainladder.md`):
+- `seed=0` reproduces (chainladder seeds its process noise only when the
+  seed is truthy), and `seed=None` returns the entropy it drew as
+  `BootstrapResult.seed`. The residuals, the process noise and the a priori
+  multipliers have a stream each, so the draws do not reproduce
+  chainladder's or R's for the same seed.
+- `residual_adjustment="none"` is chainladder's `hat_adj=False`, which adjusts
+  nothing although its docstring says degrees of freedom.
+- The hat adjustment never switches itself off: the leverage comes from a
+  pseudo-inverse, so a development factor of exactly 1.0 no longer drops it
+  with a warning (chainladder drops it on 179 of 349 complete, all-positive
+  clrd paid triangles). A cell of leverage one gets the adjusted residual 0
+  rather than whatever was in memory.
+- The cells fitted exactly (the first origin's last cell, the last origin's
+  first cell, and with development options any cell whose link ratios are
+  each the only one left at their age) are found from the fit, not by
+  testing a residual for zero, so genins without the adjustment resamples 53
+  residuals where chainladder resamples 54, one of them a rounding residue of
+  1.8e-12.
+- An observed increment of zero stays in the pool (its residual is
+  `-sqrt(m)`); chainladder stores it as missing and drops it (on 211 of the
+  349 clrd triangles).
+- A draw that is not finite is refused (`result_not_finite`) rather than
+  counted as 0; a refitted factor with no positive volume is 1.0 and counted
+  in `totals.n_draws_unit_factor`.
+- `mean_ultimate` is the actual latest plus the mean IBNR (R's), not the
+  mean of the simulated latest plus IBNR (chainladder's).
+- A tail's development is one more future cell per origin, where chainladder
+  adds two columns; the gamma noise has the same distribution.
+- `prior_cv` is a mean-one lognormal multiplier, one per draw, shared by
+  every origin; chainladder's `apriori_sigma` is a normal draw that can go
+  negative. `prior_cv = apriori_sigma / apriori` for Bornhuetter-Ferguson and
+  Benktander, `prior_cv = apriori_sigma` for Cape Cod, keeps its first two
+  moments. The central fit never draws.
+
+**Tie-outs.** Fed chainladder-python 0.9.2's residual stream, the simulated
+triangles, the scale, the refitted ultimates and, with its gamma layout,
+every IBNR draw equal chainladder's on raa, genins, ukmotor, abc and mw2014,
+with and without the hat adjustment (relative 1e-12 for the ultimates, 1e-9
+for the draws), for Bornhuetter-Ferguson, Benktander, Cape Cod and
+`apriori_sigma`, for a 5-year window with the highest ratio dropped, and for
+a first-age exclusion. With R's conventions (`"dof"`, `"all"`) the means and
+standard deviations at 20,000 draws agree with R `BootChainLadder`'s
+(ChainLadder 0.2.21, gamma and od.pois, two seeds, frozen in
+`tests/data/r_bootchainladder.json` by `scripts/r_bootchainladder.R`) within
+4 standard errors and 3%; so do chainladder's own runs and the Reserving
+app's cached workbook bootstrap (mean 373,703, sd 14,540).
+
+**Measured:** 10,000 draws of a 40 x 40 quarterly triangle take 1.3 to 1.5 s
+through `methods.odp_bootstrap` on the dev box (Intel Core Ultra 9 285H,
+Windows 11, numpy 2.4), with a peak of 62 MB of traced memory, because the
+draws are made about 600 at a time (sized to about 64 MB). In the kernel,
+chunks of 250, 1,000, 2,500 and 10,000 draws took 1.4, 1.05, 1.1 and 1.8 s
+with peaks of 26, 94, 231 and 876 MB, every one giving the same draws bit for
+bit. chainladder-python took 19.2 s and 7.0 GB for the same size (the
+migration plan's measurement, not repeated here).
+
+**Kernels.** `kernels/odp_bootstrap.py`: `fit_odp_bootstrap` gains
+`adjustment`, `pool`, `negative_increments`, `excluded` and `exact`, and
+records the unscaled residuals, the leverage, the pool and why each cell is
+in or out; its defaults are the one-year CDR route's, and that route moved
+by no bit (`tests/data/odp_cdr_pin.json`, frozen from the code before this
+change by `scripts/freeze_odp_cdr_pin.py`: 234 digests on 42 triangles,
+refusals included). New: `prepare_runoff`, `draw_runoff`,
+`future_cell_means`, `RunoffProjection`. `kernels/links.py` gains
+`position_rules` and `link_factors_many` (the averages over many triangles
+at once; the volume and regression averages are bit for bit
+`link_factors`'s); `kernels/conventional.py` gains `pattern_beta`,
+`project_ultimates` and `cape_cod_weights`, which the central fit now runs
+too, so it and every refit share one arithmetic. Every conventional fit and
+every `ibnr.methods` table, tails included, is bit for bit what it was (2,814
+cases on the public triangles and every fourteenth clrd triangle, compared
+against the code before this change). `kernels.densities` imports scipy only
+inside `odp_lpdf`, so `odp_draw` (the `od_poisson` noise) loads no scipy, and
+`methods.odp_bootstrap` loads no ibis, pandas, scipy or scikit-learn.
+
+**Refusals** use existing codes: `negative_increment` and
+`negative_fitted_mean` under `negative_increments="refuse"`, `degenerate_fit`
+(a non-zero increment against a zero fitted mean in a cell no option left
+out, or a leverage the hat adjustment cannot use), `not_identified` (no more
+cells than the model's parameters), `empty_residual_pool` and
+`result_not_finite`. The one-year CDR route's `degenerate_fit` and
+`not_identified` messages are worded more plainly; their codes are unchanged.
+
 ### Tails: constant, exponential, inverse power and Weibull
 
 Every method in `ibnr.methods` takes a tail, the development still to come

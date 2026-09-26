@@ -9,6 +9,9 @@
   classic one)
 - :func:`mack` (the chain ladder with Mack's standard errors; it takes the same
   development options, and ``average`` is Mack's alpha)
+- :func:`odp_bootstrap` (England and Verrall's over-dispersed Poisson
+  bootstrap of the whole run-off, refitting the chain ladder,
+  Bornhuetter-Ferguson, Benktander or Cape Cod on every simulated triangle)
 
 Each takes the cells of ONE triangle as a table with three columns, one row per
 observed cell:
@@ -35,10 +38,12 @@ the accident year written 2020-12-31 has its first cell at ``dev_lag`` 12.
 Any table Arrow can read is accepted: a polars DataFrame, a pyarrow Table or
 RecordBatch, anything else that offers the Arrow stream interface, or a dict
 of columns (Python lists or numpy arrays, as a service reading JSON has them).
-Other columns are ignored. Each function returns a :class:`ReserveResult`,
-whose tables are pyarrow Tables, so a service needs no DataFrame library at
-all; for analysis, ``result.to_polars()`` turns any of them into a polars
-DataFrame (``pip install "ibnr[polars]"``).
+Other columns are ignored. Each function returns a :class:`ReserveResult`
+(:func:`odp_bootstrap` a :class:`BootstrapResult`, which carries the point
+method's ``ReserveResult`` as ``central``), whose tables are pyarrow Tables,
+so a service needs no DataFrame library at all; for analysis,
+``result.to_polars()`` turns any of them into a polars DataFrame
+(``pip install "ibnr[polars]"``).
 
 The ``development`` table has one row per observed development age, then,
 with a tail, ``tail_rows`` rows for the ages after the last observed one. It
