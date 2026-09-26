@@ -245,10 +245,50 @@ calls = {{
     "one_year_cdr_normal": lambda: methods.one_year_cdr(
         cells, process="normal", n_draws=20, seed=0
     ),
+    "odp_bootstrap": lambda: methods.odp_bootstrap(
+        cells, negative_increments="reflect", n_draws=200, seed=1
+    ),
+    "odp_bootstrap_options": lambda: methods.odp_bootstrap(
+        cells,
+        method="bornhuetter_ferguson",
+        premium=premium,
+        expected_loss_ratio=0.7,
+        prior_cv=0.1,
+        negative_increments="reflect",
+        residual_adjustment="dof",
+        residual_pool="all",
+        process="od_poisson",
+        n_draws=100,
+        seed=2,
+        history_periods=6,
+        drop_high=1,
+    ),
+    "odp_bootstrap_tail": lambda: methods.odp_bootstrap(
+        cells,
+        method="cape_cod",
+        premium=premium_table,
+        decay=0.5,
+        negative_increments="reflect",
+        n_draws=100,
+        seed=3,
+        tail="exponential",
+    ),
+    "odp_bootstrap_benktander": lambda: methods.odp_bootstrap(
+        cells,
+        method="benktander",
+        premium=premium,
+        expected_loss_ratio=0.7,
+        n_iters=2,
+        negative_increments="reflect",
+        process="none",
+        n_draws=50,
+        seed=0,
+    ),
     "refused_grain": lambda: methods.chain_ladder(cells, dev_grain_months=5),
     "refused_exclusion": lambda: methods.chain_ladder(cells, exclude=[(1990, 12)]),
     "refused_valuation": lambda: methods.chain_ladder(cells, exclude_valuations=["1990Q4"]),
     "refused_one_year_cdr": lambda: methods.one_year_cdr(cells, zero_cells="x"),
+    "refused_bootstrap": lambda: methods.odp_bootstrap(cells, n_draws=10),
 }}
 out = {{}}
 for name, call in calls.items():
@@ -256,7 +296,7 @@ for name, call in calls.items():
         result = call()
         tables = (
             "origins", "development", "link_ratios", "totals", "cells", "coefficients",
-            "quantiles", "draws",
+            "quantiles", "draws", "residuals",
         )
         present = [t for t in tables if getattr(result, t, None) is not None]
         answer = {{t: getattr(result, t).to_pylist() for t in present}}
@@ -331,6 +371,7 @@ def test_every_method_runs_without_loading_ibis_pandas_scipy_or_sklearn(tmp_path
         "refused_valuation",
         "refused_tweedie_glm",
         "refused_one_year_cdr",
+        "refused_bootstrap",
     }
 
 
