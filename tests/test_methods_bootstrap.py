@@ -482,7 +482,7 @@ def _kernel_run(cells, n_draws: int, seed: int, **candidate):
 
 def test_the_tail_fallbacks_are_counted_at_the_front_door():
     """An exponential curve attached at 84 months and fitted from 60 cannot be
-    fitted to 8 of 500 draws on raa; the count is the kernel's."""
+    fitted to 10 of 500 draws on raa; the count is the kernel's."""
     from ibnr.kernels.tail import TailSpec
 
     result = boot(
@@ -496,7 +496,7 @@ def test_the_tail_fallbacks_are_counted_at_the_front_door():
         RAA, 500, 6, tail=TailSpec("exponential", attach_lag=84, fit_lags=(60, None))
     )
     assert result.draws["ibnr"].to_pylist() == kernel.ibnr.ravel().tolist()
-    assert result.totals["n_draws_tail_fallback"][0].as_py() == kernel.tail_fallback.sum() == 8
+    assert result.totals["n_draws_tail_fallback"][0].as_py() == kernel.tail_fallback.sum() == 10
 
 
 def test_the_unit_factor_draws_are_counted_at_the_front_door():

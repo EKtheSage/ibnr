@@ -2023,7 +2023,7 @@ CASES = [
         "negative_fitted_mean",
         "negative_increments",
         None,
-        [c(2001, 36), c(2001, 48), c(2002, 36)],
+        [c(2002, 48), c(2003, 36), c(2003, 48), c(2004, 36), c(2004, 48)],
         [(24, 36), (36, 48)],
         [],
         {"options": ("negative_increments", "cells")},

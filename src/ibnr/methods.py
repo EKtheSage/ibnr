@@ -1450,7 +1450,7 @@ def odp_bootstrap(
     standard errors are :func:`mack`'s.
 
     **One set of development options.** They make the central fit, whose
-    factors (after the tail) make the fitted values, and they decide which
+    factors (before any tail) make the fitted values, and they decide which
     residuals are resampled: the cell a link ratio develops into leaves the
     pool when a development option leaves that ratio out, and so does the first
     cell of an origin whose ratio from the first age is left out
@@ -1468,24 +1468,27 @@ def odp_bootstrap(
     recursion from the central factors whatever the average, so the hat
     adjustment's leverage is exactly the ODP GLM's only for the volume average
     over every link ratio; refitting the fitted triangle gives the central
-    factors back for every average, unless a tail curve is attached before
-    the last age (below).
+    factors back for every average.
 
-    **Tails** follow the same one specification: the attachment age and the
-    curve apply to the central factors that make the fitted values and to
-    every refit. A curve is refitted to each simulated triangle's own factors;
-    a draw whose curve fails the tail's checks uses the central fit's curve
-    and is counted in ``totals.n_draws_tail_fallback``. With a tail every
-    origin's run-off includes it, as one more future cell per origin. A curve
-    attached before the last age (``tail_attach_lag``) has replaced the link
-    ratios from that age on in the factors that make the fitted values, so a
-    refit fits the curve to ratios that scatter around the curve rather than
-    the data, and does not return the central curve: without process noise
-    the mean of the draws was 6.4% below the central estimate on genins with
-    an exponential curve attached at 72 months, where chainladder-python,
-    which makes its fitted values before the tail, was 0.2% above. With a
-    constant tail, or a curve attached at the last age (the default),
-    refitting the fitted triangle gives the central fit back.
+    **Tails** act once too, like the size rules: the fitted values and the
+    residual pool come from the central factors before the tail, and the
+    tail (the same kind, attachment age and fitted range) is applied only in
+    each refit, as chainladder-python does. A curve is refitted to each
+    simulated triangle's own factors; a draw whose curve fails the tail's
+    checks uses the central fit's curve and is counted in
+    ``totals.n_draws_tail_fallback``. With a tail every origin's run-off
+    includes it, as one more future cell per origin. Refitting the fitted
+    triangle gives the central fit back whatever the tail and wherever it is
+    attached. Were a curve attached before the last age (``tail_attach_lag``)
+    also in the fitted values, each refit would fit it to ratios scattered
+    around the curve rather than the data, and the mean of the draws would
+    move off the central estimate (measured at 20,000 draws, as a share of
+    the central IBNR: 6.2% below on genins with an exponential curve at 72
+    months; 0.4% above with the curve out of them, and chainladder-python
+    0.1% to 0.5% above). A curve is not a straight line in the factors, so
+    the mean need not sit exactly on the central estimate even so: on raa
+    with an inverse power curve at 60 months it is 26% above, and
+    chainladder-python's 27% to 28%.
 
     The bootstrap options:
 
@@ -1503,9 +1506,10 @@ def odp_bootstrap(
       subtracting their mean; ``"all"`` (R's rule) resamples every residual, the
       exact cells' zeros included, as they are.
     - ``negative_increments``: ``"refuse"`` (the default) refuses a negative
-      observed increment, and a negative fitted mean (only a factor below 1
-      makes one), because the over-dispersed Poisson model is defined on
-      non-negative increments. ``"reflect"`` bootstraps them as R and
+      observed increment, and a tail that puts link factors below 1
+      (``negative_fitted_mean``: it makes the expected payments after it
+      negative in every refit), because the over-dispersed Poisson model is
+      defined on non-negative increments. ``"reflect"`` bootstraps them as R and
       chainladder-python do: ``sqrt(|m|)`` scales a residual and the noise of
       a negative mean is reflected through its sign. ``totals.n_negative_fitted``
       counts the negative fitted means, whose results are rarely usable.

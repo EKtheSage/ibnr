@@ -47,7 +47,7 @@ residual, leverage, the value resampled, whether it was, and why not). The
 `BootstrapResult` docstring lists every column.
 
 **One set of development options.** They make the central fit, whose
-factors (after the tail) give the fitted values, and they decide which
+factors (before the tail) give the fitted values, and they decide which
 residuals are resampled (the cell a left-out link ratio develops into, and
 for a link from the first age the first cell too: chainladder-python's
 rule). Every simulated triangle is refitted with the options that pick a
@@ -57,14 +57,16 @@ ratio by its size (`drop_high`, `drop_low`, `drop_above`, `drop_below`) act
 once, on the central fit and the pool: trimming each simulated triangle
 again pulls the simulated mean 3.5% (the Reserving app's workbook) to 22%
 (raa) below the central estimate, measured on chainladder-python itself.
-Tails follow the same rule: a curve is refitted to each draw's own factors,
-and a draw whose curve fails its checks uses the central fit's curve, counted
-in `totals.n_draws_tail_fallback`. A curve attached before the last age
-(`tail_attach_lag`) is in the factors that make the fitted values, so a
-refit of the fitted triangle does not return the central curve, and the
-mean of the draws moves away from the central estimate: without process
-noise, 6.4% below it on genins with an exponential curve attached at 72
-months, where chainladder-python is 0.2% above (the list below).
+A tail acts once as well, as in chainladder-python: it stays out of the
+fitted values and the pool, and is applied in each refit, where a curve is
+refitted to each draw's own factors and a draw whose curve fails its checks
+uses the central fit's curve, counted in `totals.n_draws_tail_fallback`.
+With a curve attached before the last age (`tail_attach_lag`) in the fitted
+values too, the mean of the draws moved 6.2% (exponential) and 7.0%
+(Weibull) of the central IBNR below the central estimate on genins attached
+at 72 months, and 3.4% and 4.4% on abc; with it in the refit only, the four
+are +0.4%, +0.8%, -0.3% and -0.2% (20,000 draws), against chainladder's
++0.1% to +0.5%, +0.6% to +0.9%, -0.3% and -0.2%.
 
 **Different from chainladder-python 0.9.2, on purpose** (each is in
 `docs/coming-from-chainladder.md`):
@@ -101,12 +103,6 @@ months, where chainladder-python is 0.2% above (the list below).
   negative. `prior_cv = apriori_sigma / apriori` for Bornhuetter-Ferguson and
   Benktander, `prior_cv = apriori_sigma` for Cape Cod, keeps its first two
   moments. The central fit never draws.
-- A tail curve attached before the last age makes the fitted values; in
-  chainladder's sampler it applies to the refit only. Without process noise,
-  attached at 72 months, the mean of the draws is 6.4% (exponential) and
-  7.2% (Weibull) below the central estimate on genins, against 0.2% and 0.8%
-  above in chainladder, and 3.3% and 4.3% below on abc, against 0.2% and
-  0.1% below.
 - With negative fitted means (`negative_increments="reflect"`) the hat
   matrix is weighted by `|m|`; chainladder weights it by the signed `m`, so
   the leverages differ (by up to 1.2e-3 on the first liab triangle) and so
@@ -154,7 +150,9 @@ inside `odp_lpdf`, so `odp_draw` (the `od_poisson` noise) loads no scipy, and
 `methods.odp_bootstrap` loads no ibis, pandas, scipy or scikit-learn.
 
 **Refusals** use existing codes: `negative_increment` and
-`negative_fitted_mean` under `negative_increments="refuse"`, `degenerate_fit`
+`negative_fitted_mean` under `negative_increments="refuse"` (the second for a
+tail that puts link factors below 1, which makes every refit's expected
+payments after it negative; it names those future cells), `degenerate_fit`
 (a non-zero increment against a zero fitted mean in a cell no option left
 out, or a leverage the hat adjustment cannot use), `not_identified` (no more
 cells than the model's parameters), `empty_residual_pool` and

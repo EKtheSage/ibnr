@@ -125,10 +125,9 @@ class ODPBootstrapFit:
     ``england_verrall_odp.odp_mle_fitted``'s iterative proportional fit - two
     independent routes to one quantity. That equivalence holds for the
     volume-weighted factors over every link ratio; with other factors (another
-    average, development options, a tail attached before the last age) the
-    fitted values are still the backward recursion from those factors, and the
-    leverage is still the ODP GLM's at those fitted means, which is then an
-    approximation (see :func:`fit_odp_bootstrap`).
+    average, development options) the fitted values are still the backward
+    recursion from those factors, and the leverage is still the ODP GLM's at
+    those fitted means, which is then an approximation (see :func:`fit_odp_bootstrap`).
     """
 
     inc: np.ndarray  # (n_w, n_d) observed increments, NaN outside the triangle
@@ -199,7 +198,8 @@ def fit_odp_bootstrap(
     ``f`` is supplied rather than re-estimated so the bootstrap and everything
     else built on the same cohort share one set of development factors;
     passing ``MackFit.f`` is what the CDR does, and the run-off bootstrap passes
-    the central fit's factors, after its development options and tail.
+    the central fit's factors, after its development options and before any
+    tail.
 
     ``origins`` (the origin periods) and ``dev_grain_months`` only let a
     refusal name its cells; every refusal here is an ``ibnr.errors.Refusal``.
@@ -402,9 +402,8 @@ def fit_odp_bootstrap(
     exact = candidates & np.asarray(exact, dtype=bool)
     # A cell of leverage one has no hat factor (1 / sqrt(0)). With the GLM's own
     # fitted values its residual is 0 anyway; with factors from elsewhere (a
-    # tail attached before the last age) it need not be, and it is then
-    # treated as chainladder-python treats it: adjusted to 0, and out of the
-    # centred pool.
+    # caller's own ``f``) it need not be, and it is then treated as
+    # chainladder-python treats it: adjusted to 0, and out of the centred pool.
     undefined = candidates & leverage_one if adjustment == "hat" else np.zeros_like(candidates)
 
     if adjustment == "dof":
@@ -648,6 +647,19 @@ class RunoffProjection:
     chainladder-python itself: the mean falls 3.5% to 22% below the central
     estimate).
 
+    A tail acts the same way: once. The fitted values and the residual pool
+    come from the central factors BEFORE the tail, and the tail (a curve
+    refitted to each draw's own factors, or a constant) is applied only in
+    each refit, as chainladder-python does. With a curve attached before the
+    last age in the fitted values too, the fitted triangle's ratios past the
+    attachment were the curve's, and fitting the curve to each simulated
+    triangle then pulled the simulated mean off the central estimate (measured
+    at 20,000 draws, as a share of the central IBNR: -6.2% on genins with an
+    exponential curve at 72 months, -7.0% with a Weibull, -3.4% and -4.4% on
+    abc; chainladder-python stays within 0.9% on all four, and so does this
+    kernel now). A curve attached at the last age reads the same factors
+    either way.
+
     Attributes
     ----------
     method : str
@@ -735,7 +747,7 @@ def prepare_runoff(
 
     ``grid`` and ``candidate`` are as in ``kernels.fit_conventional_grid``
     (``premium`` too), without ``horizon``. The central fit's factors, after
-    every development option and the tail, make the fitted values; the cells
+    every development option and before any tail, make the fitted values; the cells
     whose link ratio a development option left out leave the residual pool
     (chainladder-python's rule: the later cell of the link, and for a link from
     the first age the first cell too); and the position rules make every
@@ -765,6 +777,8 @@ def prepare_runoff(
             option="cells",
         )
     n_links = n_d - 1
+    if negative_increments != "reflect":
+        _refuse_a_falling_tail(estimate, periods, step, fitted["latest_dev"], mask)
     rules = candidate.link_rules
     selection = select_links(cum, mask, periods, step, rules, n_links, raise_exhausted=False)
 
@@ -783,14 +797,16 @@ def prepare_runoff(
         cum,
         mask,
         fitted["latest_dev"],
-        estimate.factors[:n_links],
+        # the factors before any tail: a curve attached before the last age
+        # enters each refit, not the fitted values (see RunoffProjection)
+        estimate.untailed_factors[:n_links],
         origins=periods,
         dev_grain_months=step,
         adjustment=adjustment,
         pool=pool,
         negative_increments=negative_increments,
         excluded=excluded,
-        exact=_reproduced(selection.used, fitted["latest_dev"], estimate, mask),
+        exact=_reproduced(selection.used, fitted["latest_dev"], mask),
     )
     keep = select_links(
         cum, mask, periods, step, position_rules(rules), n_links, raise_exhausted=False
@@ -816,7 +832,49 @@ def prepare_runoff(
     return RunoffSetup(estimate, boot, projection, excluded, excluded_by)
 
 
-def _reproduced(used: np.ndarray, latest_dev, estimate: _Estimate, mask: np.ndarray) -> np.ndarray:
+def _refuse_a_falling_tail(estimate: _Estimate, periods, step: int, latest_dev, mask) -> None:
+    """Refuse a tail that puts link factors below 1, under ``negative_increments="refuse"``.
+
+    The tail stays out of the fitted values, so a tail attached before the
+    last age with steps below 1 no longer makes a negative fitted mean; it
+    makes the expected payments of the future cells after its attachment
+    negative in every refit instead, and those are the means the process noise
+    is drawn about. This keeps the refusal such a tail met when it was in the
+    fitted values, with the same reason and the same way out. The observed
+    data cannot do this (with every increment zero or more, every link factor
+    is 1 or more). A tail factor below 1 beyond the last age only, which never
+    entered the fitted values, is reflected as before.
+    """
+    tail = estimate.tail
+    if tail is None:
+        return
+    factors = np.asarray(estimate.factors, dtype=float)
+    falling = [j for j in range(factors.size) if factors[j] < 1]
+    if not falling:
+        return
+    beta = np.asarray(estimate.beta, dtype=float)
+    latest = np.asarray(latest_dev, dtype=int)
+    cells = [
+        RefusedCell(None, periods[i], (j + 1) * step, None)
+        for i in range(mask.shape[0])
+        for j in range(int(latest[i]) + 1, beta.size)
+        if beta[j] < beta[j - 1]
+    ]
+    raise Refusal(
+        "negative_fitted_mean",
+        "the tail puts link factors below 1 ({links}), so the expected payment of the "
+        "future cells after them is negative in every refit ({cells}), and the "
+        "over-dispersed Poisson bootstrap needs a positive mean to draw its noise "
+        "about. Pass negative_increments='reflect' to draw it through sign() and |m|, "
+        "as chainladder-python and R do",
+        option="negative_increments",
+        options=("negative_increments", "cells"),
+        cells=cells,
+        links=[((j + 1) * step, (j + 2) * step) for j in falling],
+    )
+
+
+def _reproduced(used: np.ndarray, latest_dev, mask: np.ndarray) -> np.ndarray:
     """``(n_w, n_d)`` bool: the observed cells the central factors reproduce exactly.
 
     The fitted cumulative at age ``j`` is the latest amount divided back by the
@@ -824,13 +882,11 @@ def _reproduced(used: np.ndarray, latest_dev, estimate: _Estimate, mask: np.ndar
     whenever each of those factors is the origin's own link ratio: the only
     ratio left at that age (an average of one ratio is that ratio, for every
     average). A fitted increment is exact when the fitted cumulatives at both
-    of its ends are. A factor that came from a tail is never the origin's
-    ratio.
+    of its ends are. The factors are the ones before any tail, so none of them
+    came from a curve.
     """
     n_w, n_d = mask.shape
     sole = used & (used.sum(axis=0) == 1)[None, :]
-    if estimate.tail is not None:
-        sole[:, estimate.tail.attach_index :] = False
     reproduced = np.zeros((n_w, n_d), dtype=bool)
     for i, k in enumerate(np.asarray(latest_dev, dtype=int)):
         reproduced[i, k] = True

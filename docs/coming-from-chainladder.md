@@ -490,21 +490,29 @@ Where the two differ, on purpose:
   the central estimate (22% on raa with `drop_high`, on chainladder itself).
   In chainladder that is the sampler with every option and the refit with the
   position ones, and ibnr's draws equal chainladder's for it when fed the same
-  random numbers (except with a tail curve attached before the last age,
-  below). `average` applies to both; chainladder's sampler has none.
-- **A tail curve attached before the last age makes the fitted values.**
-  ibnr's fitted values come from the central factors after the curve has
-  replaced the link ratios from `tail_attach_lag` on; chainladder's sampler
-  makes them from the link ratios and applies the curve in the refit only.
-  Past the attachment age ibnr's simulated ratios then scatter around the
-  curve rather than the data, so each refit fits a different curve from the
-  central one and the mean of the draws moves away from the central
-  estimate. Without process noise, attached at 72 months: genins 6.4% below
-  with an exponential curve (chainladder 0.2% above) and 7.2% below with a
-  Weibull curve (chainladder 0.8% above); abc 3.3% and 4.3% below
-  (chainladder 0.2% and 0.1% below). With a constant tail, or a curve
-  attached at the last age (the default), refitting the fitted triangle
-  gives the central fit back.
+  random numbers. `average` applies to both; chainladder's sampler has none.
+- **A tail enters the refit only, as in chainladder.** The fitted values and
+  the residual pool come from the link factors before the tail, and the
+  tail is applied to each simulated triangle's refit, so a curve attached
+  before the last age (`tail_attach_lag`) is fitted to simulated ratios
+  that scatter around the data, not around the curve. With the curve in the
+  fitted values too, the mean of the draws moved off the central estimate;
+  measured at 20,000 draws as a share of the central IBNR, attached at 72
+  months, before and after:
+
+  | triangle, curve     | curve in fitted values | refit only     | chainladder    |
+  |---------------------|------------------------|----------------|----------------|
+  | genins, exponential | -6.2%                  | +0.3% to +0.4% | +0.1% to +0.5% |
+  | genins, Weibull     | -7.0%                  | +0.7% to +0.8% | +0.6% to +0.9% |
+  | abc, exponential    | -3.4%                  | -0.3%          | -0.3%          |
+  | abc, Weibull        | -4.4%                  | -0.2%          | -0.2%          |
+
+  Each figure is two seeds; the Monte Carlo standard error is about 0.13%
+  on genins and 0.03% on abc.
+
+  A curve is not a straight line in the factors, so neither library's mean
+  sits exactly on the central estimate; on raa with an inverse power curve
+  at 60 months both sit far above it (ibnr +26%, chainladder +27% to +28%).
 - **The hat matrix is weighted by |m|.** With negative fitted means (under
   `negative_increments="reflect"`) chainladder weights its hat matrix by the
   signed fitted mean, and ibnr by its absolute value, so the leverages and
