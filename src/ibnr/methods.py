@@ -54,23 +54,28 @@ factor                   float64  the link factor to the next age; null   all
                                   at the last age
 cdf                      float64  the factor to the last observed age     all
 pct_reported             float64  ``1 / cdf``                             all
-n_selected               int64    link ratios behind the factor           all
+n_selected               int64    link ratios behind the factor           link-ratio methods
 unity_fallback           bool     no ratio was left and 1.0 was used      chain_ladder,
                                                                           bornhuetter_ferguson,
                                                                           benktander, cape_cod
-extreme_trimming_skipped bool     ``preserve`` stopped ``drop_high`` and  all
+extreme_trimming_skipped bool     ``preserve`` stopped ``drop_high`` and  link-ratio methods
                                   ``drop_low`` at this age
-bounds_skipped           bool     ``preserve`` stopped ``drop_above`` and all
+bounds_skipped           bool     ``preserve`` stopped ``drop_above`` and link-ratio methods
                                   ``drop_below`` at this age
 sigma                    float64  Mack's sigma                            mack
 std_err                  float64  the factor's standard error             mack
 sigma_extrapolated       bool     sigma came from ``sigma_rule``: the     mack
                                   age kept fewer than two link ratios
+n_observed               int64    observed increments at the age          tweedie_glm
 ======================== ======== ======================================= =====================
 
-Every column but ``dev_lag``, ``cdf`` and ``pct_reported`` is null at the last
-age, which has no next age. A method carries exactly the columns listed for
-it, whatever options it is given, so a service can read each table by name.
+The link-ratio methods are every method but :func:`tweedie_glm`, which fits
+the increments; its ``factor``, ``cdf`` and ``pct_reported`` are null where its
+fitted pattern differs by origin (each origin's is then in ``cells``). Every
+column but ``dev_lag``, ``cdf``, ``pct_reported`` and ``n_observed`` is null at
+the last age, which has no next age. A method carries exactly the columns
+listed for it, whatever options it is given, so a service can read each table
+by name.
 
 Importing this module loads numpy and pyarrow, and not ibis, pandas or scipy,
 and none of the methods loads them when it runs, so a service that starts
@@ -185,13 +190,15 @@ class ReserveResult:
         ``cdf`` (the factor to the last observed age, 1.0 there) and
         ``pct_reported`` (``1 / cdf``). There is no tail factor, so
         ``pct_reported`` is 1.0 at the last observed age by construction rather
-        than by measurement. Every method adds ``n_selected`` (int64, the link
-        ratios behind the factor), ``extreme_trimming_skipped`` and
-        ``bounds_skipped`` (bool); the chain ladder, Bornhuetter-Ferguson,
-        Benktander and Cape Cod add ``unity_fallback`` (bool); Mack adds
-        ``sigma``, ``std_err`` (the factor's standard error) and
-        ``sigma_extrapolated`` (bool), all null at the last age. The module
-        docstring has the table of every column and the methods that carry it.
+        than by measurement. Every method but :func:`tweedie_glm` adds
+        ``n_selected`` (int64, the link ratios behind the factor),
+        ``extreme_trimming_skipped`` and ``bounds_skipped`` (bool); the chain
+        ladder, Bornhuetter-Ferguson, Benktander and Cape Cod add
+        ``unity_fallback`` (bool); Mack adds ``sigma``, ``std_err`` (the
+        factor's standard error) and ``sigma_extrapolated`` (bool), all null at
+        the last age; :func:`tweedie_glm` adds ``n_observed`` (int64). The
+        module docstring has the table of every column and the methods that
+        carry it.
     link_ratios : pyarrow.Table or None
         Every observed link ratio, one row each: ``origin`` and
         ``origin_period`` (as in ``origins``), ``from_dev_lag`` (int64, the age
