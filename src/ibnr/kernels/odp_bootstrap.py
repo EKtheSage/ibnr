@@ -777,8 +777,6 @@ def prepare_runoff(
             option="cells",
         )
     n_links = n_d - 1
-    if negative_increments != "reflect":
-        _refuse_a_falling_tail(estimate, periods, step, fitted["latest_dev"], mask)
     rules = candidate.link_rules
     selection = select_links(cum, mask, periods, step, rules, n_links, raise_exhausted=False)
 
@@ -808,6 +806,9 @@ def prepare_runoff(
         excluded=excluded,
         exact=_reproduced(selection.used, fitted["latest_dev"], mask),
     )
+    if negative_increments != "reflect":
+        # after the data's own refusals, so a negative observed increment is named first
+        _refuse_a_falling_tail(estimate, periods, step, fitted["latest_dev"], mask)
     keep = select_links(
         cum, mask, periods, step, position_rules(rules), n_links, raise_exhausted=False
     ).used
@@ -840,16 +841,18 @@ def _refuse_a_falling_tail(estimate: _Estimate, periods, step: int, latest_dev, 
     makes the expected payments of the future cells after its attachment
     negative in every refit instead, and those are the means the process noise
     is drawn about. This keeps the refusal such a tail met when it was in the
-    fitted values, with the same reason and the same way out. The observed
-    data cannot do this (with every increment zero or more, every link factor
-    is 1 or more). A tail factor below 1 beyond the last age only, which never
+    fitted values, with the same reason and the same way out. Only the links
+    from the attachment on are the tail's: a factor below 1 before it is the
+    data's, which only a negative observed increment makes, and
+    :func:`fit_odp_bootstrap` has already refused that by its own name (this
+    runs after it). A tail factor below 1 beyond the last age only, which never
     entered the fitted values, is reflected as before.
     """
     tail = estimate.tail
     if tail is None:
         return
     factors = np.asarray(estimate.factors, dtype=float)
-    falling = [j for j in range(factors.size) if factors[j] < 1]
+    falling = [j for j in range(tail.attach_index, factors.size) if factors[j] < 1]
     if not falling:
         return
     beta = np.asarray(estimate.beta, dtype=float)
@@ -858,7 +861,7 @@ def _refuse_a_falling_tail(estimate: _Estimate, periods, step: int, latest_dev, 
         RefusedCell(None, periods[i], (j + 1) * step, None)
         for i in range(mask.shape[0])
         for j in range(int(latest[i]) + 1, beta.size)
-        if beta[j] < beta[j - 1]
+        if j - 1 in falling
     ]
     raise Refusal(
         "negative_fitted_mean",
