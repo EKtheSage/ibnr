@@ -4,7 +4,8 @@ Sections:
 
 1. the one-year CDR's ODP route did not move: every digest of
    ``tests/data/odp_cdr_pin.json`` (frozen from ``feat/tails`` by
-   ``scripts/freeze_odp_cdr_pin.py``) is recomputed and must match bit for bit;
+   ``scripts/freeze_odp_cdr_pin.py``) is recomputed and must match bit for bit,
+   except the draws with gamma noise, whose column sums must match to 1e-12;
 2. the residual options of ``fit_odp_bootstrap``: the adjustment, the pool,
    leverage, excluded cells, the scale, negative increments;
 3. the draws: seeds, chunks, streams, the prior multiplier, finiteness;
@@ -149,18 +150,61 @@ ODP = grid_of(rows_of(odp_matrix()))
 # -- 1. the one-year CDR's ODP route did not move ---------------------------------
 
 
+def _sums_match(now: dict, before: dict) -> bool:
+    """Column sums of draws with gamma noise: the same shape, and each sum
+    within 1e-12 of the size its rounding can reach (the sum of ``|x|``, times
+    the draw count for the index-weighted sum; the squares are all positive).
+
+    numpy's gamma sampler takes ``pow`` and ``log`` for a shape below 1, whose
+    last bits differ between the Windows the pin was frozen on and Linux.
+    """
+    if now.keys() != before.keys() or now["shape"] != before["shape"]:
+        return False
+    scale = np.array(before["sum_abs"], dtype=float)
+    bounds = {
+        "sum_abs": scale,
+        "sum": scale,
+        "sum_sq": np.array(before["sum_sq"], dtype=float),
+        "sum_index": before["shape"][0] * scale,
+    }
+    for name, bound in bounds.items():
+        a = np.array(now[name], dtype=float)
+        b = np.array(before[name], dtype=float)
+        if a.shape != b.shape or not (np.isnan(a) == np.isnan(b)).all():
+            return False
+        both = ~np.isnan(b)
+        if not (np.abs(a[both] - b[both]) <= 1e-12 * bound[both]).all():
+            return False
+    return True
+
+
 def _moved(now: dict) -> list[str]:
-    return [
-        f"{name}|{key}"
-        for name, digests in now.items()
-        for key, value in digests.items()
-        if PIN[name].get(key) != value
-    ]
+    moved = []
+    for name, digests in now.items():
+        for key, value in digests.items():
+            before = PIN[name].get(key)
+            if isinstance(before, dict) and isinstance(value, dict):
+                same = _sums_match(value, before)
+            else:
+                same = before == value
+            if not same:
+                moved.append(f"{name}|{key}")
+    return moved
+
+
+def test_only_the_draws_with_gamma_noise_are_pinned_as_sums():
+    """Every other digest is compared bit for bit: the fit, the od_poisson draws
+    and the draws with no process noise take no pow, log or exp."""
+    as_sums = {
+        key for digests in PIN.values() for key, value in digests.items() if isinstance(value, dict)
+    }
+    assert as_sums == set(frozen.SUMS_KEYS) == {"next|gamma|11", "next|gamma|10", "cdr|gamma"}
 
 
 def test_the_one_year_cdr_odp_route_did_not_move_on_the_public_triangles():
     """The defaults of fit_odp_bootstrap, draw_next_increments and the CDR's
-    odp_bootstrap generator give the bits feat/tails gave, refusals included.
+    odp_bootstrap generator give the bits feat/tails gave, refusals included
+    (the draws with gamma noise, their column sums to 1e-12).
     Mutation: make the kernel's default pool centred, or its default
     adjustment 'none'; the digests move."""
     import freeze_conventional_pin

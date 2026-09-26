@@ -133,10 +133,13 @@ migration plan's measurement, not repeated here).
 **Kernels.** `kernels/odp_bootstrap.py`: `fit_odp_bootstrap` gains
 `adjustment`, `pool`, `negative_increments`, `excluded` and `exact`, and
 records the unscaled residuals, the leverage, the pool and why each cell is
-in or out; its defaults are the one-year CDR route's, and that route moved
-by no bit (`tests/data/odp_cdr_pin.json`, frozen from the code before this
-change by `scripts/freeze_odp_cdr_pin.py`: 234 digests on 42 triangles,
-refusals included). New: `prepare_runoff`, `draw_runoff`,
+in or out; its defaults are the one-year CDR route's, and that route did
+not move (`tests/data/odp_cdr_pin.json`, frozen from the code before this
+change by `scripts/freeze_odp_cdr_pin.py`: 234 cases on 42 triangles,
+refusals included, compared bit for bit except the draws with gamma process
+noise, which are compared by their column sums to 1e-12, because numpy's
+gamma sampler takes `pow` and `log` for a shape below 1 and Windows and
+Linux differ in the last bits of those). New: `prepare_runoff`, `draw_runoff`,
 `future_cell_means`, `RunoffProjection`. `kernels/links.py` gains
 `position_rules` and `link_factors_many` (the averages over many triangles
 at once; the volume and regression averages are bit for bit
