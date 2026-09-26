@@ -15,7 +15,7 @@ Three separate claims, and they fail for different reasons:
    "catch hidden imports" literally true rather than approximately true.
 
 3. **``ibnr.methods`` loads neither ibis, pandas, scipy nor scikit-learn**, on
-   import or when any of its four methods runs. These are core dependencies,
+   import or when any of its functions runs. These are core dependencies,
    not extras, so claim 1 has nothing to say about them; the cost is a cold
    start, which a service calling ``ibnr.methods`` pays on every new process.
    ``ibnr/__init__.py`` and ``ibnr/kernels/__init__.py`` import their names on
@@ -154,10 +154,11 @@ def test_importing_methods_loads_no_ibis_pandas_scipy_or_sklearn():
     _run(code)
 
 
-#: The four methods, each called once with its defaults and once with options,
-#: and two refusals. Every call reads its cells from an Arrow file, as a service
-#: receiving Arrow bytes would, because building a table from Python lists with
-#: ``pa.table`` or ``pa.array`` makes pyarrow import pandas itself.
+#: Every function, each called once with its defaults and once with options
+#: (the one-year CDR once more with normal noise), and four refusals. Every call
+#: reads its cells from an Arrow file, as a service receiving Arrow bytes would,
+#: because building a table from Python lists with ``pa.table`` or ``pa.array``
+#: makes pyarrow import pandas itself.
 _METHOD_CALLS = """
 import json, sys
 import pyarrow.ipc as ipc
@@ -213,18 +214,34 @@ calls = {{
         cells, power=0, link="identity", origin="none", calendar="trend", max_iter=50
     ),
     "refused_tweedie_glm": lambda: methods.tweedie_glm(cells),
+    "one_year_cdr": lambda: methods.one_year_cdr(cells, n_draws=200, seed=1),
+    "one_year_cdr_options": lambda: methods.one_year_cdr(
+        cells,
+        sigma_rule="mack",
+        process="lognormal",
+        parameter_risk=False,
+        quantiles=(0.5, 0.995),
+        n_draws=50,
+        seed=3,
+    ),
+    "one_year_cdr_normal": lambda: methods.one_year_cdr(
+        cells, process="normal", n_draws=20, seed=0
+    ),
     "refused_grain": lambda: methods.chain_ladder(cells, dev_grain_months=5),
     "refused_exclusion": lambda: methods.chain_ladder(cells, exclude=[(1990, 12)]),
     "refused_valuation": lambda: methods.chain_ladder(cells, exclude_valuations=["1990Q4"]),
+    "refused_one_year_cdr": lambda: methods.one_year_cdr(cells, zero_cells="x"),
 }}
 out = {{}}
 for name, call in calls.items():
     try:
         result = call()
-        tables = ("origins", "development", "link_ratios", "totals", "cells", "coefficients")
-        answer = {{
-            t: getattr(result, t).to_pylist() for t in tables if getattr(result, t) is not None
-        }}
+        tables = (
+            "origins", "development", "link_ratios", "totals", "cells", "coefficients",
+            "quantiles", "draws",
+        )
+        present = [t for t in tables if getattr(result, t, None) is not None]
+        answer = {{t: getattr(result, t).to_pylist() for t in present}}
     except ValueError as exc:
         answer = str(exc)
     loaded = [m for m in NOT if m in sys.modules]
@@ -295,6 +312,7 @@ def test_every_method_runs_without_loading_ibis_pandas_scipy_or_sklearn(tmp_path
         "refused_exclusion",
         "refused_valuation",
         "refused_tweedie_glm",
+        "refused_one_year_cdr",
     }
 
 

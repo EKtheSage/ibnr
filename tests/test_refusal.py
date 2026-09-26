@@ -66,14 +66,17 @@ QT = tri([(f"2001Q{o - 2000}", d // 4, v) for o, d, v in BASE])
 ZERO_COL = [(o, d, 0.0 if d == 12 else v) for o, d, v in BASE]
 Z2 = replace(replace(BASE, (2002, 12), 0.0), (2003, 12), 0.0)
 Z3 = replace(replace(BASE, (2002, 36), 0.0), (2002, 24), 0.0)
-cl, bf, bk, cc, mk, tg = (
+cl, bf, bk, cc, mk, tg, cdr = (
     methods.chain_ladder,
     methods.bornhuetter_ferguson,
     methods.benktander,
     methods.cape_cod,
     methods.mack,
     methods.tweedie_glm,
+    methods.one_year_cdr,
 )
+#: few draws, so the one-year CDR's cases run fast
+FEW = {"n_draws": 20, "seed": 1}
 
 
 def year(y: int) -> dt.date:
@@ -1888,6 +1891,224 @@ CASES = [
         [],
         {"given": "cells"},
     ),
+    # the one-year claims development result
+    *[
+        (
+            f"cdr_n_draws_{name}",
+            lambda value=value: cdr(T, n_draws=value),
+            "invalid_option",
+            "n_draws",
+            None,
+            [],
+            [],
+            [],
+            {"given": value},
+        )
+        for name, value in (
+            ("zero", 0),
+            ("negative", -5),
+            ("bool", True),
+            ("float", 2.5),
+            # four origins: 25,000,001 draws hold 100,000,004 numbers
+            ("past_the_limit", 25_000_001),
+            ("huge", 2**63),
+        )
+    ],
+    *[
+        (
+            f"cdr_seed_{name}",
+            lambda value=value: cdr(T, seed=value, n_draws=5),
+            "invalid_option",
+            "seed",
+            None,
+            [],
+            [],
+            [],
+            {"given": value},
+        )
+        for name, value in (("negative", -1), ("bool", False), ("text", "1"), ("float", 1.5))
+    ],
+    *[
+        (
+            f"cdr_quantiles_{name}",
+            lambda value=value: cdr(T, quantiles=value, **FEW),
+            "invalid_option",
+            "quantiles",
+            None,
+            [],
+            [],
+            [],
+            {"given": given},
+        )
+        for name, value, given in (
+            ("one_number", 0.995, 0.995),
+            ("percent", [50, 99.5], (50, 99.5)),
+            ("one", (0.5, 1.0), (0.5, 1.0)),
+            ("zero", (0.0,), (0.0,)),
+            ("nan", (math.nan,), (math.nan,)),
+            ("text", ("0.5",), ("0.5",)),
+            ("bool", (True,), (True,)),
+            ("string", "0.5", "0.5"),
+        )
+    ],
+    (
+        "cdr_process",
+        lambda: cdr(T, process="poisson", **FEW),
+        "invalid_option",
+        "process",
+        None,
+        [],
+        [],
+        [],
+        {"given": "poisson"},
+    ),
+    (
+        "cdr_parameter_risk",
+        lambda: cdr(T, parameter_risk="no", **FEW),
+        "invalid_option",
+        "parameter_risk",
+        None,
+        [],
+        [],
+        [],
+        {"given": "no"},
+    ),
+    (
+        "cdr_sigma_rule",
+        lambda: cdr(T, sigma_rule="linear", **FEW),
+        "invalid_option",
+        "sigma_rule",
+        None,
+        [],
+        [],
+        [],
+        {"given": "linear"},
+    ),
+    (
+        "cdr_zero_cells",
+        lambda: cdr(T, zero_cells="zero", **FEW),
+        "invalid_option",
+        "zero_cells",
+        None,
+        [],
+        [],
+        [],
+        {"given": "zero"},
+    ),
+    (
+        "cdr_quarterly",
+        lambda: cdr(
+            tri(
+                [
+                    ("2001Q1", 3, 100.0),
+                    ("2001Q1", 6, 150.0),
+                    ("2001Q1", 9, 170.0),
+                    ("2001Q2", 3, 110.0),
+                    ("2001Q2", 6, 160.0),
+                    ("2001Q3", 3, 120.0),
+                ]
+            ),
+            dev_grain_months=3,
+            **FEW,
+        ),
+        "not_supported",
+        "dev_grain_months",
+        None,
+        [],
+        [],
+        [],
+        {"given": 3},
+    ),
+    (
+        "cdr_zero_latest",
+        lambda: cdr(tri(replace(BASE, (2004, 12), 0.0)), **FEW),
+        "variance_not_estimable",
+        "cells",
+        None,
+        [c(2004, 12, 0.0)],
+        [],
+        [],
+        {},
+    ),
+    (
+        "cdr_zero_latest_missing",
+        lambda: cdr(tri(replace(BASE, (2004, 12), 0.0)), zero_cells="missing", **FEW),
+        "not_supported",
+        "zero_cells",
+        None,
+        [c(2004, 12, 0.0)],
+        [],
+        [],
+        {"given": "missing"},
+    ),
+    (
+        "cdr_zero_inside_missing",
+        lambda: cdr(tri(replace(BASE, (2001, 12), 0.0)), zero_cells="missing", **FEW),
+        "not_supported",
+        "zero_cells",
+        None,
+        [c(2001, 12, 0.0)],
+        [],
+        [],
+        {"given": "missing"},
+    ),
+    # refused as not supported before the fit, whose own refusal under "missing"
+    # (a sigma with nothing to fill it from) would be about a rule not taken here
+    (
+        "cdr_zeros_missing_before_the_fit",
+        lambda: cdr(tri(Z3), zero_cells="missing", **FEW),
+        "not_supported",
+        "zero_cells",
+        None,
+        [c(2002, 24, 0.0), c(2002, 36, 0.0)],
+        [],
+        [],
+        {"given": "missing"},
+    ),
+    (
+        "cdr_one_age",
+        lambda: cdr(tri([(2001, 12, 100.0)]), **FEW),
+        "variance_not_estimable",
+        "cells",
+        None,
+        [],
+        [],
+        [],
+        {},
+    ),
+    (
+        "cdr_one_link_ratio_each",
+        lambda: cdr(years({2001: [100, 150], 2002: [110]}), **FEW),
+        "variance_not_estimable",
+        "cells",
+        None,
+        [],
+        [(12, 24)],
+        [],
+        {},
+    ),
+    (
+        "cdr_negative",
+        lambda: cdr(tri(replace(BASE, (2002, 24), -1.0)), **FEW),
+        "negative_cumulative",
+        "cells",
+        "value",
+        [c(2002, 24, -1.0)],
+        [],
+        [],
+        {},
+    ),
+    (
+        "to_polars_cdr_link_ratios",
+        lambda: cdr(T, **FEW).to_polars("link_ratios"),
+        "invalid_option",
+        "table",
+        None,
+        [],
+        [],
+        [],
+        {"given": "link_ratios"},
+    ),
 ]
 
 #: Cases whose message may show an ISO date although the labels are years: a gap
@@ -1920,6 +2141,7 @@ _METHOD_OF = {
     cc: "cape_cod",
     mk: "mack",
     tg: "tweedie_glm",
+    cdr: "one_year_cdr",
 }
 
 
@@ -1961,6 +2183,8 @@ def test_the_method_is_named_on_every_refusal():
     assert refusal_of(lambda: mk(tri(Z3))).method == "mack"
     assert refusal_of(lambda: cl(T, exclude=[(2001, 36)])).method == "chain_ladder"
     assert refusal_of(lambda: mk(T).to_polars("x")).method == "mack"
+    assert refusal_of(lambda: cdr(tri(Z3), **FEW)).method == "one_year_cdr"
+    assert refusal_of(lambda: cdr(T, n_draws=0)).method == "one_year_cdr"
 
 
 # -- the caller's labels, in every form -----------------------------------------------
@@ -2115,6 +2339,18 @@ def test_each_refusal_names_the_origin_as_the_caller_wrote_it(step, label, kind)
         "variance_not_estimable",
         [(1, s), (2, s)],
     )
+    if s == 12:  # the one-year result refuses any other step before it looks at cells
+        # the one-year result on a zero latest amount, under either zero rule
+        zero_latest = table(rows_with((3, s), 0.0))
+        expect(run(lambda: cdr(zero_latest, **FEW)), "variance_not_estimable", [(3, s)])
+        expect(
+            run(lambda: cdr(zero_latest, zero_cells="missing", **FEW)),
+            "not_supported",
+            [(3, s)],
+        )
+    else:
+        refusal = run(lambda: cdr(table(base), **FEW, **kw))
+        assert (refusal.reason, refusal.option) == ("not_supported", "dev_grain_months")
 
 
 def test_premium_refusals_name_premiums_own_label():
@@ -2351,6 +2587,54 @@ def test_no_message_uses_a_kernel_word_or_a_kernel_date(case):
             "it has ['origin_period', 'dev_lag', '{given}']",
         ),
         (lambda: cl(T, exclude=[(2001, "{cells}")]), "names development age '{cells}', which"),
+        # the one-year result says what it needs, in the front door's words
+        (
+            lambda: cdr(tri(replace(BASE, (2004, 12), 0.0)), **FEW),
+            "latest cumulative to be positive, and it is zero for (2004, 12 months)",
+        ),
+        (
+            lambda: cdr(tri(replace(BASE, (2001, 12), 0.0)), zero_cells="missing", **FEW),
+            "takes zero_cells='missing' only when no cumulative is zero, and (2001, 12 months)",
+        ),
+        (
+            lambda: cdr(
+                tri([("2001Q1", 3, 100.0), ("2001Q1", 6, 150.0), ("2001Q2", 3, 110.0)]),
+                dev_grain_months=3,
+                **FEW,
+            ),
+            "needs a 12-month development step, and this triangle's is 3 months",
+        ),
+        (lambda: cdr(T, quantiles=[50, 99.5]), "(divide a percentile by 100), got (50, 99.5)"),
+        (lambda: cdr(T, n_draws=np.int64(0)), "n_draws must be a whole number of 1 or more, got 0"),
+        (lambda: cdr(T, seed=-1), "seed must be None or a whole number of 0 or more, got -1"),
+        (
+            lambda: cdr(T, n_draws=2**63),
+            "n_draws times the number of origins must be at most 100,000,000",
+        ),
+        # the Mack checks the two share name the function that was called
+        (
+            lambda: cdr(tri([(2001, 12, 100.0)]), **FEW),
+            "one_year_cdr needs at least two development ages; this triangle has one",
+        ),
+        (
+            lambda: cdr(years({2001: [100, 150], 2002: [110]}), **FEW),
+            "one_year_cdr needs at least one development age with two or more link ratios",
+        ),
+        # amounts near the smallest double are too small, as methods.mack says, not
+        # too large: the one-year formula's NaN must not be read as an overflow
+        (
+            lambda: cdr(
+                years(
+                    {
+                        1981: [1e-300, 1.5e-300, 1.6e-300],
+                        1982: [0.9e-300, 1.4e-300],
+                        1983: [1.2e-300],
+                    }
+                ),
+                **FEW,
+            ),
+            "the amounts are too small for Mack's standard errors",
+        ),
     ],
 )
 def test_reworded_messages_say_what_is_wrong(call, phrase):
@@ -2454,6 +2738,25 @@ _EXTREMES = [
         lambda: tg(tri(fixture_rows("genins", 1e200)), power=0),
         "result_not_finite",
     ),
+    *[
+        (
+            f"cdr_{name}_{scale:g}",
+            lambda name=name, scale=scale: cdr(tri(fixture_rows(name, scale)), **FEW),
+            "result_not_finite",
+        )
+        for name in ("raa", "mw2014")
+        for scale in (1e160, 1e300, 1e-310)
+    ],
+    # only the check that Mack's squares did not fall to 0 refuses these: without
+    # it raa at 1e-166 gives a run-off standard error 17% too high, and finite
+    *[
+        (
+            f"cdr_raa_{scale:g}",
+            lambda scale=scale: cdr(tri(fixture_rows("raa", scale)), **FEW),
+            "result_not_finite",
+        )
+        for scale in (1e-165, 1e-166)
+    ],
 ]
 
 
@@ -2712,6 +3015,50 @@ def test_a_seeded_fuzz_of_the_glm_meets_nothing_but_refusals():
         outcomes["answered"] = outcomes.get("answered", 0) + 1
     assert outcomes["answered"] > 40, sorted(outcomes.items())
     assert len(outcomes) > 10, sorted(outcomes.items())
+
+
+_CDR_POOL = {
+    "sigma_rule": ["log_linear", "mack", "x", None],
+    "zero_cells": ["observed", "observed", "missing", "x"],
+    "dev_grain_months": [12, 12, 12, 3, 0],
+    "n_draws": [30, 30, 1, 2, 0, -1, 2.5, True, 2**63],
+    "seed": [None, 0, 7, -1, True, "3"],
+    "process": ["gamma", "gamma", "lognormal", "normal", "x", None],
+    "parameter_risk": [True, True, False, 1, None],
+    "quantiles": [(0.5, 0.995), (), (0.0,), (1.5,), 0.5, (math.nan,), ("0.5",)],
+}
+
+
+def test_a_seeded_fuzz_of_the_one_year_cdr_meets_nothing_but_refusals():
+    """The same edits as the fuzz above, through ``one_year_cdr`` with random
+    options: every call gives finite numbers (a missing one a null) or exactly a
+    Refusal, and a RuntimeWarning is an error."""
+    rng = np.random.default_rng(20260926)
+    names = sorted(_FUZZ)
+    outcomes: dict[str, int] = {}
+    for _ in range(1200):
+        edited = _fuzz_case(rng, _FUZZ[names[int(rng.integers(0, len(names)))]])
+        options = {"n_draws": 30, "seed": 1}
+        for name, pool in _CDR_POOL.items():
+            if rng.random() < 0.1:
+                options[name] = pool[int(rng.integers(0, len(pool)))]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            try:
+                result = cdr(_as_table(edited) if edited else pa.table({}), **options)
+            except Refusal as refusal:
+                assert type(refusal) is Refusal
+                json.dumps(refusal.to_dict(), allow_nan=False)
+                outcomes[refusal.reason] = outcomes.get(refusal.reason, 0) + 1
+                continue
+        for name in result.TABLES:
+            for column in getattr(result, name).columns:
+                if pa.types.is_floating(column.type):
+                    present = column.drop_null().to_numpy()
+                    assert np.isfinite(present).all(), (name, column)
+        outcomes["answered"] = outcomes.get("answered", 0) + 1
+    assert outcomes["answered"] > 100, sorted(outcomes.items())
+    assert len(outcomes) > 8, sorted(outcomes.items())
 
 
 @pytest.mark.tieout

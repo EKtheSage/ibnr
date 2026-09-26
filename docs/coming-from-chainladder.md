@@ -404,6 +404,80 @@ Where the answers differ from chainladder-python 0.9.2, and why:
   (`degenerate_fit`, or `did_not_converge` if the fit only ran out of
   iterations) with the age or origin named. `link="identity"` fits it.
 
+## The one-year claims development result
+
+chainladder-python has no one-year view. `methods.one_year_cdr` gives it: how
+far next year's re-estimate of the chain-ladder ultimate can move, once the
+next diagonal has arrived and the factors are re-estimated with it. It fits
+Mack's chain ladder (volume-weighted, every link ratio, no tail, an annual
+step) and returns two answers side by side:
+
+- `cdr_se`, the closed form of Merz and Wuthrich (2008), per origin and in
+  total, with Mack's run-off standard error `runoff_se` beside it. These match
+  R's `CDR(MackChainLadder(MW2014, est.sigma="Mack"))` to 6 decimals. Under
+  `sigma_rule="log_linear"` they match R's `est.sigma="log-linear"` only where
+  R keeps that rule: R switches to Mack's rule, with a warning, when the
+  regression's p-value is above 0.05, and ibnr, like chainladder-python, always
+  extrapolates. On R's `UKMotor`, for example, R's default gives a total
+  `CDR(1)S.E.` of 1024.36 (Mack's rule), while `one_year_cdr` gives 1030.17
+  and `sigma_rule="mack"` gives R's 1024.36.
+- A simulation of `n_draws` next years (20,000 by default): its mean and
+  standard deviation per origin and in total, quantiles with the mean beyond
+  each (`tvar`), and every draw.
+
+```python
+cdr = methods.one_year_cdr(cells, seed=42)
+cdr.to_polars()  # cdr_se, runoff_se and the simulated mean and sd, by origin
+cdr.to_polars("totals")
+cdr.to_polars("quantiles")  # the total's rows have a null origin
+```
+
+Every simulated number is about `ultimate_change`, next year's ultimate minus
+today's: positive is a strengthening. `kernels.simulate_one_year_cdr` uses the
+opposite sign (positive is a release), so do not mix the two without flipping
+one.
+
+| R `ChainLadder` / the Reserving app's `/cdr` | ibnr |
+|---|---|
+| `CDR(MackChainLadder(tri, est.sigma="Mack"))`, its `CDR(1)S.E.` column | `methods.one_year_cdr(cells, sigma_rule="mack").origins["cdr_se"]` |
+| its `Mack.S.E` column | `.origins["runoff_se"]` (the same as `methods.mack(cells, zero_cells="observed")`'s `mack_se`) |
+| `/cdr`'s `cdr.n_sims`, `cdr.random_state` | `n_draws`, `seed` |
+| `cdr.process`, `cdr.parameter_risk`, `cdr.sigma_rule` | `process`, `parameter_risk`, `sigma_rule` |
+| `cdr.percentiles` (percent) | `quantiles` (probabilities: divide by 100) |
+| `central_ultimate`, `central_ibnr`, `latest` | `origins["ultimate"]`, `["ibnr"]`, `["latest"]` |
+| `per_origin[].mean`, `.std` | `origins["mean_ultimate_change"]`, `["sd_ultimate_change"]` |
+| `total_delta_ultimate.mean`, `.std` | `totals["mean_ultimate_change"]`, `["sd_ultimate_change"]` |
+| `total_delta_ultimate.percentiles`, `.tvar` | the rows of `quantiles` whose `origin` is null |
+| `analytic.cdr_se`, `.runoff_se`, `.total_cdr_se`, `.total_runoff_se` | `origins["cdr_se"]`, `["runoff_se"]`, `totals["cdr_se"]`, `["runoff_se"]` |
+
+For the same seed, draw count and options, the draws are the ones the
+Reserving app's `/cdr` gives today through the gallery's `mack` entry, bit for
+bit, and so is every number in the table above, with one difference: an
+origin at its last age never moves, and the app shows its `per_origin[].mean`
+as -0.0 where ibnr has 0.0 (the same number, without the sign bit that
+negating 0.0 gives). Two defaults differ from that
+route, so pass them to keep its numbers: `sigma_rule` is `"log_linear"` here
+(chainladder's default) and `"mack"` there; and the default quantiles are the
+app's default percentiles divided by 100, but 99.9 / 100 and 0.999 are not the
+same double, so send `[p / 100 for p in percentiles]`.
+
+Where it is stricter:
+
+- **An annual step only.** One development step is one year only on an
+  annual triangle, so a `dev_grain_months` other than 12 is refused
+  (`not_supported`).
+- **Zeros.** `zero_cells` defaults to `"observed"` here (zeros are data), unlike
+  the other methods. `"missing"` is taken only on a triangle with no zero,
+  where it changes nothing, because the one-year formulas have not been checked
+  with link ratios left out; a zero under it is refused (`not_supported`).
+  Under either rule a still-developing origin whose latest cumulative is zero
+  is refused (`variance_not_estimable`): Mack's variance divides by it.
+- **No development options and no tail.** The formulas are derived for the
+  plain volume-weighted chain ladder, so `one_year_cdr` does not take them.
+- **A limit on the draws.** `n_draws` times the number of origins above
+  100,000,000 (about 7 GB while the draws are summarised) is refused
+  (`invalid_option`). The app caps its own requests at 50,000 draws.
+
 ## When a method refuses
 
 chainladder-python has no error class of its own: bad input raises whatever

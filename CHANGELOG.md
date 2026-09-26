@@ -534,6 +534,104 @@ before this change as raw Arrow bytes and exact refusal messages, eight sets of
 options on raa, GenIns, UKMotor, ABC, MW2014 and 130 clrd paid triangles, 1,218
 cases, all identical.
 
+### `methods.one_year_cdr`: the one-year claims development result
+
+A new function, `methods.one_year_cdr(cells, dev_grain_months=12,
+sigma_rule="log_linear", zero_cells="observed", n_draws=20_000, seed=None,
+process="gamma", parameter_risk=True, quantiles=(0.5, 0.75, 0.9, 0.95, 0.99,
+0.995, 0.999))`, so a service can answer a one-year question without
+chainladder-python, the Triangle layer or pandas. It fits Mack's chain ladder
+(`kernels.fit_mack_grid`) and returns a new `OneYearCDRResult` with four
+pyarrow Tables and `to_polars()`:
+
+- `origins`: the latest amount, today's chain-ladder ultimate and IBNR, the
+  simulated mean and standard deviation of `ultimate_change`, the
+  Merz-Wuthrich standard error `cdr_se` and Mack's run-off standard error
+  `runoff_se`;
+- `totals`: the same for the sum over the origins, and `n_draws`;
+- `quantiles`: the quantile and the mean beyond it (`tvar`) at each level, for
+  the total (a null origin) and for each origin;
+- `draws`: every draw of every origin.
+
+`ultimate_change` is next year's ultimate minus today's, so positive is a
+strengthening. `kernels.simulate_one_year_cdr` has the opposite sign.
+
+**The draws are the Reserving app's.** The seed is turned into a random stream
+the same way the gallery's `mack` entry does for a Triangle with the one
+segment `Total` and the field `values`, which is what the app's `/cdr` route
+fits after `Triangle.from_chainladder`. For the same seed, draw count and
+options, the draws are equal to the last bit, and so is every number `/cdr`
+returns (latest, ultimates, IBNR, the per-origin and total means and standard
+deviations, the total's percentiles and tail means, and the four analytic
+standard errors). One difference is on purpose: an origin at its last age
+never moves, and the app's negated draws hold -0.0 for it, so `/cdr` shows its
+mean as -0.0; this function has 0.0 there, in the draws and in every summary.
+Checked on raa and GenIns under six sets of options, from 2 to 20,000 draws,
+both through chainladder exactly as the app parses its request
+(`tieout`) and through an ibnr Triangle (on the core leg). For the app: pass
+`sigma_rule` through (its default is `"mack"`, this function's is
+`"log_linear"`), and send `quantiles=[p / 100 for p in percentiles]` rather than
+relying on the default, because 99.9 / 100 and 0.999 are not the same double.
+The Merz-Wuthrich figures match R's `CDR(MackChainLadder(MW2014,
+est.sigma="Mack"))` to 6 decimals through this function too.
+
+Importing `ibnr.methods` still loads no ibis, pandas or scipy, and neither does
+this function when it runs: its first call imports `numpy.random` and
+`numpy.ma` (16 modules), and 20,000 draws of raa took about 0.1 s on the dev
+box (0.05 s the second time). To make that hold, `kernels/cdr.py` now imports
+pandas, `PredictiveDistribution` and the ODP bootstrap (which needs scipy)
+inside the functions that use them, and `kernels/rng.py` imports
+`HoldoutCells` (which needs ibis and pandas) inside `heldout_stream`. The
+draws come from a new private `kernels.cdr._one_year_cdr_draws`, which
+`simulate_one_year_cdr` now calls before wrapping its answer in a
+`PredictiveDistribution`.
+
+Refusals, all in the caller's terms: a `dev_grain_months` other than 12
+(`not_supported`: one step is a year only on an annual triangle); a zero
+cumulative under `zero_cells="missing"` (`not_supported`, checked before the
+fit, because the one-year formulas have not been checked with the link ratios
+that rule leaves out; on a triangle with no zero the two rules are the same
+fit); a still-developing origin whose latest cumulative is zero
+(`variance_not_estimable`, under either rule); everything `methods.mack`
+refuses; and `n_draws`, `seed`, `process`, `parameter_risk` and `quantiles`
+outside their values (`invalid_option`; a bare number for `quantiles`, and
+percentages such as 99.5, are refused rather than dropped or read). `n_draws`
+times the number of origins above 100,000,000 is refused too
+(`invalid_option`): each number takes about 70 bytes at the peak, so that is
+about 7 GB, and a larger count would otherwise reach numpy and fail there with
+a `MemoryError` or a `ValueError`. Amounts near the smallest double are
+refused with the words `methods.mack` uses, "too small"; the one-year formula
+turns them into NaN, which the check for numbers that are not finite would
+have called too large. No refusal code was added. The kernels refuse the grain
+and the zero cases too, in words about `MackFit` and Triangle methods; the
+front door checks first so the message names its own options.
+
+**One kernel number moves, in its last one or two binary digits.**
+`kernels.one_year_cdr` computed each origin's own-process term of the total
+as `ult**2 * ratio / C`, and `ult**2 * ratio` is on the scale of an amount
+cubed. Below about 1e-103 it read 0, so the total `cdr_se` came out too low
+with nothing refused (16% low on a 3 x 3 triangle scaled by 1e-112), and above
+about 1e103 it was infinite, so the total was refused though every number in
+it fits. It is now `ult**2 * (ratio / C)`, and the standard errors now scale
+with the amounts from 1e-140 to 1e120 (tested on raa and a 3 x 3 triangle).
+The per-origin and run-off figures do not move; the total's msep moved in 51
+of 374 fits (raa, GenIns, UKMotor, ABC, MW2014 and every sixth clrd paid and
+incurred triangle, under both sigma rules), by at most 3.3e-16 of its value.
+The MW2014 tie-out to R is unchanged.
+
+`methods.__all__` gains `one_year_cdr` and `OneYearCDRResult`. **Nothing
+else moved** apart from that total: with the code before this change,
+one-year CDR draws (`simulate_one_year_cdr` with three process laws, with and
+without parameter risk, for an integer seed and a derived stream, and the ODP
+bootstrap with two process laws), the Merz-Wuthrich results and their
+`summary()`, `cdr_risk_measures`, `cdr_methods()` and `methods.mack` under
+both sigma rules and both zero rules (raw Arrow bytes, or the exact refusal)
+were hashed on raa, GenIns and clrd paid triangles (every sixth company and
+line: 130, of which 90 come out of chainladder's frame as a run-off triangle;
+the other 40 are empty or have holes where chainladder dropped a zero), and
+the gallery `mack` entry's `cdr_distribution` and `predict` draws on raa and
+GenIns: 9,381 hashed answers and 330 refusals, all identical.
+
 ## 0.7.2 - 2026-09-24
 
 Three pull requests (#149, #152, #153) for moving a reserving service off

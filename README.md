@@ -8,7 +8,8 @@ triangle data layer backed by duckdb and polars (via ibis). A companion to
 **Coming from chainladder-python?** `from ibnr import methods`, then
 `methods.chain_ladder(cells)`, `methods.mack(cells)`,
 `methods.bornhuetter_ferguson(...)`, `methods.benktander(...)`,
-`methods.cape_cod(...)` or `methods.tweedie_glm(cells, power=...)`: see [Run a chain
+`methods.cape_cod(...)`, `methods.tweedie_glm(cells, power=...)` or
+`methods.one_year_cdr(cells)`: see [Run a chain
 ladder](#run-a-chain-ladder) and [the lookup table from chainladder-python to
 ibnr](https://github.com/EKtheSage/ibnr/blob/main/docs/coming-from-chainladder.md).
 
@@ -235,6 +236,10 @@ cumulative of zero as a missing cell, as chainladder-python does, and
 `methods.tweedie_glm(cells, power=1.5)` fits a Tweedie GLM to the increments
 (power 1, the default, is the over-dispersed Poisson model and gives the chain
 ladder's ultimates) and adds `cells` and `coefficients` tables to the result.
+`methods.one_year_cdr(cells, seed=42)` gives the one-year claims development
+result on Mack's chain ladder: the Merz-Wuthrich standard error beside a
+simulation of next year, with quantiles and every draw
+([details](https://github.com/EKtheSage/ibnr/blob/main/docs/coming-from-chainladder.md#the-one-year-claims-development-result)).
 Coming from chainladder-python,
 [this lookup table](https://github.com/EKtheSage/ibnr/blob/main/docs/coming-from-chainladder.md) maps its classes and
 attributes onto these functions. Import it with `from ibnr import methods`: a
