@@ -384,6 +384,37 @@ def test_a_nonzero_increment_against_a_zero_fitted_mean_is_degenerate():
     assert caught.value.reason == "degenerate_fit"
 
 
+def test_an_excluded_cell_with_a_zero_fitted_mean_is_not_degenerate():
+    """Excluding the only ratio at the last age with a factor of 1.0 in its place
+    makes 1981's fitted increment at 120 months 0 against 172 paid; that cell's
+    residual is out of the pool, so nothing is undefined."""
+    candidate = ConventionalCandidate(
+        "cl", exclude=((dt.date(1981, 1, 1), 108),), unsupported_factor="unity"
+    )
+    boot = setup_of(RAA, candidate).boot
+    assert boot.fitted[0, 9] == 0.0 and boot.inc[0, 9] == 172.0
+    assert POOL_REASONS[boot.pool_reason[0, 9]] == "excluded_link"
+    assert np.isfinite(boot.pool).all()
+
+
+def test_a_tail_before_the_last_age_leaves_no_undefined_hat_factor():
+    """With a tail attached at 84 months the fitted values come from the curve,
+    so 1981's last cell, alone in its development column (leverage one), keeps
+    a residual that is not 0; its hat factor 1 / sqrt(0) is undefined, so it is
+    adjusted to 0 and left out of the centred pool, as chainladder-python
+    leaves it. Mutation: divide by sqrt(1 - h) there; the pool is not finite."""
+    tail = TailSpec("exponential", attach_lag=84)
+    boot = setup_of(
+        RAA, ConventionalCandidate("cl", tail=tail), adjustment="hat", pool="centred"
+    ).boot
+    assert boot.leverage[0, 9] > LEVERAGE_ONE and abs(boot.unscaled[0, 9]) > 1e-3
+    assert not boot.pool_mask[0, 9]
+    assert POOL_REASONS[boot.pool_reason[0, 9]] == "leverage_one"
+    assert np.isfinite(boot.pool).all() and abs(boot.pool.mean()) < 1e-12
+    everything = setup_of(RAA, ConventionalCandidate("cl", tail=tail), adjustment="hat", pool="all")
+    assert everything.boot.residuals[0, 9] == 0.0
+
+
 def test_too_few_cells_and_an_empty_pool_are_refused():
     tiny = grid_of(rows_of([[100.0, 150.0], [120.0, np.nan]]))
     with pytest.raises(Refusal, match="more cells than parameters") as caught:

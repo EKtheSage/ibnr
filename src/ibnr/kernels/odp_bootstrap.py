@@ -53,6 +53,7 @@ chainladder-python's ``BootstrapODPSample`` convention, without its defects
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -339,13 +340,15 @@ def fit_odp_bootstrap(
         )
     # Under "refuse" no fitted mean is negative here, so != 0 is > 0, R's rule.
     nonzero = obs_mask & (fitted != 0)
-    dead = obs_mask & ~nonzero
+    # An excluded cell's residual enters nothing, so a zero fitted mean there
+    # (a link left with no ratio and a factor of 1.0) is not a problem.
+    dead = obs_mask & ~nonzero & ~excluded
     if (inc[dead] != 0).any():
         raise Refusal(
             "degenerate_fit",
             f"{int((inc[dead] != 0).sum())} cell(s) have a zero fitted "
             "mean against a non-zero observed increment, so their Pearson residual is "
-            "undefined; the cohort's chain-ladder fit is degenerate: {cells}",
+            "undefined and the fit is degenerate: {cells}",
             option="cells",
             cells=cells(dead & (np.nan_to_num(inc) != 0), inc),
         )
@@ -393,9 +396,16 @@ def fit_odp_bootstrap(
                 options=("residual_adjustment", "residual_pool"),
                 given=adjustment,
             )
+    leverage_one = np.nan_to_num(leverage, nan=0.0) > LEVERAGE_ONE
     if exact is None:
-        exact = np.nan_to_num(leverage, nan=0.0) > LEVERAGE_ONE
+        exact = leverage_one
     exact = candidates & np.asarray(exact, dtype=bool)
+    # A cell of leverage one has no hat factor (1 / sqrt(0)). With the GLM's own
+    # fitted values its residual is 0 anyway; with factors from elsewhere (a
+    # tail attached before the last age) it need not be, and it is then
+    # treated as chainladder-python treats it: adjusted to 0, and out of the
+    # centred pool.
+    undefined = candidates & leverage_one if adjustment == "hat" else np.zeros_like(candidates)
 
     if adjustment == "dof":
         adjusted = in_scale * np.sqrt(n_cells / dof)
@@ -404,8 +414,8 @@ def fit_odp_bootstrap(
     else:
         with np.errstate(divide="ignore", invalid="ignore"):
             adjusted = in_scale / np.sqrt(1.0 - leverage)
-        adjusted[candidates & exact] = 0.0
-    in_pool = candidates & ~exact if pool == "centred" else candidates
+        adjusted[exact | undefined] = 0.0
+    in_pool = candidates & ~(exact | undefined) if pool == "centred" else candidates
     residuals = np.where(in_pool, adjusted, np.nan)
     values = residuals[in_pool]
     if pool == "centred":
@@ -422,7 +432,7 @@ def fit_odp_bootstrap(
     reason[obs_mask] = POOL_REASONS.index("pooled")
     reason[obs_mask & ~nonzero] = POOL_REASONS.index("zero_fitted_mean")
     reason[candidates & ~in_pool] = POOL_REASONS.index("leverage_one")
-    reason[nonzero & excluded] = POOL_REASONS.index("excluded_link")
+    reason[obs_mask & excluded] = POOL_REASONS.index("excluded_link")
     return ODPBootstrapFit(
         inc=inc,
         fitted=fitted,
@@ -1006,7 +1016,8 @@ def draw_runoff(
     """
     _choose("process", process, ODP_PROCESS_LAWS)
     count = _whole(n_draws, "n_draws", 1)
-    cv = float(prior_cv)
+    number = isinstance(prior_cv, int | float | np.integer | np.floating)
+    cv = float(prior_cv) if number and not isinstance(prior_cv, bool | np.bool_) else math.nan
     if not np.isfinite(cv) or cv < 0:
         raise Refusal(
             "invalid_option",
@@ -1023,6 +1034,14 @@ def draw_runoff(
         )
     if prior_multiplier is not None and not projection.has_prior:
         raise ValueError("prior_multiplier needs a method with an a priori loss ratio")
+    if not np.isfinite(boot.phi) or not np.isfinite(boot.pool).all():
+        raise Refusal(
+            "result_not_finite",
+            "the Pearson scale or a residual is not a finite number: the amounts are too "
+            "large, or too far apart, for their squares to stay finite. Scale them (work in "
+            "thousands, say) and scale the answer back",
+            option="cells",
+        )
     pool = boot.pool
     n_pool = pool.size
     n_w, n_d = boot.n_w, boot.n_d
@@ -1063,7 +1082,6 @@ def draw_runoff(
             index = np.minimum((u * n_pool).astype(np.intp), n_pool - 1)
         else:
             index = residual_index[start:stop]
-        pseudo = np.cumsum(np.where(mask, pool[index] * scale + mean, 0.0), axis=2)
         mult = None
         if prior_multiplier is not None:
             mult = prior_multiplier[start:stop]
@@ -1072,17 +1090,20 @@ def draw_runoff(
             mult = np.exp(np.sqrt(spread) * z - spread / 2)
         if mult is not None:
             multipliers[start:stop] = mult
-        found = future_cell_means(projection, pseudo, prior_multiplier=mult)
-        means = found.means
-        # A draw whose means are not finite is counted and refused below; its
-        # means are set to 0 first only so the noise law is never handed them.
-        bad = ~np.isfinite(means).all(axis=(1, 2))
-        if bad.any():
-            means = np.where(bad[:, None, None], 0.0, means)
-        if process_noise and boot.phi > 0:
-            with np.errstate(over="ignore"):
+        # Amounts near the largest double can overflow anywhere below; such a draw
+        # is not finite, and is counted and refused, so numpy's warnings say
+        # nothing more.
+        with np.errstate(all="ignore"):
+            pseudo = np.cumsum(np.where(mask, pool[index] * scale + mean, 0.0), axis=2)
+            found = future_cell_means(projection, pseudo, prior_multiplier=mult)
+            means = found.means
+            # A draw whose means are not finite is counted and refused below; its
+            # means are set to 0 first only so the noise law is never handed them.
+            bad = ~np.isfinite(means).all(axis=(1, 2))
+            if bad.any():
+                means = np.where(bad[:, None, None], 0.0, means)
+            if process_noise and boot.phi > 0:
                 means = _od_process_noise(process_stream, means, boot.phi, law=process)
-        with np.errstate(over="ignore", invalid="ignore"):
             chunk_ibnr = means.sum(axis=2)
         bad |= ~np.isfinite(chunk_ibnr).all(axis=1)
         not_finite += int(bad.sum())
