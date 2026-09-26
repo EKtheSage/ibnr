@@ -103,9 +103,12 @@ reference:
       - methods.cape_cod
       - methods.tweedie_glm
       - methods.one_year_cdr
+      - methods.odp_bootstrap
       - name: methods.ReserveResult
         members: true
       - name: methods.OneYearCDRResult
+        members: true
+      - name: methods.BootstrapResult
         members: true
       - name: methods.Refusal
         members: true

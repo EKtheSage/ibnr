@@ -488,9 +488,10 @@ def test_seed_zero_reproduces_and_a_seed_sequence_is_the_same_as_its_integer():
 
 
 def test_the_draws_do_not_depend_on_the_chunk_size_and_a_run_is_a_prefix_of_a_longer_one():
-    """9 x 9 cells, so a chunk of one draw holds an odd count of residual picks:
-    Generator.integers would drop half a 64-bit number at each chunk's end.
-    Mutation: pick residuals with ``integers``; the chunk sizes disagree."""
+    """Each of the three streams is read on from where the last chunk left it,
+    so the chunk size moves no bit (9 x 9 cells, an odd count per draw, with a
+    priori multipliers). Mutation: start a chunk's residual generator afresh
+    from the seed; the chunk sizes disagree."""
     setup = setup_of(
         grid_of(rows_of(odp_matrix(9))),
         ConventionalCandidate("bf", expected_loss_ratio=0.9),

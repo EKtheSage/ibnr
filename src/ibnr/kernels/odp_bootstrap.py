@@ -994,10 +994,8 @@ def draw_runoff(
     for bit whatever ``chunk_draws`` is, the first ``k`` draws of a run are a
     ``k``-draw run, and changing ``process`` (or turning the noise off) leaves
     the simulated triangles unchanged. A residual is picked with one uniform
-    number per cell, ``floor(u * n_pool)``, not with ``Generator.integers``:
-    ``integers`` draws small ranges 32 bits at a time and discards the unused
-    half at the end of each call, so a chunk holding an odd count of cells would
-    shift every later draw.
+    number per cell, ``floor(u * n_pool)``, so each cell takes exactly one
+    64-bit number from its stream whatever the pool's size.
 
     ``prior_cv`` (Bornhuetter-Ferguson, Benktander and Cape Cod only) draws one
     a priori multiplier per draw, shared by every origin of the draw: lognormal

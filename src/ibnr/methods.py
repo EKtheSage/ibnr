@@ -15,6 +15,9 @@
 - :func:`one_year_cdr` (the one-year claims development result: how far next
   year's re-estimate of Mack's chain-ladder ultimate can move, as the
   Merz-Wuthrich standard error beside a simulation of next year)
+- :func:`odp_bootstrap` (England and Verrall's over-dispersed Poisson
+  bootstrap of the whole run-off, refitting the chain ladder,
+  Bornhuetter-Ferguson, Benktander or Cape Cod on every simulated triangle)
 
 Each takes the cells of ONE triangle as a table with three columns, one row per
 observed cell:
@@ -43,6 +46,10 @@ Any table Arrow can read is accepted: a polars DataFrame, a pyarrow Table or
 RecordBatch, anything else that offers the Arrow stream interface, or a dict
 of columns (Python lists or numpy arrays, as a service reading JSON has them).
 Other columns are ignored. Each function returns a :class:`ReserveResult`
+(:func:`one_year_cdr` a :class:`OneYearCDRResult`, :func:`odp_bootstrap` a
+:class:`BootstrapResult`, which carries the point method's ``ReserveResult``
+as ``central``), whose tables are pyarrow Tables, so a service needs no
+DataFrame library at all; for analysis,
 (:func:`one_year_cdr` a :class:`OneYearCDRResult`), whose tables are pyarrow
 Tables, so a service needs no DataFrame library at all; for analysis,
 ``result.to_polars()`` turns any of them into a polars DataFrame
