@@ -604,16 +604,6 @@ def _bounds_exhausted(rules: LinkRules, j: int, step: int, n: int, left: int) ->
     )
 
 
-#: The rules that pick a link ratio by where it is, not by its size.
-POSITION_REASONS = (
-    "zero_cell",
-    "undefined_ratio",
-    "history_window",
-    "explicit_exclusion",
-    "valuation_exclusion",
-)
-
-
 def position_rules(rules: LinkRules) -> LinkRules:
     """``rules`` without the rules that pick a link ratio by its size.
 
