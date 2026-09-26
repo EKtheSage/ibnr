@@ -389,6 +389,29 @@ def test_a_negative_fitted_mean_is_refused_or_counted():
     assert (noisy[:, negative] <= 0).all()
 
 
+@pytest.mark.parametrize(
+    "tail",
+    [
+        TailSpec("constant", factor=1.05),
+        TailSpec("exponential"),
+        TailSpec("constant", factor=0.9, attach_lag=72),
+    ],
+    ids=["constant_beyond", "curve_beyond", "falling_tail_after_the_fall"],
+)
+def test_a_falling_triangle_with_a_tail_is_refused_for_its_increments(tail):
+    """The falling triangle's factor below 1 (60 to 72 months) is the data's,
+    not the tail's. With a tail it is refused for its negative increments, as
+    it is without one and as it was while the tail was in the fitted values;
+    even a tail that falls too is named second, after the data. Mutation: run
+    _refuse_a_falling_tail before fit_odp_bootstrap (as adff0cc did, which also
+    counted the factors before the attachment); the refusal blames the tail
+    for the data's fall."""
+    grid = grid_of(rows_of(_falling_matrix()))
+    with pytest.raises(Refusal) as caught:
+        setup_of(grid, ConventionalCandidate("cl", tail=tail), negative_increments="refuse")
+    assert caught.value.reason == "negative_increment"
+
+
 def test_a_nonzero_increment_against_a_zero_fitted_mean_is_degenerate():
     """72 to 84 months: one origin falls by 500 and the other rises by 500, so
     the factor is exactly 1, the fitted increments are 0, and the observed ones
