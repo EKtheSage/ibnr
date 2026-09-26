@@ -346,15 +346,33 @@ def _falling_matrix() -> np.ndarray:
 
 
 def test_a_negative_fitted_mean_is_refused_or_counted():
-    """With every increment zero or more, only a factor below 1 makes a fitted
-    mean negative: here a constant tail of 0.9 attached at 60 months. A
-    triangle that falls is refused for its negative increments first; under
-    ``reflect`` its negative fitted means are counted."""
+    """Only a factor below 1 makes a fitted mean negative. With every increment
+    zero or more no link factor of the data is below 1, so fit_odp_bootstrap
+    is handed one directly here. A constant tail of 0.9 attached at 60 months
+    stays out of the fitted values, but puts the refit's steps below 1 and
+    the future cells' means below 0, so under ``refuse`` it is refused with
+    the same reason, naming the future cells; under ``reflect`` it runs and
+    the fitted values are the untailed ones. A triangle that falls is refused
+    for its negative increments first; under ``reflect`` its negative fitted
+    means are counted. Mutation: drop _refuse_a_falling_tail; the second
+    refusal is not raised."""
+    factors = fit_conventional_grid(ODP, CL).factors.copy()
+    factors[4:] = 0.95
+    with pytest.raises(Refusal, match="below 1") as caught:
+        fit_odp_bootstrap(
+            ODP["cum"], ODP["obs_mask"], ODP["latest_dev"], factors, dev_grain_months=12
+        )
+    assert caught.value.reason == "negative_fitted_mean"
+    assert caught.value.links == ((60, 72), (72, 84), (84, 96))
     shrinking = ConventionalCandidate("cl", tail=TailSpec("constant", factor=0.9, attach_lag=60))
     with pytest.raises(Refusal, match="below 1") as caught:
         setup_of(ODP, shrinking, negative_increments="refuse")
     assert caught.value.reason == "negative_fitted_mean"
     assert caught.value.links == ((60, 72), (72, 84), (84, 96))
+    assert caught.value.cells and all(cell.dev_lag > 60 for cell in caught.value.cells)
+    reflected = setup_of(ODP, shrinking)
+    assert reflected.boot.fitted.tobytes() == setup_of(ODP).boot.fitted.tobytes()
+    assert reflected.boot.n_negative_fitted == 0
     grid = grid_of(rows_of(_falling_matrix()))
     with pytest.raises(Refusal) as caught:
         setup_of(grid, negative_increments="refuse")
@@ -397,30 +415,28 @@ def test_an_excluded_cell_with_a_zero_fitted_mean_is_not_degenerate():
     assert np.isfinite(boot.pool).all()
 
 
-def test_a_tail_before_the_last_age_leaves_no_undefined_hat_factor():
-    """With a tail attached at 84 months the fitted values come from the curve,
-    so 1981's last cell, alone in its development column (leverage one), keeps
-    a residual that is not 0; its hat factor 1 / sqrt(0) is undefined, so it is
-    adjusted to 0 and left out of the centred pool, as chainladder-python
-    leaves it. Mutation: divide by sqrt(1 - h) there; the pool is not finite."""
+@pytest.mark.parametrize("adjustment", ["hat", "dof", "none"])
+@pytest.mark.parametrize("pool", ["centred", "all"])
+def test_a_tail_before_the_last_age_leaves_the_fitted_values_and_the_pool_alone(adjustment, pool):
+    """The fitted values and the residuals come from the factors before the tail,
+    so a curve attached at 84 months gives the untailed bootstrap bit for bit:
+    1981's last cell, alone in its development column (leverage one), is
+    fitted exactly, its residual is 0 and it is out of the centred pool, and
+    no hat factor is undefined. Mutation: pass the tailed factors to
+    fit_odp_bootstrap; the fitted values move and the cell keeps a residual."""
     tail = TailSpec("exponential", attach_lag=84)
-    boot = setup_of(
-        RAA, ConventionalCandidate("cl", tail=tail), adjustment="hat", pool="centred"
-    ).boot
-    assert boot.leverage[0, 9] > LEVERAGE_ONE and abs(boot.unscaled[0, 9]) > 1e-3
-    assert not boot.pool_mask[0, 9]
-    assert POOL_REASONS[boot.pool_reason[0, 9]] == "leverage_one"
-    assert np.isfinite(boot.pool).all() and abs(boot.pool.mean()) < 1e-12
-    everything = setup_of(RAA, ConventionalCandidate("cl", tail=tail), adjustment="hat", pool="all")
-    assert everything.boot.residuals[0, 9] == 0.0
-    # Without the hat the leverage does not decide the centred pool: the cells
-    # fitted exactly do, and a factor from the tail is not the origin's own
-    # ratio, so the cell is not fitted exactly and is resampled. Mutation: let
-    # a tail factor count as the only ratio at its age; the cell leaves the pool.
-    dof = setup_of(RAA, ConventionalCandidate("cl", tail=tail), adjustment="dof", pool="centred")
-    assert dof.boot.pool_mask[0, 9]
-    assert POOL_REASONS[dof.boot.pool_reason[0, 9]] == "pooled"
-    assert dof.boot.pool.size == 54
+    options = {"adjustment": adjustment, "pool": pool}
+    boot = setup_of(RAA, ConventionalCandidate("cl", tail=tail), **options).boot
+    plain = setup_of(RAA, CL, **options).boot
+    assert boot.fitted.tobytes() == plain.fitted.tobytes()
+    assert boot.pool.tobytes() == plain.pool.tobytes()
+    assert boot.phi == plain.phi
+    assert boot.leverage[0, 9] > LEVERAGE_ONE and abs(boot.unscaled[0, 9]) < 1e-9
+    assert np.isfinite(boot.pool).all()
+    if pool == "centred":
+        assert not boot.pool_mask[0, 9]
+        assert POOL_REASONS[boot.pool_reason[0, 9]] == "leverage_one"
+        assert boot.pool.size == 53 and abs(boot.pool.mean()) < 1e-12
 
 
 def test_too_few_cells_and_an_empty_pool_are_refused():
@@ -659,14 +675,17 @@ def test_refitting_the_fitted_triangle_gives_the_central_fit(method, average):
     returns it for every average, and the refit's ultimates are the central
     ones: the central fit and every draw share one arithmetic. With a trim, the
     refit keeps every ratio (the trim acted once) and still returns the central
-    factors. So does a curve attached at the last age (it refits to the
-    central curve) and a constant tail attached earlier (it reads no ratio);
-    a curve attached before the last age does not (next test)."""
+    factors. So does every tail: the fitted values come from the factors
+    before it, so a curve refits to the central curve wherever it is attached,
+    and a constant tail reads no ratio (next test for a curve attached
+    before the last age)."""
     for options in (
         {},
         {"drop_high": 1, "exhausted_exclusions": "keep"},
         {"history_periods": 4},
         {"tail": TailSpec("exponential")},
+        {"tail": TailSpec("exponential", attach_lag=60)},
+        {"tail": TailSpec("weibull", attach_lag=72)},
         {"tail": TailSpec("constant", factor=1.05, attach_lag=60)},
     ):
         candidate = _candidate(method, average=average, **options)
@@ -681,20 +700,64 @@ def test_refitting_the_fitted_triangle_gives_the_central_fit(method, average):
             assert found.tail_factor[0] == pytest.approx(setup.estimate.tail.tail_factor, 1e-12)
 
 
-def test_a_curve_attached_before_the_last_age_does_not_refit_to_the_central_curve():
-    """The one specification puts the curve in the factors that make the fitted
-    values (DECISIONS, G4 + G12), so past the attachment age the fitted
-    triangle's ratios are the curve's, and a curve fitted to them is not the
-    one fitted to the data. The methods docstring and
-    docs/coming-from-chainladder.md name this; change them with this test."""
-    for spec in (TailSpec("exponential"), TailSpec("exponential", attach_lag=72)):
+def test_a_curve_attached_before_the_last_age_refits_to_the_central_curve():
+    """The curve stays out of the fitted values (as in chainladder-python), so
+    the fitted triangle's ratios past the attachment age are the data's
+    factors, and the curve fitted to them is the one fitted to the data.
+    When the curve made the fitted values, genins's tail factor refitted to
+    1.02353 against the central 1.02950. The methods docstring and
+    docs/coming-from-chainladder.md say this; change them with this test.
+    Mutation: pass the tailed factors to fit_odp_bootstrap; this fails."""
+    for spec in (
+        TailSpec("exponential"),
+        TailSpec("exponential", attach_lag=72),
+        TailSpec("weibull", attach_lag=72),
+        TailSpec("inverse_power", attach_lag=60),
+    ):
         setup = setup_of(GENINS, ConventionalCandidate("cl", tail=spec))
         found = future_cell_means(setup.projection, fitted_triangle(setup.boot))
         moved = abs(found.tail_factor[0] / setup.estimate.tail.tail_factor - 1)
-        if spec.attach_lag is None:
-            assert moved < 1e-12
-        else:
-            assert moved > 1e-3  # 1.02353 against the central 1.02950
+        assert moved < 1e-12, spec
+        np.testing.assert_allclose(found.factors[0], setup.estimate.factors, rtol=1e-12)
+
+
+#: The simulated mean ultimate (20,000 draws, the front door's hat and
+#: centred pool, gamma process), as a share of the central IBNR, against
+#: chainladder-python 0.9.2's own offset on the same setting (BootstrapODPSample
+#: at 20,000 draws, then Development, TailCurve and Chainladder), each at two
+#: seeds; the Monte Carlo standard error is about 0.13% on genins and 0.03% on
+#: abc. Measured 2026-09-25:
+#:
+#: - genins, exponential at 72: ibnr +0.44%, +0.34%; chainladder +0.13%, +0.50%
+#:   (-6.2% in ibnr when the curve made the fitted values);
+#: - abc, exponential at 72: ibnr -0.30%, -0.28%; chainladder -0.32%, -0.29%
+#:   (-3.4% before).
+#:
+#: The band is 1% of the central IBNR: at least four standard errors from
+#: either measured offset, and far inside the old ones. A curve is not a
+#: straight line in the factors, so neither library's mean sits exactly on
+#: the central estimate; on raa with an inverse power curve at 60 months both
+#: sit far above it (ibnr +26%, chainladder +27% to +28%), which is the curve
+#: and not the fitted values, and is why raa is not in this test.
+TAILED_MEAN_BAND = 0.01
+
+
+@pytest.mark.parametrize("name", ["genins", "abc"])
+def test_a_curve_attached_before_the_last_age_keeps_the_mean_on_the_central_estimate(name):
+    """With the curve out of the fitted values, the simulated mean ultimate
+    stays on the central estimate, as it does in chainladder-python (numbers
+    at TAILED_MEAN_BAND). Mutation: pass the tailed factors to
+    fit_odp_bootstrap; the mean falls 6.2% (genins) and 3.4% (abc) of the
+    central IBNR below it."""
+    grid = grid_of(PUBLIC[name])
+    spec = TailSpec("exponential", attach_lag=72)
+    setup = setup_of(grid, ConventionalCandidate("cl", tail=spec), adjustment="hat", pool="centred")
+    central = np.asarray(setup.estimate.origins["ultimate"], dtype=float).sum()
+    latest = np.nansum(grid["cum"][np.arange(grid["n_w"]), grid["latest_dev"]])
+    drawn = _run(setup, n=20_000, seed=1)
+    assert not drawn.tail_fallback.any()
+    offset = (latest + drawn.ibnr.sum(axis=1).mean() - central) / (central - latest)
+    assert abs(offset) < TAILED_MEAN_BAND, offset
 
 
 @pytest.mark.parametrize("name", ["raa", "genins", "mw2014", "abc"])

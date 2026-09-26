@@ -616,7 +616,10 @@ class _Estimate:
 
     ``origins`` maps each column of ``ConventionalFit.origins`` to its values;
     ``selection`` and ``summary`` are the rows of ``factor_selection`` and
-    ``factor_summary``. :meth:`fit` builds the pandas tables.
+    ``factor_summary``. :meth:`fit` builds the pandas tables. ``factors`` are
+    the link factors after the tail's attachment and ``untailed_factors`` the
+    ones the development options gave before it (the same values without a
+    tail); the run-off bootstrap makes its fitted values from the latter.
     """
 
     candidate: ConventionalCandidate
@@ -628,6 +631,7 @@ class _Estimate:
     selection: list[dict[str, Any]]
     summary: list[dict[str, Any]]
     tail: TailFit | None = None
+    untailed_factors: np.ndarray | None = None
 
     def fit(self) -> ConventionalFit:
         import pandas as pd
@@ -692,6 +696,7 @@ def _estimate(grid: dict[str, Any], candidate: ConventionalCandidate, cutoff: dt
             cells=[_cell(periods, i, j, step, cum) for i, j in np.argwhere(bad)],
         )
     factors, selection, summary = _factors(grid, candidate, horizon // step)
+    untailed = factors
     tail = None
     if candidate.tail is not None:
         # the curve is fitted to the factors the development options produced; a
@@ -773,7 +778,9 @@ def _estimate(grid: dict[str, Any], candidate: ConventionalCandidate, cutoff: dt
             option="cells",
             cells=[RefusedCell(None, grid["origin_periods"][i]) for i in np.flatnonzero(bad)],
         )
-    return _Estimate(candidate, cutoff, grid, factors, beta, origins, selection, summary, tail)
+    return _Estimate(
+        candidate, cutoff, grid, factors, beta, origins, selection, summary, tail, untailed
+    )
 
 
 def pattern_beta(factors: np.ndarray, tail_factor=None) -> np.ndarray:
