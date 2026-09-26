@@ -59,7 +59,12 @@ again pulls the simulated mean 3.5% (the Reserving app's workbook) to 22%
 (raa) below the central estimate, measured on chainladder-python itself.
 Tails follow the same rule: a curve is refitted to each draw's own factors,
 and a draw whose curve fails its checks uses the central fit's curve, counted
-in `totals.n_draws_tail_fallback`.
+in `totals.n_draws_tail_fallback`. A curve attached before the last age
+(`tail_attach_lag`) is in the factors that make the fitted values, so a
+refit of the fitted triangle does not return the central curve, and the
+mean of the draws moves away from the central estimate: without process
+noise, 6.4% below it on genins with an exponential curve attached at 72
+months, where chainladder-python is 0.2% above (the list below).
 
 **Different from chainladder-python 0.9.2, on purpose** (each is in
 `docs/coming-from-chainladder.md`):
@@ -96,6 +101,16 @@ in `totals.n_draws_tail_fallback`.
   negative. `prior_cv = apriori_sigma / apriori` for Bornhuetter-Ferguson and
   Benktander, `prior_cv = apriori_sigma` for Cape Cod, keeps its first two
   moments. The central fit never draws.
+- A tail curve attached before the last age makes the fitted values; in
+  chainladder's sampler it applies to the refit only. Without process noise,
+  attached at 72 months, the mean of the draws is 6.4% (exponential) and
+  7.2% (Weibull) below the central estimate on genins, against 0.2% and 0.8%
+  above in chainladder, and 3.3% and 4.3% below on abc, against 0.2% and
+  0.1% below.
+- With negative fitted means (`negative_increments="reflect"`) the hat
+  matrix is weighted by `|m|`; chainladder weights it by the signed `m`, so
+  the leverages differ (by up to 1.2e-3 on the first liab triangle) and so
+  do the draws.
 
 **Tie-outs.** Fed chainladder-python 0.9.2's residual stream, the simulated
 triangles, the scale, the refitted ultimates and, with its gamma layout,

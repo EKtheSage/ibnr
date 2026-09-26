@@ -2054,6 +2054,43 @@ CASES = [
         {},
     ),
     (
+        # one development age: chain_ladder answers (an ibnr of 0), the bootstrap
+        # has no development step to fit
+        "ob_one_development_age",
+        lambda: ob(tri([(2001, 12, 100.0)])),
+        "not_identified",
+        "cells",
+        None,
+        [],
+        [],
+        [],
+        {},
+    ),
+    (
+        "ob_one_development_age_two_origins",
+        lambda: ob(tri([(2001, 12, 100.0), (2002, 12, 50.0)])),
+        "not_identified",
+        "cells",
+        None,
+        [],
+        [],
+        [],
+        {},
+    ),
+    (
+        # 25,000,001 draws of 4 origins is more than 100,000,000 numbers; refused
+        # before any draw is made
+        "ob_too_many_draws",
+        lambda: ob(n_draws=25_000_001),
+        "invalid_option",
+        "n_draws",
+        None,
+        [],
+        [],
+        [],
+        {"given": 25_000_001},
+    ),
+    (
         "ob_amounts_too_large",
         # the draws are finite, and their squares, for the standard deviation, are not
         lambda: ob(tri([(o, d, v * 1e300) for o, d, v in BASE])),

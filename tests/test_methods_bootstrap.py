@@ -156,7 +156,12 @@ def test_central_is_the_point_method_for_the_same_options(method):
 def test_the_summaries_are_the_draws_summarised():
     result = boot(n_draws=400)
     draws = floats(result.draws, "ibnr").reshape(400, 10)
-    assert result.draws["draw"].to_pylist()[:12] == [0] * 10 + [1, 1]
+    assert result.draws["draw"].to_pylist() == [d for d in range(400) for _ in range(10)]
+    # each draw lists every origin in order, so origin k's values sit under k's label
+    years = list(range(1981, 1991))
+    assert result.draws["origin"].to_pylist() == years * 400
+    starts = [dt.date(y, 1, 1) for y in years]
+    assert result.draws["origin_period"].to_pylist() == starts * 400
     np.testing.assert_array_equal(floats(result.origins, "mean_ibnr"), draws.mean(axis=0))
     np.testing.assert_array_equal(floats(result.origins, "sd_ibnr"), draws.std(axis=0, ddof=1))
     latest = floats(result.origins, "latest")
@@ -179,8 +184,9 @@ def test_the_quantile_table_puts_the_total_first_with_a_null_origin():
     result = boot(n_draws=500, quantiles=levels)
     table = result.quantiles
     assert table.num_rows == 3 * 11
-    assert table["origin"].to_pylist()[:4] == [None, None, None, 1981]
-    assert table["origin_period"].null_count == 3
+    each = [y for y in range(1981, 1991) for _ in levels]
+    assert table["origin"].to_pylist() == [None] * 3 + each
+    assert table["origin_period"].to_pylist() == [None] * 3 + [dt.date(y, 1, 1) for y in each]
     assert table["level"].to_pylist()[:6] == [0.5, 0.9, 0.995, 0.5, 0.9, 0.995]
     draws = floats(result.draws, "ibnr").reshape(500, 10)
     samples = [draws.sum(axis=1)] + [draws[:, i] for i in range(10)]
@@ -389,6 +395,9 @@ def test_unsupported_factor_and_exhausted_exclusions_are_delivered():
     assert caught.value.reason == "no_link_ratio"
     unity = boot(exclude=[(1981, 108)], unsupported_factor="unity")
     assert unity.central.development["unity_fallback"].to_pylist()[8] is True
+    # a link with no ratio in any draw takes 1.0 as the central fit does, and is
+    # not counted: only a draw's own missing volume is
+    assert unity.totals["n_draws_unit_factor"][0].as_py() == 0
     with pytest.raises(Refusal) as caught:
         boot(drop_high=1, exhausted_exclusions="raise")
     assert caught.value.reason == "exclusions_exhausted"
@@ -431,3 +440,84 @@ def test_the_bootstrap_mean_sits_near_the_central_estimate():
         totals = boot(cells, n_draws=20_000, seed=5).totals.to_pylist()[0]
         ratio = totals["mean_ibnr"] / totals["central_ibnr"] - 1
         assert abs(ratio - above) < 0.02, ratio
+
+
+def test_the_residual_defaults_are_the_hat_and_the_centred_pool():
+    """Without the two options: the hat adjustment and chainladder-python's
+    centred pool, which leaves out raa's two cells of leverage one (53 of 55
+    residuals; the whole pool is 55)."""
+    result = methods.odp_bootstrap(RAA, negative_increments="reflect", n_draws=20, seed=1)
+    totals = result.totals.to_pylist()[0]
+    assert totals["residual_adjustment"] == "hat"
+    assert totals["residual_pool"] == "centred"
+    assert totals["n_residuals"] == 53
+    assert boot(residual_pool="all", n_draws=20).totals["n_residuals"][0].as_py() == 55
+
+
+def _kernel_run(cells, n_draws: int, seed: int, **candidate):
+    """The same run through the kernel: prepare_runoff and draw_runoff."""
+    from ibnr.kernels.conventional import ConventionalCandidate
+    from ibnr.kernels.grid import grid_from_columns
+    from ibnr.kernels.odp_bootstrap import draw_runoff, prepare_runoff
+
+    years = cells["origin_period"].to_pylist()
+    grid = grid_from_columns(
+        np.array([dt.date(y, 1, 1) for y in years], dtype="datetime64[D]"),
+        np.array(cells["dev_lag"].to_pylist()),
+        np.array(cells["value"].to_pylist(), dtype=float),
+        dev_grain_months=12,
+        measure="cumulative",
+    )
+    setup = prepare_runoff(
+        grid,
+        ConventionalCandidate("cl", zero_cells="missing", **candidate),
+        adjustment="hat",
+        pool="centred",
+        negative_increments="reflect",
+    )
+    return draw_runoff(
+        setup.boot, setup.projection, n_draws=n_draws, seed=np.random.SeedSequence(seed)
+    )
+
+
+def test_the_tail_fallbacks_are_counted_at_the_front_door():
+    """An exponential curve attached at 84 months and fitted from 60 cannot be
+    fitted to 8 of 500 draws on raa; the count is the kernel's."""
+    from ibnr.kernels.tail import TailSpec
+
+    result = boot(
+        n_draws=500,
+        seed=6,
+        tail="exponential",
+        tail_attach_lag=84,
+        tail_fit_lags=(60, None),
+    )
+    kernel = _kernel_run(
+        RAA, 500, 6, tail=TailSpec("exponential", attach_lag=84, fit_lags=(60, None))
+    )
+    assert result.draws["ibnr"].to_pylist() == kernel.ibnr.ravel().tolist()
+    assert result.totals["n_draws_tail_fallback"][0].as_py() == kernel.tail_fallback.sum() == 8
+
+
+def test_the_unit_factor_draws_are_counted_at_the_front_door():
+    """raa with every 12-month amount divided by 100: the simulated 12-month
+    volume is often not positive, and the link from 12 then takes 1.0 in 72 of
+    200 draws; the count is the kernel's."""
+    tiny = cells_of([(o, d, v / 100 if d == 12 else v) for o, d, v in PUBLIC["raa"]])
+    result = boot(tiny, n_draws=200, seed=3)
+    kernel = _kernel_run(tiny, 200, 3)
+    assert result.draws["ibnr"].to_pylist() == kernel.ibnr.ravel().tolist()
+    assert result.totals["n_draws_unit_factor"][0].as_py() == kernel.unit.sum() == 72
+
+
+def test_a_zero_cumulative_keeps_its_residuals_in_the_pool():
+    """Under the default zero_cells='missing' the ratios out of 1988's zero
+    12-month amount are left out of the factors, but the zero rule is about
+    what a zero cumulative is, and the increments are data: every 1988 cell
+    stays in the pool, with no link reason."""
+    result = boot(RAA_ZERO, n_draws=20)
+    rows = [r for r in result.residuals.to_pylist() if r["origin"] == 1988]
+    assert [r["dev_lag"] for r in rows] == [12, 24, 36]
+    for row in rows:
+        assert row["in_pool"] is True, row
+        assert row["reason"] == "pooled" and row["link_reason"] is None, row

@@ -413,6 +413,14 @@ def test_a_tail_before_the_last_age_leaves_no_undefined_hat_factor():
     assert np.isfinite(boot.pool).all() and abs(boot.pool.mean()) < 1e-12
     everything = setup_of(RAA, ConventionalCandidate("cl", tail=tail), adjustment="hat", pool="all")
     assert everything.boot.residuals[0, 9] == 0.0
+    # Without the hat the leverage does not decide the centred pool: the cells
+    # fitted exactly do, and a factor from the tail is not the origin's own
+    # ratio, so the cell is not fitted exactly and is resampled. Mutation: let
+    # a tail factor count as the only ratio at its age; the cell leaves the pool.
+    dof = setup_of(RAA, ConventionalCandidate("cl", tail=tail), adjustment="dof", pool="centred")
+    assert dof.boot.pool_mask[0, 9]
+    assert POOL_REASONS[dof.boot.pool_reason[0, 9]] == "pooled"
+    assert dof.boot.pool.size == 54
 
 
 def test_too_few_cells_and_an_empty_pool_are_refused():
@@ -651,8 +659,16 @@ def test_refitting_the_fitted_triangle_gives_the_central_fit(method, average):
     returns it for every average, and the refit's ultimates are the central
     ones: the central fit and every draw share one arithmetic. With a trim, the
     refit keeps every ratio (the trim acted once) and still returns the central
-    factors."""
-    for options in ({}, {"drop_high": 1, "exhausted_exclusions": "keep"}, {"history_periods": 4}):
+    factors. So does a curve attached at the last age (it refits to the
+    central curve) and a constant tail attached earlier (it reads no ratio);
+    a curve attached before the last age does not (next test)."""
+    for options in (
+        {},
+        {"drop_high": 1, "exhausted_exclusions": "keep"},
+        {"history_periods": 4},
+        {"tail": TailSpec("exponential")},
+        {"tail": TailSpec("constant", factor=1.05, attach_lag=60)},
+    ):
         candidate = _candidate(method, average=average, **options)
         setup = setup_of(ODP, candidate, premium=None if method == "cl" else premium_of(ODP))
         found = future_cell_means(setup.projection, fitted_triangle(setup.boot))
@@ -661,6 +677,24 @@ def test_refitting_the_fitted_triangle_gives_the_central_fit(method, average):
             found.ultimate[0], setup.estimate.origins["ultimate"], rtol=1e-12
         )
         assert not found.unit.any()
+        if "tail" in options:
+            assert found.tail_factor[0] == pytest.approx(setup.estimate.tail.tail_factor, 1e-12)
+
+
+def test_a_curve_attached_before_the_last_age_does_not_refit_to_the_central_curve():
+    """The one specification puts the curve in the factors that make the fitted
+    values (DECISIONS, G4 + G12), so past the attachment age the fitted
+    triangle's ratios are the curve's, and a curve fitted to them is not the
+    one fitted to the data. The methods docstring and
+    docs/coming-from-chainladder.md name this; change them with this test."""
+    for spec in (TailSpec("exponential"), TailSpec("exponential", attach_lag=72)):
+        setup = setup_of(GENINS, ConventionalCandidate("cl", tail=spec))
+        found = future_cell_means(setup.projection, fitted_triangle(setup.boot))
+        moved = abs(found.tail_factor[0] / setup.estimate.tail.tail_factor - 1)
+        if spec.attach_lag is None:
+            assert moved < 1e-12
+        else:
+            assert moved > 1e-3  # 1.02353 against the central 1.02950
 
 
 @pytest.mark.parametrize("name", ["raa", "genins", "mw2014", "abc"])
@@ -683,24 +717,54 @@ def test_the_refit_factors_are_the_link_factors_of_one_triangle(name):
 
 
 def test_the_refit_uses_the_position_rules_decided_on_the_real_triangle():
-    """The refit keeps the ratios the window and the exclusions keep, and every
-    ratio the trims and bounds removed."""
+    """The refit keeps the ratios the window, the explicit exclusions and the
+    excluded valuations keep, and every ratio the trims and bounds removed. The
+    expected pairs are selected with the position rules written out, not with
+    position_rules itself, so a field it drops is seen. Mutation: leave
+    exclude_valuations out of position_rules; this fails."""
+    valuation = (dt.date(1988, 12, 31),)
     candidate = ConventionalCandidate(
         "cl",
         history_periods=6,
         exclude=((dt.date(1983, 1, 1), 24),),
+        exclude_valuations=valuation,
         drop_high=1,
         drop_below=1.05,
         exhausted_exclusions="keep",
     )
     setup = setup_of(RAA, candidate)
-    rules = candidate.link_rules
-    positions = select_links(
-        RAA["cum"], RAA["obs_mask"], RAA["origin_periods"], 12, position_rules(rules), 9
-    ).used
-    full = select_links(RAA["cum"], RAA["obs_mask"], RAA["origin_periods"], 12, rules, 9).used
+
+    def used(rules: LinkRules) -> np.ndarray:
+        return select_links(RAA["cum"], RAA["obs_mask"], RAA["origin_periods"], 12, rules, 9).used
+
+    written = dict(
+        history_periods=6, exclude=((dt.date(1983, 1, 1), 24),), exhausted_exclusions="keep"
+    )
+    positions = used(LinkRules(**written, exclude_valuations=valuation))
     assert np.array_equal(setup.projection.keep, positions)
-    assert (positions & ~full).any()  # the trims removed ratios the refit keeps
+    assert np.array_equal(positions, used(position_rules(candidate.link_rules)))
+    assert (positions & ~used(candidate.link_rules)).any()  # trims removed ratios the refit keeps
+    assert (used(LinkRules(**written)) & ~positions).any()  # the valuation left ratios out
+
+
+def test_the_refit_keeps_the_zero_rule_decided_on_the_real_triangle():
+    """Under zero_cells='missing' (the front door's default) a link ratio out of
+    or into a zero cumulative is left out but keeps its place in the history
+    window, so the window reaches one origin less far back than under
+    'observed'. The refit keeps the 'missing' pairs. Mutation: leave zero_cells
+    out of position_rules, so the refit falls back to 'observed'; this fails."""
+    rows = [[o, d, 0.0 if (o, d) == (1988, 12) else v] for o, d, v in PUBLIC["raa"]]
+    grid = grid_of(rows)
+    candidate = ConventionalCandidate("cl", history_periods=2, zero_cells="missing")
+    setup = setup_of(grid, candidate)
+
+    def used(zero_cells: str) -> np.ndarray:
+        rules = LinkRules(history_periods=2, zero_cells=zero_cells)
+        periods = grid["origin_periods"]
+        return select_links(grid["cum"], grid["obs_mask"], periods, 12, rules, 9).used
+
+    assert not np.array_equal(used("missing"), used("observed"))
+    assert np.array_equal(setup.projection.keep, used("missing"))
 
 
 def test_the_window_is_not_recomputed_on_simulated_triangles_under_observed():
@@ -731,6 +795,24 @@ def test_a_link_with_no_positive_volume_takes_factor_one_and_is_counted():
     found = future_cell_means(setup.projection, pseudo)
     assert found.unit.tolist() == [False, True, False]
     assert found.factors[1, 0] == 1.0
+
+
+@pytest.mark.parametrize(("average", "reducer"), [("simple", np.mean), ("median", np.median)])
+def test_the_simple_and_median_refits_leave_out_a_non_positive_earlier_amount(average, reducer):
+    """The simple average and the median are of link ratios, and an earlier
+    amount of zero or less gives none, so that pair is left out of that draw's
+    average only; with every earlier amount negative the link takes 1.0 and the
+    draw is counted. Mutation: keep every pair; the negative ratio enters."""
+    setup = setup_of(ODP, ConventionalCandidate("cl", average=average))
+    pseudo = np.repeat(fitted_triangle(setup.boot), 3, axis=0)
+    rows = np.flatnonzero(setup.projection.keep[:, 0])
+    pseudo[1, rows[0], 0] = -1.0  # one negative 12-month amount in draw 1
+    pseudo[2, rows, 0] = -1.0  # every one in draw 2
+    found = future_cell_means(setup.projection, pseudo)
+    rest = pseudo[1, rows[1:], 1] / pseudo[1, rows[1:], 0]
+    assert found.factors[1, 0] == pytest.approx(float(reducer(rest)), rel=1e-14)
+    assert found.factors[2, 0] == 1.0
+    assert found.unit.tolist() == [False, False, True]
 
 
 def test_the_value_rules_act_once_so_the_mean_stays_near_the_central_estimate():
@@ -780,6 +862,24 @@ def test_a_curve_is_refitted_on_every_draw_and_falls_back_when_it_fails():
     found = future_cell_means(setup.projection, flat)
     assert found.tail_fallback.tolist() == [False, True]
     assert found.tail_factor[1] == float(setup.projection.central_tail.tail_factor)
+
+
+def test_a_fallback_takes_the_central_curve_from_the_attachment_age():
+    """With the curve attached at 84 months it replaces the factors from 84 on
+    as well as giving the tail factor; a draw that falls back takes the central
+    curve's factors there, and keeps its own before 84. Mutation: copy only the
+    tail factor; the draw keeps factors of 1.0 from 84 on."""
+    tail = TailSpec("exponential", attach_lag=84)
+    setup = setup_of(RAA, ConventionalCandidate("cl", tail=tail), adjustment="hat", pool="centred")
+    central = setup.projection.central_tail
+    k = central.attach_index
+    assert k == 6 and (central.factors[k:9] > 1).all()
+    flat = np.repeat(fitted_triangle(setup.boot), 2, axis=0)
+    flat[1] = np.where(setup.boot.obs_mask, flat[1][:, :1], 0.0)
+    found = future_cell_means(setup.projection, flat)
+    assert found.tail_fallback.tolist() == [False, True]
+    assert found.factors[1, k:].tobytes() == np.asarray(central.factors[k:9]).tobytes()
+    assert (found.factors[1, :k] == 1.0).all()
 
 
 def test_a_drawn_run_counts_the_tail_fallbacks():

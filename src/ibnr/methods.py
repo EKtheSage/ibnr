@@ -1468,14 +1468,24 @@ def odp_bootstrap(
     recursion from the central factors whatever the average, so the hat
     adjustment's leverage is exactly the ODP GLM's only for the volume average
     over every link ratio; refitting the fitted triangle gives the central
-    factors back for every average.
+    factors back for every average, unless a tail curve is attached before
+    the last age (below).
 
     **Tails** follow the same one specification: the attachment age and the
     curve apply to the central factors that make the fitted values and to
     every refit. A curve is refitted to each simulated triangle's own factors;
     a draw whose curve fails the tail's checks uses the central fit's curve
     and is counted in ``totals.n_draws_tail_fallback``. With a tail every
-    origin's run-off includes it, as one more future cell per origin.
+    origin's run-off includes it, as one more future cell per origin. A curve
+    attached before the last age (``tail_attach_lag``) has replaced the link
+    ratios from that age on in the factors that make the fitted values, so a
+    refit fits the curve to ratios that scatter around the curve rather than
+    the data, and does not return the central curve: without process noise
+    the mean of the draws was 6.4% below the central estimate on genins with
+    an exponential curve attached at 72 months, where chainladder-python,
+    which makes its fitted values before the tail, was 0.2% above. With a
+    constant tail, or a curve attached at the last age (the default),
+    refitting the fitted triangle gives the central fit back.
 
     The bootstrap options:
 

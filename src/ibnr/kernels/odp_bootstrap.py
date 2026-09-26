@@ -756,6 +756,14 @@ def prepare_runoff(
     periods = fitted["origin_periods"]
     step = int(fitted["dev_grain_months"])
     n_w, n_d = cum.shape
+    if n_d < 2:
+        # checked here, before the link selection, which has no link to index
+        raise Refusal(
+            "not_identified",
+            "the ODP bootstrap needs at least two development ages; this triangle has "
+            "one. chain_ladder gives the latest amounts as the ultimates",
+            option="cells",
+        )
     n_links = n_d - 1
     rules = candidate.link_rules
     selection = select_links(cum, mask, periods, step, rules, n_links, raise_exhausted=False)

@@ -490,7 +490,27 @@ Where the two differ, on purpose:
   the central estimate (22% on raa with `drop_high`, on chainladder itself).
   In chainladder that is the sampler with every option and the refit with the
   position ones, and ibnr's draws equal chainladder's for it when fed the same
-  random numbers. `average` applies to both; chainladder's sampler has none.
+  random numbers (except with a tail curve attached before the last age,
+  below). `average` applies to both; chainladder's sampler has none.
+- **A tail curve attached before the last age makes the fitted values.**
+  ibnr's fitted values come from the central factors after the curve has
+  replaced the link ratios from `tail_attach_lag` on; chainladder's sampler
+  makes them from the link ratios and applies the curve in the refit only.
+  Past the attachment age ibnr's simulated ratios then scatter around the
+  curve rather than the data, so each refit fits a different curve from the
+  central one and the mean of the draws moves away from the central
+  estimate. Without process noise, attached at 72 months: genins 6.4% below
+  with an exponential curve (chainladder 0.2% above) and 7.2% below with a
+  Weibull curve (chainladder 0.8% above); abc 3.3% and 4.3% below
+  (chainladder 0.2% and 0.1% below). With a constant tail, or a curve
+  attached at the last age (the default), refitting the fitted triangle
+  gives the central fit back.
+- **The hat matrix is weighted by |m|.** With negative fitted means (under
+  `negative_increments="reflect"`) chainladder weights its hat matrix by the
+  signed fitted mean, and ibnr by its absolute value, so the leverages and
+  the draws differ: on the first liab triangle (7 negative fitted means) the
+  leverages differ by up to 1.2e-3 and the resampled residuals by up to
+  0.045. With no negative fitted mean the two are the same.
 - **Seeds.** `seed=0` reproduces; chainladder seeds its process noise only
   when the seed is truthy, so 0 and `None` do not. The draws do not reproduce
   chainladder's for the same seed: the residuals, the noise and the a priori
