@@ -101,7 +101,10 @@ reference:
       - methods.bornhuetter_ferguson
       - methods.benktander
       - methods.cape_cod
+      - methods.odp_bootstrap
       - name: methods.ReserveResult
+        members: true
+      - name: methods.BootstrapResult
         members: true
       - name: methods.Refusal
         members: true

@@ -9,6 +9,9 @@
   classic one)
 - :func:`mack` (the chain ladder with Mack's standard errors; it takes the same
   development options, and ``average`` is Mack's alpha)
+- :func:`odp_bootstrap` (England and Verrall's over-dispersed Poisson
+  bootstrap of the whole run-off, refitting the chain ladder,
+  Bornhuetter-Ferguson, Benktander or Cape Cod on every simulated triangle)
 
 Each takes the cells of ONE triangle as a table with three columns, one row per
 observed cell:
@@ -35,10 +38,12 @@ the accident year written 2020-12-31 has its first cell at ``dev_lag`` 12.
 Any table Arrow can read is accepted: a polars DataFrame, a pyarrow Table or
 RecordBatch, anything else that offers the Arrow stream interface, or a dict
 of columns (Python lists or numpy arrays, as a service reading JSON has them).
-Other columns are ignored. Each function returns a :class:`ReserveResult`,
-whose tables are pyarrow Tables, so a service needs no DataFrame library at
-all; for analysis, ``result.to_polars()`` turns any of them into a polars
-DataFrame (``pip install "ibnr[polars]"``).
+Other columns are ignored. Each function returns a :class:`ReserveResult`
+(:func:`odp_bootstrap` a :class:`BootstrapResult`, which carries the point
+method's ``ReserveResult`` as ``central``), whose tables are pyarrow Tables,
+so a service needs no DataFrame library at all; for analysis,
+``result.to_polars()`` turns any of them into a polars DataFrame
+(``pip install "ibnr[polars]"``).
 
 The ``development`` table has one row per observed development age, then,
 with a tail, ``tail_rows`` rows for the ages after the last observed one. It
@@ -135,7 +140,7 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 import pyarrow as pa
@@ -148,9 +153,18 @@ from ibnr.kernels.grid import as_date, check_grid, grid_from_columns, month_end
 from ibnr.kernels.links import REASONS as LINK_REASONS
 from ibnr.kernels.links import is_all_history
 from ibnr.kernels.mack import _require_mack_average, fit_mack_grid
+from ibnr.kernels.odp_bootstrap import (
+    NEGATIVE_INCREMENTS,
+    POOL_REASONS,
+    RESIDUAL_ADJUSTMENTS,
+    RESIDUAL_POOLS,
+    draw_runoff,
+    prepare_runoff,
+)
 from ibnr.kernels.tail import TailFit, TailSpec, apply_tail
 
 __all__ = [
+    "BootstrapResult",
     "Refusal",
     "ReserveResult",
     "benktander",
@@ -158,6 +172,7 @@ __all__ = [
     "cape_cod",
     "chain_ladder",
     "mack",
+    "odp_bootstrap",
 ]
 
 #: The tables a result carries, in the order ``to_polars`` lists them.
@@ -1240,6 +1255,726 @@ def _require_finite(periods, per_origin: dict, others, total: dict) -> None:
             "scale them (work in thousands, say) and scale the answer back",
             option="cells",
         )
+
+
+# -- the ODP bootstrap -------------------------------------------------------------
+
+#: The methods odp_bootstrap refits, each with the kernel candidate's method.
+_BOOTSTRAP_METHODS = {
+    "chain_ladder": "cl",
+    "bornhuetter_ferguson": "bf",
+    "benktander": "bf",
+    "cape_cod": "gcc",
+}
+
+#: The process noise odp_bootstrap offers; ``"none"`` leaves the cells at their means.
+BOOTSTRAP_PROCESSES = ("gamma", "od_poisson", "none")
+
+#: The quantile levels odp_bootstrap reports by default.
+_BOOTSTRAP_QUANTILES = (0.5, 0.75, 0.9, 0.95, 0.99)
+
+#: The most numbers the ``draws`` table may hold (draws times origins): about
+#: 7 GB at the peak, at about 70 bytes a number while they are summarised.
+_MAX_DRAWN_NUMBERS = 100_000_000
+
+
+@dataclass(frozen=True)
+class BootstrapResult:
+    """What :func:`odp_bootstrap` returns: pyarrow Tables with fixed column types.
+
+    A missing number is an Arrow null, never NaN. ``to_polars(name)`` gives any
+    of the tables as a polars DataFrame.
+
+    Attributes
+    ----------
+    method : str
+        The method refitted on every simulated triangle: ``"chain_ladder"``,
+        ``"bornhuetter_ferguson"``, ``"benktander"`` or ``"cape_cod"``.
+    as_of : datetime.date
+        The information date, the evaluation date of the latest cell.
+    dev_grain_months : int
+        Months per development step.
+    n_draws : int
+        The number of simulated run-offs.
+    seed : int
+        The seed the draws came from: the one passed, or, when ``seed=None``
+        was passed, the fresh entropy drawn for it, so passing it back as
+        ``seed`` gives the same draws again.
+    central : ReserveResult
+        The point fit: exactly what ``methods.<method>`` returns for the same
+        cells and options.
+    origins : pyarrow.Table
+        One row per origin period: ``origin`` and ``origin_period`` (as in
+        :class:`ReserveResult`), ``latest_dev_lag`` (int64), ``latest`` (the
+        actual latest cumulative), ``central_ultimate`` and ``central_ibnr``
+        (from ``central``), ``mean_ibnr`` and ``sd_ibnr`` (the draws' mean, and
+        their standard deviation with ``ddof=1``, null when ``n_draws`` is 1)
+        and ``mean_ultimate`` (``latest + mean_ibnr``), all float64.
+    totals : pyarrow.Table
+        One row: ``latest``, ``central_ultimate``, ``central_ibnr``,
+        ``mean_ibnr``, ``sd_ibnr`` (null at one draw) and ``mean_ultimate``
+        for the sum over the origins (float64); ``n_draws``; ``n_residuals``
+        (the residuals resampled); ``degrees_of_freedom`` (observed cells minus
+        the ODP model's parameters, one per origin and one per development age
+        after the first); ``n_negative_fitted`` (observed cells whose fitted
+        mean is negative, 0 unless ``negative_increments="reflect"``);
+        ``n_draws_unit_factor`` (draws in which some refitted factor had no
+        positive volume and took 1.0); ``n_draws_negative_ibnr`` (draws whose
+        total is below 0); ``n_draws_tail_fallback`` (draws whose tail curve
+        failed its checks and used the central fit's curve), all int64;
+        ``phi`` (float64, the Pearson scale); and the options
+        ``residual_adjustment``, ``residual_pool``, ``negative_increments`` and
+        ``process`` (string).
+    quantiles : pyarrow.Table
+        One row per origin, or the total, and level: ``origin`` and
+        ``origin_period`` (null for the total), ``level`` (the probability, as
+        passed), ``ibnr`` (the quantile of the draws, numpy's linear rule,
+        which is ``np.percentile`` with the level times 100 and R's type 7) and
+        ``tvar`` (the mean of the draws at or above that quantile). The total's
+        rows come first, then each origin's in origin order, each in the order
+        of the levels.
+    draws : pyarrow.Table
+        Every draw of every origin, ``n_draws`` times the number of origins
+        rows, draw by draw: ``draw`` (int64, from 0), ``origin``,
+        ``origin_period`` and ``ibnr`` (float64). A draw's total is the sum of
+        its rows.
+    residuals : pyarrow.Table
+        One row per observed cell, origin by origin: ``origin``,
+        ``origin_period``, ``dev_lag`` (int64), ``increment`` and ``fitted``
+        (float64, the observed and the fitted incremental amount),
+        ``residual`` (float64, the unscaled Pearson residual ``(increment -
+        fitted) / sqrt(|fitted|)``, null where ``fitted`` is 0), ``leverage``
+        (float64, the cell's leverage in the ODP GLM, null where ``fitted`` is
+        0), ``adjusted`` (float64, the value resampled from this cell: adjusted,
+        and centred under ``residual_pool="centred"``; null off the pool),
+        ``in_pool`` (bool), ``reason`` (string: ``pooled``, ``leverage_one`` (a
+        cell fitted exactly, left out under ``residual_pool="centred"``),
+        ``zero_fitted_mean`` or ``excluded_link``) and ``link_reason`` (string,
+        the ``link_ratios.reason`` of the link ratio whose development option
+        took the cell out, null otherwise).
+    """
+
+    TABLES: ClassVar[tuple[str, ...]] = ("origins", "totals", "quantiles", "draws", "residuals")
+
+    method: str
+    as_of: dt.date
+    dev_grain_months: int
+    n_draws: int
+    seed: int
+    central: ReserveResult
+    origins: pa.Table
+    totals: pa.Table
+    quantiles: pa.Table
+    draws: pa.Table
+    residuals: pa.Table
+
+    def to_polars(self, table: str = "origins"):
+        """One of the result's tables as a polars DataFrame.
+
+        ``table`` is ``"origins"`` (the default), ``"totals"``, ``"quantiles"``,
+        ``"draws"`` or ``"residuals"``; ``central.to_polars`` gives the point
+        fit's. Needs polars: ``pip install "ibnr[polars]"``.
+        """
+        if table not in self.TABLES:
+            raise Refusal(
+                "invalid_option",
+                f"table must be one of {self.TABLES}, got {{given}}",
+                option="table",
+                given=table,
+                method=self.method,
+            )
+        try:
+            import polars as pl
+        except ImportError as exc:
+            raise ImportError(
+                'to_polars needs polars; install it with pip install "ibnr[polars]"'
+            ) from exc
+        return pl.from_arrow(getattr(self, table))
+
+
+def odp_bootstrap(
+    cells,
+    *,
+    method: str = "chain_ladder",
+    premium=None,
+    expected_loss_ratio: float | None = None,
+    n_iters: int = 1,
+    decay: float | None = None,
+    trend: float | None = None,
+    prior_cv: float = 0.0,
+    n_draws: int = 1000,
+    seed: int | None = None,
+    quantiles=_BOOTSTRAP_QUANTILES,
+    residual_adjustment: str = "hat",
+    residual_pool: str = "centred",
+    negative_increments: str = "refuse",
+    process: str = "gamma",
+    dev_grain_months: int = 12,
+    average: str = "volume",
+    history_periods: int | None = None,
+    drop_high: bool | int = False,
+    drop_low: bool | int = False,
+    preserve: int = 1,
+    drop_above: float | None = None,
+    drop_below: float | None = None,
+    exclude=(),
+    exclude_valuations=(),
+    trim_ties: str = "volume",
+    unsupported_factor: str = "raise",
+    exhausted_exclusions: str = "keep",
+    zero_cells: str = "missing",
+    tail: str | None = None,
+    tail_factor: float | None = None,
+    tail_decay: float | None = None,
+    tail_attach_lag: int | None = None,
+    tail_fit_lags: tuple | None = None,
+    tail_steps: int | None = None,
+    tail_rows: int | None = None,
+) -> BootstrapResult:
+    """England and Verrall's over-dispersed Poisson bootstrap of the whole run-off.
+
+    The residual bootstrap of R's ``BootChainLadder`` and chainladder-python's
+    ``BootstrapODPSample``: fit ``method``, take the Pearson residuals of the
+    observed increments against the fitted ones, resample them into
+    ``n_draws`` simulated triangles, refit ``method`` on each, and add process
+    noise to every future cell. Each draw is a possible run-off of every
+    origin; ``draws`` has them all, and ``origins``, ``totals`` and
+    ``quantiles`` summarise them beside the point fit, ``central``.
+
+    ``cells``, the development options and the tail options are as in
+    :func:`chain_ladder`. ``method`` is ``"chain_ladder"`` (the default),
+    ``"bornhuetter_ferguson"``, ``"benktander"`` or ``"cape_cod"``; ``premium``,
+    ``expected_loss_ratio``, ``n_iters``, ``decay`` and ``trend`` are as in
+    those functions, each given only to the methods that read it (``decay``
+    and ``trend``, ``None`` by default, are Cape Cod's 1.0 and 0.0). Mack's
+    standard errors are :func:`mack`'s.
+
+    **One set of development options.** They make the central fit, whose
+    factors (before any tail) make the fitted values, and they decide which
+    residuals are resampled: the cell a link ratio develops into leaves the
+    pool when a development option leaves that ratio out, and so does the first
+    cell of an origin whose ratio from the first age is left out
+    (chainladder-python's rule; the zero rule leaves every residual in, since a
+    zero increment is data). Every simulated triangle is refitted with the
+    options that pick a link ratio by where it is (``history_periods``,
+    ``exclude``, ``exclude_valuations``, the zero rule), decided once on the
+    real triangle. The options that pick a ratio by its size (``drop_high``,
+    ``drop_low``, ``drop_above``, ``drop_below``) act once, on the central
+    factors and the pool, and not again on each simulated triangle: trimming
+    those again removes ordinary draws a second time and pulls the simulated
+    mean below the central estimate (3.5% on the Reserving app's workbook and
+    22% on raa with ``drop_high``, measured on chainladder-python itself).
+    ``average`` applies in both places. The fitted values are the backward
+    recursion from the central factors whatever the average, so the hat
+    adjustment's leverage is exactly the ODP GLM's only for the volume average
+    over every link ratio; refitting the fitted triangle gives the central
+    factors back for every average.
+
+    **Tails** act once too, like the size rules: the fitted values and the
+    residual pool come from the central factors before the tail, and the
+    tail (the same kind, attachment age and fitted range) is applied only in
+    each refit, as chainladder-python does. A curve is refitted to each
+    simulated triangle's own factors; a draw whose curve fails the tail's
+    checks uses the central fit's curve and is counted in
+    ``totals.n_draws_tail_fallback``. With a tail every origin's run-off
+    includes it, as one more future cell per origin. Refitting the fitted
+    triangle gives the central fit back whatever the tail and wherever it is
+    attached. Were a curve attached before the last age (``tail_attach_lag``)
+    also in the fitted values, each refit would fit it to ratios scattered
+    around the curve rather than the data, and the mean of the draws would
+    move off the central estimate (measured at 20,000 draws, as a share of
+    the central IBNR: 6.2% below on genins with an exponential curve at 72
+    months; 0.4% above with the curve out of them, and chainladder-python
+    0.1% to 0.5% above). A curve is not a straight line in the factors, so
+    the mean need not sit exactly on the central estimate even so: on raa
+    with an inverse power curve at 60 months it is 26% above, and
+    chainladder-python's 27% to 28%.
+
+    The bootstrap options:
+
+    - ``residual_adjustment``: ``"hat"`` (the default) divides each Pearson
+      residual by ``sqrt(1 - h)``, ``h`` its leverage in the ODP GLM,
+      chainladder-python's ``hat_adj=True``; ``"dof"`` multiplies every
+      residual by ``sqrt(n / (n - p))``, R's rule; ``"none"`` leaves them as
+      they are, which is what chainladder-python's ``hat_adj=False`` does
+      (its docstring says degrees of freedom). The leverage is computed with a
+      pseudo-inverse, so a development factor of exactly 1.0 does not switch
+      the adjustment off, as it does in chainladder-python.
+    - ``residual_pool``: ``"centred"`` (the default, chainladder-python's rule)
+      resamples every residual except the cells fitted exactly (leverage one:
+      the first origin's last cell and the last origin's first cell), after
+      subtracting their mean; ``"all"`` (R's rule) resamples every residual, the
+      exact cells' zeros included, as they are.
+    - ``negative_increments``: ``"refuse"`` (the default) refuses a negative
+      observed increment, and a tail that puts link factors below 1
+      (``negative_fitted_mean``: it makes the expected payments after it
+      negative in every refit), because the over-dispersed Poisson model is
+      defined on non-negative increments. ``"reflect"`` bootstraps them as R and
+      chainladder-python do: ``sqrt(|m|)`` scales a residual and the noise of
+      a negative mean is reflected through its sign. ``totals.n_negative_fitted``
+      counts the negative fitted means, whose results are rarely usable.
+    - ``process``: the noise added to each future cell, with mean ``m`` and
+      variance ``phi * |m|``: ``"gamma"`` (the default, as in R and
+      chainladder-python), ``"od_poisson"`` (``phi`` times a Poisson count) or
+      ``"none"`` (no noise, so the draws are the refitted means).
+    - ``prior_cv``: Bornhuetter-Ferguson, Benktander and Cape Cod only. Above
+      0 it varies the a priori loss ratio from draw to draw: each draw's a
+      priori ultimates are multiplied by one lognormal number with mean 1 and
+      coefficient of variation ``prior_cv``, shared by every origin of the
+      draw (for Cape Cod, the loss ratio estimated from that draw's triangle).
+      The central fit never draws. chainladder-python's ``apriori_sigma`` is a
+      normal standard deviation instead: ``prior_cv = apriori_sigma /
+      apriori`` for Bornhuetter-Ferguson and Benktander, ``prior_cv =
+      apriori_sigma`` for Cape Cod, keeps its first two moments.
+    - ``n_draws``: how many run-offs to simulate, a whole number of 1 or more
+      (1,000 by default). ``draws`` holds ``n_draws`` times the number of
+      origins rows, and that product is refused above 100,000,000.
+    - ``seed``: a whole number of 0 or more makes the draws repeatable, 0
+      included; ``None`` (the default) draws fresh entropy and returns it as
+      ``BootstrapResult.seed``. The residuals, the process noise and the a
+      priori multipliers each have a stream of their own, so ``process`` and
+      ``prior_cv`` never change the simulated triangles, and the first ``k``
+      draws of a run are the draws of a ``k``-draw run. The draws do not
+      reproduce chainladder-python's or R's for the same seed.
+    - ``quantiles``: the levels of the ``quantiles`` table, probabilities
+      strictly between 0 and 1 (divide a percentile by 100).
+
+    Every draw is a finite number: a simulated triangle whose refitted factors
+    have no positive volume takes a factor of 1.0 at that age (counted in
+    ``totals.n_draws_unit_factor``), and a run with a draw that is still not
+    finite is refused (``result_not_finite``) rather than answered with 0 in
+    its place. The simulated mean usually sits a little above the central
+    estimate (3% on raa, 1% on genins); that is the refit's non-linearity, and
+    R shows it too.
+
+    Returns a :class:`BootstrapResult`. Input it will not answer is refused
+    with :class:`Refusal`: besides the refusals of the point method,
+    ``negative_increment`` and ``negative_fitted_mean`` (under
+    ``negative_increments="refuse"``), ``degenerate_fit`` (a non-zero
+    increment against a zero fitted mean, or a leverage that cannot be
+    computed under the hat adjustment or the centred pool),
+    ``not_identified`` (no more cells than the ODP model has parameters),
+    ``empty_residual_pool`` and ``result_not_finite``. The run ties out to
+    chainladder-python 0.9.2 draw for draw when both are fed the same
+    residual choices, and to R's ``BootChainLadder`` within Monte Carlo error
+    (``tests/test_odp_runoff.py``).
+    """
+    with _CallersTerms("odp_bootstrap") as terms:
+        if not isinstance(method, str) or method not in _BOOTSTRAP_METHODS:
+            raise Refusal(
+                "invalid_option",
+                "method must be 'chain_ladder', 'bornhuetter_ferguson', 'benktander' or "
+                "'cape_cod', got {given}; Mack has its own standard errors in methods.mack",
+                option="method",
+                given=method,
+            )
+        count = _draw_count(n_draws)
+        _require_seed(seed)
+        levels = _levels(quantiles)
+        for option, value, choices in (
+            ("residual_adjustment", residual_adjustment, RESIDUAL_ADJUSTMENTS),
+            ("residual_pool", residual_pool, RESIDUAL_POOLS),
+            ("negative_increments", negative_increments, NEGATIVE_INCREMENTS),
+            ("process", process, BOOTSTRAP_PROCESSES),
+        ):
+            if not isinstance(value, str) or value not in choices:
+                listed = ", ".join(repr(choice) for choice in choices)
+                raise Refusal(
+                    "invalid_option",
+                    f"{option} must be one of {listed}, got {{given}}",
+                    option=option,
+                    given=value,
+                )
+        cv = _prior_cv(prior_cv, method)
+        settings = _bootstrap_settings(
+            method,
+            premium=premium,
+            expected_loss_ratio=expected_loss_ratio,
+            n_iters=n_iters,
+            decay=decay,
+            trend=trend,
+        )
+        grid, origins = terms.read(cells, dev_grain_months)
+        if count * grid["n_w"] > _MAX_DRAWN_NUMBERS:
+            raise Refusal(
+                "invalid_option",
+                f"n_draws times the number of origins must be at most {_MAX_DRAWN_NUMBERS:,}, "
+                f"and {{given}} draws of {grid['n_w']} origins is more: each number takes "
+                "about 70 bytes while the draws are summarised, so the limit is already about "
+                "7 GB. Ask for fewer draws",
+                option="n_draws",
+                given=count,
+            )
+        wrapped = _candidate(
+            _BOOTSTRAP_METHODS[method],
+            origins,
+            **settings,
+            average=average,
+            history_periods=history_periods,
+            drop_high=drop_high,
+            drop_low=drop_low,
+            preserve=preserve,
+            drop_above=drop_above,
+            drop_below=drop_below,
+            exclude=exclude,
+            exclude_valuations=exclude_valuations,
+            trim_ties=trim_ties,
+            unsupported_factor=unsupported_factor,
+            exhausted_exclusions=exhausted_exclusions,
+            zero_cells=zero_cells,
+            tail=_tail_spec(
+                tail,
+                tail_factor=tail_factor,
+                tail_decay=tail_decay,
+                tail_attach_lag=tail_attach_lag,
+                tail_fit_lags=tail_fit_lags,
+                tail_steps=tail_steps,
+                tail_rows=tail_rows,
+            ),
+        )
+        central = _conventional_result(method, grid, origins, wrapped, premium=premium)
+        keyed = None if method == "chain_ladder" else _premium(premium, origins, method)
+        try:
+            with np.errstate(all="ignore"):
+                setup = prepare_runoff(
+                    grid,
+                    wrapped.kernel,
+                    premium=keyed,
+                    adjustment=residual_adjustment,
+                    pool=residual_pool,
+                    negative_increments=negative_increments,
+                )
+        except Refusal as refusal:
+            if refusal.reason != "negative_increment":
+                raise
+            raise refusal._replace(
+                template=(
+                    f"{refusal.count} negative increment(s): the cumulative falls into "
+                    "{cells}. The over-dispersed Poisson bootstrap is defined on non-negative "
+                    "increments; pass negative_increments='reflect' to bootstrap them through "
+                    "sign(), as chainladder-python and R do, or use methods.mack"
+                ),
+                option="negative_increments",
+                options=("negative_increments", "cells"),
+            ) from None
+        root = np.random.SeedSequence(seed)
+        drawn = draw_runoff(
+            setup.boot,
+            setup.projection,
+            n_draws=count,
+            seed=root,
+            process="gamma" if process == "none" else process,
+            process_noise=process != "none",
+            prior_cv=cv,
+        )
+        return _bootstrap_result(
+            method,
+            origins,
+            central,
+            setup,
+            drawn.ibnr,
+            unit=drawn.unit,
+            tail_fallback=drawn.tail_fallback,
+            seed=int(root.entropy),
+            levels=levels,
+            options={
+                "residual_adjustment": residual_adjustment,
+                "residual_pool": residual_pool,
+                "negative_increments": negative_increments,
+                "process": process,
+            },
+        )
+
+
+def _prior_cv(prior_cv, method: str) -> float:
+    if (
+        not isinstance(prior_cv, numbers.Real)
+        or isinstance(prior_cv, bool | np.bool_)
+        or not math.isfinite(prior_cv)
+        or prior_cv < 0
+    ):
+        raise Refusal(
+            "invalid_option",
+            "prior_cv must be a finite number of 0 or more, got {given}",
+            option="prior_cv",
+            given=prior_cv,
+        )
+    if prior_cv > 0 and method == "chain_ladder":
+        raise Refusal(
+            "invalid_option",
+            "prior_cv varies the a priori loss ratio, and the chain ladder has none; use it "
+            "with bornhuetter_ferguson, benktander or cape_cod",
+            option="prior_cv",
+            options=("prior_cv", "method"),
+            given=prior_cv,
+        )
+    return float(prior_cv)
+
+
+def _bootstrap_settings(
+    method: str, *, premium, expected_loss_ratio, n_iters, decay, trend
+) -> dict[str, Any]:
+    """The kernel candidate's method settings, each refused where ``method`` does not read it."""
+
+    def not_read(option: str, given, why: str) -> Refusal:
+        return Refusal(
+            "invalid_option",
+            f"{option} was given for method={method!r}, which {why}",
+            option=option,
+            options=(option, "method"),
+            given=given,
+        )
+
+    if method == "chain_ladder" and premium is not None:
+        raise not_read("premium", None, "never reads it; premium is for the a priori methods")
+    if method in ("chain_ladder", "cape_cod") and expected_loss_ratio is not None:
+        why = (
+            "estimates its loss ratio from the triangle"
+            if method == "cape_cod"
+            else "has no a priori loss ratio"
+        )
+        raise not_read("expected_loss_ratio", expected_loss_ratio, why)
+    if isinstance(n_iters, bool | np.bool_) or (
+        method in ("chain_ladder", "bornhuetter_ferguson") and n_iters != 1
+    ):
+        if isinstance(n_iters, bool | np.bool_):
+            raise Refusal(
+                "invalid_option",
+                "n_iters must be a whole number of 1 or more, got {given}",
+                option="n_iters",
+                given=n_iters,
+            )
+        raise not_read(
+            "n_iters",
+            n_iters,
+            "is not iterated; method='benktander' iterates Bornhuetter-Ferguson, and Cape Cod "
+            "takes n_iters too",
+        )
+    for option, value in (("decay", decay), ("trend", trend)):
+        if value is not None and method != "cape_cod":
+            raise not_read(option, value, "does not read it; it is a Cape Cod setting")
+    settings: dict[str, Any] = {}
+    if method in ("bornhuetter_ferguson", "benktander"):
+        settings["expected_loss_ratio"] = expected_loss_ratio
+    if method in ("benktander", "cape_cod"):
+        settings["n_iters"] = n_iters
+    if method == "cape_cod":
+        settings["decay"] = 1.0 if decay is None else decay
+        settings["trend"] = 0.0 if trend is None else trend
+    return settings
+
+
+def _bootstrap_result(
+    method: str,
+    origins: _Origins,
+    central: ReserveResult,
+    setup,
+    ibnr: np.ndarray,
+    *,
+    unit: np.ndarray,
+    tail_fallback: np.ndarray,
+    seed: int,
+    levels: tuple[float, ...],
+    options: dict[str, str],
+) -> BootstrapResult:
+    estimate, boot = setup.estimate, setup.boot
+    step = central.dev_grain_months
+    periods = list(estimate.origins["origin_period"])
+    n_draws, n_w = ibnr.shape
+    latest = np.asarray(estimate.origins["latest"], dtype=float)
+    ultimate = np.asarray(estimate.origins["ultimate"], dtype=float)
+    no_sd = n_draws == 1
+    with np.errstate(all="ignore"):
+        total = ibnr.sum(axis=1)
+        mean = ibnr.mean(axis=0)
+        sd = ibnr.std(axis=0, ddof=1) if not no_sd else np.zeros(n_w)
+        total_mean = float(total.mean())
+        total_sd = float(total.std(ddof=1)) if not no_sd else 0.0
+        mean_ultimate = latest + mean
+        total_latest = float(latest.sum())
+        tails = [_tail(total, level) for level in levels] + [
+            _tail(ibnr[:, i], level) for i in range(n_w) for level in levels
+        ]
+    _require_finite(
+        periods,
+        {"mean_ibnr": mean, "sd_ibnr": sd, "mean_ultimate": mean_ultimate},
+        np.array(tails, dtype=float).ravel(),
+        {
+            "mean": _arrow.float64([total_mean]),
+            "sd": _arrow.float64([total_sd]),
+            "ultimate": _arrow.float64([total_latest + total_mean]),
+        },
+    )
+    shown = origins.labels_for(periods)
+    dates = _arrow.date32(periods)
+    origin_table = pa.table(
+        {
+            "origin": shown,
+            "origin_period": dates,
+            "latest_dev_lag": _arrow.int64(estimate.origins["latest_dev_lag"]),
+            "latest": _arrow.float64(latest),
+            "central_ultimate": _arrow.float64(ultimate),
+            "central_ibnr": _arrow.float64(ultimate - latest),
+            "mean_ibnr": _arrow.float64(mean),
+            "sd_ibnr": _arrow.float64(sd, mask=np.full(n_w, no_sd)),
+            "mean_ultimate": _arrow.float64(mean_ultimate),
+        }
+    )
+    totals = pa.table(
+        {
+            "latest": central.totals.column("latest"),
+            "central_ultimate": central.totals.column("ultimate"),
+            "central_ibnr": central.totals.column("ibnr"),
+            "mean_ibnr": _arrow.float64([total_mean]),
+            "sd_ibnr": _arrow.float64([total_sd], mask=np.array([no_sd])),
+            "mean_ultimate": _arrow.float64([total_latest + total_mean]),
+            "n_draws": _arrow.int64([n_draws]),
+            "n_residuals": _arrow.int64([boot.pool.size]),
+            "degrees_of_freedom": _arrow.int64([boot.degrees_of_freedom]),
+            "n_negative_fitted": _arrow.int64([boot.n_negative_fitted]),
+            "n_draws_unit_factor": _arrow.int64([int(unit.sum())]),
+            "n_draws_negative_ibnr": _arrow.int64([int((total < 0).sum())]),
+            "n_draws_tail_fallback": _arrow.int64([int(tail_fallback.sum())]),
+            "phi": _arrow.float64([boot.phi]),
+            **{name: _arrow.string([value]) for name, value in options.items()},
+        }
+    )
+    # quantile rows: the total's (a null origin) first, then each origin's
+    n_levels = len(levels)
+    row_origin = np.r_[np.zeros(n_levels, dtype=np.int64), np.repeat(np.arange(n_w), n_levels)]
+    is_total = np.r_[np.ones(n_levels, dtype=bool), np.zeros(n_w * n_levels, dtype=bool)]
+    at = _arrow.int64(row_origin, mask=is_total)
+    values = np.array(tails, dtype=float).reshape(-1, 2)
+    quantile_table = pa.table(
+        {
+            "origin": shown.take(at),
+            "origin_period": dates.take(at),
+            "level": _arrow.float64(np.tile(levels, n_w + 1)),
+            "ibnr": _arrow.float64(values[:, 0]),
+            "tvar": _arrow.float64(values[:, 1]),
+        }
+    )
+    each = _arrow.int64(np.tile(np.arange(n_w), n_draws))
+    draws = pa.table(
+        {
+            "draw": _arrow.int64(np.repeat(np.arange(n_draws), n_w)),
+            "origin": shown.take(each),
+            "origin_period": dates.take(each),
+            "ibnr": _arrow.float64(ibnr.ravel()),
+        }
+    )
+    return BootstrapResult(
+        method,
+        central.as_of,
+        step,
+        n_draws,
+        seed,
+        central,
+        origin_table,
+        totals,
+        quantile_table,
+        draws,
+        _residual_table(shown, dates, setup, step),
+    )
+
+
+def _residual_table(shown: pa.Array, dates: pa.Array, setup, step: int) -> pa.Table:
+    """One row per observed cell, origin by origin: the residuals and which were resampled."""
+    boot = setup.boot
+    observed = boot.obs_mask
+    rows, cols = np.nonzero(observed)
+    resampled = np.full(observed.shape, np.nan)
+    resampled[boot.pool_mask] = boot.pool
+    at = _arrow.int64(rows)
+
+    def nullable(values: np.ndarray) -> pa.Array:
+        values = np.asarray(values, dtype=float)
+        missing = np.isnan(values)
+        return _arrow.float64(np.where(missing, 0.0, values), mask=missing)
+
+    link_reason = setup.excluded_by[observed]
+    return pa.table(
+        {
+            "origin": shown.take(at),
+            "origin_period": dates.take(at),
+            "dev_lag": _arrow.int64((cols + 1) * step),
+            "increment": _arrow.float64(boot.inc[observed]),
+            "fitted": _arrow.float64(boot.fitted[observed]),
+            "residual": nullable(boot.unscaled[observed]),
+            "leverage": nullable(
+                np.where(boot.fitted[observed] != 0, boot.leverage[observed], np.nan)
+            ),
+            "adjusted": nullable(resampled[observed]),
+            "in_pool": _arrow.bool_(boot.pool_mask[observed]),
+            "reason": _arrow.string([POOL_REASONS[code] for code in boot.pool_reason[observed]]),
+            "link_reason": _arrow.strings_or_nulls(
+                [None if code < 0 else LINK_REASONS[code] for code in link_reason]
+            ),
+        }
+    )
+
+
+def _tail(sample: np.ndarray, level: float) -> tuple[float, float]:
+    """The quantile at ``level`` and the mean of the draws at or above it.
+
+    ``np.quantile`` at ``level`` is ``np.percentile`` at ``100 * level``, and the
+    tail mean is taken over the draws themselves, as the Reserving app's
+    ``/cdr`` takes it, so the two give the same numbers.
+    """
+    threshold = np.quantile(sample, level)
+    return float(threshold), float(sample[sample >= threshold].mean())
+
+
+def _draw_count(n_draws) -> int:
+    if (
+        not isinstance(n_draws, numbers.Integral)
+        or isinstance(n_draws, bool | np.bool_)
+        or n_draws < 1
+    ):
+        raise Refusal(
+            "invalid_option",
+            "n_draws must be a whole number of 1 or more, got {given}",
+            option="n_draws",
+            given=n_draws,
+        )
+    return int(n_draws)
+
+
+def _require_seed(seed) -> None:
+    if seed is None:
+        return
+    if not isinstance(seed, numbers.Integral) or isinstance(seed, bool | np.bool_) or seed < 0:
+        raise Refusal(
+            "invalid_option",
+            "seed must be None or a whole number of 0 or more, got {given}",
+            option="seed",
+            given=seed,
+        )
+
+
+def _levels(quantiles) -> tuple[float, ...]:
+    """The quantile levels as floats, or a refusal naming what was passed."""
+    listed = isinstance(quantiles, list | tuple) or (
+        isinstance(quantiles, np.ndarray) and quantiles.ndim == 1
+    )
+    refusal = Refusal(
+        "invalid_option",
+        "quantiles must be a list of probabilities strictly between 0 and 1, such as 0.995 "
+        "(divide a percentile by 100), got {given}",
+        option="quantiles",
+        given=tuple(quantiles) if listed else quantiles,
+    )
+    if not listed:
+        raise refusal
+    levels = []
+    for level in quantiles:
+        if not isinstance(level, numbers.Real) or isinstance(level, bool | np.bool_):
+            raise refusal
+        value = float(level)
+        if not 0.0 < value < 1.0:  # also false for NaN
+            raise refusal
+        levels.append(value)
+    return tuple(levels)
 
 
 # -- refusals in the caller's terms ------------------------------------------------

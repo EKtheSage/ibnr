@@ -126,6 +126,12 @@ NOT_PROMISED = {
         "that needs chainladder, which the image does not install, and it computes "
         "no result."
     ),
+    "freeze_odp_cdr_pin.py": (
+        "rewrites a test fixture (tests/data/odp_cdr_pin.json) from an older "
+        "checkout's source and chainladder's clrd sample. It is a development tool "
+        "that needs chainladder, which the image does not install, and it computes "
+        "no result."
+    ),
     "freeze_untailed_pin.py": (
         "rewrites a test fixture (tests/data/untailed_pin.json) from an older "
         "checkout's source and chainladder's clrd sample. It is a development tool "

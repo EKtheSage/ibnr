@@ -432,6 +432,130 @@ held-out draws refuse a tailed fit (`not_supported`): the Merz-Wuthrich
 formulas and R's `CDR.MackChainLadder` cover the development inside the
 triangle only.
 
+## The ODP bootstrap
+
+chainladder puts `cl.BootstrapODPSample` in front of a method and fits the
+method to the simulated triangles it returns; ibnr takes the method as an
+option of one function, `methods.odp_bootstrap`, and the development and tail
+options once.
+
+```python
+# cl.Chainladder().fit(cl.BootstrapODPSample(n_sims=2000, random_state=42).fit_transform(tri))
+methods.odp_bootstrap(cells, n_draws=2000, seed=42, negative_increments="reflect")
+
+# cl.BornhuetterFerguson(apriori=0.8, apriori_sigma=0.1).fit(sims, sample_weight=premium)
+methods.odp_bootstrap(
+    cells,
+    method="bornhuetter_ferguson",
+    premium=premium,
+    expected_loss_ratio=0.8,
+    prior_cv=0.1 / 0.8,
+    negative_increments="reflect",
+)
+```
+
+| chainladder-python | ibnr |
+|---|---|
+| `cl.BootstrapODPSample(n_sims=n)` | `n_draws=n` (1,000 by default in both) |
+| `random_state=s` | `seed=s` |
+| `hat_adj=True` / `hat_adj=False` | `residual_adjustment="hat"` / `"none"` (and `"dof"`, R's) |
+| its residual pool (zeros dropped, centred) | `residual_pool="centred"` (and `"all"`, R's) |
+| negative increments and fitted means through `abs()` | `negative_increments="reflect"` (`"refuse"` by default) |
+| its gamma process noise | `process="gamma"` (and `"od_poisson"`, or `"none"`) |
+| the refit estimator: `cl.Chainladder()`, `cl.BornhuetterFerguson(apriori=r)`, `cl.Benktander(apriori=r, n_iters=n)`, `cl.CapeCod(decay=d, trend=t, n_iters=n)` | `method="chain_ladder"`, `"bornhuetter_ferguson"` (with `expected_loss_ratio=r`), `"benktander"` (and `n_iters=n`) or `"cape_cod"` (with `decay`, `trend`, `n_iters`) |
+| `sample_weight=` a premium triangle | `premium=` keyed by origin |
+| `apriori_sigma=s` (normal, one draw per simulation) | `prior_cv=s / r` for Bornhuetter-Ferguson and Benktander, `prior_cv=s` for Cape Cod (lognormal, mean 1) |
+| `BootstrapODPSample(n_periods=, drop=, drop_high=, drop_low=, drop_valuation=)` and `cl.Development(...)` before the refit | the development options, given once |
+| `.ibnr_` of the refit, per simulation | `result.draws` (`draw`, `origin`, `ibnr`) |
+| `.scale_` | `result.totals["phi"]` |
+| the mean and standard deviation of `.ibnr_` | `result.origins["mean_ibnr"]`, `["sd_ibnr"]`; `result.totals` for the total |
+
+`result.central` is the point method for the same options, a
+`ReserveResult`; `result.quantiles` holds the quantiles (numpy's linear rule,
+`np.percentile`'s) and the mean of the draws at or above each; and
+`result.residuals` shows every observed cell's residual and whether it was
+resampled.
+
+Where the two differ, on purpose:
+
+- **One set of development options.** chainladder's sampler takes
+  `n_periods`, `drop`, `drop_high`, `drop_low` and `drop_valuation`, and the
+  refit whatever `cl.Development` is put in front of it, so the fitted values
+  and the refit can use different patterns. ibnr takes the options once. The
+  options that pick a link ratio by where it is (`history_periods`, `exclude`,
+  `exclude_valuations`, the zero rule) make the fitted values and refit every
+  simulated triangle; the ones that pick it by size (`drop_high`,
+  `drop_low`, `drop_above`, `drop_below`) make the fitted values and the pool
+  only, because trimming each simulated triangle again pulls the mean below
+  the central estimate (22% on raa with `drop_high`, on chainladder itself).
+  In chainladder that is the sampler with every option and the refit with the
+  position ones, and ibnr's draws equal chainladder's for it when fed the same
+  random numbers. `average` applies to both; chainladder's sampler has none.
+- **A tail enters the refit only, as in chainladder.** The fitted values and
+  the residual pool come from the link factors before the tail, and the
+  tail is applied to each simulated triangle's refit, so a curve attached
+  before the last age (`tail_attach_lag`) is fitted to simulated ratios
+  that scatter around the data, not around the curve. With the curve in the
+  fitted values too, the mean of the draws moved off the central estimate;
+  measured at 20,000 draws as a share of the central IBNR, attached at 72
+  months, before and after:
+
+  | triangle, curve     | curve in fitted values | refit only     | chainladder    |
+  |---------------------|------------------------|----------------|----------------|
+  | genins, exponential | -6.2%                  | +0.3% to +0.4% | +0.1% to +0.5% |
+  | genins, Weibull     | -7.0%                  | +0.7% to +0.8% | +0.6% to +0.9% |
+  | abc, exponential    | -3.4%                  | -0.3%          | -0.3%          |
+  | abc, Weibull        | -4.4%                  | -0.2%          | -0.2%          |
+
+  Each figure is two seeds; the Monte Carlo standard error is about 0.13%
+  on genins and 0.03% on abc.
+
+  A curve is not a straight line in the factors, so neither library's mean
+  sits exactly on the central estimate; on raa with an inverse power curve
+  at 60 months both sit far above it (ibnr +26%, chainladder +27% to +28%).
+- **The hat matrix is weighted by |m|.** With negative fitted means (under
+  `negative_increments="reflect"`) chainladder weights its hat matrix by the
+  signed fitted mean, and ibnr by its absolute value, so the leverages and
+  the draws differ: on the first liab triangle (7 negative fitted means) the
+  leverages differ by up to 1.2e-3 and the resampled residuals by up to
+  0.045. With no negative fitted mean the two are the same.
+- **Seeds.** `seed=0` reproduces; chainladder seeds its process noise only
+  when the seed is truthy, so 0 and `None` do not. The draws do not reproduce
+  chainladder's for the same seed: the residuals, the noise and the a priori
+  multipliers each have a stream of their own.
+- **`hat_adj=False` adjusts nothing**, although its docstring says degrees of
+  freedom; that is `residual_adjustment="none"` here, and R's degrees of
+  freedom are `"dof"`.
+- **The hat adjustment does not switch itself off.** chainladder inverts the
+  GLM's weighted design and, when a development factor is exactly 1.0 (179 of
+  349 complete, all-positive clrd paid triangles), catches the singular
+  matrix and drops the adjustment with a warning. ibnr's leverage uses a
+  pseudo-inverse. A cell of leverage one gets the adjusted residual 0, which
+  chainladder gets from memory it never set.
+- **The cells fitted exactly are found from the fit.** chainladder drops
+  residuals equal to 0, so on genins without the adjustment it resamples a
+  rounding residue of 1.8e-12 (54 residuals; ibnr 53). ibnr drops the
+  first origin's last cell and the last origin's first cell, and, with
+  development options, every cell whose link ratios are each the only one
+  left at their age, which the central factors reproduce exactly.
+- **A zero increment is data.** chainladder stores a zero increment as
+  missing and drops its residual; ibnr resamples it (`-sqrt(m)`).
+- **Every draw is a number.** chainladder gives NaN for a draw it cannot
+  finish (2 of 2,000 on raa with a 1.05 constant tail, 100 with an
+  exponential curve), which the Reserving app counted as 0. ibnr refuses a
+  run with such a draw (`result_not_finite`); a refitted age with no positive
+  volume takes 1.0, counted in `totals.n_draws_unit_factor`, and a draw whose
+  tail curve fails its checks uses the central curve, counted in
+  `totals.n_draws_tail_fallback`.
+- **`mean_ultimate` is the actual latest plus the mean IBNR**, as in R;
+  chainladder's `ultimate_` adds the simulated latest.
+- **A tail is one more future cell**, where chainladder adds two columns
+  past the last age; the gamma noise has the same distribution.
+- **`apriori_sigma` becomes `prior_cv`**: one mean-one lognormal multiplier
+  per draw, shared by every origin, where chainladder draws a normal
+  multiplier (negative now and then) and makes the central fit random too.
+  ibnr's central fit never draws.
+
 ## When a method refuses
 
 chainladder-python has no error class of its own: bad input raises whatever
@@ -561,6 +685,5 @@ year written `2020-12-31` has its first cell at `dev_lag` 12, valued
   cumulatives.
 - Origin periods longer than a development step, such as annual origins
   developed quarterly: `dev_grain_months` must equal the origin period length.
-- The bootstrap (`cl.BootstrapODPSample`) through `ibnr.methods`. An
-  over-dispersed Poisson bootstrap of next year's diagonal is in
-  `ibnr.kernels` for the one-year claims development result.
+- Bootstrapping a triangle with more than one segment: `methods.odp_bootstrap`
+  takes one triangle at a time, as every method here does.

@@ -88,6 +88,13 @@ cl, bf, bk, cc, mk = (
 )
 
 
+def ob(cells=T, **options):
+    """methods.odp_bootstrap with a small draw count."""
+    options.setdefault("n_draws", 20)
+    options.setdefault("seed", 0)
+    return methods.odp_bootstrap(cells, **options)
+
+
 def year(y: int) -> dt.date:
     return dt.date(y, 1, 1)
 
@@ -1806,6 +1813,306 @@ CASES = [
         [],
         {"given": -1.0},
     ),
+    # the ODP bootstrap
+    ("ob_method", lambda: ob(method="mack"), "invalid_option", "method", None, [], [], [], {}),
+    (
+        "ob_premium_on_the_chain_ladder",
+        lambda: ob(premium=PREM),
+        "invalid_option",
+        "premium",
+        None,
+        [],
+        [],
+        [],
+        {"options": ("premium", "method")},
+    ),
+    (
+        "ob_loss_ratio_on_cape_cod",
+        lambda: ob(method="cape_cod", premium=PREM, expected_loss_ratio=0.7),
+        "invalid_option",
+        "expected_loss_ratio",
+        None,
+        [],
+        [],
+        [],
+        {"options": ("expected_loss_ratio", "method"), "given": 0.7},
+    ),
+    (
+        "ob_n_iters_on_bornhuetter_ferguson",
+        lambda: ob(method="bornhuetter_ferguson", premium=PREM, expected_loss_ratio=0.7, n_iters=2),
+        "invalid_option",
+        "n_iters",
+        None,
+        [],
+        [],
+        [],
+        {"options": ("n_iters", "method"), "given": 2},
+    ),
+    (
+        "ob_n_iters_bool",
+        lambda: ob(n_iters=True),
+        "invalid_option",
+        "n_iters",
+        None,
+        [],
+        [],
+        [],
+        {"given": True},
+    ),
+    (
+        "ob_decay_on_the_chain_ladder",
+        lambda: ob(decay=0.5),
+        "invalid_option",
+        "decay",
+        None,
+        [],
+        [],
+        [],
+        {"options": ("decay", "method"), "given": 0.5},
+    ),
+    (
+        "ob_trend_on_bornhuetter_ferguson",
+        lambda: ob(
+            method="bornhuetter_ferguson", premium=PREM, expected_loss_ratio=0.7, trend=0.02
+        ),
+        "invalid_option",
+        "trend",
+        None,
+        [],
+        [],
+        [],
+        {"options": ("trend", "method")},
+    ),
+    (
+        "ob_prior_cv_negative",
+        lambda: ob(method="cape_cod", premium=PREM, prior_cv=-0.1),
+        "invalid_option",
+        "prior_cv",
+        None,
+        [],
+        [],
+        [],
+        {"given": -0.1},
+    ),
+    (
+        "ob_prior_cv_bool",
+        lambda: ob(method="cape_cod", premium=PREM, prior_cv=True),
+        "invalid_option",
+        "prior_cv",
+        None,
+        [],
+        [],
+        [],
+        {"given": True},
+    ),
+    (
+        "ob_prior_cv_on_the_chain_ladder",
+        lambda: ob(prior_cv=0.1),
+        "invalid_option",
+        "prior_cv",
+        None,
+        [],
+        [],
+        [],
+        {"options": ("prior_cv", "method")},
+    ),
+    ("ob_no_draws", lambda: ob(n_draws=0), "invalid_option", "n_draws", None, [], [], [], {}),
+    (
+        "ob_draws_bool",
+        lambda: ob(n_draws=True),
+        "invalid_option",
+        "n_draws",
+        None,
+        [],
+        [],
+        [],
+        {"given": True},
+    ),
+    ("ob_seed_negative", lambda: ob(seed=-1), "invalid_option", "seed", None, [], [], [], {}),
+    (
+        "ob_seed_bool",
+        lambda: ob(seed=True),
+        "invalid_option",
+        "seed",
+        None,
+        [],
+        [],
+        [],
+        {"given": True},
+    ),
+    (
+        "ob_quantile_as_a_percent",
+        lambda: ob(quantiles=[95]),
+        "invalid_option",
+        "quantiles",
+        None,
+        [],
+        [],
+        [],
+        {"given": (95,)},
+    ),
+    (
+        "ob_quantile_nan",
+        lambda: ob(quantiles=[math.nan]),
+        "invalid_option",
+        "quantiles",
+        None,
+        [],
+        [],
+        [],
+        {},
+    ),
+    (
+        "ob_residual_adjustment",
+        lambda: ob(residual_adjustment="leverage"),
+        "invalid_option",
+        "residual_adjustment",
+        None,
+        [],
+        [],
+        [],
+        {"given": "leverage"},
+    ),
+    (
+        "ob_residual_pool",
+        lambda: ob(residual_pool="median"),
+        "invalid_option",
+        "residual_pool",
+        None,
+        [],
+        [],
+        [],
+        {"given": "median"},
+    ),
+    (
+        "ob_negative_increments",
+        lambda: ob(negative_increments="keep"),
+        "invalid_option",
+        "negative_increments",
+        None,
+        [],
+        [],
+        [],
+        {"given": "keep"},
+    ),
+    (
+        "ob_process",
+        lambda: ob(process="normal"),
+        "invalid_option",
+        "process",
+        None,
+        [],
+        [],
+        [],
+        {"given": "normal"},
+    ),
+    (
+        "ob_negative_increment",
+        lambda: ob(tri(replace(BASE, (2001, 48), 160.0))),
+        "negative_increment",
+        "negative_increments",
+        None,
+        [c(2001, 48, -10.0)],
+        [],
+        [],
+        {"options": ("negative_increments", "cells")},
+    ),
+    (
+        "ob_negative_fitted_mean",
+        lambda: ob(tail="constant", tail_factor=0.9, tail_attach_lag=24),
+        "negative_fitted_mean",
+        "negative_increments",
+        None,
+        [c(2002, 48), c(2003, 36), c(2003, 48), c(2004, 36), c(2004, 48)],
+        [(24, 36), (36, 48)],
+        [],
+        {"options": ("negative_increments", "cells")},
+    ),
+    (
+        "ob_zero_fitted_mean",
+        lambda: ob(
+            tri(replace(replace(BASE, (2001, 36), 128.0), (2001, 48), 140.0)),
+            negative_increments="reflect",
+        ),
+        "degenerate_fit",
+        "cells",
+        None,
+        [c(2001, 36, -22.0), c(2002, 36, 22.0)],
+        [],
+        [],
+        {},
+    ),
+    (
+        "ob_too_few_cells",
+        lambda: ob(tri([(2001, 12, 100.0), (2001, 24, 150.0), (2002, 12, 110.0)])),
+        "not_identified",
+        "cells",
+        None,
+        [],
+        [],
+        [],
+        {},
+    ),
+    (
+        # one development age: chain_ladder answers (an ibnr of 0), the bootstrap
+        # has no development step to fit
+        "ob_one_development_age",
+        lambda: ob(tri([(2001, 12, 100.0)])),
+        "not_identified",
+        "cells",
+        None,
+        [],
+        [],
+        [],
+        {},
+    ),
+    (
+        "ob_one_development_age_two_origins",
+        lambda: ob(tri([(2001, 12, 100.0), (2002, 12, 50.0)])),
+        "not_identified",
+        "cells",
+        None,
+        [],
+        [],
+        [],
+        {},
+    ),
+    (
+        # 25,000,001 draws of 4 origins is more than 100,000,000 numbers; refused
+        # before any draw is made
+        "ob_too_many_draws",
+        lambda: ob(n_draws=25_000_001),
+        "invalid_option",
+        "n_draws",
+        None,
+        [],
+        [],
+        [],
+        {"given": 25_000_001},
+    ),
+    (
+        "ob_amounts_too_large",
+        # the draws are finite, and their squares, for the standard deviation, are not
+        lambda: ob(tri([(o, d, v * 1e300) for o, d, v in BASE])),
+        "result_not_finite",
+        "cells",
+        None,
+        [c(2002), c(2003), c(2004)],
+        [],
+        [],
+        {},
+    ),
+    (
+        "ob_to_polars_unknown",
+        lambda: ob().to_polars("development"),
+        "invalid_option",
+        "table",
+        None,
+        [],
+        [],
+        [],
+        {"given": "development"},
+    ),
     # the result
     (
         "to_polars_unknown",
@@ -1849,6 +2156,7 @@ _METHOD_OF = {
     bk: "benktander",
     cc: "cape_cod",
     mk: "mack",
+    ob: "odp_bootstrap",
 }
 
 
@@ -2652,6 +2960,74 @@ def test_a_seeded_fuzz_of_tails_meets_nothing_but_refusals():
     assert outcomes["answered"] > 100, outcomes
     for reason in ("invalid_option", "not_in_triangle", "grain_mismatch", "not_supported"):
         assert outcomes.get(reason, 0) > 0, (reason, outcomes)
+
+
+_BOOTSTRAP_POOL = {
+    "method": ["chain_ladder", "bornhuetter_ferguson", "benktander", "cape_cod", "mack", 1],
+    "residual_adjustment": ["hat", "dof", "none", "x"],
+    "residual_pool": ["centred", "all", None],
+    "negative_increments": ["reflect", "reflect", "refuse", "x"],
+    "process": ["gamma", "od_poisson", "none", "normal"],
+    "prior_cv": [0.0, 0.1, 0.5, -0.1, math.nan, True, "0.1"],
+    "n_draws": [1, 2, 25, 0, 2.5, True],
+    "seed": [None, 0, 7, -1, 2.5],
+    "quantiles": [(0.5,), (0.9, 0.995), (), (95,), (math.nan,), 0.5],
+    "history_periods": [None, 3, 1],
+    "drop_high": [False, 1, 2],
+    "drop_above": [None, 1.5],
+    "average": ["volume", "simple", "median", "regression"],
+    "tail": [None, "constant", "exponential", "weibull"],
+}
+
+
+def _bootstrap_numbers_are_finite(result) -> None:
+    for name in result.TABLES:
+        for column in getattr(result, name).columns:
+            if pa.types.is_floating(column.type):
+                values = np.array(column.drop_null().to_pylist(), dtype=float)
+                assert np.isfinite(values).all(), (name, column)
+    _numbers_are_finite(result.central)
+
+
+def test_a_seeded_fuzz_of_the_bootstrap_meets_nothing_but_refusals():
+    """600 cases of methods.odp_bootstrap: the five public triangles, some edited,
+    with its own options and a few development and tail options drawn from
+    values valid and not. Every call answers with finite numbers (a missing
+    one a null) or raises exactly Refusal, and a RuntimeWarning is an error."""
+    rng = np.random.default_rng(20260926)
+    names = sorted(_FUZZ)
+    outcomes: dict[str, int] = {}
+    for _ in range(600):
+        rows = _FUZZ[names[int(rng.integers(0, len(names)))]]
+        edited = _fuzz_case(rng, rows) if rng.random() < 0.4 else [list(r) for r in rows]
+        options = {"n_draws": 10, "seed": 1, "negative_increments": "reflect"}
+        for name, pool in _BOOTSTRAP_POOL.items():
+            if rng.random() < 0.2:
+                options[name] = pool[int(rng.integers(0, len(pool)))]
+        if options.get("tail") == "constant":
+            options["tail_factor"] = 1.05
+        method = options.get("method", "chain_ladder")
+        if method in ("bornhuetter_ferguson", "benktander", "cape_cod"):
+            origins = sorted({r[0] for r in rows})
+            options["premium"] = {o: 1000.0 * (1 + k) for k, o in enumerate(origins)}
+        if method in ("bornhuetter_ferguson", "benktander"):
+            options["expected_loss_ratio"] = 0.7
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            try:
+                result = methods.odp_bootstrap(
+                    _as_table(edited) if edited else pa.table({}), **options
+                )
+            except Refusal as refusal:
+                assert type(refusal) is Refusal
+                assert refusal.method == "odp_bootstrap"
+                json.dumps(refusal.to_dict(), allow_nan=False)
+                outcomes[refusal.reason] = outcomes.get(refusal.reason, 0) + 1
+                continue
+        _bootstrap_numbers_are_finite(result)
+        outcomes["answered"] = outcomes.get("answered", 0) + 1
+    assert outcomes["answered"] > 150, outcomes
+    assert len(outcomes) > 6, outcomes
 
 
 @pytest.mark.tieout

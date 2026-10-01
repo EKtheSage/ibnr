@@ -439,6 +439,7 @@ def test_a_bare_import_of_ibnr_does_not_load_methods():
 
 def test_the_public_names_are_pinned():
     assert sorted(methods.__all__) == [
+        "BootstrapResult",
         "Refusal",
         "ReserveResult",
         "benktander",
@@ -446,6 +447,7 @@ def test_the_public_names_are_pinned():
         "cape_cod",
         "chain_ladder",
         "mack",
+        "odp_bootstrap",
     ]
 
 

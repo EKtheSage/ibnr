@@ -78,9 +78,13 @@ def float64(values, *, mask: np.ndarray | None = None) -> pa.Array:
     )
 
 
-def int64(values) -> pa.Array:
+def int64(values, *, mask: np.ndarray | None = None) -> pa.Array:
+    """An int64 array; ``mask`` is True where a value is missing."""
     data = np.ascontiguousarray(values, dtype=np.int64)
-    return pa.Array.from_buffers(pa.int64(), len(data), [None, pa.py_buffer(data)])
+    bitmap, missing = (None, 0) if mask is None else _validity(~np.asarray(mask, dtype=bool))
+    return pa.Array.from_buffers(
+        pa.int64(), len(data), [bitmap, pa.py_buffer(data)], null_count=missing
+    )
 
 
 def bool_(values) -> pa.Array:

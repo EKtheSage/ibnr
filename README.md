@@ -7,8 +7,9 @@ triangle data layer backed by duckdb and polars (via ibis). A companion to
 
 **Coming from chainladder-python?** `from ibnr import methods`, then
 `methods.chain_ladder(cells)`, `methods.mack(cells)`,
-`methods.bornhuetter_ferguson(...)`, `methods.benktander(...)` or
-`methods.cape_cod(...)`: see [Run a chain
+`methods.bornhuetter_ferguson(...)`, `methods.benktander(...)`,
+`methods.cape_cod(...)` or, for chainladder's `BootstrapODPSample`,
+`methods.odp_bootstrap(cells, method=...)`: see [Run a chain
 ladder](#run-a-chain-ladder) and [the lookup table from chainladder-python to
 ibnr](https://github.com/EKtheSage/ibnr/blob/main/docs/coming-from-chainladder.md).
 
