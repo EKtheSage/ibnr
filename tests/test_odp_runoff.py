@@ -1023,6 +1023,47 @@ def test_a_drawn_run_counts_the_tail_fallbacks():
 # -- 5. chainladder-python on shared random numbers ---------------------------------
 
 
+@pytest.fixture
+def chainladder_hat_zero_at_leverage_one(monkeypatch):
+    """Give chainladder-python's hat adjustment a defined value where it has none.
+
+    chainladder 0.9.2's ``BootstrapODPSample._get_hat`` computes
+    ``sqrt(divide(1, abs(1 - hat), where=(1 - hat) != 0))`` with no ``out=``,
+    so at a cell of leverage exactly one (the corners of the triangle) numpy
+    leaves whatever was in memory. The residual there is zero in exact
+    arithmetic, but on genins it is -1.8e-12, so that leftover value decides
+    whether the cell joins the pool: zero drops it (chainladder's own
+    ``!= 0`` filter), anything else keeps it, and one extra residual shifts
+    every resampled index. The leftover value happened to be zero on a Windows
+    machine and in most CI environments, and was not in the Linux CI job that
+    installs every extra (run 36220435896), where all 2,000 genins ultimates
+    differed (most likely because the tests that run first there leave
+    different memory behind; the exact leftover value was not observed).
+    Filled with zero here, so chainladder drops the cell, as ibnr does (a
+    leverage-one cell has no residual to resample). Measured: filled with 5
+    instead, the genins draw-for-draw tests fail as they did on that runner.
+    """
+    pytest.importorskip("chainladder")
+    from chainladder.adjustments import bootstrap
+
+    original = bootstrap.BootstrapODPSample._get_hat
+    divide = np.divide
+
+    def zero_filled(a, b, *, where=True, out=None, **kwargs):
+        if out is None and where is not True:
+            out = np.zeros(np.broadcast(a, b).shape)
+        return divide(a, b, where=where, out=out, **kwargs)
+
+    def get_hat(self, X, exp_incr_triangle):
+        np.divide = zero_filled
+        try:
+            return original(self, X, exp_incr_triangle)
+        finally:
+            np.divide = divide
+
+    monkeypatch.setattr(bootstrap.BootstrapODPSample, "_get_hat", get_hat)
+
+
 def _chainladder_noise(means, mask, phi, seed) -> np.ndarray:
     """chainladder-python's process noise on these means: ``RandomState(seed + 1)``
     gamma over a ``(n, 1, n_w, n_d + 2)`` array, NaN on the observed cells and
@@ -1040,17 +1081,25 @@ CHAINLADDER_SAMPLES = ("raa", "genins", "ukmotor", "abc", "mw2014")
 
 
 @pytest.mark.tieout
-@pytest.mark.parametrize("name", CHAINLADDER_SAMPLES)
-@pytest.mark.parametrize("hat", [True, False])
-def test_chainladder_draw_for_draw(name, hat):
+@pytest.mark.parametrize(
+    ("hat", "name"),
+    # genins without the hat is left out rather than skipped: the all-extras
+    # CI leg allows no skip reason but a missing gold mart or cmdstan, and the
+    # next test names the difference.
+    [
+        (hat, name)
+        for hat in (True, False)
+        for name in CHAINLADDER_SAMPLES
+        if hat or name != "genins"
+    ],
+)
+def test_chainladder_draw_for_draw(name, hat, chainladder_hat_zero_at_leverage_one):
     """Fed chainladder-python's residual stream, the simulated triangles, the
     scale and the refitted ultimates are chainladder's, and with its gamma
     layout applied to the future-cell means so is every IBNR draw. genins
     without the hat is the named exception (next test). Mutation: project from
     the actual latest diagonal instead of the simulated one; this fails."""
     cl = pytest.importorskip("chainladder")
-    if name == "genins" and not hat:
-        pytest.skip("chainladder resamples a rounding residual here; see the next test")
     tri = cl.load_sample(name)
     grid = grid_of(PUBLIC[name])
     setup = setup_of(grid, adjustment="hat" if hat else "none", pool="centred")
@@ -1089,7 +1138,9 @@ def test_chainladder_resamples_a_rounding_residual_on_genins_without_the_hat():
     "label",
     ["bornhuetter_ferguson", "benktander", "cape_cod", "cape_cod_decay", "bf_sigma", "cc_sigma"],
 )
-def test_chainladder_draw_for_draw_for_the_a_priori_methods(label):
+def test_chainladder_draw_for_draw_for_the_a_priori_methods(
+    label, chainladder_hat_zero_at_leverage_one
+):
     """Bornhuetter-Ferguson, Benktander (``n_iters`` 2), Cape Cod (``decay`` 1, and
     0.5 with ``n_iters`` 2) and ``apriori_sigma``, each refitted on
     chainladder's simulated triangles with its noise: equal to 1e-9. The
@@ -1139,7 +1190,9 @@ def test_chainladder_draw_for_draw_for_the_a_priori_methods(label):
 
 @pytest.mark.tieout
 @pytest.mark.parametrize("name", ["raa", "genins"])
-def test_chainladder_draw_for_draw_with_development_options(name):
+def test_chainladder_draw_for_draw_with_development_options(
+    name, chainladder_hat_zero_at_leverage_one
+):
     """The combination the one specification reaches in chainladder-python: the
     sampler with ``n_periods=5, drop_high=True`` and the refit with
     ``n_periods=5``, which is ``history_periods=5, drop_high=1`` here. And an
@@ -1214,7 +1267,7 @@ def test_r_bootchainladder_within_monte_carlo_error(run):
 
 @pytest.mark.tieout
 @pytest.mark.parametrize("name", ["raa", "genins"])
-def test_chainladder_within_monte_carlo_error(name):
+def test_chainladder_within_monte_carlo_error(name, chainladder_hat_zero_at_leverage_one):
     """chainladder-python's own run and ibnr's (hat, centred) at 20,000 draws."""
     cl = pytest.importorskip("chainladder")
     tri = cl.load_sample(name)
