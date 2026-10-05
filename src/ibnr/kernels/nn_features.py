@@ -65,7 +65,12 @@ from typing import Any
 
 import numpy as np
 
-__all__ = ["origin_cl_log_factors", "pooled_cl_factors", "tlrn_features"]
+__all__ = [
+    "origin_cl_log_factors",
+    "pooled_cl_factors",
+    "pooled_incremental_lr",
+    "tlrn_features",
+]
 
 #: standard deviations a standardised feature is clipped at (reference: 5)
 CLAMP_Z = 5.0
@@ -88,6 +93,10 @@ FACTOR_FLOOR = 1.0 + 1e-6
 ANCHOR_FLOOR = 1.0
 #: the premium a predicted increment is divided by (reference: 1e-8)
 PREMIUM_FLOOR = 1e-8
+#: pooled incremental loss ratios are floored here so their log is finite: a lag
+#: no visible cell reaches, or one whose pooled increments are not positive,
+#: starts the premium head at this ratio rather than at minus infinity
+LR_FLOOR = 1e-6
 
 #: channel order of ``feat``'s last axis. The first eight are the paid-only
 #: form; naming an incurred and a case channel appends the other five. The
@@ -275,6 +284,37 @@ def origin_cl_log_factors(
         factors[:, :, d] = np.where(usable, ratio, pooled_tail_one[None, :, d])
     factors = np.where(np.asarray(written, dtype=bool)[:, :, None], factors, 1.0)
     return np.log(factors)
+
+
+def pooled_incremental_lr(contract: dict[str, Any], cutoff: int) -> np.ndarray:
+    """Premium-weighted incremental paid loss ratio pooled over companies, per line and lag.
+
+    Returns (n_l, n_d): at lag ``d`` the paid increments of every visible cell of
+    that line, summed over companies and origins, over the premium of those same
+    cells. A cell is visible when its calendar diagonal is at or before
+    ``cutoff`` and the company writes the line; an unusable increment (the
+    contract's ``x_obs`` is False) contributes to neither sum. A lag no visible
+    cell reaches, or whose pool is not positive, is floored at :data:`LR_FLOOR`.
+
+    This is what the premium head starts from and what it falls back to at a lag
+    no training target supervised, so it reads visible cells only, exactly as
+    :func:`pooled_cl_factors` does: a ratio that saw a hidden cell would be a
+    fallback that had seen the answer.
+    """
+    x = np.asarray(contract["x"], dtype=float)[:, :, 0]
+    x_obs = np.asarray(contract["x_obs"], dtype=bool)[:, :, 0]
+    written = np.asarray(contract["line_mask"], dtype=bool)
+    premium = np.asarray(contract["premium"], dtype=float)
+    premium = np.where(np.isfinite(premium), premium, 0.0)
+    visible = np.asarray(contract["cal_idx"], dtype=int) <= int(cutoff)
+    prem = np.broadcast_to(premium[..., None], x.shape)
+    ok = x_obs & written[:, :, None, None] & visible[None, None] & (prem > 0)
+    numerator = np.where(ok, np.where(np.isfinite(x), x, 0.0) * prem, 0.0)
+    denominator = np.where(ok, prem, 0.0)
+    num, den = numerator.sum(axis=(0, 2)), denominator.sum(axis=(0, 2))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ratio = np.where(den > 0, num / den, LR_FLOOR)
+    return np.maximum(ratio, LR_FLOOR)
 
 
 def _resolve_channels(
@@ -552,6 +592,11 @@ def tlrn_features(
         "line_ix": np.repeat(np.arange(1, n_l + 1), n_d),
         "lag_ix": np.tile(np.arange(1, n_d + 1), n_l),
         "fallback_logf": np.log(pooled_tail_one),
+        # the premium head's counterpart of the fallback: the pooled incremental
+        # loss ratio per (line, lag) as known at this cutoff
+        "fallback_lr": pooled_incremental_lr(contract, cutoff),
+        # the tokens this cutoff has revealed, which a masked attention may read
+        "visible": np.broadcast_to(visible_e & written_e, shape).astype(float).reshape(n_ex, n_tok),
         "anchor_logf": np.repeat(anchor_logf, n_w, axis=0),
         "example_company": np.repeat(np.arange(n_c), n_w),
         "example_origin": np.tile(np.arange(n_w), n_c),

@@ -52,7 +52,7 @@ from ibnr.gallery.registry import register
 from ibnr.kernels.contract import _as_date
 from ibnr.kernels.multiline import flatten_with_totals, multiline_targets
 from ibnr.kernels.nn_contract import cohort_identities, nn_company_data
-from ibnr.kernels.nn_features import tlrn_features
+from ibnr.kernels.nn_features import pooled_incremental_lr, tlrn_features
 from ibnr.kernels.predictive import PredictiveDistribution
 from ibnr.kernels.residual_calibration import calibrate, calibrated_draws, rolling_residuals
 from ibnr.kernels.rng import cohort_stream
@@ -87,20 +87,29 @@ def _refuse_overlap(train_masks, val_masks) -> None:
         )
 
 
-def _training_parts(cfg, n_l, n_d, n_feat, dev, support, train_tensors, val_tensors):
+def _training_parts(
+    cfg, n_l, n_d, n_feat, dev, support, train_tensors, val_tensors, *, n_w=None, head_init=None
+):
     """``make_model``, ``forward``, ``train_loss``, ``val_loss`` and ``param_groups``.
 
     Module level rather than closures inside ``fit`` so that a worker process can
     rebuild exactly what ``fit`` trains with from the arrays alone: a function defined
     inside ``fit`` cannot be sent to a process started by ``spawn``, which is the only
     start method Windows has. ``train_tensors`` maps each training cutoff to its
-    tensor set.
+    tensor set. ``n_w`` is the number of accident years per company and ``head_init``
+    the premium head's starting log loss ratios, (n_l, n_d), a numpy array.
     """
+    import torch
+
     from ibnr.gallery.nn.tlrn import head as tlrn_head
     from ibnr.gallery.nn.tlrn.network import TLRNNetwork
 
+    start = None if head_init is None else torch.tensor(head_init, dtype=torch.float32)
+
     def make_model():
-        return TLRNNetwork(cfg, n_lines=n_l, n_lag=n_d, n_feat=n_feat).to(dev)
+        return TLRNNetwork(
+            cfg, n_lines=n_l, n_lag=n_d, n_feat=n_feat, n_origin=n_w, head_init=start
+        ).to(dev)
 
     def forward(model, tset: dict, rows=None) -> dict:
         take = (lambda t: t) if rows is None else (lambda t: t[rows])
@@ -114,9 +123,18 @@ def _training_parts(cfg, n_l, n_d, n_feat, dev, support, train_tensors, val_tens
             take(tset["written"]),
             factor_support=support,
             fallback_logf=tset["fallback_logf"],
+            fallback_lr=tset["fallback_lr"],
             anchor_logf=take(tset["anchor_logf"]),
             anchor_start=take(tset["anchor_start"]),
+            visible=take(tset["visible"]),
         )
+
+    def example_rows(idx):
+        """The example rows a batch of units names: itself, or every year of each company."""
+        if cfg.batch_unit != "company":
+            return idx
+        years = torch.arange(n_w, device=idx.device)
+        return (idx.unsqueeze(1) * n_w + years).reshape(-1)
 
     def train_loss(model, idx, cutoffs):
         k = int(cutoffs[0])
@@ -126,6 +144,7 @@ def _training_parts(cfg, n_l, n_d, n_feat, dev, support, train_tensors, val_tens
                 "against one feature set: set cutoff_sampling='per_epoch'"
             )
         tset = train_tensors[k]
+        idx = example_rows(idx)
         mask = tset["target_mask"][idx]
         if not float(mask.sum()):
             return None  # this epoch's cutoff left this batch nothing to score
@@ -146,9 +165,10 @@ def _training_parts(cfg, n_l, n_d, n_feat, dev, support, train_tensors, val_tens
         return TLRN._ay_line_ape(model, val_tensors, forward, n_l, n_d)
 
     def param_groups(m):
+        owned = set(m.head_param_names)
         return [
-            {"params": [m.phi], "lr": cfg.lr_phi},
-            {"params": [p for n, p in m.named_parameters() if n != "phi"]},
+            {"params": m.head_parameters(), "lr": cfg.lr_phi},
+            {"params": [p for n, p in m.named_parameters() if n not in owned]},
         ]
 
     return make_model, forward, train_loss, val_loss, param_groups
@@ -187,6 +207,8 @@ def _start_worker(payload_path: str, threads: int) -> None:
         None if support is None else torch.tensor(support, device=dev),
         {k: TLRN._to_tensors(s, torch, dev) for k, s in payload["train_sets"].items()},
         [TLRN._to_tensors(s, torch, dev) for s in payload["val_sets"]],
+        n_w=payload["n_w"],
+        head_init=payload["head_init"],
     )
     _WORKER.update(parts=parts, payload=payload, dev=dev)
 
@@ -204,7 +226,7 @@ def _train_member(member: int) -> tuple[int, dict, list[dict], int]:
     payload = _WORKER["payload"]
     cfg = payload["cfg"]
     models, history = train_ensemble(
-        payload["n_ex"],
+        payload["n_units"],
         config=cfg,
         seed=payload["seed"],
         make_model=make_model,
@@ -374,17 +396,30 @@ class TLRN(GalleryEntry):
 
         support = None
         if cfg.tail_policy == "observed_cl":
-            # which factors the TRAINING targets could move; read off the masks
-            # and the starting lags, never off a validation or a test value
-            support_np = tlrn_head.factor_support(
-                [s["target_mask"] for s in train_sets.values()],
-                [s["lk"] for s in train_sets.values()],
-                n_l,
-                n_d,
-            )
+            # which parameters the TRAINING targets could move; read off the
+            # masks (and the starting lags), never off a validation or a test value
+            if cfg.head == "premium_lr":
+                support_np = tlrn_head.lag_support(
+                    [s["target_mask"] for s in train_sets.values()], n_l, n_d
+                )
+            else:
+                support_np = tlrn_head.factor_support(
+                    [s["target_mask"] for s in train_sets.values()],
+                    [s["lk"] for s in train_sets.values()],
+                    n_l,
+                    n_d,
+                )
             support = torch.tensor(support_np, device=dev)
         else:
             support_np = None
+
+        # the premium head starts at the pooled incremental loss ratio known when
+        # training starts, which is the last training diagonal and not a later one
+        head_init = (
+            np.log(pooled_incremental_lr(contract, train_end)) if cfg.head == "premium_lr" else None
+        )
+        # what train_ensemble batches: examples, or whole companies
+        n_units = n_c if cfg.batch_unit == "company" else n_ex
 
         val_tensors = [tensor_of[id(s)] for s in val_sets]
         make_model, forward, train_loss, val_loss, param_groups = _training_parts(
@@ -396,6 +431,8 @@ class TLRN(GalleryEntry):
             support,
             {k: tensor_of[id(s)] for k, s in train_sets.items()},
             val_tensors,
+            n_w=n_w,
+            head_init=head_init,
         )
 
         def company_ape(model) -> float:
@@ -405,7 +442,7 @@ class TLRN(GalleryEntry):
         # made here so the table can carry the members that were dropped
         if processes == 1:
             models, history = train_ensemble(
-                n_ex,
+                n_units,
                 config=cfg,
                 seed=seed,
                 make_model=make_model,
@@ -428,7 +465,9 @@ class TLRN(GalleryEntry):
                 "n_l": n_l,
                 "n_d": n_d,
                 "n_feat": n_feat,
-                "n_ex": n_ex,
+                "n_units": n_units,
+                "n_w": n_w,
+                "head_init": head_init,
                 "train_end": train_end,
                 "seed": seed,
                 "support": support_np,
@@ -685,11 +724,12 @@ class TLRN(GalleryEntry):
     @staticmethod
     def _to_tensors(features: dict, torch, dev) -> dict:
         out = {k: torch.tensor(features[k], dtype=torch.float32, device=dev) for k in _FLOAT_KEYS}
-        for k in ("fallback_logf", "anchor_logf"):
+        for k in ("fallback_logf", "anchor_logf", "fallback_lr"):
             out[k] = torch.tensor(features[k], dtype=torch.float32, device=dev)
         for k in _LONG_KEYS:
             out[k] = torch.tensor(features[k], dtype=torch.long, device=dev)
         out["written"] = torch.tensor(features["written"], dtype=torch.bool, device=dev)
+        out["visible"] = torch.tensor(features["visible"], dtype=torch.bool, device=dev)
         return out
 
     @staticmethod

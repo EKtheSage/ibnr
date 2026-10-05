@@ -34,6 +34,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ibnr.gallery.nn._training import CUTOFF_SAMPLING
+from ibnr.gallery.nn.tlrn.components import check_combination
 
 #: what happens to a development step no training target ever supervised.
 #: ``observed_cl`` substitutes the chain ladder factors observable at the
@@ -75,6 +76,18 @@ class TLRNConfig:
     #: half-width of that correction, in log factor units
     anchor_width: float = 0.1
     tail_policy: str = "observed_cl"
+    #: what the network output is read as; see ``components.py`` for the choices
+    #: and which of them can be combined. ``ldf`` is the published model.
+    head: str = "ldf"
+    #: the axes a block attends along, in order. ``None`` follows ``cross_line``:
+    #: ``("line", "lag")`` or ``("lag",)``. ``("line", "lag", "ay")`` adds the
+    #: accident-year attention and needs ``batch_unit="company"``.
+    attention: tuple[str, ...] | None = None
+    #: what an attention may read: ``unwritten_lines`` masks only absent lines,
+    #: ``observed_cells`` masks every cell the forecast date has not revealed
+    mask: str = "unwritten_lines"
+    #: the premium head's cap on ``beta + eps * net``, so a ratio is at most e**cap
+    lr_cap: float = 5.0
 
     # loss: the accident-year/line absolute percentage error, a pooled bias
     # penalty, and a squared-error term on the scale the ratios live on
@@ -88,7 +101,10 @@ class TLRNConfig:
     lr_phi: float = 3e-2
     weight_decay: float = 0.0
     warmup: int = 20
-    #: EXAMPLES per batch, not companies: an example is one (company, origin)
+    #: what ``batch_size`` counts: ``example`` is one (company, accident year),
+    #: ``company`` is a whole company with every accident year
+    batch_unit: str = "example"
+    #: batch units per batch: examples, or companies under ``batch_unit="company"``
     batch_size: int = 64
     max_epochs: int = 3000
     min_epochs: int = 500
@@ -147,6 +163,9 @@ class TLRNConfig:
                 f"cutoff_sampling must be one of {list(CUTOFF_SAMPLING)}, "
                 f"got {self.cutoff_sampling!r}"
             )
+        check_combination(self)
+        if not self.lr_cap > 0:
+            raise ValueError(f"lr_cap must be positive, got {self.lr_cap}")
         if self.n_heads < 1 or self.d_model % self.n_heads:
             raise ValueError(
                 f"d_model {self.d_model} must be a positive multiple of n_heads {self.n_heads}: "
