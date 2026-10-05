@@ -207,6 +207,19 @@ calls = {{
         exclude=[(1982, 12)],
         exclude_valuations=[1989],
     ),
+    "chain_ladder_tail": lambda: methods.chain_ladder(
+        cells, tail="weibull", tail_rows=3, tail_fit_lags=(24, None)
+    ),
+    "cape_cod_tail": lambda: methods.cape_cod(
+        cells, premium=premium, tail="constant", tail_factor=1.05, tail_attach_lag=84
+    ),
+    "benktander_tail": lambda: methods.benktander(
+        cells, premium=premium, expected_loss_ratio=0.7, tail="inverse_power", tail_steps=500
+    ),
+    "mack_tail": lambda: methods.mack(cells, tail="exponential"),
+    "mack_tail_given": lambda: methods.mack(
+        cells, tail="constant", tail_factor=0.97, tail_sigma=0.5, tail_std_err=0.01
+    ),
     "refused_grain": lambda: methods.chain_ladder(cells, dev_grain_months=5),
     "refused_exclusion": lambda: methods.chain_ladder(cells, exclude=[(1990, 12)]),
     "refused_valuation": lambda: methods.chain_ladder(cells, exclude_valuations=["1990Q4"]),

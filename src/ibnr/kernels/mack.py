@@ -77,7 +77,9 @@ Cross-refs: ``kernels/contract.py::cohort_grid`` (the data contract),
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
+import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -102,6 +104,7 @@ from ibnr.kernels.links import (
     select_links,
     settings_named,
 )
+from ibnr.kernels.tail import TailSpec, apply_tail, tail_variance
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -141,9 +144,10 @@ class MackFit:
 
     ``cum`` keeps the observed triangle (NaN outside it); ``full`` is the same
     matrix with the lower triangle filled by the chain-ladder projection, so
-    ``full[:, -1]`` is the ultimate and ``full[i, j]`` for ``j > latest_dev[i]``
-    is the ``C-hat_{i,j}`` that Mack's and Merz-Wuthrich's variance formulas
-    both evaluate at.
+    ``full[:, -1]`` is the projection to the last observed age (the ultimate
+    only without a tail; with one, the ultimate is ``ultimate``) and
+    ``full[i, j]`` for ``j > latest_dev[i]`` is the ``C-hat_{i,j}`` that Mack's
+    and Merz-Wuthrich's variance formulas both evaluate at.
 
     A fit made with development options (see :func:`fit_mack_grid`) also
     carries ``average``, the ``links`` rules and the ``selection`` they made.
@@ -151,6 +155,16 @@ class MackFit:
     at step ``j``, ``n_obs[j]`` is how many were used and ``n_pos[j]`` equals
     it. ``links`` and ``selection`` are ``None`` on a fit made without options,
     which is 0.7.2's estimator.
+
+    A fit made with a tail (``fit_mack_grid(tail=...)``) carries the
+    :class:`~ibnr.kernels.tail.TailSpec` in ``tail``, the development beyond
+    the last observed age in ``tail_factor``, the tail step's sigma squared in
+    ``tail_sigma2``, the tail factor's standard error squared in ``tail_se2``,
+    and in ``tail_position`` where the tail sits on the link axis (``None``
+    when both variances were given, or the tail factor is 1). ``full`` still
+    ends at the last observed age; ``ultimate`` is its last column times
+    ``tail_factor``, and every origin, the oldest too, develops one more step.
+    Without a tail these are ``None``, 1.0, 0.0, 0.0 and ``None``.
     """
 
     cum: np.ndarray  # (n_w, n_d) observed cumulative, NaN outside the triangle
@@ -174,12 +188,19 @@ class MackFit:
     links: LinkRules | None = None
     #: which link ratios ``links`` kept, and why the others went
     selection: LinkSelection | None = None
+    #: the tail, or None; see the class docstring for the four numbers after it
+    tail: TailSpec | None = None
+    tail_factor: float = 1.0
+    tail_sigma2: float = 0.0
+    tail_se2: float = 0.0
+    tail_position: float | None = None
 
     def __post_init__(self) -> None:
         # checked here too, so a fit built by hand or decoded from a tampered
         # payload cannot carry a setting every reader would take as "observed"
         _require_zero_cells(self.zero_cells)
         _require_mack_average(self.average)
+        self._check_tail()
         if (self.links is None) != (self.selection is None):
             raise Refusal(
                 "invalid_option",
@@ -199,6 +220,39 @@ class MackFit:
                 f"a MackFit's zero_cells ({self.zero_cells!r}) must be its link rules' "
                 f"({self.links.zero_cells!r})",
                 option="zero_cells",
+            )
+
+    def _check_tail(self) -> None:
+        """A tail's numbers go with a tail: none without one, finite with one."""
+        numbers = (self.tail_factor, self.tail_sigma2, self.tail_se2)
+        if self.tail is None:
+            if numbers != (1.0, 0.0, 0.0) or self.tail_position is not None:
+                raise Refusal(
+                    "invalid_option",
+                    "a MackFit without a tail has tail_factor 1.0, tail_sigma2 and tail_se2 0.0 "
+                    "and no tail_position",
+                    option="tail",
+                )
+            return
+        if not isinstance(self.tail, TailSpec):
+            raise Refusal(
+                "invalid_option",
+                "a MackFit's tail must be an ibnr.kernels.tail.TailSpec, got {given}",
+                option="tail",
+                given=type(self.tail).__name__,
+            )
+        position = self.tail_position
+        if (
+            not all(isinstance(v, float) and math.isfinite(v) for v in numbers)
+            or self.tail_factor <= 0
+            or min(self.tail_sigma2, self.tail_se2) < 0
+            or not (position is None or (isinstance(position, float) and math.isfinite(position)))
+        ):
+            raise Refusal(
+                "invalid_option",
+                "a MackFit's tail_factor must be a positive finite float, tail_sigma2 and "
+                "tail_se2 finite floats of 0 or more, and tail_position a finite float or None",
+                option="tail",
             )
 
     @property
@@ -239,13 +293,25 @@ class MackFit:
 
     @property
     def ultimate(self) -> np.ndarray:
-        """(n_w,) projected ultimate = the completed triangle's last column."""
-        return self.full[:, -1]
+        """(n_w,) projected ultimate = the completed triangle's last column, times
+        the tail factor when there is a tail."""
+        if self.tail is None:
+            return self.full[:, -1]
+        return self.full[:, -1] * self.tail_factor
 
     @property
     def reserve(self) -> np.ndarray:
-        """(n_w,) IBNR = ultimate - latest. Zero for a fully developed origin."""
+        """(n_w,) IBNR = ultimate - latest. Zero for a fully developed origin,
+        unless there is a tail."""
         return self.ultimate - self.latest
+
+    @property
+    def _developing(self) -> np.ndarray:
+        """(n_w,) bool: origins with development still to come. With a tail that is
+        every origin, since each develops one more step beyond the last age."""
+        if self.tail is not None:
+            return np.ones(self.n_w, dtype=bool)
+        return self.latest_dev < self.n_d - 1
 
     @property
     def zero_links(self) -> int:
@@ -266,10 +332,11 @@ class MackFit:
     @property
     def _zero_latest(self) -> np.ndarray:
         """(n_w,) bool: open origins whose latest cumulative is exactly zero, under
-        ``zero_cells="missing"`` only (always all False under ``"observed"``)."""
+        ``zero_cells="missing"`` only (always all False under ``"observed"``). With
+        a tail every origin is open."""
         if self.zero_cells != "missing":
             return np.zeros(self.n_w, dtype=bool)
-        return (self.latest_dev < self.n_d - 1) & (self.latest == 0)
+        return self._developing & (self.latest == 0)
 
     # -- preconditions ---------------------------------------------------------
 
@@ -299,7 +366,9 @@ class MackFit:
         the CDR refuse.
 
         A CLOSED origin (already at the last dev column) is exempt: it has no
-        remaining step, so nothing divides by its diagonal.
+        remaining step, so nothing divides by its diagonal. With a tail no
+        origin is closed: the tail step divides by every origin's amount at
+        the last age.
 
         Under ``zero_cells="missing"`` a latest cell of exactly zero is accepted
         too. Every term of Mack's msep for that origin carries its latest amount
@@ -330,7 +399,7 @@ class MackFit:
                     for i in np.flatnonzero(self._zero_latest)
                 ],
             )
-        open_ = self.latest_dev < self.n_d - 1
+        open_ = self._developing
         diag = self.cum[np.arange(self.n_w), self.latest_dev]
         bad = np.nonzero(open_ & ~(diag > 0) & ~self._zero_latest)[0]
         if bad.size:
@@ -398,12 +467,26 @@ class MackFit:
         variance ``sigma_j^2 C^(2 - alpha)`` rolled forward to ultimate, and
         ``S_j`` is the weight total ``sum C^alpha`` behind ``f_j``. At alpha 1
         this is the formula above, computed the same way.
+
+        With a tail (Mack 1999, and R's ``MackChainLadder(tail=)``) the tail is
+        one more step with factor ``F = tail_factor``, sigma squared
+        ``tail_sigma2`` and factor standard error squared ``tail_se2``, taken
+        by EVERY origin, the fully developed one too. ``C-hat_{i,J}`` becomes
+        the tailed ultimate ``U_i``, and each origin adds process
+        ``U_i^2 (tail_sigma2 / F^2) / C-hat_{i,J}^alpha`` and parameter
+        ``U_i^2 tail_se2 / F^2``, with ``C-hat_{i,J}`` its projected amount at
+        the last observed age and alpha the last link's (the fit's); the cross
+        term's shared sum gains ``tail_se2 / F^2`` for every pair.
         """
         self.require_positive_open_diagonals()  # 1/C-hat_{i,j} below starts there
         full = self.full
         ratio = np.divide(  # (n_d - 1,) sigma_j^2 / f_j^2, the recurring weight
             self.sigma2, self.f**2, out=np.zeros_like(self.sigma2), where=self.f != 0
         )
+        tailed = self.tail is not None
+        if tailed:
+            squared = self.tail_factor**2
+            tail_process, tail_parameter = self.tail_sigma2 / squared, self.tail_se2 / squared
         process = np.zeros(self.n_w)
         parameter = np.zeros(self.n_w)
         at_zero = self._zero_latest
@@ -417,6 +500,13 @@ class MackFit:
                 else:
                     process[i] += ratio[j] / full[i, j] ** alpha
                 parameter[i] += ratio[j] / self.s[j]
+            if tailed:
+                # the tail step, from the amount at the last observed age
+                if alpha == 1:
+                    process[i] += tail_process / full[i, -1]
+                else:
+                    process[i] += tail_process / full[i, -1] ** alpha
+                parameter[i] += tail_parameter
         ult2 = self.ultimate**2
         process *= ult2
         parameter *= ult2
@@ -426,11 +516,13 @@ class MackFit:
         # factors estimated on the dev steps they both still have to run through
         cross = 0.0
         for i in range(self.n_w):
-            tail_ult = self.ultimate[i + 1 :].sum()
-            if tail_ult == 0.0:
+            rest = self.ultimate[i + 1 :].sum()
+            if rest == 0.0:
                 continue
             shared = sum(ratio[j] / self.s[j] for j in range(int(self.latest_dev[i]), self.n_d - 1))
-            cross += 2.0 * self.ultimate[i] * tail_ult * shared
+            if tailed:
+                shared += tail_parameter
+            cross += 2.0 * self.ultimate[i] * rest * shared
         return {
             "msep": msep,
             "process": process,
@@ -674,6 +766,7 @@ def fit_mack_grid(
     zero_cells: str | None = None,
     average: str = "volume",
     links: LinkRules | None = None,
+    tail: TailSpec | None = None,
 ) -> MackFit:
     """Fit Mack's distribution-free chain ladder from a grid dict (the array entry point).
 
@@ -764,9 +857,33 @@ def fit_mack_grid(
       over every age with a positive sigma, and under ``"mack"`` by Mack's rule
       from the two ages before, filled or estimated, in order (both as R's
       ``MackChainLadder`` does), refusing an age before the third.
+
+    **Tail** (Mack 1999; R's ``MackChainLadder(tail=, tail.se=, tail.sigma=)``).
+    ``tail`` (an ``ibnr.kernels.tail.TailSpec``) adds one development step
+    beyond the last observed age, taken by every origin, whose factor is the
+    tail factor: a constant tail's own, or a curve's fitted to ``f`` (after the
+    development options). Its sigma and standard error are read by
+    :func:`ibnr.kernels.tail.tail_variance` off straight lines through the
+    logarithms of the sigmas and the factors' standard errors, at the age
+    where the tail sits, unless ``TailSpec.sigma`` and ``TailSpec.std_err``
+    give them. ``msep_runoff`` then carries the tail step (see there), with
+    the tail step's process variance divided by the amount at the last age to
+    the power of the fit's alpha. Refused: a tail attached before the last
+    observed age (``not_supported``: Mack's standard errors are derived for
+    factors estimated from link ratios, and curve factors in their place have
+    no derived standard error), and every refusal of ``apply_tail`` and
+    ``tail_variance``. A tailed fit has no one-year claims development result
+    and no simulation yet; both refuse it by name.
     """
     _require_sigma_rule(sigma_rule)
     _require_mack_average(average)
+    if tail is not None and not isinstance(tail, TailSpec):
+        raise Refusal(
+            "invalid_option",
+            "tail must be an ibnr.kernels.tail.TailSpec or None, got {given}",
+            option="tail",
+            given=type(tail).__name__,
+        )
     zero_cells = _resolve_zero_cells(zero_cells, links)
     origins, _ = check_grid(grid)
     cum, mask = grid["cum"], grid["obs_mask"]
@@ -788,7 +905,7 @@ def fit_mack_grid(
             average=average,
             sigma_rule=sigma_rule,
         )
-        return MackFit(
+        fit = MackFit(
             cum=cum,
             obs_mask=mask,
             latest_dev=grid["latest_dev"],
@@ -807,6 +924,7 @@ def fit_mack_grid(
             links=rules,
             selection=selection,
         )
+        return fit if tail is None else _with_tail(fit, tail)
     f, sigma2, s, n_obs, n_pos = _estimate_factors(
         cum,
         mask,
@@ -815,7 +933,7 @@ def fit_mack_grid(
         lag_months=grid["dev_grain_months"],
         origins=origins,
     )
-    return MackFit(
+    fit = MackFit(
         cum=cum,
         obs_mask=mask,
         latest_dev=grid["latest_dev"],
@@ -830,6 +948,59 @@ def fit_mack_grid(
         units=grid.get("units"),
         loss_field=grid.get("loss_field"),
         zero_cells=zero_cells,
+    )
+    return fit if tail is None else _with_tail(fit, tail)
+
+
+def _with_tail(fit: MackFit, spec: TailSpec) -> MackFit:
+    """The fit with a tail step beyond its last observed age."""
+    step = fit.dev_grain_months
+    applied = apply_tail(fit.f, step, spec)
+    if applied.attach_index < fit.n_d - 1:
+        last = fit.n_d * step
+        raise Refusal(
+            "not_supported",
+            f"Mack cannot attach a tail before the last observed age: Mack's standard errors "
+            "are derived for factors estimated from link ratios, and the ages "
+            f"{spec.attach_lag} to {last - step} would carry tail factors whose standard "
+            f"error nobody derived. Attach it at {last} (the default), or use the chain ladder "
+            "for the ultimates",
+            option=spec.name("attach_lag"),
+            given=spec.attach_lag,
+            links=[
+                ((j + 1) * step, (j + 2) * step) for j in range(applied.attach_index, fit.n_d - 1)
+            ],
+        )
+    factor = float(applied.tail_factor)
+    variance = tail_variance(
+        fit.f,
+        fit.sigma2,
+        fit.s,
+        factor,
+        sigma=spec.sigma,
+        std_err=spec.std_err,
+        dev_grain_months=step,
+        option_prefix=spec.option_prefix,
+    )
+    return dataclasses.replace(
+        fit,
+        tail=spec,
+        tail_factor=factor,
+        tail_sigma2=float(variance.sigma2),
+        tail_se2=float(variance.se2),
+        tail_position=variance.position,
+    )
+
+
+def _require_untailed(fit: MackFit, what: str, why: str) -> None:
+    """Refuse a tailed fit on a path that has no tail step yet."""
+    if fit.tail is None:
+        return
+    raise Refusal(
+        "not_supported",
+        f"{what} has no tail step yet: {why}. Fit without tail= for it, or read the tailed "
+        "run-off uncertainty from MackFit.msep_runoff()",
+        option="tail",
     )
 
 
@@ -1407,6 +1578,12 @@ def simulate_ultimates(
     ``sigma2[j] * C ** (2 - alpha)``, the fit's own model; at alpha 1 the draws
     are what they always were.
     """
+    _require_untailed(
+        fit,
+        "simulate_ultimates",
+        "its draws develop each origin to the last observed age only, so they would leave out "
+        "the tail the fit's ultimates and standard errors include",
+    )
     # a non-positive diagonal would give var = sigma2 * state <= 0, which
     # draw_step returns at its mean - a silent point mass, not an error
     fit.require_positive_open_diagonals()
@@ -1535,6 +1712,12 @@ def draw_next_cells(
         raise _refuse_process(process)
     if n_draws < 1:
         raise _refuse_n_draws(n_draws)
+    _require_untailed(
+        fit,
+        "draw_next_cells",
+        "it draws one development step inside the triangle, and a tailed fit's held-out score "
+        "has not been defined",
+    )
     # Var = sigma2 * prev is non-positive off a non-positive diagonal, and
     # draw_step then returns the mean exactly - an invisible point mass rather
     # than an error. Same guard, same reason as every other variance path.

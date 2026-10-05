@@ -1686,6 +1686,9 @@ PATTERN = [
     ("factor", pa.float64()),
     ("cdf", pa.float64()),
     ("pct_reported", pa.float64()),
+    ("source", pa.string()),
+    ("curve_factor", pa.float64()),
+    ("in_tail_fit", pa.bool_()),
 ]
 SELECTION = [
     ("n_selected", pa.int64()),
@@ -1705,8 +1708,23 @@ LINK_RATIOS = pa.schema(
         ("reason", pa.string()),
     ]
 )
-TOTALS = [("latest", pa.float64()), ("ultimate", pa.float64()), ("ibnr", pa.float64())]
+TOTALS = [
+    ("latest", pa.float64()),
+    ("ultimate", pa.float64()),
+    ("ibnr", pa.float64()),
+    ("tail_factor", pa.float64()),
+]
 MACK_SE = [("mack_se", pa.float64()), ("parameter_se", pa.float64()), ("process_se", pa.float64())]
+MACK_TOTALS = [
+    ("latest", pa.float64()),
+    ("ultimate", pa.float64()),
+    ("ibnr", pa.float64()),
+    *MACK_SE,
+    ("tail_factor", pa.float64()),
+    ("tail_sigma", pa.float64()),
+    ("tail_std_err", pa.float64()),
+    ("tail_position", pa.float64()),
+]
 ELR = [("expected_loss_ratio", pa.float64())]
 TREND = [("trended_loss_ratio", pa.float64()), ("trend_factor", pa.float64())]
 
@@ -1727,25 +1745,26 @@ SCHEMAS = {
             ("sigma_extrapolated", pa.bool_()),
         ],
         LINK_RATIOS,
-        TOTALS + MACK_SE,
+        MACK_TOTALS,
     ),
 }
 
 
-def run(method: str, cells=None):
+def run(method: str, cells=None, **options):
     cells = arrow_cells() if cells is None else cells
-    if method == "bornhuetter_ferguson":
-        return methods.bornhuetter_ferguson(cells, premium=RAA_PREMIUM, expected_loss_ratio=0.7)
-    if method == "benktander":
-        return methods.benktander(cells, premium=RAA_PREMIUM, expected_loss_ratio=0.7)
+    if method in ("bornhuetter_ferguson", "benktander"):
+        return getattr(methods, method)(
+            cells, premium=RAA_PREMIUM, expected_loss_ratio=0.7, **options
+        )
     if method == "cape_cod":
-        return methods.cape_cod(cells, premium=RAA_PREMIUM)
-    return getattr(methods, method)(cells)
+        return methods.cape_cod(cells, premium=RAA_PREMIUM, **options)
+    return getattr(methods, method)(cells, **options)
 
 
-def run_with_options(method: str):
+def run_with_options(method: str, **tail):
     """``run``, with every option that adds or fills a column set away from its default."""
     options = {"drop_above": 4.0, "drop_high": 2, "preserve": 2, "exclude_valuations": [1989]}
+    options.update(tail)
     extra = {}
     if method not in ("chain_ladder", "mack"):
         extra["premium"] = RAA_PREMIUM
@@ -1758,10 +1777,20 @@ def run_with_options(method: str):
     return getattr(methods, method)(arrow_cells(), **options, **extra)
 
 
+#: Each kind of tail, as the methods take it: a column set is the same with and without.
+TAILS = {
+    "no_tail": {},
+    "constant": {"tail": "constant", "tail_factor": 1.05, "tail_rows": 2},
+    "curve": {"tail": "exponential", "tail_rows": 3},
+}
+
+
+@pytest.mark.parametrize("tail", list(TAILS))
 @pytest.mark.parametrize("options", [False, True], ids=["defaults", "options"])
 @pytest.mark.parametrize("method", list(SCHEMAS))
-def test_the_result_schema_is_pinned(method, options):
-    result = run_with_options(method) if options else run(method)
+def test_the_result_schema_is_pinned(method, options, tail):
+    run_it = run_with_options if options else run
+    result = run_it(method, **TAILS[tail])
     origins, development, link_ratios, totals = SCHEMAS[method]
     assert result.method == method
     assert result.origins.schema.equals(pa.schema(origins))
@@ -1769,7 +1798,8 @@ def test_the_result_schema_is_pinned(method, options):
     assert result.totals.schema.equals(pa.schema(totals))
     assert result.totals.num_rows == 1
     assert result.origins.num_rows == 10
-    assert result.development.num_rows == 10
+    # one row per observed age, and the rows shown beyond the last age
+    assert result.development.num_rows == 10 + TAILS[tail].get("tail_rows", 0)
     assert result.link_ratios.schema.equals(link_ratios)
     assert result.link_ratios.num_rows == 45
 

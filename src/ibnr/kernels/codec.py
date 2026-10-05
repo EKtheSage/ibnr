@@ -45,9 +45,9 @@ cross this boundary bit for bit or not at all; the tests compare
 ``samples.view(np.uint8)``, because an ``allclose`` assertion passes cleanly
 against a float32 encoder and would therefore be worthless.
 
-Envelope, version 1 (version 2 is the same layout, written only by a
-``MackFit`` with development options, whose header and arrays carry them; see
-``CODEC_VERSION``). One Arrow IPC **stream** per artifact:
+Envelope, version 1 (versions 2 and 3 are the same layout, written only by a
+``MackFit`` with development options and one with a tail, whose header and
+arrays carry them; see ``CODEC_VERSION``). One Arrow IPC **stream** per artifact:
 
     body table          the artifact's largest rectangular array
     schema metadata     b"ibnr.kind"            artifact type name
@@ -105,6 +105,7 @@ from ibnr.kernels.forecast import ForecastPanel
 from ibnr.kernels.links import LinkRules, LinkSelection
 from ibnr.kernels.mack import MackFit, MackFitPanel
 from ibnr.kernels.predictive import PredictiveDistribution
+from ibnr.kernels.tail import TailSpec
 from ibnr.triangle.core import Triangle
 
 #: The newest envelope version this build reads, checked on the way back in. A
@@ -113,8 +114,9 @@ from ibnr.triangle.core import Triangle
 #: Each payload carries the lowest version that reads it completely, so a
 #: payload that needs nothing new keeps version 1 and its bytes: 2 is written
 #: only by a MackFit made with development options (``average`` and ``links``),
-#: which a version-1 reader would otherwise decode as a fit without them.
-CODEC_VERSION: int = 2
+#: which a version-1 reader would otherwise decode as a fit without them, and 3
+#: only by a MackFit with a tail, which a version-2 reader would decode untailed.
+CODEC_VERSION: int = 3
 
 #: The version of every payload that needs nothing added after it.
 _FIRST_VERSION = 1
@@ -585,6 +587,23 @@ _LINK_FIELDS = (
     "zero_cells",
 )
 
+#: The fields of a fit's tail spec, in the order ``TailSpec`` takes them.
+_TAIL_FIELDS = (
+    "kind",
+    "factor",
+    "decay",
+    "attach_lag",
+    "fit_lags",
+    "steps",
+    "rows",
+    "sigma",
+    "std_err",
+)
+
+#: The tail's numbers a tailed fit carries, each as a shape-() array so its
+#: bits cross exactly.
+_TAIL_NUMBERS = ("tail_factor", "tail_sigma2", "tail_se2")
+
 
 def _encode_mack_fit(obj: MackFit, compression: str | None) -> bytes:
     body = pa.table({f"d{j}": obj.cum[:, j] for j in range(obj.n_d)})
@@ -608,19 +627,28 @@ def _encode_mack_fit(obj: MackFit, compression: str | None) -> bytes:
         "zero_cells": obj.zero_cells,
     }
     arrays = {name: getattr(obj, name) for name in _MACK_ARRAYS}
-    if obj.links is None:
-        # a fit without development options: the header and arrays of 0.7.2, byte
-        # for byte, which any version-1 reader decodes completely
-        return _pack("MackFit", body, header, arrays=arrays, compression=compression)
-    # The development options. The arrays alone would decode to the right
-    # factors, but msep_runoff reads the average (the process term's exponent),
-    # the one-year result refuses by the options themselves, and the link_ratios
-    # table reads the selection.
-    header["average"] = obj.average
-    header["links"] = {name: _tag(getattr(obj.links, name)) for name in _LINK_FIELDS}
-    for name in _SELECTION_ARRAYS:
-        arrays[f"sel_{name}"] = getattr(obj.selection, name)
-    return _pack("MackFit", body, header, arrays=arrays, compression=compression, version=2)
+    version = _FIRST_VERSION
+    if obj.links is not None:
+        # The development options. The arrays alone would decode to the right
+        # factors, but msep_runoff reads the average (the process term's exponent),
+        # the one-year result refuses by the options themselves, and the
+        # link_ratios table reads the selection.
+        header["average"] = obj.average
+        header["links"] = {name: _tag(getattr(obj.links, name)) for name in _LINK_FIELDS}
+        for name in _SELECTION_ARRAYS:
+            arrays[f"sel_{name}"] = getattr(obj.selection, name)
+        version = 2
+    if obj.tail is not None:
+        # The tail. A version-2 reader would decode the fit without it, and give
+        # untailed ultimates and standard errors, so a tailed payload says 3.
+        header["tail"] = {name: _tag(getattr(obj.tail, name)) for name in _TAIL_FIELDS}
+        header["tail_position"] = obj.tail_position
+        for name in _TAIL_NUMBERS:
+            arrays[name] = np.asarray(getattr(obj, name), dtype=np.float64)
+        version = 3
+    # a fit with neither: the header and arrays of 0.7.2, byte for byte, which any
+    # version-1 reader decodes completely
+    return _pack("MackFit", body, header, arrays=arrays, compression=compression, version=version)
 
 
 def _decode_mack_fit(body: pa.Table, header: dict, frames, arrays, nested) -> MackFit:
@@ -636,6 +664,13 @@ def _decode_mack_fit(body: pa.Table, header: dict, frames, arrays, nested) -> Ma
         options["selection"] = LinkSelection(
             **{name: arrays[f"sel_{name}"] for name in _SELECTION_ARRAYS}
         )
+    if "tail" in header:
+        # a payload written before tails existed has none, and decodes untailed
+        spec = {name: _untag(value) for name, value in header["tail"].items()}
+        options["tail"] = TailSpec(**{**spec, "fit_lags": tuple(spec["fit_lags"])})
+        options["tail_position"] = header["tail_position"]
+        for name in _TAIL_NUMBERS:
+            options[name] = float(arrays[name])
     return MackFit(
         cum=cum,
         origin_periods=[_untag(p) for p in header["origin_periods"]],

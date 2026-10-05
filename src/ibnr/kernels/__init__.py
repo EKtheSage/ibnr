@@ -98,6 +98,7 @@ if TYPE_CHECKING:
         score_replay,
         select_conventional,
     )
+    from ibnr.kernels.tail import TailSpec, apply_tail, tail_variance
 
 #: Each exported name and the module it is imported from on first read. It must
 #: hold exactly the names of ``__all__``; ``tests/test_import_purity.py`` checks
@@ -159,6 +160,9 @@ _LAZY = {
     "evaluate_conventional": "selection",
     "score_replay": "selection",
     "select_conventional": "selection",
+    "TailSpec": "tail",
+    "apply_tail": "tail",
+    "tail_variance": "tail",
 }
 
 
@@ -201,7 +205,9 @@ __all__ = [
     "ODPBootstrapDiagonal",
     "ParityReport",
     "PredictiveDistribution",
+    "TailSpec",
     "align_panel",
+    "apply_tail",
     "calibrate",
     "calibrated_draws",
     "cdr_methods",
@@ -233,6 +239,7 @@ __all__ = [
     "shrink_toward",
     "simulate_one_year_cdr",
     "simulate_ultimates",
+    "tail_variance",
     "to_amount_scale",
     "to_arrow",
     "to_summary",

@@ -221,6 +221,19 @@ reference:
       - kernels.evaluate_conventional
       - kernels.ConventionalEvaluation
 
+  - title: Tails
+    desc: >
+      Development after the last observed age: a constant tail, or an
+      exponential, inverse power or Weibull curve fitted to the link factors.
+      A TailSpec goes on a ConventionalCandidate or into fit_mack_grid, where
+      tail_variance gives the tail step's sigma and standard error for Mack's
+      standard errors. apply_tail takes one row of factors per simulation too.
+    contents:
+      - name: kernels.TailSpec
+        members: false
+      - kernels.apply_tail
+      - kernels.tail_variance
+
   - title: Evaluation kernels
     desc: >
       The unifying predictive-distribution output type, the cross-backend

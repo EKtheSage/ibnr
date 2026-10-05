@@ -231,7 +231,13 @@ development options (`average`, `history_periods`, `drop_high`, `drop_low`,
 which refuses `average="median"` and has no `unsupported_factor`. So is
 `zero_cells`, which all five methods take: by default they read a cumulative
 of zero as a missing cell, as chainladder-python does, and
-`zero_cells="observed"` keeps it as data.
+`zero_cells="observed"` keeps it as data. All five take a tail too:
+`tail="constant", tail_factor=1.05`, or a curve fitted to the link factors
+(`tail="exponential"`, `"inverse_power"` or `"weibull"`), with `tail_decay`,
+`tail_attach_lag`, `tail_fit_lags`, `tail_steps` and `tail_rows`; `mack`
+carries the tail in its standard errors and also takes `tail_sigma` and
+`tail_std_err`. With a tail, `development` goes on past the last observed age
+and `totals` has the tail factor.
 Coming from chainladder-python,
 [this lookup table](https://github.com/EKtheSage/ibnr/blob/main/docs/coming-from-chainladder.md) maps its classes and
 attributes onto these functions. Import it with `from ibnr import methods`: a

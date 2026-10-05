@@ -40,18 +40,33 @@ whose tables are pyarrow Tables, so a service needs no DataFrame library at
 all; for analysis, ``result.to_polars()`` turns any of them into a polars
 DataFrame (``pip install "ibnr[polars]"``).
 
-The ``development`` table has one row per observed development age, and the
-same columns for every method that carries them, in this order:
+The ``development`` table has one row per observed development age, then,
+with a tail, ``tail_rows`` rows for the ages after the last observed one. It
+has the same columns for every method that carries them, in this order:
 
 ======================== ======== ======================================= =====================
 column                   type     meaning                                 methods
 ======================== ======== ======================================= =====================
 dev_lag                  int64    the age, in months                      all
-factor                   float64  the link factor to the next age; null   all
-                                  at the last age
-cdf                      float64  the factor to the last observed age     all
+factor                   float64  the factor to the next row; null on the all
+                                  final row
+cdf                      float64  the factor to ultimate, the tail's      all
+                                  development included (without a tail,
+                                  to the last observed age); on a tail's
+                                  final row, the rest of the tail
 pct_reported             float64  ``1 / cdf``                             all
-n_selected               int64    link ratios behind the factor           all
+source                   string   where the factor came from:             all
+                                  ``"link_ratios"`` or ``"tail"``; null
+                                  on the last age without a tail
+curve_factor             float64  a fitted curve's factor at this row,    all
+                                  for plotting fitted against selected;
+                                  null on the final row and without a
+                                  curve
+in_tail_fit              bool     the curve was fitted through this       all
+                                  age's factor; null at the last
+                                  observed age, on the rows beyond it,
+                                  and without a curve
+n_selected               int64    link ratios selected at this age        all
 unity_fallback           bool     no ratio was left and 1.0 was used      chain_ladder,
                                                                           bornhuetter_ferguson,
                                                                           benktander, cape_cod
@@ -65,9 +80,21 @@ sigma_extrapolated       bool     sigma came from ``sigma_rule``: the     mack
                                   age kept fewer than two link ratios
 ======================== ======== ======================================= =====================
 
-Every column but ``dev_lag``, ``cdf`` and ``pct_reported`` is null at the last
-age, which has no next age. A method carries exactly the columns listed for
-it, whatever options it is given, so a service can read each table by name.
+``n_selected`` and every column after it is null at the last observed age,
+which has no link ratios after it, and on every row beyond it. On an
+observed age whose ``source`` is ``"tail"`` (a tail attached before the last
+age), ``n_selected`` and the three flags still describe the link ratios at
+that age, but the factor is the tail's, not their average. A method carries
+exactly the columns listed for it, whatever options it is given, tail or
+none, so a service can read each table by name.
+
+Every method takes a tail, the development still to come after the last
+observed age: ``tail="constant"`` with ``tail_factor`` (such as 1.05), or a
+curve fitted to the link factors, ``"exponential"``, ``"inverse_power"`` or
+``"weibull"``. :func:`chain_ladder` describes the tail options. With a tail
+every origin's ultimate includes it, the oldest origin's too, ``totals`` has
+the tail factor in ``tail_factor`` (1.0 without a tail), and :func:`mack`'s
+standard errors carry one more development step for it.
 
 Importing this module loads numpy and pyarrow, and not ibis, pandas or scipy,
 and none of the methods loads them when it runs, so a service that starts
@@ -121,6 +148,7 @@ from ibnr.kernels.grid import as_date, check_grid, grid_from_columns, month_end
 from ibnr.kernels.links import REASONS as LINK_REASONS
 from ibnr.kernels.links import is_all_history
 from ibnr.kernels.mack import _require_mack_average, fit_mack_grid
+from ibnr.kernels.tail import TailFit, TailSpec, apply_tail
 
 __all__ = [
     "Refusal",
@@ -169,24 +197,38 @@ class ReserveResult:
         Cape Cod also adds ``trended_loss_ratio`` (the loss ratio at the
         valuation date's level, chainladder-python's ``apriori_``) and
         ``trend_factor`` (1.0 at ``trend=0``); Mack adds ``mack_se`` and its
-        two parts, ``parameter_se`` and ``process_se``.
+        two parts, ``parameter_se`` and ``process_se``. With a tail the
+        ultimates, reserves and standard errors include it, the oldest
+        origin's too.
         An origin whose latest cumulative is zero keeps 0 as its latest amount,
         so its chain-ladder ultimate is 0 and, under Mack with
         ``zero_cells="missing"``, its ``mack_se`` is 0 too; chainladder-python
         leaves both missing.
     development : pyarrow.Table
-        One row per observed development age: ``dev_lag`` (int64), ``factor``
-        (the link factor from this age to the next, null at the last age),
-        ``cdf`` (the factor to the last observed age, 1.0 there) and
-        ``pct_reported`` (``1 / cdf``). There is no tail factor, so
-        ``pct_reported`` is 1.0 at the last observed age by construction rather
-        than by measurement. Every method adds ``n_selected`` (int64, the link
-        ratios behind the factor), ``extreme_trimming_skipped`` and
+        One row per observed development age, and with a tail ``tail_rows``
+        more for the ages after the last observed one: ``dev_lag`` (int64),
+        ``factor`` (the factor from this row to the next, null on the final
+        row), ``cdf`` (the factor to ultimate, float64) and ``pct_reported``
+        (``1 / cdf``). Without a tail ``cdf`` runs to the last observed age, so
+        ``pct_reported`` is 1.0 there by construction rather than by
+        measurement. With one it includes the tail, and on the final row it is
+        what is left of the tail after the rows shown, so the factors from any
+        row times the final row's ``cdf`` are that row's ``cdf``. ``source``
+        (string) is ``"link_ratios"`` for a factor averaged from link ratios
+        and ``"tail"`` for one from the tail (an attached age, or a row beyond
+        the triangle), null at the last age without a tail; ``curve_factor``
+        (float64) is a fitted curve's factor at each row but the final one;
+        ``in_tail_fit`` (bool) says whether the curve was fitted through that
+        age's factor, null from the last observed age on. Every method adds
+        ``n_selected`` (int64, the link ratios selected at that age; on an age
+        whose ``source`` is ``"tail"`` the factor is the tail's, not their
+        average), ``extreme_trimming_skipped`` and
         ``bounds_skipped`` (bool); the chain ladder, Bornhuetter-Ferguson,
         Benktander and Cape Cod add ``unity_fallback`` (bool); Mack adds
         ``sigma``, ``std_err`` (the factor's standard error) and
-        ``sigma_extrapolated`` (bool), all null at the last age. The module
-        docstring has the table of every column and the methods that carry it.
+        ``sigma_extrapolated`` (bool), all null at the last observed age and
+        beyond it. The module docstring has the table of every column and the
+        methods that carry it.
     link_ratios : pyarrow.Table or None
         Every observed link ratio, one row each: ``origin`` and
         ``origin_period`` (as in ``origins``), ``from_dev_lag`` (int64, the age
@@ -207,9 +249,18 @@ class ReserveResult:
         built by hand.
     totals : pyarrow.Table
         One row with ``latest``, ``ultimate`` and ``ibnr`` summed over the
-        origins. Mack adds ``mack_se``, ``parameter_se`` and ``process_se`` for
-        the total, which is not the sum of the origins' standard errors: the
-        origins share the estimated factors.
+        origins, and ``tail_factor`` (float64), the development beyond the
+        last observed age: 1.0 without a tail, the constant itself for a
+        constant tail attached at the last age, and what is left of it after
+        the attached ages for one attached earlier (chainladder-python's
+        ``tail_``). Mack adds ``mack_se``, ``parameter_se`` and ``process_se``
+        for the total, which is not the sum of the origins' standard errors:
+        the origins share the estimated factors; and ``tail_sigma``,
+        ``tail_std_err`` (the tail step's sigma and the tail factor's standard
+        error) and ``tail_position`` (where the tail sits on the link axis,
+        link 1 developing from the first age), all float64 and null without a
+        tail, ``tail_position`` also when ``tail_sigma`` and ``tail_std_err``
+        were both given or the tail factor is exactly 1.
     """
 
     method: str
@@ -271,6 +322,13 @@ def chain_ladder(
     unsupported_factor: str = "raise",
     exhausted_exclusions: str = "keep",
     zero_cells: str = "missing",
+    tail: str | None = None,
+    tail_factor: float | None = None,
+    tail_decay: float | None = None,
+    tail_attach_lag: int | None = None,
+    tail_fit_lags: tuple | None = None,
+    tail_steps: int | None = None,
+    tail_rows: int | None = None,
 ) -> ReserveResult:
     """The chain ladder: project each origin's latest cumulative loss to ultimate.
 
@@ -387,10 +445,59 @@ def chain_ladder(
       amount, so its chain-ladder ultimate is 0, where chainladder-python
       leaves that ultimate missing.
 
-    Returns a :class:`ReserveResult`. There is no tail factor: each origin is
-    projected to the last observed development age. Input it will not answer is
-    refused with :class:`Refusal`, whose reason codes the module docstring
-    describes.
+    The tail options, shared with :func:`bornhuetter_ferguson`,
+    :func:`benktander`, :func:`cape_cod` and :func:`mack`. A tail is the
+    development still to come after the last observed age. It is applied to
+    the factors the development options produced, and every origin's
+    development to ultimate then includes it, the oldest origin's too, so
+    Bornhuetter-Ferguson, Benktander and Cape Cod read it through
+    ``pct_reported``. Every option but ``tail`` defaults to ``None``, and one
+    given without ``tail`` is refused rather than ignored.
+
+    - ``tail``: ``None`` (the default, no tail), ``"constant"``, or a curve
+      fitted to the link factors by least squares: ``"exponential"`` (``f - 1 =
+      exp(a + b t)`` at link ``t``, link 1 developing from the first age),
+      ``"inverse_power"`` (``f - 1 = exp(a) t ** b``) or ``"weibull"`` (``f =
+      1 / (1 - exp(-exp(a) t ** b))``), as chainladder-python's ``TailCurve``.
+      A curve must decay with age, and an inverse power curve's slope must be
+      below -1, since between -1 and 0 the product of its factors never
+      converges; otherwise it is refused.
+    - ``tail_factor``: a constant tail's development from ``tail_attach_lag``
+      to ultimate, such as 1.05; needed for ``"constant"``. Below 1 is allowed
+      and lowers the ultimates.
+    - ``tail_decay``: from 0 to 1 (0.5 by default), how a constant tail is
+      spread over the steps it covers: each step's development above 1 is
+      ``tail_decay`` times the step's before it, and the last step holds what
+      is left, so the steps multiply to ``tail_factor``. With the tail attached at the
+      last observed age it changes only the rows shown, never an ultimate.
+    - ``tail_attach_lag``: the age, in months, of the first link the tail
+      replaces. The default is the last observed age, where no link is
+      replaced; an earlier age replaces the factors from that age on with the
+      curve's (or the constant's steps), and ``development.source`` says which.
+    - ``tail_fit_lags``: curves only, ``(first, last)``: the ages, in months,
+      that the first and the last link fitted develop from, both included;
+      ``None`` at either end is the edge of the triangle. Only factors above
+      1.00001 go through the line, and at least two must, or the tail is
+      refused (``in_tail_fit`` shows which did).
+    - ``tail_steps``: curves only, how many development steps past the last
+      observed age the curve is extrapolated, 1 to 10,000 (100 by default, as
+      chainladder-python's ``extrap_periods``). It is a count of steps of the
+      triangle's own grain, not months. An inverse power tail still grows
+      noticeably at 100 steps.
+    - ``tail_rows``: how many rows beyond the last observed age ``development``
+      shows, one step each (one year's by default: 1 on an annual triangle, 4
+      on a quarterly one); the final row's ``cdf`` holds the rest of the tail.
+      It never changes an ultimate. A curve cannot show more rows than
+      ``tail_steps``.
+
+    ``docs/coming-from-chainladder.md`` maps chainladder-python's
+    ``TailConstant`` and ``TailCurve`` options onto these, with the cases
+    chainladder-python rounds, ignores or answers as no tail that are refused
+    here.
+
+    Returns a :class:`ReserveResult`. Without a tail each origin is projected
+    to the last observed development age. Input it will not answer is refused
+    with :class:`Refusal`, whose reason codes the module docstring describes.
     """
     with _CallersTerms("chain_ladder") as terms:
         grid, origins = terms.read(cells, dev_grain_months)
@@ -410,6 +517,15 @@ def chain_ladder(
             unsupported_factor=unsupported_factor,
             exhausted_exclusions=exhausted_exclusions,
             zero_cells=zero_cells,
+            tail=_tail_spec(
+                tail,
+                tail_factor=tail_factor,
+                tail_decay=tail_decay,
+                tail_attach_lag=tail_attach_lag,
+                tail_fit_lags=tail_fit_lags,
+                tail_steps=tail_steps,
+                tail_rows=tail_rows,
+            ),
         )
         return _conventional_result("chain_ladder", grid, origins, candidate, premium=None)
 
@@ -433,6 +549,13 @@ def bornhuetter_ferguson(
     unsupported_factor: str = "raise",
     exhausted_exclusions: str = "keep",
     zero_cells: str = "missing",
+    tail: str | None = None,
+    tail_factor: float | None = None,
+    tail_decay: float | None = None,
+    tail_attach_lag: int | None = None,
+    tail_fit_lags: tuple | None = None,
+    tail_steps: int | None = None,
+    tail_rows: int | None = None,
 ) -> ReserveResult:
     """Bornhuetter-Ferguson: the unreported share of an a priori ultimate.
 
@@ -440,7 +563,8 @@ def bornhuetter_ferguson(
     ``premium * expected_loss_ratio * (1 - pct_reported)``, where
     ``pct_reported`` comes from the chain-ladder development pattern.
 
-    ``cells`` and the development options are as in :func:`chain_ladder`.
+    ``cells``, the development options and the tail options are as in
+    :func:`chain_ladder`; with a tail, ``pct_reported`` includes it.
 
     ``premium`` is keyed by origin period, never by position: either a table
     with columns ``origin_period`` and ``premium`` (a polars DataFrame or a
@@ -472,6 +596,15 @@ def bornhuetter_ferguson(
             unsupported_factor=unsupported_factor,
             exhausted_exclusions=exhausted_exclusions,
             zero_cells=zero_cells,
+            tail=_tail_spec(
+                tail,
+                tail_factor=tail_factor,
+                tail_decay=tail_decay,
+                tail_attach_lag=tail_attach_lag,
+                tail_fit_lags=tail_fit_lags,
+                tail_steps=tail_steps,
+                tail_rows=tail_rows,
+            ),
         )
         return _conventional_result(
             "bornhuetter_ferguson", grid, origins, candidate, premium=premium
@@ -498,6 +631,13 @@ def benktander(
     unsupported_factor: str = "raise",
     exhausted_exclusions: str = "keep",
     zero_cells: str = "missing",
+    tail: str | None = None,
+    tail_factor: float | None = None,
+    tail_decay: float | None = None,
+    tail_attach_lag: int | None = None,
+    tail_fit_lags: tuple | None = None,
+    tail_steps: int | None = None,
+    tail_rows: int | None = None,
 ) -> ReserveResult:
     """Benktander: Bornhuetter-Ferguson repeated, each time from the last ultimate.
 
@@ -511,9 +651,10 @@ def benktander(
     which ignores the reported losses, and each iteration is one more pass of a
     loop, so the upper limit bounds the time one call can take.
 
-    ``cells`` and the development options are as in :func:`chain_ladder`, and
-    ``premium`` and ``expected_loss_ratio`` as in :func:`bornhuetter_ferguson`.
-    The result has the same tables and columns as Bornhuetter-Ferguson's.
+    ``cells``, the development options and the tail options are as in
+    :func:`chain_ladder`, and ``premium`` and ``expected_loss_ratio`` as in
+    :func:`bornhuetter_ferguson`. The result has the same tables and columns
+    as Bornhuetter-Ferguson's.
     """
     with _CallersTerms("benktander") as terms:
         grid, origins = terms.read(cells, dev_grain_months)
@@ -535,6 +676,15 @@ def benktander(
             unsupported_factor=unsupported_factor,
             exhausted_exclusions=exhausted_exclusions,
             zero_cells=zero_cells,
+            tail=_tail_spec(
+                tail,
+                tail_factor=tail_factor,
+                tail_decay=tail_decay,
+                tail_attach_lag=tail_attach_lag,
+                tail_fit_lags=tail_fit_lags,
+                tail_steps=tail_steps,
+                tail_rows=tail_rows,
+            ),
         )
         return _conventional_result("benktander", grid, origins, candidate, premium=premium)
 
@@ -560,6 +710,13 @@ def cape_cod(
     unsupported_factor: str = "raise",
     exhausted_exclusions: str = "keep",
     zero_cells: str = "missing",
+    tail: str | None = None,
+    tail_factor: float | None = None,
+    tail_decay: float | None = None,
+    tail_attach_lag: int | None = None,
+    tail_fit_lags: tuple | None = None,
+    tail_steps: int | None = None,
+    tail_rows: int | None = None,
 ) -> ReserveResult:
     """Cape Cod: Bornhuetter-Ferguson with the loss ratio estimated from the triangle.
 
@@ -588,7 +745,8 @@ def cape_cod(
     1 (the default) is Cape Cod itself, and 0 and counts above 10,000 are
     refused.
 
-    ``cells`` and the development options are as in :func:`chain_ladder`, and
+    ``cells``, the development options and the tail options are as in
+    :func:`chain_ladder` (with a tail, the used-up premium includes it), and
     ``premium`` as in :func:`bornhuetter_ferguson`. The loss ratios are in
     ``origins.expected_loss_ratio`` and ``origins.trended_loss_ratio``, and
     ``origins.trend_factor`` is each origin's factor (1.0 at trend 0).
@@ -614,6 +772,15 @@ def cape_cod(
             unsupported_factor=unsupported_factor,
             exhausted_exclusions=exhausted_exclusions,
             zero_cells=zero_cells,
+            tail=_tail_spec(
+                tail,
+                tail_factor=tail_factor,
+                tail_decay=tail_decay,
+                tail_attach_lag=tail_attach_lag,
+                tail_fit_lags=tail_fit_lags,
+                tail_steps=tail_steps,
+                tail_rows=tail_rows,
+            ),
         )
         return _conventional_result("cape_cod", grid, origins, candidate, premium=premium)
 
@@ -635,6 +802,15 @@ def mack(
     exclude_valuations=(),
     trim_ties: str = "volume",
     exhausted_exclusions: str = "keep",
+    tail: str | None = None,
+    tail_factor: float | None = None,
+    tail_decay: float | None = None,
+    tail_attach_lag: int | None = None,
+    tail_fit_lags: tuple | None = None,
+    tail_steps: int | None = None,
+    tail_rows: int | None = None,
+    tail_sigma: float | None = None,
+    tail_std_err: float | None = None,
 ) -> ReserveResult:
     """Mack's chain ladder: the chain-ladder ultimate and its standard error.
 
@@ -665,7 +841,7 @@ def mack(
     is refused (one ratio at every age leaves no sigma to estimate), and so are
     any options that leave at most one link ratio at every age. The one-year
     claims development result in ``ibnr.kernels`` needs a fit with no
-    development options.
+    development options and no tail.
 
     ``zero_cells`` is what a cumulative of exactly zero is. ``"missing"`` (the
     default here, as in chainladder-python) leaves out every link ratio with a
@@ -690,6 +866,27 @@ def mack(
     1993 rule, from the two ages before. The ultimates do not depend on it; the
     standard errors do. (``kernels.fit_mack`` keeps ``"mack"`` as its default,
     so published numbers made with it do not move.)
+
+    The tail options are as in :func:`chain_ladder`, and the tail is one more
+    development step, taken by every origin, the fully developed one too (Mack
+    1999; R's ``MackChainLadder(tail=, tail.se=, tail.sigma=)``). Its sigma
+    and the tail factor's standard error are read off straight lines through
+    the logarithms of the sigmas and of the factors' standard errors, at the
+    age where a straight line through ``log(factor - 1)`` reaches the tail
+    (``totals.tail_position``); the lines go through the factors above 1 and
+    the positive values only, as R's do. ``tail_sigma`` and ``tail_std_err``
+    (R's ``tail.sigma`` and ``tail.se``, zero or more) give either instead.
+    The tail step's process variance is divided by the origin's amount at the
+    last observed age to the power alpha, as every other step's is. Refused: a
+    tail attached before the last observed age (no formula gives a curve
+    factor's standard error where a link ratio's was); and, unless both
+    ``tail_sigma`` and ``tail_std_err`` are given, a tail factor below 1, too
+    few factors above 1 or positive sigmas to draw the lines through, and a
+    tail larger than the line through the factors gives even at the first
+    link, where the sigma would be read backwards past the data.
+    chainladder-python's lines keep a left-out point's age in their sums, so
+    its tail variance differs from this one whenever a factor is at or below 1
+    or a sigma is 0 (``docs/coming-from-chainladder.md`` has the numbers).
 
     ``origins`` and ``totals`` carry ``mack_se`` and its two parts:
     ``parameter_se``, from estimating the factors, and ``process_se``, from the
@@ -729,10 +926,23 @@ def mack(
             exhausted_exclusions=exhausted_exclusions,
             zero_cells=zero_cells,
         )
-        return _mack(grid, labels, wrapped, sigma_rule=sigma_rule)
+        spec = _tail_spec(
+            tail,
+            tail_factor=tail_factor,
+            tail_decay=tail_decay,
+            tail_attach_lag=tail_attach_lag,
+            tail_fit_lags=tail_fit_lags,
+            tail_steps=tail_steps,
+            tail_rows=tail_rows,
+            tail_sigma=tail_sigma,
+            tail_std_err=tail_std_err,
+        )
+        return _mack(grid, labels, wrapped, sigma_rule=sigma_rule, tail=spec)
 
 
-def _mack(grid, labels: _Origins, wrapped: _Candidate, *, sigma_rule: str) -> ReserveResult:
+def _mack(
+    grid, labels: _Origins, wrapped: _Candidate, *, sigma_rule: str, tail: TailSpec | None
+) -> ReserveResult:
     _, as_of = check_grid(grid)
     step = grid["dev_grain_months"]
     if grid["n_d"] < 2:
@@ -767,7 +977,12 @@ def _mack(grid, labels: _Origins, wrapped: _Candidate, *, sigma_rule: str) -> Re
     # by name before anything is returned.
     with np.errstate(all="ignore"):
         fit = fit_mack_grid(
-            grid, sigma_rule=sigma_rule, zero_cells=zero_cells, average=average, links=links
+            grid,
+            sigma_rule=sigma_rule,
+            zero_cells=zero_cells,
+            average=average,
+            links=links,
+            tail=tail,
         )
     zero_factor = np.flatnonzero(fit.f == 0)
     if zero_factor.size:
@@ -788,14 +1003,17 @@ def _mack(grid, labels: _Origins, wrapped: _Candidate, *, sigma_rule: str) -> Re
         raise _no_sigma_anywhere(fit.n_d, step)
     # Negative cells never get here (the cells are checked first), so the one
     # latest amount msep_runoff refuses is a zero under "observed". Its own
-    # message names MackFit attributes a ReserveResult does not have.
-    zero_latest = np.flatnonzero((fit.latest_dev < fit.n_d - 1) & (fit.latest == 0))
+    # message names MackFit attributes a ReserveResult does not have. With a tail
+    # every origin is still developing: the tail step divides by its amount too.
+    zero_latest = np.flatnonzero(fit._developing & (fit.latest == 0))
     if zero_cells == "observed" and zero_latest.size:
+        developing = " (with a tail, every origin)" if tail is not None else ""
         raise Refusal(
             "variance_not_estimable",
             "mack cannot give standard errors under zero_cells='observed' while a "
-            "still-developing origin's latest cumulative is zero: {origins}. Mack's variance "
-            "divides by that amount. zero_cells='missing' (this function's default) gives "
+            f"still-developing origin's{developing} latest cumulative is zero: {{origins}}. "
+            "Mack's variance divides by that amount. zero_cells='missing' (this function's "
+            "default) gives "
             "such an origin an ultimate and a standard error of 0, and "
             "methods.chain_ladder(cells, zero_cells='observed') gives the ultimates without "
             "standard errors",
@@ -819,12 +1037,22 @@ def _mack(grid, labels: _Origins, wrapped: _Candidate, *, sigma_rule: str) -> Re
         }
         sigma = np.sqrt(fit.sigma2)
         std_err = np.sqrt(fit.sigma2 / fit.s)
-        pattern = _pattern_numbers(fit.f, fit.n_d)
+        # Mack refuses a tail attached before the last age, so the tail's factors
+        # are fit.f and only the rows beyond the triangle are the tail's
+        shown = None if tail is None else apply_tail(fit.f, step, tail)
+        pattern = _pattern_numbers(fit.f, fit.n_d, shown)
+        tailed = tail is not None
         total = {
             **_sums(latest, ultimate),
             "mack_se": _arrow.float64([np.sqrt(risk["msep_total"])]),
             "parameter_se": _arrow.float64([np.sqrt(risk["parameter_total"])]),
             "process_se": _arrow.float64([np.sqrt(risk["process_total"])]),
+            "tail_factor": _arrow.float64([fit.tail_factor]),
+            "tail_sigma": _arrow.float64([np.sqrt(fit.tail_sigma2)], mask=[not tailed]),
+            "tail_std_err": _arrow.float64([np.sqrt(fit.tail_se2)], mask=[not tailed]),
+            "tail_position": _arrow.float64(
+                [fit.tail_position or 0.0], mask=[fit.tail_position is None]
+            ),
         }
     _require_finite(
         fit.origin_periods, per_origin, np.concatenate([sigma, std_err, *pattern]), total
@@ -845,15 +1073,17 @@ def _mack(grid, labels: _Origins, wrapped: _Candidate, *, sigma_rule: str) -> Re
         trimming_skipped = bounds_skipped = np.zeros(fit.n_d - 1, dtype=bool)
     else:
         trimming_skipped, bounds_skipped = selection.trimming_skipped, selection.bounds_skipped
+    rows = 0 if shown is None else shown.rows
     development = pa.table(
         {
             **_pattern(pattern, step),
-            "n_selected": _with_last_null(fit.n_obs.tolist(), pa.int64()),
-            "extreme_trimming_skipped": _with_last_null(trimming_skipped.tolist(), pa.bool_()),
-            "bounds_skipped": _with_last_null(bounds_skipped.tolist(), pa.bool_()),
-            "sigma": _with_last_null(sigma, pa.float64()),
-            "std_err": _with_last_null(std_err, pa.float64()),
-            "sigma_extrapolated": _with_last_null((fit.n_pos < 2).tolist(), pa.bool_()),
+            **_tail_columns(fit.n_d, shown),
+            "n_selected": _per_link(fit.n_obs.tolist(), pa.int64(), rows),
+            "extreme_trimming_skipped": _per_link(trimming_skipped.tolist(), pa.bool_(), rows),
+            "bounds_skipped": _per_link(bounds_skipped.tolist(), pa.bool_(), rows),
+            "sigma": _per_link(sigma, pa.float64(), rows),
+            "std_err": _per_link(std_err, pa.float64(), rows),
+            "sigma_extrapolated": _per_link((fit.n_pos < 2).tolist(), pa.bool_(), rows),
         }
     )
     link_ratios = _link_ratios(labels, _mack_link_rows(fit))
@@ -955,8 +1185,11 @@ def _require_no_underflow(fit, msep: np.ndarray) -> None:
             ratios = cum[pair, j + 1] / cum[pair, j]
         if fit.sigma2[j] == 0 and ratios.size > 1 and np.ptp(ratios) > 0:
             underflowed.append(j)
-    open_ = (fit.latest_dev < fit.n_d - 1) & (fit.latest > 0)
-    noisy = np.array([(fit.sigma2[int(k) :] > 0).any() for k in fit.latest_dev], dtype=bool)
+    open_ = fit._developing & (fit.latest > 0)
+    tail_noise = fit.tail_sigma2 > 0 or fit.tail_se2 > 0
+    noisy = np.array(
+        [(fit.sigma2[int(k) :] > 0).any() or tail_noise for k in fit.latest_dev], dtype=bool
+    )
     zero_msep = np.flatnonzero(open_ & noisy & (msep == 0))
     if underflowed or zero_msep.size:
         raise Refusal(
@@ -998,7 +1231,7 @@ def _require_finite(periods, per_origin: dict, others, total: dict) -> None:
             cells=[RefusedCell(None, periods[i]) for i in np.flatnonzero(bad)],
         )
     totals = [column[0].as_py() for column in total.values()]
-    if not (np.isfinite(others).all() and all(math.isfinite(t) for t in totals)):
+    if not (np.isfinite(others).all() and all(t is None or math.isfinite(t) for t in totals)):
         raise Refusal(
             "result_not_finite",
             "a total, a link ratio, or a development age's factor, cdf, pct_reported or "
@@ -1310,11 +1543,13 @@ def _conventional_result(
     table = fit.origins
     latest = np.asarray(table["latest"], dtype=float)
     ultimate = np.asarray(table["ultimate"], dtype=float)
+    tail = fit.tail
     with np.errstate(all="ignore"):
         ibnr = ultimate - latest
-        pattern = _pattern_numbers(fit.factors, grid["n_d"])
+        pattern = _pattern_numbers(fit.factors, grid["n_d"], tail)
         # the kernel checks each origin; a sum of finite ultimates can still overflow
         sums = _sums(latest, ultimate)
+        sums["tail_factor"] = _arrow.float64([1.0 if tail is None else tail.tail_factor])
     columns = {
         "origin": origins.labels_for(table["origin_period"]),
         "origin_period": _arrow.date32(table["origin_period"]),
@@ -1332,15 +1567,17 @@ def _conventional_result(
     def summary(key: str) -> list:
         return [row[key] for row in fit.summary]
 
+    rows = 0 if tail is None else tail.rows
     development = pa.table(
         {
             **_pattern(pattern, step),
-            "n_selected": _with_last_null(summary("n_selected"), pa.int64()),
-            "unity_fallback": _with_last_null(summary("unity_fallback"), pa.bool_()),
-            "extreme_trimming_skipped": _with_last_null(
-                summary("extreme_trimming_skipped"), pa.bool_()
+            **_tail_columns(grid["n_d"], tail),
+            "n_selected": _per_link(summary("n_selected"), pa.int64(), rows),
+            "unity_fallback": _per_link(summary("unity_fallback"), pa.bool_(), rows),
+            "extreme_trimming_skipped": _per_link(
+                summary("extreme_trimming_skipped"), pa.bool_(), rows
             ),
-            "bounds_skipped": _with_last_null(summary("bounds_skipped"), pa.bool_()),
+            "bounds_skipped": _per_link(summary("bounds_skipped"), pa.bool_(), rows),
         }
     )
 
@@ -1356,27 +1593,132 @@ def _conventional_result(
     _require_finite(
         table["origin_period"],
         per_origin,
-        np.concatenate([*pattern, ratio[~np.isnan(ratio)]]),
+        np.concatenate([*pattern, ratio[~np.isnan(ratio)], _curve_numbers(tail)]),
         sums,
     )
     totals = pa.table(sums)
     return ReserveResult(name, fit.as_of, step, pa.table(columns), development, link_ratios, totals)
 
 
-def _pattern_numbers(factors: np.ndarray, n_d: int) -> tuple[np.ndarray, ...]:
-    """(factor, cdf, pct_reported): a factor per link, the others per observed age.
+def _pattern_numbers(
+    factors: np.ndarray, n_d: int, tail: TailFit | None = None
+) -> tuple[np.ndarray, ...]:
+    """(factor, cdf, pct_reported), one row per development age.
 
-    ``factors`` has one entry per link, ``n_d - 1`` of them; there is no tail.
-    Computed without warnings; the caller refuses a number that is not finite.
+    ``factors`` has one entry per link, ``n_d - 1`` of them. Without a tail the
+    rows are the observed ages; with one they go on for ``tail.rows`` rows
+    beyond the last observed age, each row's factor is the step to the next
+    row, and each cdf includes the tail. Computed without warnings; the caller
+    refuses a number that is not finite.
     """
     factors = np.asarray(factors, dtype=float)[: n_d - 1]
     with np.errstate(all="ignore"):
         cdf = np.r_[np.cumprod(factors[::-1])[::-1], 1.0]
+        if tail is None:
+            return factors, cdf, 1.0 / cdf
+        factors = np.r_[factors, tail.shown]
+        cdf = np.r_[cdf * tail.tail_factor, tail.beyond_cdf[1:]]
         return factors, cdf, 1.0 / cdf
 
 
+def _tail_columns(n_d: int, tail: TailFit | None) -> dict[str, pa.Array]:
+    """source, curve_factor and in_tail_fit, one row per development age.
+
+    ``source`` says where each row's factor came from: ``"link_ratios"`` for a
+    factor averaged from link ratios, ``"tail"`` for a factor (or, on the last
+    row, the rest of the development) that came from the tail. Without a tail
+    the last observed age has no factor and no source.
+    """
+    links = n_d - 1
+    if tail is None:
+        return {
+            "source": _arrow.strings_or_nulls(["link_ratios"] * links + [None]),
+            "curve_factor": _arrow.with_nulls([], pa.float64(), n_d),
+            "in_tail_fit": _arrow.with_nulls([], pa.bool_(), n_d),
+        }
+    rows = tail.rows
+    k = tail.attach_index
+    source = ["link_ratios"] * k + ["tail"] * (links - k + 1 + rows)
+    if tail.curve is None:
+        curve = _arrow.with_nulls([], pa.float64(), n_d + rows)
+        in_fit = _arrow.with_nulls([], pa.bool_(), n_d + rows)
+    else:
+        curve = _arrow.with_last_null(tail.curve, pa.float64())
+        in_fit = _arrow.with_nulls(tail.in_fit, pa.bool_(), 1 + rows)
+    return {"source": _arrow.strings_or_nulls(source), "curve_factor": curve, "in_tail_fit": in_fit}
+
+
+def _curve_numbers(tail: TailFit | None) -> np.ndarray:
+    """A curve tail's factors at every row, for the finiteness check."""
+    if tail is None or tail.curve is None:
+        return np.empty(0)
+    return np.asarray(tail.curve, dtype=float)
+
+
+def _per_link(values, kind: pa.DataType, rows: int) -> pa.Array:
+    """One value per link, then a null for the last observed age and each tail row."""
+    return _arrow.with_nulls(values, kind, 1 + rows)
+
+
+#: The tail options every method takes, in the order they are listed.
+_TAIL_OPTIONS = (
+    "tail_factor",
+    "tail_decay",
+    "tail_attach_lag",
+    "tail_fit_lags",
+    "tail_steps",
+    "tail_rows",
+    "tail_sigma",
+    "tail_std_err",
+)
+
+
+def _tail_spec(tail, **options) -> TailSpec | None:
+    """The kernel's TailSpec from the methods' tail options, or a refusal.
+
+    Every option other than ``tail`` defaults to None, so one passed without a
+    tail is refused rather than ignored.
+    """
+    given = [name for name in _TAIL_OPTIONS if options.get(name) is not None]
+    if tail is None:
+        if given:
+            name = given[0]
+            raise Refusal(
+                "invalid_option",
+                f"{name} was given but tail is None; pass tail='constant' (with tail_factor) or "
+                "a curve, 'exponential', 'inverse_power' or 'weibull', to have a tail",
+                option=name,
+                options=(name, "tail"),
+                given=options[name],
+            )
+        return None
+    fit_lags = options.get("tail_fit_lags")
+    if tail == "constant" and fit_lags is not None:
+        # The kernel reads (None, None) as not given, so a caller's (None, None)
+        # would pass there unnoticed; here any value was given.
+        raise Refusal(
+            "invalid_option",
+            "tail_fit_lags is a curve setting; a constant tail takes tail_factor and tail_decay",
+            option="tail_fit_lags",
+            options=("tail_fit_lags", "tail"),
+            given=fit_lags,
+        )
+    return TailSpec(
+        tail,
+        factor=options.get("tail_factor"),
+        decay=options.get("tail_decay"),
+        attach_lag=options.get("tail_attach_lag"),
+        fit_lags=(None, None) if fit_lags is None else fit_lags,
+        steps=options.get("tail_steps"),
+        rows=options.get("tail_rows"),
+        sigma=options.get("tail_sigma"),
+        std_err=options.get("tail_std_err"),
+        option_prefix="tail_",
+    )
+
+
 def _pattern(numbers: tuple[np.ndarray, ...], step: int) -> dict[str, pa.Array]:
-    """dev_lag, factor, cdf and pct_reported, one row per observed age."""
+    """dev_lag, factor, cdf and pct_reported, one row per development age."""
     factors, cdf, pct_reported = numbers
     return {
         "dev_lag": _arrow.int64(np.arange(1, cdf.size + 1, dtype=np.int64) * step),

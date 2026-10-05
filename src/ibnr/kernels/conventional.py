@@ -36,6 +36,7 @@ from ibnr.kernels.links import (
     link_factors,
     select_links,
 )
+from ibnr.kernels.tail import TailFit, TailSpec, apply_tail
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -68,6 +69,7 @@ SUMMARY_COLUMNS = [
     "unity_fallback",
     "extreme_trimming_skipped",
     "bounds_skipped",
+    "tail",
 ]
 
 
@@ -109,6 +111,15 @@ class ConventionalCandidate:
     moved to the valuation date's level by ``(1 + trend)`` a year from the end
     of the origin period before the loss ratios are pooled, and each pooled
     ratio is brought back to its origin's level after.
+
+    ``tail`` (a :class:`~ibnr.kernels.tail.TailSpec`) extends the pattern past
+    the last observed age: the link factors are estimated first, the tail is
+    applied to them (replacing the links from its attachment age on, when that
+    is before the last age), and every origin's development to ultimate then
+    includes the tail factor, the oldest origin's too. Chain ladder,
+    Bornhuetter-Ferguson, Benktander and Cape Cod all read it through the
+    pattern. A tail cannot be combined with ``horizon``, and its ``sigma`` and
+    ``std_err`` are Mack settings, refused here.
     """
 
     method: str = "cl"
@@ -130,6 +141,7 @@ class ConventionalCandidate:
     trim_ties: str = "origin"
     n_iters: int = 1
     trend: float = 0.0
+    tail: TailSpec | None = None
 
     def __post_init__(self) -> None:
         # Every refusal here is an ibnr.errors.Refusal with the reason
@@ -194,6 +206,7 @@ class ConventionalCandidate:
                 given=self.decay,
             )
         self._check_iterations_and_trend()
+        self._check_tail()
         if self.horizon is not None and any(lag >= self.horizon for _, lag in self.exclude):
             raise Refusal(
                 "invalid_option",
@@ -259,6 +272,35 @@ class ConventionalCandidate:
                 given=self.trend,
             )
 
+    def _check_tail(self) -> None:
+        tail = self.tail
+        if tail is None:
+            return
+        if not isinstance(tail, TailSpec):
+            raise Refusal(
+                "invalid_option",
+                "tail must be an ibnr.kernels.tail.TailSpec or None, got {given}",
+                option="tail",
+                given=type(tail).__name__,
+            )
+        for name in ("sigma", "std_err"):
+            if getattr(tail, name) is not None:
+                raise Refusal(
+                    "invalid_option",
+                    f"{tail.name(name)} is a Mack setting: it is the tail step's variance in "
+                    "Mack's standard errors, and a point estimate has none",
+                    option=tail.name(name),
+                    given=getattr(tail, name),
+                )
+        if self.horizon is not None:
+            raise Refusal(
+                "not_supported",
+                "a tail extends development past the last observed age and horizon fixes the "
+                "last age for replay; the two together are not built yet",
+                option="tail",
+                options=("tail", "horizon"),
+            )
+
     @property
     def link_rules(self) -> LinkRules:
         """The link-ratio options as one :class:`~ibnr.kernels.links.LinkRules`.
@@ -295,7 +337,13 @@ class ConventionalFit:
 
     ``origins`` has one row per training origin. ``factor_selection`` records
     each observed pair's inclusion or exclusion; ``factor_summary`` records
-    any unity fallback or skipped extreme trimming. Amounts use input units.
+    any unity fallback or skipped extreme trimming, and in ``tail`` whether the
+    factor came from the tail. Amounts use input units.
+
+    ``factors`` are the link factors used, after the tail's attachment, and
+    ``beta[j]`` is the share of the ultimate reported by age ``j``: with a tail
+    ``beta[-1]`` is ``1 / tail_factor`` rather than 1. ``tail`` is the
+    :class:`~ibnr.kernels.tail.TailFit`, ``None`` without one.
     """
 
     candidate: ConventionalCandidate
@@ -306,9 +354,15 @@ class ConventionalFit:
     origins: pd.DataFrame
     factor_selection: pd.DataFrame
     factor_summary: pd.DataFrame
+    tail: TailFit | None = None
 
     def predict_cumulative(self, origin_period: dt.date | str, dev_lag: int) -> float:
-        """Forecast an existing origin at an age after its last observation."""
+        """Forecast an existing origin at an age after its last observation.
+
+        The ages run to the last observed age. With a tail, the amount at the
+        last age is not the ultimate: the ultimate is that amount times the
+        tail factor.
+        """
         origin = as_date(origin_period)
         step = self.grid["dev_grain_months"]
         if (
@@ -573,6 +627,7 @@ class _Estimate:
     origins: dict[str, Any]
     selection: list[dict[str, Any]]
     summary: list[dict[str, Any]]
+    tail: TailFit | None = None
 
     def fit(self) -> ConventionalFit:
         import pandas as pd
@@ -590,6 +645,7 @@ class _Estimate:
             pd.DataFrame(self.origins),
             pd.DataFrame(self.selection, columns=SELECTION_COLUMNS),
             pd.DataFrame(self.summary, columns=SUMMARY_COLUMNS),
+            self.tail,
         )
 
 
@@ -636,7 +692,19 @@ def _estimate(grid: dict[str, Any], candidate: ConventionalCandidate, cutoff: dt
             cells=[_cell(periods, i, j, step, cum) for i, j in np.argwhere(bad)],
         )
     factors, selection, summary = _factors(grid, candidate, horizon // step)
+    tail = None
+    if candidate.tail is not None:
+        # the curve is fitted to the factors the development options produced; a
+        # unity fallback's 1.0 is below the fit's threshold, so it never enters
+        tail = apply_tail(factors, step, candidate.tail)
+        factors = tail.factors
+        for j, row in enumerate(summary):
+            row["factor"] = factors[j]
+            row["tail"] = j >= tail.attach_index
     beta = np.r_[1 / np.cumprod(factors[::-1])[::-1], 1.0]
+    if tail is not None:
+        # every age's share of the ultimate, the tail's development included
+        beta = beta / tail.tail_factor
     if not np.isfinite(beta).all() or (beta <= 0).any():
         bad = np.flatnonzero(~np.isfinite(beta[:-1]) | (beta[:-1] <= 0))
         raise Refusal(
@@ -717,7 +785,7 @@ def _estimate(grid: dict[str, Any], candidate: ConventionalCandidate, cutoff: dt
             option="cells",
             cells=[RefusedCell(None, grid["origin_periods"][i]) for i in np.flatnonzero(bad)],
         )
-    return _Estimate(candidate, cutoff, grid, factors, beta, origins, selection, summary)
+    return _Estimate(candidate, cutoff, grid, factors, beta, origins, selection, summary, tail)
 
 
 def _months_to(cutoff: dt.date, grid: dict[str, Any], step: int) -> np.ndarray:
@@ -848,6 +916,7 @@ def _factors(grid, candidate, n_dev):
                 "unity_fallback": fallback,
                 "extreme_trimming_skipped": bool(chosen.trimming_skipped[j]),
                 "bounds_skipped": bool(chosen.bounds_skipped[j]),
+                "tail": False,
             }
         )
     return factors, selection, summary
