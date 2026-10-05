@@ -599,3 +599,23 @@ def test_retraining_at_a_date_with_no_room_to_train_is_refused(backend_name):
             config=config,
             seed=0,
         )
+
+
+def test_the_accident_year_variant_names_every_choice_and_accepts_overrides():
+    variant = TLRNConfig.accident_year_variant()
+    assert components.attention_axes(variant) == ("line", "lag", "ay")
+    assert (variant.head, variant.mask, variant.member) == (
+        "premium_lr",
+        "observed_cells",
+        "mcl_blend",
+    )
+    assert (variant.batch_unit, variant.batch_size) == ("company", 8)
+    assert (variant.ensemble_size, variant.n_kept) == (20, 20)
+    assert variant.calibration == "retrain_per_valuation"
+    # horizons are how far each retrained forecast reaches: 10 - 6, 10 - 7, 10 - 8
+    assert variant.calibration_cutoffs == (6, 7, 8)
+    # switching one choice back to the published model is one override
+    back = TLRNConfig.accident_year_variant(head="ldf", calibration="rescore_final")
+    assert (back.head, back.calibration) == ("ldf", "rescore_final")
+    with pytest.raises(ValueError, match="batch_unit='company'"):
+        TLRNConfig.accident_year_variant(batch_unit="example")

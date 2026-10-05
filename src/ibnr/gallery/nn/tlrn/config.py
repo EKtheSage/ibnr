@@ -138,6 +138,38 @@ class TLRNConfig:
     min_per_stratum: int = 40
     n_draws: int = 4000
 
+    @classmethod
+    def accident_year_variant(cls, **overrides) -> TLRNConfig:
+        """The companion study's accident-year variant, as one config.
+
+        Every choice that variant differs on, named: the premium loss ratio head,
+        attention across lines, lags and accident years reading only the cells the
+        forecast date has revealed, whole-company batches of eight, a blend with the
+        multivariate chain ladder, twenty members all averaged, and a calibration
+        from the method retrained at valuation dates 6, 7 and 8 (so the errors it
+        pools come from forecasts 4, 3 and 2 diagonals ahead). ``overrides`` replace
+        any of them, which is how one choice is switched back to the published
+        model to see what it was worth.
+
+        Written from a description of that notebook, not from its code, so a number
+        that differs from the notebook's is a question about this config before it
+        is a question about the model.
+        """
+        choices = {
+            "head": "premium_lr",
+            "attention": ("line", "lag", "ay"),
+            "mask": "observed_cells",
+            "batch_unit": "company",
+            "batch_size": 8,
+            "member": "mcl_blend",
+            "ensemble_size": 20,
+            "keep": None,
+            "calibration": "retrain_per_valuation",
+            "calibration_cutoffs": (6, 7, 8),
+            "calibration_horizons": (2, 3, 4),
+        }
+        return cls(**{**choices, **overrides})
+
     @property
     def n_kept(self) -> int:
         """How many members are averaged: ``keep``, or all of them when it is ``None``."""
