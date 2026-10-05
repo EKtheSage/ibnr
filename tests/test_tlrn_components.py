@@ -510,3 +510,92 @@ def test_keep_none_averages_every_trained_member(backend_name):
     assert len(every.models_) == 2
     np.testing.assert_array_equal(every.company_reserves(), named.company_reserves())
     assert TLRNConfig(keep=None).n_kept == 10
+
+
+# -- calibration by retraining ---------------------------------------------------------
+
+
+def retrain_config(member="network"):
+    return replace(
+        tiny(),
+        calibration="retrain_per_valuation",
+        calibration_cutoffs=(5,),
+        calibration_horizons=(1,),
+        member=member,
+    )
+
+
+@pytest.mark.parametrize("member", components.MEMBERS)
+def test_retrained_calibration_forecasts_the_last_diagonal_out_of_sample(member, backend_name):
+    """A valuation date's forecast cannot depend on any cell after that date.
+
+    The triangle's last diagonal is perturbed. The method retrained at diagonal 5
+    must forecast the same totals either way - it was never shown that diagonal -
+    while the outcome it is scored against moves.
+    """
+    from .test_nn_features import study_arrays
+
+    arrays = study_arrays()
+    n_w = arrays["paid"].shape[2]
+    last = (np.arange(n_w)[:, None] + np.arange(n_w)[None, :]) == n_w - 1  # the diagonal 6 cells
+    moved = {k: v.copy() for k, v in arrays.items()}
+    for key in ("paid", "incurred"):
+        moved[key][:, :, last] *= 1.5
+    moved["case"] = moved["incurred"] - moved["paid"]
+
+    fits = []
+    for source in (arrays, moved):
+        fits.append(
+            TLRNEntry().fit(
+                study_triangle(backend_name, source),
+                loss_field="paid_loss",
+                as_of=AS_OF,
+                config=retrain_config(member),
+                seed=0,
+            )
+        )
+    before, after = (f.backtest_.sort_values("unit").reset_index(drop=True) for f in fits)
+    assert (before["cutoff"] == 5).all()
+    np.testing.assert_array_equal(before["predicted"], after["predicted"])
+    assert not np.array_equal(before["actual"], after["actual"])
+
+
+def test_rescoring_the_final_models_is_not_out_of_sample(backend_name):
+    """The contrast that gives the test above its meaning: the published calibration
+    scores models that were trained on the diagonal it forecasts."""
+    from .test_nn_features import study_arrays
+
+    arrays = study_arrays()
+    n_w = arrays["paid"].shape[2]
+    last = (np.arange(n_w)[:, None] + np.arange(n_w)[None, :]) == n_w - 1
+    moved = {k: v.copy() for k, v in arrays.items()}
+    for key in ("paid", "incurred"):
+        moved[key][:, :, last] *= 1.5
+    moved["case"] = moved["incurred"] - moved["paid"]
+    config = replace(tiny(), calibration_cutoffs=(5,), calibration_horizons=(1,))
+    preds = [
+        TLRNEntry()
+        .fit(
+            study_triangle(backend_name, source),
+            loss_field="paid_loss",
+            as_of=AS_OF,
+            config=config,
+            seed=0,
+        )
+        .backtest_.sort_values("unit")["predicted"]
+        .to_numpy()
+        for source in (arrays, moved)
+    ]
+    assert not np.array_equal(preds[0], preds[1])
+
+
+def test_retraining_at_a_date_with_no_room_to_train_is_refused(backend_name):
+    config = replace(retrain_config(), calibration_cutoffs=(3,), calibration_horizons=(3,))
+    with pytest.raises(ValueError, match="leave no training cutoff"):
+        TLRNEntry().fit(
+            study_triangle(backend_name, None),
+            loss_field="paid_loss",
+            as_of=AS_OF,
+            config=config,
+            seed=0,
+        )

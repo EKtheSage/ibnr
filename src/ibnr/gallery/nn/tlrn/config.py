@@ -128,7 +128,10 @@ class TLRNConfig:
     #: members averaged; ``None`` averages every trained member
     keep: int | None = 2
 
-    # uncertainty: the historical residual calibration
+    # uncertainty: the historical residual calibration. ``calibration`` says
+    # whether the forecasts it scores come from the final models (``rescore_final``)
+    # or from the method retrained at each cutoff (``retrain_per_valuation``)
+    calibration: str = "rescore_final"
     calibration_cutoffs: tuple[int, ...] = (5, 6, 7, 8, 9)
     calibration_horizons: tuple[int, ...] = (3, 4, 5)
     n_strata: int = 4

@@ -24,6 +24,12 @@ A ``tlrn`` is five choices made independently, each with a short list of names:
     What ``batch_size`` counts. ``example`` is one (company, accident year);
     ``company`` is one company with all its accident years together, which an
     ``ay`` attention needs because it attends across them.
+``calibration``
+    Where the historical errors that become the predictive distribution come
+    from. ``rescore_final`` applies the final models at earlier cutoffs, so those
+    forecasts are of cells the models trained on. ``retrain_per_valuation``
+    retrains the whole method from scratch at each calibration cutoff on what was
+    known then, so its errors are out of sample, at the price of a full fit each.
 ``member`` and ``keep``
     How a trained network becomes a member's forecast and how many members are
     averaged. ``network`` is the network's forecast alone; ``mcl_blend`` is the
@@ -51,6 +57,7 @@ from typing import Any
 __all__ = [
     "ATTENTION_AXES",
     "BATCH_UNITS",
+    "CALIBRATIONS",
     "HEADS",
     "MASKS",
     "MEMBERS",
@@ -66,6 +73,8 @@ ATTENTION_AXES: tuple[str, ...] = ("line", "lag", "ay")
 MASKS: tuple[str, ...] = ("unwritten_lines", "observed_cells")
 #: how a trained network becomes a member's forecast
 MEMBERS: tuple[str, ...] = ("network", "mcl_blend")
+#: where the calibration errors come from
+CALIBRATIONS: tuple[str, ...] = ("rescore_final", "retrain_per_valuation")
 #: what ``batch_size`` counts
 BATCH_UNITS: tuple[str, ...] = ("example", "company")
 
@@ -83,6 +92,7 @@ def check_combination(cfg: Any) -> None:
         ("head", cfg.head, HEADS),
         ("mask", cfg.mask, MASKS),
         ("member", cfg.member, MEMBERS),
+        ("calibration", cfg.calibration, CALIBRATIONS),
         ("batch_unit", cfg.batch_unit, BATCH_UNITS),
     ):
         if value not in allowed:

@@ -337,8 +337,6 @@ class TLRN(GalleryEntry):
         """
         import torch
 
-        from ibnr.gallery.nn.tlrn import head as tlrn_head
-
         if isinstance(processes, bool) or not isinstance(processes, int) or processes < 1:
             raise ValueError(f"processes must be a positive int, got {processes!r}")
         cfg = config or TLRNConfig()
@@ -368,13 +366,6 @@ class TLRN(GalleryEntry):
         obs_any = contract["obs_mask"].any(axis=1)
         _, _, train_end = splits(obs_any, contract["cal_idx"], cfg.val_diagonals)
         c_max = train_end + cfg.val_diagonals
-        if train_end - 1 < cfg.min_cutoff:
-            raise ValueError(
-                f"the latest observed diagonal is {c_max} and {cfg.val_diagonals} of them "
-                f"validate, which leaves training cutoffs {cfg.min_cutoff} to {train_end - 1} "
-                "- an empty range. Lower min_cutoff or val_diagonals, or fit on a triangle "
-                "with more elapsed diagonals"
-            )
 
         def features(cutoff: int, target_lo: int, target_hi: int) -> dict:
             return tlrn_features(
@@ -387,6 +378,146 @@ class TLRN(GalleryEntry):
                 with_mcl=cfg.member == "mcl_blend",
             )
 
+        bad_cutoffs = [k for k in cfg.calibration_cutoffs if not 1 <= k < c_max]
+        if bad_cutoffs:
+            raise ValueError(
+                f"calibration cutoff(s) {bad_cutoffs} are outside 1 to {c_max - 1}: a "
+                "calibration forecast is scored against diagonals this triangle has "
+                f"already observed, and the latest of those is {c_max}"
+            )
+        if cfg.calibration == "retrain_per_valuation":
+            too_early = [
+                k for k in cfg.calibration_cutoffs if k - cfg.val_diagonals - 1 < cfg.min_cutoff
+            ]
+            if too_early:
+                raise ValueError(
+                    f"calibration cutoff(s) {too_early} leave no training cutoff once "
+                    f"{cfg.val_diagonals} diagonal(s) validate and training starts at "
+                    f"min_cutoff {cfg.min_cutoff}: retraining at a valuation date needs "
+                    "a whole fit's worth of earlier diagonals"
+                )
+        run = self._run_protocol(
+            contract,
+            cfg,
+            c_max=c_max,
+            target_hi=last_diagonal,
+            features=features,
+            dev=dev,
+            seed=seed,
+            processes=processes,
+            show_progress=show_progress,
+            torch=torch,
+        )
+        models, kept, kept_history = run["models"], run["kept"], run["kept_history"]
+        selection, final_set, forward = run["selection"], run["final_set"], run["forward"]
+        final_tensors = run["final_tensors"]
+        support_np, train_sets = run["support_np"], run["train_sets"]
+
+        point = self._ensemble_pred(kept, final_tensors, forward)
+        ultimates, reserves, cumulative = self._assemble_point(
+            point, final_set, contract, kept, final_tensors, forward
+        )
+        # every trained member's own reserves, the dropped ones included: the kept
+        # ensemble is their mean over the kept rows, and any other group of members
+        # can be scored from them without refitting
+        member_reserves = np.stack(
+            [
+                self._assemble_point(
+                    self._ensemble_pred([m], final_tensors, forward),
+                    final_set,
+                    contract,
+                    [m],
+                    final_tensors,
+                    forward,
+                )[1]
+                for m in models
+            ]
+        )
+
+        size = np.array(
+            [
+                np.nansum(
+                    np.where(contract["line_mask"][c][:, None], contract["premium"][c], np.nan)
+                )
+                for c in range(n_c)
+            ]
+        )
+        if cfg.calibration == "retrain_per_valuation":
+            at = self._retrained_totals(
+                contract,
+                cfg,
+                c_max=c_max,
+                features=features,
+                dev=dev,
+                seed=seed,
+                processes=processes,
+                torch=torch,
+            )
+        else:
+            calibration_sets = {k: features(k, k + 1, c_max) for k in cfg.calibration_cutoffs}
+            tensors = {id(f): self._to_tensors(f, torch, dev) for f in calibration_sets.values()}
+            at = self._rescored_totals(kept, calibration_sets, tensors, forward, n_c)
+        residuals, calibration = self._calibrate(at, contract, cfg, c_max, size)
+
+        self.contract_ = contract
+        self.config_ = cfg
+        self._loss_field = loss_field
+        self._device = str(dev)
+        self.models_, self.history_ = kept, kept_history
+        self.selection_ = selection
+        self.factor_support_ = support_np
+        self.feature_stats_ = {
+            "n_feat": final_set["n_feat"],
+            "feature_names": final_set["feature_names"],
+            "train_cutoffs": tuple(train_sets),
+            "validation_cutoffs": tuple(range(c_max - cfg.val_diagonals, c_max)),
+            "final_cutoff": c_max,
+            "n_dropped": {k: s["n_dropped"] for k, s in train_sets.items()},
+            "fallback_logf": final_set["fallback_logf"],
+        }
+        self.point_ultimates_ = ultimates
+        self.point_reserves_ = reserves
+        self.point_cumulative_ = cumulative
+        self.member_reserves_ = member_reserves
+        self.calibration_ = calibration
+        self.company_size_ = size
+        self.backtest_ = residuals
+        return self
+
+    def _run_protocol(
+        self,
+        contract,
+        cfg,
+        *,
+        c_max,
+        target_hi,
+        features,
+        dev,
+        seed,
+        processes,
+        show_progress,
+        torch,
+    ) -> dict:
+        """Train the ensemble on what is known at diagonal ``c_max`` and select its members.
+
+        The whole protocol for ONE valuation date: the trailing ``val_diagonals``
+        diagonals up to ``c_max`` validate, everything before them trains, and the
+        final feature set forecasts ``c_max + 1`` to ``target_hi``. ``fit`` runs it
+        once at the latest observed diagonal; ``calibration="retrain_per_valuation"``
+        runs it again at each earlier valuation date, reading nothing past that date
+        into any input, so its forecasts of the later diagonals are out of sample.
+        """
+        from ibnr.gallery.nn.tlrn import head as tlrn_head
+
+        n_c, n_l, _, n_w, n_d = contract["x"].shape
+        train_end = c_max - cfg.val_diagonals
+        if train_end - 1 < cfg.min_cutoff:
+            raise ValueError(
+                f"the latest observed diagonal is {c_max} and {cfg.val_diagonals} of them "
+                f"validate, which leaves training cutoffs {cfg.min_cutoff} to {train_end - 1} "
+                "- an empty range. Lower min_cutoff or val_diagonals, or fit on a triangle "
+                "with more elapsed diagonals"
+            )
         # one training set per cutoff; each is the same triangle presented as a
         # complete "forecast the next diagonals" task from a different date
         train_sets = {k: features(k, k + 1, train_end) for k in range(cfg.min_cutoff, train_end)}
@@ -397,19 +528,10 @@ class TLRN(GalleryEntry):
             [s["target_mask"] for s in train_sets.values()],
             [s["target_mask"] for s in val_sets],
         )
-        final_set = features(c_max, c_max + 1, last_diagonal)
-        bad_cutoffs = [k for k in cfg.calibration_cutoffs if not 1 <= k < c_max]
-        if bad_cutoffs:
-            raise ValueError(
-                f"calibration cutoff(s) {bad_cutoffs} are outside 1 to {c_max - 1}: a "
-                "calibration forecast is scored against diagonals this triangle has "
-                f"already observed, and the latest of those is {c_max}"
-            )
-        calibration_sets = {k: features(k, k + 1, c_max) for k in cfg.calibration_cutoffs}
-
+        final_set = features(c_max, c_max + 1, target_hi)
         n_feat = final_set["n_feat"]
         n_ex = final_set["n_ex"]
-        every_set = [*train_sets.values(), *val_sets, final_set, *calibration_sets.values()]
+        every_set = [*train_sets.values(), *val_sets, final_set]
         tensor_of = {id(s): self._to_tensors(s, torch, dev) for s in every_set}
 
         support = None
@@ -505,63 +627,17 @@ class TLRN(GalleryEntry):
         kept_history = [history[m] for m in kept_ix]
 
         final_tensors = tensor_of[id(final_set)]
-        point = self._ensemble_pred(kept, final_tensors, forward)
-        ultimates, reserves, cumulative = self._assemble_point(
-            point, final_set, contract, kept, final_tensors, forward
-        )
-        # every trained member's own reserves, the dropped ones included: the kept
-        # ensemble is their mean over the kept rows, and any other group of members
-        # can be scored from them without refitting
-        member_reserves = np.stack(
-            [
-                self._assemble_point(
-                    self._ensemble_pred([m], final_tensors, forward),
-                    final_set,
-                    contract,
-                    [m],
-                    final_tensors,
-                    forward,
-                )[1]
-                for m in models
-            ]
-        )
-
-        size = np.array(
-            [
-                np.nansum(
-                    np.where(contract["line_mask"][c][:, None], contract["premium"][c], np.nan)
-                )
-                for c in range(n_c)
-            ]
-        )
-        residuals, calibration = self._calibrate(
-            kept, calibration_sets, tensor_of, forward, contract, cfg, c_max, size
-        )
-
-        self.contract_ = contract
-        self.config_ = cfg
-        self._loss_field = loss_field
-        self._device = str(dev)
-        self.models_, self.history_ = kept, kept_history
-        self.selection_ = selection
-        self.factor_support_ = support_np
-        self.feature_stats_ = {
-            "n_feat": n_feat,
-            "feature_names": final_set["feature_names"],
-            "train_cutoffs": tuple(train_sets),
-            "validation_cutoffs": tuple(range(train_end, c_max)),
-            "final_cutoff": c_max,
-            "n_dropped": {k: s["n_dropped"] for k, s in train_sets.items()},
-            "fallback_logf": final_set["fallback_logf"],
+        return {
+            "models": models,
+            "kept": kept,
+            "kept_history": kept_history,
+            "selection": selection,
+            "final_set": final_set,
+            "final_tensors": final_tensors,
+            "forward": forward,
+            "support_np": support_np,
+            "train_sets": train_sets,
         }
-        self.point_ultimates_ = ultimates
-        self.point_reserves_ = reserves
-        self.point_cumulative_ = cumulative
-        self.member_reserves_ = member_reserves
-        self.calibration_ = calibration
-        self.company_size_ = size
-        self.backtest_ = residuals
-        return self
 
     # -- the gallery contract -------------------------------------------------------
 
@@ -953,9 +1029,12 @@ class TLRN(GalleryEntry):
         return ultimates, reserves, cumulative
 
     @classmethod
-    def _calibrate(cls, models, calibration_sets, tensor_of, forward, contract, cfg, c_max, size):
-        """Apply the kept checkpoints at earlier cutoffs and pool their errors."""
-        n_c = len(contract["companies"])
+    def _rescored_totals(cls, models, calibration_sets, tensor_of, forward, n_c):
+        """``at(k)``: the kept checkpoints applied at cutoff ``k``, as company totals.
+
+        These models were trained on diagonals up to the latest one, so at an earlier
+        cutoff they are scored on cells they have already seen the answer to.
+        """
         cache: dict[int, tuple[np.ndarray, np.ndarray]] = {}
 
         def at(k: int) -> tuple[np.ndarray, np.ndarray]:
@@ -968,6 +1047,48 @@ class TLRN(GalleryEntry):
                 )
             return cache[k]
 
+        return at
+
+    def _retrained_totals(self, contract, cfg, *, c_max, features, dev, seed, processes, torch):
+        """``at(v)``: the whole method retrained from scratch at valuation ``v``.
+
+        Everything is rebuilt from what was known at diagonal ``v``: its own training
+        and validation windows, its own members and selection, its own pooled loss
+        ratios and chain ladder. Its forecast of diagonals ``v + 1`` to ``c_max`` is
+        therefore out of sample, which the rescored kind is not. The cost is a full
+        fit per valuation date.
+        """
+        n_c = len(contract["companies"])
+        cache: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+
+        def at(v: int) -> tuple[np.ndarray, np.ndarray]:
+            if v not in cache:
+                run = self._run_protocol(
+                    contract,
+                    cfg,
+                    c_max=v,
+                    target_hi=c_max,
+                    features=features,
+                    dev=dev,
+                    # a valuation date's members must not be the final fit's members
+                    seed=None if seed is None else seed + 10_000 * v,
+                    processes=processes,
+                    show_progress=False,
+                    torch=torch,
+                )
+                final = run["final_set"]
+                pred = self._ensemble_pred(run["kept"], run["final_tensors"], run["forward"])
+                cache[v] = (
+                    self._company_totals(pred, final, n_c),
+                    self._company_totals(final["target"], final, n_c),
+                )
+            return cache[v]
+
+        return at
+
+    @staticmethod
+    def _calibrate(at, contract, cfg, c_max, size):
+        """Pool the company-level errors ``at(k)`` returns at the calibration cutoffs."""
         residuals = rolling_residuals(
             lambda k: at(k)[0],
             lambda k: at(k)[1],
