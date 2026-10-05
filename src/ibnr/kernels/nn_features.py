@@ -65,7 +65,13 @@ from typing import Any
 
 import numpy as np
 
-__all__ = ["origin_cl_log_factors", "pooled_cl_factors", "tlrn_features"]
+__all__ = [
+    "mcl_cell_forecast",
+    "origin_cl_log_factors",
+    "pooled_cl_factors",
+    "pooled_incremental_lr",
+    "tlrn_features",
+]
 
 #: standard deviations a standardised feature is clipped at (reference: 5)
 CLAMP_Z = 5.0
@@ -88,6 +94,11 @@ FACTOR_FLOOR = 1.0 + 1e-6
 ANCHOR_FLOOR = 1.0
 #: the premium a predicted increment is divided by (reference: 1e-8)
 PREMIUM_FLOOR = 1e-8
+#: pooled incremental loss ratios are floored here so their log is finite
+#: (the companion study's value)
+LR_FLOOR = 1e-4
+#: what a line with no visible cell at any lag starts at
+LR_NO_CELLS = 0.05
 
 #: channel order of ``feat``'s last axis. The first eight are the paid-only
 #: form; naming an incurred and a case channel appends the other five. The
@@ -277,6 +288,96 @@ def origin_cl_log_factors(
     return np.log(factors)
 
 
+def pooled_incremental_lr(contract: dict[str, Any], cutoff: int) -> np.ndarray:
+    """Mean incremental paid loss ratio over every cell known at ``cutoff``, per line and lag.
+
+    Returns (n_l, n_d): at lag ``d`` the mean of the paid increment over premium of
+    every visible cell of that line, over companies and accident years, floored at
+    :data:`LR_FLOOR`. A cell is visible when its calendar diagonal is at or before
+    ``cutoff`` and the company writes the line; an unusable increment (the
+    contract's ``x_obs`` is False) is left out. A lag no visible cell reaches takes
+    the value at the line's last lag that one does, and a line none reaches takes
+    :data:`LR_NO_CELLS`.
+
+    This is the companion study's definition, a plain mean and not a premium-weighted
+    one. It is what the premium head starts from and what it falls back to at a lag no
+    training target supervised, so it reads visible cells only, exactly as
+    :func:`pooled_cl_factors` does: a ratio that saw a hidden cell would be a fallback
+    that had seen the answer.
+    """
+    x = np.asarray(contract["x"], dtype=float)[:, :, 0]
+    x_obs = np.asarray(contract["x_obs"], dtype=bool)[:, :, 0]
+    written = np.asarray(contract["line_mask"], dtype=bool)
+    visible = np.asarray(contract["cal_idx"], dtype=int) <= int(cutoff)
+    ok = x_obs & written[:, :, None, None] & visible[None, None] & np.isfinite(x)
+    count = ok.sum(axis=(0, 2))  # (n_l, n_d)
+    total = np.where(ok, x, 0.0).sum(axis=(0, 2))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        mean = np.where(count > 0, total / np.maximum(count, 1), np.nan)
+    out = np.where(np.isfinite(mean), np.maximum(mean, LR_FLOOR), np.nan)
+    for li in range(out.shape[0]):
+        known = np.flatnonzero(np.isfinite(out[li]))
+        out[li, np.isnan(out[li])] = out[li, known[-1]] if known.size else LR_NO_CELLS
+    return out
+
+
+def mcl_cell_forecast(
+    contract: dict[str, Any],
+    cutoff: int,
+    *,
+    lk: np.ndarray,
+    c_lk: np.ndarray,
+    p_lk: np.ndarray,
+    has_history: np.ndarray,
+) -> dict[str, np.ndarray]:
+    """The multivariate chain ladder's cell forecast, in the layout of the head's.
+
+    One company at a time: the lines it writes are fitted jointly on the paid
+    cumulatives visible at ``cutoff`` (``kernels.multivariate_cl.point_grid``) and
+    every origin is rolled forward from its latest visible lag. Returns
+    ``mcl_pred`` (n_ex, n_tok), the predicted incremental loss ratios, and
+    ``mcl_C`` (n_ex, n_l, n_d), the cumulative grid, in exactly the layouts and
+    with exactly the convention of the network's own output: cells at or before
+    an origin's latest visible lag are held at the starting balance, so a blend of
+    the two is the same kind of object whatever its weights, and the projected
+    cells add the forecast increments to the same floored ``c_lk``.
+
+    Reads visible cells only, like every other statistic in this module. A
+    forecast increment that is not finite is taken as zero, and a line the
+    company does not write has no forecast.
+    """
+    from ibnr.kernels.multivariate_cl import point_grid
+
+    cp = np.asarray(contract["values"], dtype=float)[:, :, 0]  # (n_c, n_l, n_w, n_d)
+    written = np.asarray(contract["line_mask"], dtype=bool)
+    n_c, n_l, n_w, n_d = cp.shape
+    visible = np.asarray(contract["cal_idx"], dtype=int) <= int(cutoff)
+    held_c = np.broadcast_to(c_lk.reshape(n_c, n_w, n_l)[..., None], (n_c, n_w, n_l, n_d)).copy()
+    pred = np.zeros((n_c, n_w, n_l, n_d))
+    pred[..., 0] = c_lk.reshape(n_c, n_w, n_l) / p_lk.reshape(n_c, n_w, n_l)
+    for ci in range(n_c):
+        lines = np.nonzero(written[ci])[0]
+        if lines.size == 0:
+            continue
+        grid, _ = point_grid(cp[ci, lines], visible)
+        for ki, li in enumerate(lines):
+            for w in range(n_w):
+                start = int(lk[ci * n_w + w])
+                if not has_history[w] or start >= n_d:
+                    continue
+                path = np.nan_to_num(
+                    np.diff(grid[ki, w, start - 1 :]), nan=0.0, posinf=0.0, neginf=0.0
+                )
+                row = ci * n_w + w
+                pred[ci, w, li, start:] = path / p_lk[row, li]
+                held_c[ci, w, li, start:] = c_lk[row, li] + np.cumsum(path)
+    n_ex = n_c * n_w
+    return {
+        "mcl_pred": pred.reshape(n_ex, n_l * n_d),
+        "mcl_C": held_c.reshape(n_ex, n_l, n_d),
+    }
+
+
 def _resolve_channels(
     contract: dict[str, Any], incurred_field: str | None, case_field: str | None
 ) -> tuple[int | None, int | None]:
@@ -354,6 +455,8 @@ def tlrn_features(
     incurred_field: str | None = None,
     case_field: str | None = None,
     clamp: float = CLAMP_Z,
+    with_mcl: bool = False,
+    max_lag: int | None = None,
 ) -> dict[str, Any]:
     """Build one training example per (company, accident year) at ``cutoff``.
 
@@ -378,6 +481,13 @@ def tlrn_features(
     to project from, so its cells carry nothing a development model can learn
     from, and deleting the row instead would make the example axis depend on the
     cutoff. ``n_dropped`` counts the scoring cells that costs.
+
+    ``max_lag`` keeps only the scored cells at development lag ``max_lag`` or earlier
+    (1-based): the cells whose steps the cutoff has already seen when it is the cutoff.
+
+    ``with_mcl=True`` adds ``mcl_pred`` and ``mcl_C`` (see :func:`mcl_cell_forecast`),
+    the multivariate chain ladder's forecast of the same cells from the same
+    visible data, which the ``mcl_blend`` member mixes the network's forecast with.
     """
     x = np.asarray(contract["x"], dtype=float)
     if x.ndim != 5:
@@ -421,6 +531,8 @@ def tlrn_features(
     cal = np.asarray(contract["cal_idx"], dtype=int)  # (n_w, n_d)
     visible = cal <= cutoff
     scored = (cal >= target_lo) & (cal <= target_hi)
+    if max_lag is not None:
+        scored = scored & (np.arange(1, n_d + 1) <= int(max_lag))[None, :]
 
     # the paid target, in both forms the reference keeps: NaN where the
     # increment is unusable, and the contract's padded zeros for the tensors
@@ -534,7 +646,7 @@ def tlrn_features(
     pooled_tail_one = np.where(step_index[None, :] >= cutoff, 1.0, pooled)
     anchor_logf = origin_cl_log_factors(cp, written, cutoff, pooled_tail_one)
 
-    return {
+    out = {
         "feat": feat.reshape(n_ex, n_tok, len(channels)),
         "target": np.moveaxis(paid_ratio_padded, 2, 1).reshape(n_ex, n_tok),
         "target_mask": (scored_e & has_history[None, :, None, None])
@@ -552,6 +664,11 @@ def tlrn_features(
         "line_ix": np.repeat(np.arange(1, n_l + 1), n_d),
         "lag_ix": np.tile(np.arange(1, n_d + 1), n_l),
         "fallback_logf": np.log(pooled_tail_one),
+        # the premium head's counterpart of the fallback: the pooled incremental
+        # loss ratio per (line, lag) as known at this cutoff
+        "fallback_lr": pooled_incremental_lr(contract, cutoff),
+        # the tokens this cutoff has revealed, which a masked attention may read
+        "visible": np.broadcast_to(visible_e & written_e, shape).astype(float).reshape(n_ex, n_tok),
         "anchor_logf": np.repeat(anchor_logf, n_w, axis=0),
         "example_company": np.repeat(np.arange(n_c), n_w),
         "example_origin": np.tile(np.arange(n_w), n_c),
@@ -567,3 +684,15 @@ def tlrn_features(
         "target_lo": target_lo,
         "target_hi": target_hi,
     }
+    if with_mcl:
+        out.update(
+            mcl_cell_forecast(
+                contract,
+                cutoff,
+                lk=out["lk"],
+                c_lk=out["c_lk"],
+                p_lk=out["p_lk"],
+                has_history=has_history,
+            )
+        )
+    return out

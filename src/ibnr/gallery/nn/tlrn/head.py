@@ -61,10 +61,12 @@ __all__ = [
     "ay_line_ape_loss",
     "factor_support",
     "log_factors",
+    "log_ratios",
     "masked_mse",
     "point_loss",
     "pool_pe_loss",
     "project",
+    "project_ratios",
 ]
 
 #: guards a ratio whose denominator is zero, as the reference implementation does
@@ -141,6 +143,45 @@ def project(
         c = anchor_start.unsqueeze(2) * ((1 - forward) + grown * forward)
     previous = torch.cat([torch.zeros_like(c[:, :, :1]), c[:, :, :-1]], dim=2)
     pred = ((c - previous) / p_lk.unsqueeze(2)).reshape(batch, n_l * n_d)
+    return pred, c
+
+
+def log_ratios(beta: Tensor, net: Tensor | None, eps: float, cap: float) -> Tensor:
+    """``min(beta + eps * net, cap)``: the premium head's log incremental loss ratio.
+
+    ``beta`` is (n_l, n_d) or already batched, ``net`` (B, n_l, n_d), or None for
+    the learned ratios alone. The cap bounds a ratio at ``e ** cap`` so one
+    runaway output cannot put an exponential of it into a reserve.
+    """
+    raw = beta if net is None else beta + eps * net
+    return torch.clamp(raw, max=cap)
+
+
+def project_ratios(logr: Tensor, c_lk: Tensor, p_lk: Tensor, lk: Tensor) -> tuple[Tensor, Tensor]:
+    """Project each origin forward by premium times an incremental loss ratio.
+
+    ``logr`` (B, n_l, n_d) log incremental loss ratios, ``c_lk`` and ``p_lk``
+    (B, n_l), ``lk`` (B,) the 1-based latest visible lag. Returns ``(pred, C)``
+    in the layouts :func:`project` returns. Cells at or before ``lk`` hold the
+    starting balance; the cell at lag ``j`` past it adds ``exp(logr) * premium``
+    to the one before. So the forecast grows with premium however large the
+    balance already is - the opposite of the development-factor head, whose
+    increment is proportional to the latest cumulative.
+
+    A projected cell's predicted ratio is ``exp(logr)`` itself rather than the
+    difference of two cumulatives divided by premium: in single precision that
+    difference loses a small increment against a large balance, and the ratio the
+    loss scores would then carry the rounding of the balance.
+    """
+    batch, n_l, n_d = logr.shape
+    lag = torch.arange(n_d, device=logr.device).view(1, 1, n_d)
+    forward = lag >= lk.view(batch, 1, 1)
+    ratio = torch.exp(logr)
+    increment = ratio * p_lk.unsqueeze(2) * forward.to(logr.dtype)
+    c = c_lk.unsqueeze(2) + increment.cumsum(dim=2)
+    previous = torch.cat([torch.zeros_like(c[:, :, :1]), c[:, :, :-1]], dim=2)
+    held = (c - previous) / p_lk.unsqueeze(2)  # the observed part of the grid
+    pred = torch.where(forward, ratio, held).reshape(batch, n_l * n_d)
     return pred, c
 
 

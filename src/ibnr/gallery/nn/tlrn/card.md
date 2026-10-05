@@ -83,6 +83,42 @@ reference implementation's are.
 comparison between the two arms is a comparison of the attention rather than of
 the model size.
 
+## Design choices
+
+The published model is the default of every choice below, and each choice can be
+changed alone. They are named in `components.py`, checked together when the
+config is built (a combination that cannot work is refused by name), and
+`TLRNConfig.accident_year_variant()` sets all of the companion study's
+accident-year variant at once.
+
+| choice | published | alternatives |
+|---|---|---|
+| `head` | `ldf`: log development factors, projected from the latest cumulative | `premium_lr`: an incremental loss ratio per (line, lag), times premium |
+| `attention` | lines, then lags | add `"ay"`: across a company's accident years (needs `batch_unit="company"`) |
+| `mask` | only unwritten lines | `observed_cells`: only cells the forecast date has revealed; a token with nothing to read gets nothing |
+| `batch_unit` | `example` | `company`: a whole company, every accident year, per batch unit |
+| `member` | `network` | `mcl_blend`: the multivariate chain ladder plus alpha times the network's difference from it |
+| `keep` | 2 of 10 | `None`: every trained member averaged |
+| `scoring` | `all_cells` | `reached_cells`: validation and retrained forecasts score only cells whose development steps the cutoff has seen (lag at most the cutoff) |
+| `calibration` | `rescore_final` | `retrain_per_valuation`: the whole method retrained at each calibration cutoff |
+
+`premium_lr` starts each (line, lag) ratio at the pooled incremental loss ratio
+known when training starts (a plain mean over the visible cells, floored at 1e-4; a
+lag no visible cell reaches repeats the line's last known lag), caps `beta + eps * net` at `lr_cap`, and at a lag no
+training target supervised uses the pooled ratio observable at the example's own
+cutoff. With the network off it gives premium times that pooled ratio, which is
+its own first test.
+
+`mcl_blend`: alpha is the exact weighted-median minimiser of the validation
+error, refitted at every validation check and kept with the checkpoint that
+validated best (it is a buffer in the state dict), and the multivariate chain
+ladder is refitted on the triangle known at each date. The selection table
+carries each member's alpha.
+
+`retrain_per_valuation` costs a full fit per calibration cutoff, and in exchange
+the forecasts whose errors become the predictive distribution come from a method
+that had not seen the cells it forecasts.
+
 ## Head
 
 The network does not predict a cell. It predicts a log development factor per

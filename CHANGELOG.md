@@ -21,6 +21,30 @@ patch releases, and 0.8 comes when the roadmap's goals are done.
 
 ## Unreleased
 
+### tlrn design choices
+
+`tlrn` takes its design choices by name, so a variant of the network is a config and
+not a copy of the entry. `TLRNConfig()` is unchanged: every default reproduces the
+previous fits bit for bit (weights, histories, reserves and draws, on both the
+network-only and the anchored, single-line and factors-only variants).
+
+**New `TLRNConfig` fields:** `head` (`ldf`, or `premium_lr`: an incremental loss
+ratio per line and lag times premium), `attention` (axes in order; adding `"ay"`
+attends across a company's accident years), `mask` (`unwritten_lines`, or
+`observed_cells`), `batch_unit` (`example`, or `company`), `member` (`network`, or
+`mcl_blend`: the multivariate chain ladder plus alpha times the network's difference
+from it), `calibration` (`rescore_final`, or `retrain_per_valuation`), `scoring` (`all_cells`,
+or `reached_cells`: only cells whose development steps the cutoff has seen), `lr_cap`; and
+`keep=None` averages every trained member. Combinations that cannot work are refused
+at construction, by name. `TLRNConfig.accident_year_variant()` sets the companion
+study's accident-year variant in one call.
+
+**Also:** the multivariate chain ladder's estimator moved from
+`gallery/statistical/mcl` to `kernels/multivariate_cl.py` (same code; the names stay
+importable from where they were) and gained `point_grid`. `kernels.nn_features` gained
+`pooled_incremental_lr` and `mcl_cell_forecast`, and `tlrn_features` returns
+`fallback_lr` and `visible`. `AxialBlock.forward` now returns four values.
+
 ### Mack with development options
 
 `methods.mack` takes the chain ladder's development options, and Mack's
