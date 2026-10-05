@@ -17,11 +17,16 @@ uv run pytest "tests/test_transforms.py::test_as_of[polars]"   # single test, on
 uv run ruff check . && uv run ruff format .                    # format also rewrites python blocks in *.md
 uv run python scripts/lint_md_snippets.py                      # lint those blocks (ruff check ignores markdown)
 uv run python scripts/meyers_validation.py --per-line 50       # Meyers retrospective validation
+uv run python scripts/check_okf.py                             # knowledge/ is a clean Open Knowledge Format bundle
 ```
 
 Markers: `tieout` (chainladder comparisons), `mart` (needs the local Schedule P gold mart; auto-skips when absent), `parity`, `slow` (cmdstan; excluded by default via addopts), `network` (really talks to the internet; also excluded by default - run with `uv run pytest -m network`).
 
 cmdstan on this machine: installed at `~/.cmdstan` (2.39.0), built with the RTools toolchain at `C:\rtools45` (plain `make`, not `mingw32-make` - set `MAKE=make` and prepend `C:\rtools45\x86_64-w64-mingw32.static.posix\bin` and `C:\rtools45\usr\bin` to PATH; `gallery/bayesian/meyers_ccl/model.py:_ensure_windows_toolchain` does this automatically).
+
+## Knowledge bundle (`knowledge/`) - Open Knowledge Format v0.2, Ethan's instruction 2026-10-05
+
+All durable knowledge collected while working on ibnr goes in `knowledge/`, written in the [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format) (markdown files with YAML frontmatter; `knowledge/references/okf-spec.md` summarises the rules). It is shared and version-controlled, not an agent-private store. What belongs: a measurement, finding, decision with its reasons, gotcha, playbook or outside reference that the code and git history do not already say. One concept per file, in `findings/`, `decisions/`, `gotchas/`, `playbooks/` or `references/`; frontmatter carries `type`, `title`, `description`, `tags`, `status`, `generated: { by: claude-code/<model>, at }`, and `sources` for anything a reader could follow, plus `stale_after` for anything that depends on hardware, a library version or a price. The agent never writes `verified` for itself; it is added as `human:<id>` only when a person confirmed the concept. Every change updates the directory's `index.md` and puts a line in `log.md` (newest date first). `scripts/check_okf.py` checks the bundle and `tests/test_knowledge_bundle.py` runs it; the conventions are in `knowledge/decisions/knowledge-in-okf-format.md`.
 
 ## Core design decisions - do not relitigate without asking
 
