@@ -408,9 +408,11 @@ class TLRNNetwork(nn.Module):
                     "observable at this example's cutoff, to substitute at the lags no "
                     "training target supervised"
                 )
-            logr = tlrn_head.apply_support(
-                logr, factor_support, torch.log(fallback_lr).unsqueeze(0)
-            )
+            # the factor support is per development STEP, and step d is what lag d + 1
+            # needs: lag 0 is never projected into, so it is always the network's
+            fallback = torch.log(fallback_lr)[:, 1:].unsqueeze(0)
+            tail = tlrn_head.apply_support(logr[:, :, 1:], factor_support, fallback)
+            logr = torch.cat([logr[:, :, :1], tail], dim=2)
         pred, c = tlrn_head.project_ratios(logr, c_lk, p_lk, lk)
         return {"pred": pred, "logr": logr, "C": c}
 

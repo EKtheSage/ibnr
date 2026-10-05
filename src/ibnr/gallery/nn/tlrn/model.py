@@ -367,7 +367,7 @@ class TLRN(GalleryEntry):
         _, _, train_end = splits(obs_any, contract["cal_idx"], cfg.val_diagonals)
         c_max = train_end + cfg.val_diagonals
 
-        def features(cutoff: int, target_lo: int, target_hi: int) -> dict:
+        def features(cutoff: int, target_lo: int, target_hi: int, max_lag=None) -> dict:
             return tlrn_features(
                 contract,
                 cutoff=cutoff,
@@ -376,6 +376,7 @@ class TLRN(GalleryEntry):
                 incurred_field=incurred_field,
                 case_field=case_field,
                 with_mcl=cfg.member == "mcl_blend",
+                max_lag=max_lag,
             )
 
         bad_cutoffs = [k for k in cfg.calibration_cutoffs if not 1 <= k < c_max]
@@ -491,6 +492,7 @@ class TLRN(GalleryEntry):
         *,
         c_max,
         target_hi,
+        final_max_lag=None,
         features,
         dev,
         seed,
@@ -523,12 +525,16 @@ class TLRN(GalleryEntry):
         train_sets = {k: features(k, k + 1, train_end) for k in range(cfg.min_cutoff, train_end)}
         # the validation sets score every diagonal still held out at their own
         # cutoff, so the selection is not made on one-step forecasts alone
-        val_sets = [features(k, k + 1, c_max) for k in range(train_end, c_max)]
+        reached = cfg.scoring == "reached_cells"
+        val_sets = [
+            features(k, k + 1, c_max, max_lag=k if reached else None)
+            for k in range(train_end, c_max)
+        ]
         _refuse_overlap(
             [s["target_mask"] for s in train_sets.values()],
             [s["target_mask"] for s in val_sets],
         )
-        final_set = features(c_max, c_max + 1, target_hi)
+        final_set = features(c_max, c_max + 1, target_hi, max_lag=final_max_lag)
         n_feat = final_set["n_feat"]
         n_ex = final_set["n_ex"]
         every_set = [*train_sets.values(), *val_sets, final_set]
@@ -538,17 +544,12 @@ class TLRN(GalleryEntry):
         if cfg.tail_policy == "observed_cl":
             # which parameters the TRAINING targets could move; read off the
             # masks (and the starting lags), never off a validation or a test value
-            if cfg.head == "premium_lr":
-                support_np = tlrn_head.lag_support(
-                    [s["target_mask"] for s in train_sets.values()], n_l, n_d
-                )
-            else:
-                support_np = tlrn_head.factor_support(
-                    [s["target_mask"] for s in train_sets.values()],
-                    [s["lk"] for s in train_sets.values()],
-                    n_l,
-                    n_d,
-                )
+            support_np = tlrn_head.factor_support(
+                [s["target_mask"] for s in train_sets.values()],
+                [s["lk"] for s in train_sets.values()],
+                n_l,
+                n_d,
+            )
             support = torch.tensor(support_np, device=dev)
         else:
             support_np = None
@@ -1068,6 +1069,7 @@ class TLRN(GalleryEntry):
                     cfg,
                     c_max=v,
                     target_hi=c_max,
+                    final_max_lag=v if cfg.scoring == "reached_cells" else None,
                     features=features,
                     dev=dev,
                     # a valuation date's members must not be the final fit's members

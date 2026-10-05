@@ -99,10 +99,12 @@ accident-year variant at once.
 | `batch_unit` | `example` | `company`: a whole company, every accident year, per batch unit |
 | `member` | `network` | `mcl_blend`: the multivariate chain ladder plus alpha times the network's difference from it |
 | `keep` | 2 of 10 | `None`: every trained member averaged |
+| `scoring` | `all_cells` | `reached_cells`: validation and retrained forecasts score only cells whose development steps the cutoff has seen (lag at most the cutoff) |
 | `calibration` | `rescore_final` | `retrain_per_valuation`: the whole method retrained at each calibration cutoff |
 
 `premium_lr` starts each (line, lag) ratio at the pooled incremental loss ratio
-known when training starts, caps `beta + eps * net` at `lr_cap`, and at a lag no
+known when training starts (a plain mean over the visible cells, floored at 1e-4; a
+lag no visible cell reaches repeats the line's last known lag), caps `beta + eps * net` at `lr_cap`, and at a lag no
 training target supervised uses the pooled ratio observable at the example's own
 cutoff. With the network off it gives premium times that pooled ratio, which is
 its own first test.

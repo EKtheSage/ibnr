@@ -192,8 +192,9 @@ def test_premium_head_substitutes_the_pooled_ratio_where_no_target_supervised(ba
     model = network(cfg(head="premium_lr"), f, contract, cutoff)
     with torch.no_grad():
         model.beta += 1.0  # every learned ratio moves away from the pooled one
-    support = torch.ones(f["n_l"], f["n_d"], dtype=torch.bool)
-    support[0, 4] = False
+    # one entry per development STEP: step 3 is what lag 4 needs
+    support = torch.ones(f["n_l"], f["n_d"] - 1, dtype=torch.bool)
+    support[0, 3] = False
     out = forward(model, t, use_residual=False, factor_support=support)["logr"].detach()
     lr = torch.log(t["fallback_lr"])
     torch.testing.assert_close(out[:, 0, 4], lr[0, 4].expand(out.shape[0]))
@@ -356,7 +357,7 @@ def test_every_registered_choice_fits(head, mask, member, attention, unit, backe
         assert float(entry.models_[0].alpha) == float(alpha[entry.selection_["kept"]].iloc[0])
     else:
         assert "alpha" not in entry.selection_.columns
-    assert entry.factor_support_.shape == (2, 6 if head == "premium_lr" else 5)
+    assert entry.factor_support_.shape == (2, 5)
     # the reserve is the ultimate less what is already paid, whatever the head
     np.testing.assert_allclose(
         np.nansum(entry.point_ultimates_ - entry.contract_["latest_cum"], axis=(1, 2)),
@@ -414,8 +415,8 @@ def test_the_blend_weight_is_the_exact_minimiser():
     # takes alpha to 0, and one it fixes more than fully takes alpha to 1
     assert blend_weight(np.array([1.0]), np.array([1.0])) == 0.0
     assert blend_weight(np.array([-5.0]), np.array([1.0])) == 1.0
-    # nothing to choose between: the network is taken whole
-    assert blend_weight(np.array([1.0, 2.0]), np.zeros(2)) == 1.0
+    # nothing to choose between: the chain ladder, as the companion study sets it
+    assert blend_weight(np.array([1.0, 2.0]), np.zeros(2)) == 0.0
 
 
 def exact_chain_ladder_square(n_lob=2, n_w=6, n_d=6, seed=0):
@@ -619,3 +620,53 @@ def test_the_accident_year_variant_names_every_choice_and_accepts_overrides():
     assert (back.head, back.calibration) == ("ldf", "rescore_final")
     with pytest.raises(ValueError, match="batch_unit='company'"):
         TLRNConfig.accident_year_variant(batch_unit="example")
+
+
+# -- the companion study's definitions ---------------------------------------------------------
+
+
+def test_the_pooled_loss_ratio_is_a_plain_mean_that_carries_the_last_known_lag_forward(
+    backend_name,
+):
+    cutoff = 3
+    contract = company_contract(backend_name)
+    got = pooled_incremental_lr(contract, cutoff)
+    x = contract["x"][:, :, 0]
+    obs = contract["x_obs"][:, :, 0] & contract["line_mask"][:, :, None, None]
+    visible = contract["cal_idx"] <= cutoff
+    n_l, n_d = got.shape
+    want = np.full((n_l, n_d), np.nan)
+    for li in range(n_l):
+        for d in range(n_d):
+            cells = x[:, li, :, d][(obs & visible[None, None])[:, li, :, d]]
+            if cells.size:
+                want[li, d] = max(cells.mean(), 1e-4)
+        last = np.flatnonzero(np.isfinite(want[li]))[-1]
+        want[li, np.isnan(want[li])] = want[li, last]  # lags no visible cell reaches
+    np.testing.assert_allclose(got, want, rtol=1e-12)
+    # a lag past the last known one repeats it, so the head forecasts something there
+    assert (got[:, cutoff:] == got[:, [cutoff - 1]]).all()
+
+
+def test_reached_cells_scoring_drops_cells_past_the_cutoffs_lag(backend_name):
+    contract = company_contract(backend_name)
+    f_all = tlrn_features(contract, cutoff=3, target_lo=4, target_hi=6)
+    f_cut = tlrn_features(contract, cutoff=3, target_lo=4, target_hi=6, max_lag=3)
+    n_l, n_d = f_all["n_l"], f_all["n_d"]
+    cut = f_cut["target_mask"].reshape(-1, n_l, n_d)
+    whole = f_all["target_mask"].reshape(-1, n_l, n_d)
+    assert (cut[:, :, 3:] == 0).all() and (whole[:, :, 3:] > 0).any()
+    np.testing.assert_array_equal(cut[:, :, :3], whole[:, :, :3])
+
+
+def test_reached_cells_scoring_fits(backend_name):
+    entry = TLRNEntry().fit(
+        study_triangle(backend_name, None),
+        loss_field="paid_loss",
+        as_of=AS_OF,
+        config=replace(retrain_config("mcl_blend"), scoring="reached_cells"),
+        seed=0,
+    )
+    assert np.isfinite(entry.company_reserves()).all()
+    with pytest.raises(ValueError, match="scoring"):
+        TLRNConfig(scoring="x")

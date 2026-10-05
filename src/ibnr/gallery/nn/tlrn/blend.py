@@ -25,14 +25,14 @@ def blend_weight(a: np.ndarray, b: np.ndarray) -> float:
     """``argmin over alpha in [0, 1]`` of ``sum |a + alpha * b|``, exactly.
 
     When no group has a difference between the two forecasts (every ``b`` is zero
-    or not finite) the score does not depend on alpha, and the network is taken
-    whole: ``alpha = 1``.
+    or not finite) the score does not depend on alpha, and the member is the chain
+    ladder: ``alpha = 0``, as the companion study sets it.
     """
     a = np.asarray(a, dtype=float).ravel()
     b = np.asarray(b, dtype=float).ravel()
     keep = np.isfinite(a) & np.isfinite(b) & (b != 0)
     if not keep.any():
-        return 1.0
+        return 0.0
     a, b = a[keep], b[keep]
     t = -a / b
     weight = np.abs(b)

@@ -33,7 +33,8 @@ ratio per line and lag times premium), `attention` (axes in order; adding `"ay"`
 attends across a company's accident years), `mask` (`unwritten_lines`, or
 `observed_cells`), `batch_unit` (`example`, or `company`), `member` (`network`, or
 `mcl_blend`: the multivariate chain ladder plus alpha times the network's difference
-from it), `calibration` (`rescore_final`, or `retrain_per_valuation`), `lr_cap`; and
+from it), `calibration` (`rescore_final`, or `retrain_per_valuation`), `scoring` (`all_cells`,
+or `reached_cells`: only cells whose development steps the cutoff has seen), `lr_cap`; and
 `keep=None` averages every trained member. Combinations that cannot work are refused
 at construction, by name. `TLRNConfig.accident_year_variant()` sets the companion
 study's accident-year variant in one call.

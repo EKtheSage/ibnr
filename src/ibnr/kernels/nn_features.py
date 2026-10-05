@@ -94,10 +94,11 @@ FACTOR_FLOOR = 1.0 + 1e-6
 ANCHOR_FLOOR = 1.0
 #: the premium a predicted increment is divided by (reference: 1e-8)
 PREMIUM_FLOOR = 1e-8
-#: pooled incremental loss ratios are floored here so their log is finite: a lag
-#: no visible cell reaches, or one whose pooled increments are not positive,
-#: starts the premium head at this ratio rather than at minus infinity
-LR_FLOOR = 1e-6
+#: pooled incremental loss ratios are floored here so their log is finite
+#: (the companion study's value)
+LR_FLOOR = 1e-4
+#: what a line with no visible cell at any lag starts at
+LR_NO_CELLS = 0.05
 
 #: channel order of ``feat``'s last axis. The first eight are the paid-only
 #: form; naming an incurred and a case channel appends the other five. The
@@ -288,34 +289,36 @@ def origin_cl_log_factors(
 
 
 def pooled_incremental_lr(contract: dict[str, Any], cutoff: int) -> np.ndarray:
-    """Premium-weighted incremental paid loss ratio pooled over companies, per line and lag.
+    """Mean incremental paid loss ratio over every cell known at ``cutoff``, per line and lag.
 
-    Returns (n_l, n_d): at lag ``d`` the paid increments of every visible cell of
-    that line, summed over companies and origins, over the premium of those same
-    cells. A cell is visible when its calendar diagonal is at or before
+    Returns (n_l, n_d): at lag ``d`` the mean of the paid increment over premium of
+    every visible cell of that line, over companies and accident years, floored at
+    :data:`LR_FLOOR`. A cell is visible when its calendar diagonal is at or before
     ``cutoff`` and the company writes the line; an unusable increment (the
-    contract's ``x_obs`` is False) contributes to neither sum. A lag no visible
-    cell reaches, or whose pool is not positive, is floored at :data:`LR_FLOOR`.
+    contract's ``x_obs`` is False) is left out. A lag no visible cell reaches takes
+    the value at the line's last lag that one does, and a line none reaches takes
+    :data:`LR_NO_CELLS`.
 
-    This is what the premium head starts from and what it falls back to at a lag
-    no training target supervised, so it reads visible cells only, exactly as
-    :func:`pooled_cl_factors` does: a ratio that saw a hidden cell would be a
-    fallback that had seen the answer.
+    This is the companion study's definition, a plain mean and not a premium-weighted
+    one. It is what the premium head starts from and what it falls back to at a lag no
+    training target supervised, so it reads visible cells only, exactly as
+    :func:`pooled_cl_factors` does: a ratio that saw a hidden cell would be a fallback
+    that had seen the answer.
     """
     x = np.asarray(contract["x"], dtype=float)[:, :, 0]
     x_obs = np.asarray(contract["x_obs"], dtype=bool)[:, :, 0]
     written = np.asarray(contract["line_mask"], dtype=bool)
-    premium = np.asarray(contract["premium"], dtype=float)
-    premium = np.where(np.isfinite(premium), premium, 0.0)
     visible = np.asarray(contract["cal_idx"], dtype=int) <= int(cutoff)
-    prem = np.broadcast_to(premium[..., None], x.shape)
-    ok = x_obs & written[:, :, None, None] & visible[None, None] & (prem > 0)
-    numerator = np.where(ok, np.where(np.isfinite(x), x, 0.0) * prem, 0.0)
-    denominator = np.where(ok, prem, 0.0)
-    num, den = numerator.sum(axis=(0, 2)), denominator.sum(axis=(0, 2))
+    ok = x_obs & written[:, :, None, None] & visible[None, None] & np.isfinite(x)
+    count = ok.sum(axis=(0, 2))  # (n_l, n_d)
+    total = np.where(ok, x, 0.0).sum(axis=(0, 2))
     with np.errstate(invalid="ignore", divide="ignore"):
-        ratio = np.where(den > 0, num / den, LR_FLOOR)
-    return np.maximum(ratio, LR_FLOOR)
+        mean = np.where(count > 0, total / np.maximum(count, 1), np.nan)
+    out = np.where(np.isfinite(mean), np.maximum(mean, LR_FLOOR), np.nan)
+    for li in range(out.shape[0]):
+        known = np.flatnonzero(np.isfinite(out[li]))
+        out[li, np.isnan(out[li])] = out[li, known[-1]] if known.size else LR_NO_CELLS
+    return out
 
 
 def mcl_cell_forecast(
@@ -453,6 +456,7 @@ def tlrn_features(
     case_field: str | None = None,
     clamp: float = CLAMP_Z,
     with_mcl: bool = False,
+    max_lag: int | None = None,
 ) -> dict[str, Any]:
     """Build one training example per (company, accident year) at ``cutoff``.
 
@@ -477,6 +481,9 @@ def tlrn_features(
     to project from, so its cells carry nothing a development model can learn
     from, and deleting the row instead would make the example axis depend on the
     cutoff. ``n_dropped`` counts the scoring cells that costs.
+
+    ``max_lag`` keeps only the scored cells at development lag ``max_lag`` or earlier
+    (1-based): the cells whose steps the cutoff has already seen when it is the cutoff.
 
     ``with_mcl=True`` adds ``mcl_pred`` and ``mcl_C`` (see :func:`mcl_cell_forecast`),
     the multivariate chain ladder's forecast of the same cells from the same
@@ -524,6 +531,8 @@ def tlrn_features(
     cal = np.asarray(contract["cal_idx"], dtype=int)  # (n_w, n_d)
     visible = cal <= cutoff
     scored = (cal >= target_lo) & (cal <= target_hi)
+    if max_lag is not None:
+        scored = scored & (np.arange(1, n_d + 1) <= int(max_lag))[None, :]
 
     # the paid target, in both forms the reference keeps: NaN where the
     # increment is unusable, and the contract's padded zeros for the tensors

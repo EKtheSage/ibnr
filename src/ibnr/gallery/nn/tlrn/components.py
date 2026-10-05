@@ -24,6 +24,12 @@ A ``tlrn`` is five choices made independently, each with a short list of names:
     What ``batch_size`` counts. ``example`` is one (company, accident year);
     ``company`` is one company with all its accident years together, which an
     ``ay`` attention needs because it attends across them.
+``scoring``
+    Which cells validation and the retrained calibration forecasts are scored on.
+    ``all_cells`` is every cell past the cutoff; ``reached_cells`` only the cells
+    whose development steps the cutoff has already observed (lag at most the
+    cutoff), because a step no origin has completed is not estimated and a forecast
+    across it, by the chain ladder or the network, is not something to grade.
 ``calibration``
     Where the historical errors that become the predictive distribution come
     from. ``rescore_final`` applies the final models at earlier cutoffs, so those
@@ -61,6 +67,7 @@ __all__ = [
     "HEADS",
     "MASKS",
     "MEMBERS",
+    "SCORINGS",
     "attention_axes",
     "check_combination",
 ]
@@ -73,6 +80,8 @@ ATTENTION_AXES: tuple[str, ...] = ("line", "lag", "ay")
 MASKS: tuple[str, ...] = ("unwritten_lines", "observed_cells")
 #: how a trained network becomes a member's forecast
 MEMBERS: tuple[str, ...] = ("network", "mcl_blend")
+#: which cells validation and retrained calibration score
+SCORINGS: tuple[str, ...] = ("all_cells", "reached_cells")
 #: where the calibration errors come from
 CALIBRATIONS: tuple[str, ...] = ("rescore_final", "retrain_per_valuation")
 #: what ``batch_size`` counts
@@ -93,6 +102,7 @@ def check_combination(cfg: Any) -> None:
         ("mask", cfg.mask, MASKS),
         ("member", cfg.member, MEMBERS),
         ("calibration", cfg.calibration, CALIBRATIONS),
+        ("scoring", cfg.scoring, SCORINGS),
         ("batch_unit", cfg.batch_unit, BATCH_UNITS),
     ):
         if value not in allowed:

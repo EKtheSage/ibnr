@@ -90,6 +90,9 @@ class TLRNConfig:
     #: ``mcl_blend``, the multivariate chain ladder plus alpha times the
     #: network's difference from it (alpha is fitted at each validation check)
     member: str = "network"
+    #: which cells validation (and a retrained calibration) scores: ``all_cells``,
+    #: or ``reached_cells``, only those whose development steps the cutoff has seen
+    scoring: str = "all_cells"
     #: the premium head's cap on ``beta + eps * net``, so a ratio is at most e**cap
     lr_cap: float = 5.0
 
@@ -164,6 +167,7 @@ class TLRNConfig:
             "member": "mcl_blend",
             "ensemble_size": 20,
             "keep": None,
+            "scoring": "reached_cells",
             "calibration": "retrain_per_valuation",
             "calibration_cutoffs": (6, 7, 8),
             "calibration_horizons": (2, 3, 4),

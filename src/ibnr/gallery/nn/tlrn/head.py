@@ -60,7 +60,6 @@ __all__ = [
     "apply_support",
     "ay_line_ape_loss",
     "factor_support",
-    "lag_support",
     "log_factors",
     "log_ratios",
     "masked_mse",
@@ -258,20 +257,6 @@ def point_loss(
         + w_pe * pool_pe_loss(pred, targ, mask, prem)
         + w_mse * masked_mse(pred, targ, mask) / mse_scale
     )
-
-
-def lag_support(target_masks, n_l: int, n_d: int) -> np.ndarray:
-    """Which (line, lag) ratios any training target scored: (n_l, n_d), bool.
-
-    The premium head's counterpart of :func:`factor_support`. A ratio at lag ``d``
-    is moved by training only where some example scores a cell at that lag on
-    that line, so it is read off the scoring masks alone.
-    """
-    support = np.zeros((n_l, n_d), dtype=bool)
-    for mask in target_masks:
-        scored = np.asarray(mask).reshape(-1, n_l, n_d).sum(axis=0) > 0
-        support |= scored
-    return support
 
 
 def factor_support(target_masks, lks, n_l: int, n_d: int) -> np.ndarray:
