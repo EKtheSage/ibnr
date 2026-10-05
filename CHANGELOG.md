@@ -19,7 +19,16 @@ corrected decision 8 - and, from 0.7.2,
 From 0.7.2 the minor number is kept for milestones: additions and fixes ship as
 patch releases, and 0.8 comes when the roadmap's goals are done.
 
-## Unreleased
+## 0.7.3 - 2026-10-05
+
+A patch release over the changes below: `tlrn` design choices (premium loss ratio
+head, accident-year attention, the multivariate chain ladder blend and retrained
+calibration), and the rest of what is listed (the `ibnr.methods` development
+options, Benktander and Cape Cod trend, Mack with options, refusal reason codes).
+Defaults are unchanged throughout. What can break existing code: `AxialBlock.forward` in
+`gallery/nn/tlrn/network.py` returns four values where it returned three, and
+`TLRNConfig.keep` may now be `None`; neither is part of the public surface in
+decision 8.
 
 ### tlrn design choices
 
