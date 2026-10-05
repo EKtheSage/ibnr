@@ -86,6 +86,10 @@ class TLRNConfig:
     #: what an attention may read: ``unwritten_lines`` masks only absent lines,
     #: ``observed_cells`` masks every cell the forecast date has not revealed
     mask: str = "unwritten_lines"
+    #: how a trained network becomes a member's forecast: ``network`` alone, or
+    #: ``mcl_blend``, the multivariate chain ladder plus alpha times the
+    #: network's difference from it (alpha is fitted at each validation check)
+    member: str = "network"
     #: the premium head's cap on ``beta + eps * net``, so a ratio is at most e**cap
     lr_cap: float = 5.0
 
@@ -121,7 +125,8 @@ class TLRNConfig:
 
     # ensemble: train this many seeds, keep the best few by validation score
     ensemble_size: int = 10
-    keep: int = 2
+    #: members averaged; ``None`` averages every trained member
+    keep: int | None = 2
 
     # uncertainty: the historical residual calibration
     calibration_cutoffs: tuple[int, ...] = (5, 6, 7, 8, 9)
@@ -130,8 +135,13 @@ class TLRNConfig:
     min_per_stratum: int = 40
     n_draws: int = 4000
 
+    @property
+    def n_kept(self) -> int:
+        """How many members are averaged: ``keep``, or all of them when it is ``None``."""
+        return self.ensemble_size if self.keep is None else self.keep
+
     def __post_init__(self) -> None:
-        if not 1 <= self.keep <= self.ensemble_size:
+        if self.keep is not None and not 1 <= self.keep <= self.ensemble_size:
             raise ValueError(
                 f"keep must be in [1, ensemble_size={self.ensemble_size}], got {self.keep}. "
                 "The kept members are the ones that validated best, so keeping more than "

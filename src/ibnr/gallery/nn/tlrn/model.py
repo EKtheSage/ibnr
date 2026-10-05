@@ -47,6 +47,7 @@ import pandas as pd
 from ibnr.gallery.entry import GalleryEntry
 from ibnr.gallery.nn._scheme import splits
 from ibnr.gallery.nn._training import train_ensemble, warmup_cosine
+from ibnr.gallery.nn.tlrn.blend import blend_weight
 from ibnr.gallery.nn.tlrn.config import TLRNConfig
 from ibnr.gallery.registry import register
 from ibnr.kernels.contract import _as_date
@@ -111,9 +112,12 @@ def _training_parts(
             cfg, n_lines=n_l, n_lag=n_d, n_feat=n_feat, n_origin=n_w, head_init=start
         ).to(dev)
 
-    def forward(model, tset: dict, rows=None) -> dict:
+    def forward(model, tset: dict, rows=None, *, blend: bool = True) -> dict:
+        """One pass. Under ``member="mcl_blend"`` the result is the blend of the network
+        with the multivariate chain ladder, ``pred_net`` and ``C_net`` being the
+        network alone; ``blend=False`` returns the network alone as ``pred``."""
         take = (lambda t: t) if rows is None else (lambda t: t[rows])
-        return model(
+        out = model(
             take(tset["feat"]),
             take(tset["c_lk"]),
             take(tset["p_lk"]),
@@ -128,6 +132,17 @@ def _training_parts(
             anchor_start=take(tset["anchor_start"]),
             visible=take(tset["visible"]),
         )
+        if cfg.member != "mcl_blend" or not blend:
+            return out
+        mcl_pred, mcl_c = take(tset["mcl_pred"]), take(tset["mcl_C"])
+        a = model.alpha
+        return {
+            **out,
+            "pred_net": out["pred"],
+            "C_net": out["C"],
+            "pred": mcl_pred + a * (out["pred"] - mcl_pred),
+            "C": mcl_c + a * (out["C"] - mcl_c),
+        }
 
     def example_rows(idx):
         """The example rows a batch of units names: itself, or every year of each company."""
@@ -148,7 +163,7 @@ def _training_parts(
         mask = tset["target_mask"][idx]
         if not float(mask.sum()):
             return None  # this epoch's cutoff left this batch nothing to score
-        out = forward(model, tset, idx)
+        out = forward(model, tset, idx, blend=False)
         return tlrn_head.point_loss(
             out["pred"],
             tset["target"][idx],
@@ -162,6 +177,8 @@ def _training_parts(
         )
 
     def val_loss(model) -> float:
+        if cfg.member == "mcl_blend":
+            return TLRN._blend_ay_line_ape(model, val_tensors, forward, n_l, n_d)
         return TLRN._ay_line_ape(model, val_tensors, forward, n_l, n_d)
 
     def param_groups(m):
@@ -367,6 +384,7 @@ class TLRN(GalleryEntry):
                 target_hi=target_hi,
                 incurred_field=incurred_field,
                 case_field=case_field,
+                with_mcl=cfg.member == "mcl_blend",
             )
 
         # one training set per cutoff; each is the same triangle presented as a
@@ -478,7 +496,10 @@ class TLRN(GalleryEntry):
                 payload, processes, make_model, cfg.ensemble_size, torch
             )
 
-        selection = self._selection_table(models, history, cfg.keep, company_ape)
+        selection = self._selection_table(models, history, cfg.n_kept, company_ape)
+        if cfg.member == "mcl_blend":
+            # the weight each member's best checkpoint put on the network
+            selection["alpha"] = [float(m.alpha) for m in models]
         kept_ix = selection.index[selection["kept"]].tolist()
         kept = [models[m] for m in kept_ix]
         kept_history = [history[m] for m in kept_ix]
@@ -730,6 +751,9 @@ class TLRN(GalleryEntry):
             out[k] = torch.tensor(features[k], dtype=torch.long, device=dev)
         out["written"] = torch.tensor(features["written"], dtype=torch.bool, device=dev)
         out["visible"] = torch.tensor(features["visible"], dtype=torch.bool, device=dev)
+        for k in ("mcl_pred", "mcl_C"):
+            if k in features:
+                out[k] = torch.tensor(features[k], dtype=torch.float32, device=dev)
         return out
 
     @staticmethod
@@ -806,6 +830,37 @@ class TLRN(GalleryEntry):
                 numerator += float(error.abs().sum())
                 denominator += float(actual.abs().sum())
         return numerator / max(denominator, 1e-8)
+
+    @staticmethod
+    def _blend_ay_line_ape(model, tsets: list[dict], forward, n_l: int, n_d: int) -> float:
+        """The validation score of the blend, after fitting its weight.
+
+        The network's weight alpha is the exact minimiser of the same
+        (accident year, line) absolute error ``_ay_line_ape`` scores, over both
+        validation sets together (``blend.blend_weight``), and is written into the
+        model before the score is taken: the weight is part of what validates, and
+        the checkpoint that validates best keeps its own.
+        """
+        import torch
+
+        errors, gaps, actuals = [], [], []
+        with torch.no_grad():
+            for tset in tsets:
+                net = forward(model, tset, blend=False)["pred"]
+                mcl = tset["mcl_pred"]
+                weight = tset["target_mask"] * tset["premium"]
+
+                def by_group(cells, weight=weight):
+                    return (cells * weight).reshape(-1, n_l, n_d).sum(2).cpu().numpy()
+
+                errors.append(by_group(mcl - tset["target"]))
+                gaps.append(by_group(net - mcl))
+                actuals.append(by_group(tset["target"]))
+            error, gap = np.concatenate(errors), np.concatenate(gaps)
+            alpha = blend_weight(error, gap)
+            model.alpha.fill_(alpha)
+        score = np.abs(error + alpha * gap).sum()
+        return float(score / max(np.abs(np.concatenate(actuals)).sum(), 1e-8))
 
     @staticmethod
     def _company_totals(pred: np.ndarray, features: dict, n_c: int) -> np.ndarray:

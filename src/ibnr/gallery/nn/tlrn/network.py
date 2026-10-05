@@ -314,6 +314,12 @@ class TLRNNetwork(nn.Module):
             # with the config it is reloaded under.
             self.register_buffer("initial_logf", steps.repeat(n_lines, 1), persistent=False)
             self.head_param_names = ("phi",)
+        if cfg.member == "mcl_blend":
+            # the weight of the network in the member's blend with the multivariate
+            # chain ladder. A buffer, so it lives in the state dict: the validation
+            # check that picks the best checkpoint also fits this, and the weight
+            # that goes with that checkpoint comes back with its weights.
+            self.register_buffer("alpha", torch.ones(()))
         with torch.no_grad():
             self.head.weight.mul_(HEAD_INIT_SCALE)
             self.head.bias.zero_()

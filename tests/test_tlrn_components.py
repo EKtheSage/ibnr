@@ -33,9 +33,11 @@ torch = pytest.importorskip("torch")
 from ibnr.gallery.nn.tlrn import components  # noqa: E402
 from ibnr.gallery.nn.tlrn import head as tlrn_head  # noqa: E402
 from ibnr.gallery.nn.tlrn import model as tlrn_model  # noqa: E402
+from ibnr.gallery.nn.tlrn.blend import blend_weight  # noqa: E402
 from ibnr.gallery.nn.tlrn.config import TLRNConfig  # noqa: E402
 from ibnr.gallery.nn.tlrn.model import TLRN as TLRNEntry  # noqa: E402
 from ibnr.gallery.nn.tlrn.network import AxialBlock, TLRNNetwork  # noqa: E402
+from ibnr.kernels.multivariate_cl import point_grid  # noqa: E402
 from ibnr.kernels.nn_features import pooled_incremental_lr, tlrn_features  # noqa: E402
 
 from .test_nn_features import company_contract, study_triangle  # noqa: E402
@@ -321,16 +323,18 @@ def test_hidden_cells_do_not_reach_the_network_output(head, mask, backend_name):
 def combos():
     for head in components.HEADS:
         for mask in components.MASKS:
-            yield head, mask, ("line", "lag"), "example"
-            yield head, mask, ("line", "lag", "ay"), "company"
+            for member in components.MEMBERS:
+                yield head, mask, member, ("line", "lag"), "example"
+                yield head, mask, member, ("line", "lag", "ay"), "company"
 
 
-@pytest.mark.parametrize(("head", "mask", "attention", "unit"), list(combos()))
-def test_every_registered_choice_fits(head, mask, attention, unit, backend_name):
+@pytest.mark.parametrize(("head", "mask", "member", "attention", "unit"), list(combos()))
+def test_every_registered_choice_fits(head, mask, member, attention, unit, backend_name):
     config = replace(
         tiny(),
         head=head,
         mask=mask,
+        member=member,
         attention=attention,
         batch_unit=unit,
         batch_size=2 if unit == "company" else 8,
@@ -346,6 +350,12 @@ def test_every_registered_choice_fits(head, mask, attention, unit, backend_name)
     assert np.isfinite(reserves).all()
     assert (reserves >= 0).all()
     assert len(entry.models_) == 1
+    if member == "mcl_blend":
+        alpha = entry.selection_["alpha"]
+        assert alpha.between(0.0, 1.0).all()
+        assert float(entry.models_[0].alpha) == float(alpha[entry.selection_["kept"]].iloc[0])
+    else:
+        assert "alpha" not in entry.selection_.columns
     assert entry.factor_support_.shape == (2, 6 if head == "premium_lr" else 5)
     # the reserve is the ultimate less what is already paid, whatever the head
     np.testing.assert_allclose(
@@ -384,3 +394,119 @@ def test_company_batching_batches_companies(backend_name, monkeypatch):
         n_c = 3
         n_w = 6
         assert seen["n_units"] == (n_c if unit == "company" else n_c * n_w)
+
+
+# -- the multivariate chain ladder member -------------------------------------------------
+
+
+def test_the_blend_weight_is_the_exact_minimiser():
+    rng = np.random.default_rng(3)
+    grid = np.linspace(0.0, 1.0, 100_001)
+    for _ in range(20):
+        n = int(rng.integers(1, 12))
+        a, b = rng.normal(size=n) * 10, rng.normal(size=n) * 5
+        got = blend_weight(a, b)
+        objective = np.abs(a[None, :] + grid[:, None] * b[None, :]).sum(axis=1)
+        assert 0.0 <= got <= 1.0
+        # nothing on a fine grid beats it by more than the grid's own resolution
+        assert np.abs(a + got * b).sum() <= objective.min() + 1e-4
+    # the weight is clipped into [0, 1]: an error the network would only worsen
+    # takes alpha to 0, and one it fixes more than fully takes alpha to 1
+    assert blend_weight(np.array([1.0]), np.array([1.0])) == 0.0
+    assert blend_weight(np.array([-5.0]), np.array([1.0])) == 1.0
+    # nothing to choose between: the network is taken whole
+    assert blend_weight(np.array([1.0, 2.0]), np.zeros(2)) == 1.0
+
+
+def exact_chain_ladder_square(n_lob=2, n_w=6, n_d=6, seed=0):
+    rng = np.random.default_rng(seed)
+    factors = 1.0 + rng.uniform(0.05, 0.6, (n_lob, n_d - 1)) / np.arange(1, n_d)
+    base = rng.uniform(50, 150, (n_lob, n_w))
+    cum = np.empty((n_lob, n_w, n_d))
+    cum[:, :, 0] = base
+    for d in range(1, n_d):
+        cum[:, :, d] = cum[:, :, d - 1] * factors[:, d - 1][:, None]
+    return cum
+
+
+def test_point_grid_recovers_an_exact_chain_ladder_triangle():
+    cum = exact_chain_ladder_square()
+    n_w, n_d = cum.shape[1:]
+    observed = (np.arange(n_w)[:, None] + np.arange(n_d)[None, :]) < n_w
+    grid, methods = point_grid(np.where(observed[None], cum, np.nan), observed)
+    np.testing.assert_allclose(grid, cum, rtol=1e-9)
+    # every step an origin pair reaches got an estimate
+    assert "flat" not in methods
+
+
+def test_point_grid_is_flat_where_no_pair_reaches_a_step():
+    cum = exact_chain_ladder_square()
+    n_w, n_d = cum.shape[1:]
+    observed = (np.arange(n_w)[:, None] + np.arange(n_d)[None, :]) < 2  # two diagonals
+    grid, methods = point_grid(np.where(observed[None], cum, np.nan), observed)
+    assert methods[0] != "flat"
+    assert set(methods[1:]) == {"flat"}
+    # a flat step carries the balance across unchanged
+    np.testing.assert_allclose(grid[:, 0, -1], grid[:, 0, 1])
+
+
+def blend_features(contract, cutoff):
+    return tlrn_features(
+        contract,
+        cutoff=cutoff,
+        target_lo=cutoff + 1,
+        target_hi=6,
+        incurred_field="incurred_loss",
+        case_field="case_reserve",
+        with_mcl=True,
+    )
+
+
+def test_the_blend_member_forecasts_in_the_heads_layout_from_visible_cells_only(backend_name):
+    cutoff = 4
+    contract = company_contract(backend_name)
+    f = blend_features(contract, cutoff)
+    n_l, n_d = f["n_l"], f["n_d"]
+    # held at the starting balance until the latest visible lag, as the head holds it
+    mcl_c = f["mcl_C"]
+    for b in range(f["n_ex"]):
+        start = int(f["lk"][b])
+        held = np.repeat(f["c_lk"][b][:, None], start, axis=1)
+        np.testing.assert_array_equal(mcl_c[b, :, :start], held)
+    # past it the forecast adds mcl_pred * premium to the balance
+    pred = f["mcl_pred"].reshape(-1, n_l, n_d)
+    for b in range(f["n_ex"]):
+        start = int(f["lk"][b])
+        added = pred[b, :, start:] * f["p_lk"][b][:, None]
+        grown = f["c_lk"][b][:, None] + np.cumsum(added, axis=1)
+        np.testing.assert_allclose(mcl_c[b, :, start:], grown, rtol=1e-9)
+    # no cell the cutoff hides reaches either array
+    hidden = contract["cal_idx"] > cutoff
+    perturbed = dict(contract)
+    perturbed["values"] = np.where(hidden, contract["values"] * 1.37 + 0.123, contract["values"])
+    perturbed["x"] = np.where(hidden, contract["x"] * 1.37 + 0.123, contract["x"])
+    after = blend_features(perturbed, cutoff)
+    np.testing.assert_array_equal(f["mcl_pred"], after["mcl_pred"])
+    np.testing.assert_array_equal(f["mcl_C"], after["mcl_C"])
+
+
+def test_keep_none_averages_every_trained_member(backend_name):
+    triangle = study_triangle(backend_name, None)
+    every = TLRNEntry().fit(
+        triangle,
+        loss_field="paid_loss",
+        as_of=AS_OF,
+        config=replace(tiny(), keep=None),
+        seed=0,
+    )
+    named = TLRNEntry().fit(
+        triangle,
+        loss_field="paid_loss",
+        as_of=AS_OF,
+        config=replace(tiny(), keep=2),
+        seed=0,
+    )
+    assert every.selection_["kept"].all()
+    assert len(every.models_) == 2
+    np.testing.assert_array_equal(every.company_reserves(), named.company_reserves())
+    assert TLRNConfig(keep=None).n_kept == 10

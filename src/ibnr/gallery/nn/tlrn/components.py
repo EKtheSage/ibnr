@@ -25,8 +25,12 @@ A ``tlrn`` is five choices made independently, each with a short list of names:
     ``company`` is one company with all its accident years together, which an
     ``ay`` attention needs because it attends across them.
 ``member`` and ``keep``
-    How a trained network becomes a member's forecast (``network``, or a blend
-    with the multivariate chain ladder) and how many members are averaged.
+    How a trained network becomes a member's forecast and how many members are
+    averaged. ``network`` is the network's forecast alone; ``mcl_blend`` is the
+    multivariate chain ladder plus a weight alpha times the network's difference
+    from it, alpha fitted at every validation check and kept with the checkpoint
+    that validated best. ``keep`` members are averaged, or every trained member
+    when it is ``None``.
 
 WHY THE COMBINATIONS ARE CHECKED HERE. The choices are not independent: ``ay``
 attention reads across accident years so it cannot run on a batch of unrelated
@@ -49,6 +53,7 @@ __all__ = [
     "BATCH_UNITS",
     "HEADS",
     "MASKS",
+    "MEMBERS",
     "attention_axes",
     "check_combination",
 ]
@@ -59,6 +64,8 @@ HEADS: tuple[str, ...] = ("ldf", "premium_lr")
 ATTENTION_AXES: tuple[str, ...] = ("line", "lag", "ay")
 #: what an attention may read
 MASKS: tuple[str, ...] = ("unwritten_lines", "observed_cells")
+#: how a trained network becomes a member's forecast
+MEMBERS: tuple[str, ...] = ("network", "mcl_blend")
 #: what ``batch_size`` counts
 BATCH_UNITS: tuple[str, ...] = ("example", "company")
 
@@ -75,6 +82,7 @@ def check_combination(cfg: Any) -> None:
     for name, value, allowed in (
         ("head", cfg.head, HEADS),
         ("mask", cfg.mask, MASKS),
+        ("member", cfg.member, MEMBERS),
         ("batch_unit", cfg.batch_unit, BATCH_UNITS),
     ):
         if value not in allowed:
