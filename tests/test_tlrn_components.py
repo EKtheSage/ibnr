@@ -670,3 +670,25 @@ def test_reached_cells_scoring_fits(backend_name):
     assert np.isfinite(entry.company_reserves()).all()
     with pytest.raises(ValueError, match="scoring"):
         TLRNConfig(scoring="x")
+
+
+def test_retraining_in_one_pool_trains_what_one_process_trains(backend_name):
+    """Every protocol's members share one pool, and learn exactly what they learn alone."""
+    triangle = study_triangle(backend_name, None)
+    fits = [
+        TLRNEntry().fit(
+            triangle,
+            loss_field="paid_loss",
+            as_of=AS_OF,
+            config=retrain_config("mcl_blend"),
+            seed=0,
+            processes=processes,
+        )
+        for processes in (1, 2)
+    ]
+    one, two = fits
+    np.testing.assert_array_equal(one.member_reserves_, two.member_reserves_)
+    np.testing.assert_array_equal(
+        one.backtest_.sort_values("unit")["predicted"].to_numpy(),
+        two.backtest_.sort_values("unit")["predicted"].to_numpy(),
+    )

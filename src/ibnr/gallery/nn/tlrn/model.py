@@ -195,43 +195,58 @@ def _training_parts(
 _WORKER: dict[str, Any] = {}
 
 
-def _start_worker(payload_path: str, threads: int) -> None:
-    """Rebuild the training parts in a worker process, once, from plain arrays.
+def _start_worker(payload_paths: list[str], threads: int) -> None:
+    """Prepare a worker process: remember where each protocol's payload is.
 
-    The payload is read from a file the caller wrote rather than sent with the worker:
+    A payload is read from a file the caller wrote rather than sent with the worker:
     a worker that dies while starting never reads what it was sent, and on Windows the
     caller then waits forever writing several megabytes into that worker's pipe. It
     carries numpy arrays rather than tensors, so nothing here depends on how torch
     shares memory between processes; the tensors are made in the worker the same way
     ``fit`` makes them. ``threads`` is the calling process's torch thread count,
     because the arithmetic, and so the trained weights, depend on it.
+
+    One pool serves every protocol of a fit (the final one and, under
+    ``calibration="retrain_per_valuation"``, each earlier valuation date), so a
+    protocol's parts are built the first time a member of it reaches this worker and
+    kept for the rest.
     """
+    import torch
+
+    torch.set_num_threads(threads)
+    _WORKER.clear()
+    _WORKER.update(paths=list(payload_paths), parts={}, payload={}, dev=torch.device("cpu"))
+
+
+def _worker_protocol(index: int):
+    """The training parts and payload of protocol ``index``, built once per worker."""
     import pickle
 
     import torch
 
-    with open(payload_path, "rb") as handle:
-        payload = pickle.load(handle)  # written by this module's own caller, just now
-    torch.set_num_threads(threads)
-    dev = torch.device("cpu")
-    support = payload["support"]
-    parts = _training_parts(
-        payload["cfg"],
-        payload["n_l"],
-        payload["n_d"],
-        payload["n_feat"],
-        dev,
-        None if support is None else torch.tensor(support, device=dev),
-        {k: TLRN._to_tensors(s, torch, dev) for k, s in payload["train_sets"].items()},
-        [TLRN._to_tensors(s, torch, dev) for s in payload["val_sets"]],
-        n_w=payload["n_w"],
-        head_init=payload["head_init"],
-    )
-    _WORKER.update(parts=parts, payload=payload, dev=dev)
+    if index not in _WORKER["parts"]:
+        with open(_WORKER["paths"][index], "rb") as handle:
+            payload = pickle.load(handle)  # written by this module's own caller, just now
+        dev = _WORKER["dev"]
+        support = payload["support"]
+        _WORKER["parts"][index] = _training_parts(
+            payload["cfg"],
+            payload["n_l"],
+            payload["n_d"],
+            payload["n_feat"],
+            dev,
+            None if support is None else torch.tensor(support, device=dev),
+            {k: TLRN._to_tensors(s, torch, dev) for k, s in payload["train_sets"].items()},
+            [TLRN._to_tensors(s, torch, dev) for s in payload["val_sets"]],
+            n_w=payload["n_w"],
+            head_init=payload["head_init"],
+        )
+        _WORKER["payload"][index] = payload
+    return _WORKER["parts"][index], _WORKER["payload"][index]
 
 
-def _train_member(member: int) -> tuple[int, dict, list[dict], int]:
-    """Train one member in a worker process, exactly as the whole ensemble would.
+def _train_member(job: tuple[int, int]) -> tuple[int, int, dict, list[dict], int]:
+    """Train member ``job[1]`` of protocol ``job[0]``, exactly as the whole ensemble would.
 
     Returns the torch thread count it trained on as well, so the caller can check the
     worker used the count it was sent: on a small problem the weights come out the same
@@ -239,8 +254,8 @@ def _train_member(member: int) -> tuple[int, dict, list[dict], int]:
     """
     import torch
 
-    make_model, _, train_loss, val_loss, param_groups = _WORKER["parts"]
-    payload = _WORKER["payload"]
+    index, member = job
+    (make_model, _, train_loss, val_loss, param_groups), payload = _worker_protocol(index)
     cfg = payload["cfg"]
     models, history = train_ensemble(
         payload["n_units"],
@@ -260,7 +275,7 @@ def _train_member(member: int) -> tuple[int, dict, list[dict], int]:
         members=[member],
     )
     state = {k: v.detach().cpu().clone() for k, v in models[0].state_dict().items()}
-    return member, state, history[0], torch.get_num_threads()
+    return index, member, state, history[0], torch.get_num_threads()
 
 
 @register
@@ -334,6 +349,14 @@ class TLRN(GalleryEntry):
         is the one ``processes=1`` gives. Set the thread count first - a small
         network trains fastest on a few threads, and ``processes`` times that
         count should not exceed the cores. CPU only.
+
+        Under ``calibration="retrain_per_valuation"`` the members of every valuation
+        date's protocol go to the one pool, so ``processes`` can usefully exceed the
+        ensemble size. Measured on a 16-thread laptop with the accident-year variant,
+        a worker is compute-bound (a step is about 25 ms on one thread and the time per
+        epoch does not fall past four threads), so the machine delivers roughly 10 to 15
+        member-epochs per second however the threads are split; one thread per worker
+        and as many workers as physical cores is the setting to start from.
         """
         import torch
 
@@ -397,18 +420,31 @@ class TLRN(GalleryEntry):
                     f"min_cutoff {cfg.min_cutoff}: retraining at a valuation date needs "
                     "a whole fit's worth of earlier diagonals"
                 )
-        run = self._run_protocol(
-            contract,
-            cfg,
-            c_max=c_max,
-            target_hi=last_diagonal,
-            features=features,
-            dev=dev,
-            seed=seed,
-            processes=processes,
-            show_progress=show_progress,
-            torch=torch,
+        specs = [
+            {
+                "c_max": c_max,
+                "target_hi": last_diagonal,
+                "seed": seed,
+                "show_progress": show_progress,
+            }
+        ]
+        if cfg.calibration == "retrain_per_valuation":
+            # one protocol per calibration cutoff, each from what was known there; a
+            # valuation date's members must not be the final fit's members
+            specs += [
+                {
+                    "c_max": v,
+                    "target_hi": c_max,
+                    "final_max_lag": v if cfg.scoring == "reached_cells" else None,
+                    "seed": None if seed is None else seed + 10_000 * v,
+                    "show_progress": False,
+                }
+                for v in cfg.calibration_cutoffs
+            ]
+        runs = self._run_protocols(
+            contract, cfg, specs, features=features, dev=dev, processes=processes, torch=torch
         )
+        run = runs[0]
         models, kept, kept_history = run["models"], run["kept"], run["kept_history"]
         selection, final_set, forward = run["selection"], run["final_set"], run["forward"]
         final_tensors = run["final_tensors"]
@@ -444,16 +480,7 @@ class TLRN(GalleryEntry):
             ]
         )
         if cfg.calibration == "retrain_per_valuation":
-            at = self._retrained_totals(
-                contract,
-                cfg,
-                c_max=c_max,
-                features=features,
-                dev=dev,
-                seed=seed,
-                processes=processes,
-                torch=torch,
-            )
+            at = self._retrained_totals(runs[1:], cfg.calibration_cutoffs, n_c)
         else:
             calibration_sets = {k: features(k, k + 1, c_max) for k in cfg.calibration_cutoffs}
             tensors = {id(f): self._to_tensors(f, torch, dev) for f in calibration_sets.values()}
@@ -485,7 +512,54 @@ class TLRN(GalleryEntry):
         self.backtest_ = residuals
         return self
 
-    def _run_protocol(
+    def _run_protocols(
+        self, contract, cfg, specs, *, features, dev, processes, torch
+    ) -> list[dict]:
+        """Run the protocol once per spec and return each run, in spec order.
+
+        Every spec is prepared first, then ALL their members are trained, then each is
+        finished. With ``processes > 1`` the members of every protocol go to one pool, so
+        the workers stay busy across protocols: twenty members on sixteen processes would
+        otherwise leave twelve idle while the last four of each protocol finish. What a
+        member learns is unchanged, because it is seeded from its own protocol's seed and
+        its own index wherever and whenever it runs.
+        """
+        preps = [
+            self._prepare_protocol(
+                contract, cfg, features=features, dev=dev, processes=processes, torch=torch, **spec
+            )
+            for spec in specs
+        ]
+        if processes == 1:
+            trained = [
+                train_ensemble(
+                    prep["n_units"],
+                    config=cfg,
+                    seed=prep["seed"],
+                    make_model=prep["make_model"],
+                    train_loss=prep["train_loss"],
+                    val_loss=prep["val_loss"],
+                    min_cutoff=cfg.min_cutoff,
+                    val_cutoff=prep["train_end"],
+                    device=dev,
+                    show_progress=prep["show_progress"],
+                    schedule=warmup_cosine(cfg.max_epochs, cfg.warmup),
+                    param_groups=prep["param_groups"],
+                    min_epochs=cfg.min_epochs,
+                    check_every=cfg.check_every,
+                    cutoff_sampling=cfg.cutoff_sampling,
+                    keep=None,
+                )
+                for prep in preps
+            ]
+        else:
+            trained = self._train_in_processes(preps, processes, torch)
+        return [
+            self._finish_protocol(prep, cfg, models, history)
+            for prep, (models, history) in zip(preps, trained, strict=True)
+        ]
+
+    def _prepare_protocol(
         self,
         contract,
         cfg,
@@ -493,19 +567,19 @@ class TLRN(GalleryEntry):
         c_max,
         target_hi,
         final_max_lag=None,
+        seed,
+        show_progress,
         features,
         dev,
-        seed,
         processes,
-        show_progress,
         torch,
     ) -> dict:
-        """Train the ensemble on what is known at diagonal ``c_max`` and select its members.
+        """Build everything the protocol at diagonal ``c_max`` trains and is scored on.
 
         The whole protocol for ONE valuation date: the trailing ``val_diagonals``
-        diagonals up to ``c_max`` validate, everything before them trains, and the
+        diagonals up to ``c_max`` validate, everything before them train, and the
         final feature set forecasts ``c_max + 1`` to ``target_hi``. ``fit`` runs it
-        once at the latest observed diagonal; ``calibration="retrain_per_valuation"``
+        at the latest observed diagonal; ``calibration="retrain_per_valuation"``
         runs it again at each earlier valuation date, reading nothing past that date
         into any input, so its forecasts of the later diagonals are out of sample.
         """
@@ -575,32 +649,8 @@ class TLRN(GalleryEntry):
             n_w=n_w,
             head_init=head_init,
         )
-
-        def company_ape(model) -> float:
-            return self._company_ape(model, val_tensors, forward, val_sets, n_c)
-
-        # keep=None: every member is trained and reported, and the selection is
-        # made here so the table can carry the members that were dropped
-        if processes == 1:
-            models, history = train_ensemble(
-                n_units,
-                config=cfg,
-                seed=seed,
-                make_model=make_model,
-                train_loss=train_loss,
-                val_loss=val_loss,
-                min_cutoff=cfg.min_cutoff,
-                val_cutoff=train_end,
-                device=dev,
-                show_progress=show_progress,
-                schedule=warmup_cosine(cfg.max_epochs, cfg.warmup),
-                param_groups=param_groups,
-                min_epochs=cfg.min_epochs,
-                check_every=cfg.check_every,
-                cutoff_sampling=cfg.cutoff_sampling,
-                keep=None,
-            )
-        else:
+        payload = None
+        if processes > 1:
             payload = {
                 "cfg": cfg,
                 "n_l": n_l,
@@ -615,29 +665,52 @@ class TLRN(GalleryEntry):
                 "train_sets": train_sets,
                 "val_sets": val_sets,
             }
-            models, history = self._train_in_processes(
-                payload, processes, make_model, cfg.ensemble_size, torch
+        return {
+            "n_units": n_units,
+            "seed": seed,
+            "show_progress": show_progress,
+            "train_end": train_end,
+            "make_model": make_model,
+            "forward": forward,
+            "train_loss": train_loss,
+            "val_loss": val_loss,
+            "param_groups": param_groups,
+            "payload": payload,
+            "val_tensors": val_tensors,
+            "val_sets": val_sets,
+            "n_c": n_c,
+            "support_np": support_np,
+            "train_sets": train_sets,
+            "final_set": final_set,
+            "final_tensors": tensor_of[id(final_set)],
+        }
+
+    def _finish_protocol(self, prep: dict, cfg, models: list, history: list) -> dict:
+        """Select the members of a trained protocol and keep the pieces a fit reads."""
+        forward = prep["forward"]
+
+        def company_ape(model) -> float:
+            return self._company_ape(
+                model, prep["val_tensors"], forward, prep["val_sets"], prep["n_c"]
             )
 
+        # keep=None: every member was trained and reported, and the selection is
+        # made here so the table can carry the members that were dropped
         selection = self._selection_table(models, history, cfg.n_kept, company_ape)
         if cfg.member == "mcl_blend":
             # the weight each member's best checkpoint put on the network
             selection["alpha"] = [float(m.alpha) for m in models]
         kept_ix = selection.index[selection["kept"]].tolist()
-        kept = [models[m] for m in kept_ix]
-        kept_history = [history[m] for m in kept_ix]
-
-        final_tensors = tensor_of[id(final_set)]
         return {
             "models": models,
-            "kept": kept,
-            "kept_history": kept_history,
+            "kept": [models[m] for m in kept_ix],
+            "kept_history": [history[m] for m in kept_ix],
             "selection": selection,
-            "final_set": final_set,
-            "final_tensors": final_tensors,
+            "final_set": prep["final_set"],
+            "final_tensors": prep["final_tensors"],
             "forward": forward,
-            "support_np": support_np,
-            "train_sets": train_sets,
+            "support_np": prep["support_np"],
+            "train_sets": prep["train_sets"],
         }
 
     # -- the gallery contract -------------------------------------------------------
@@ -834,13 +907,14 @@ class TLRN(GalleryEntry):
         return out
 
     @staticmethod
-    def _train_in_processes(payload: dict, processes: int, make_model, n_members: int, torch):
-        """Train every member in a pool of ``spawn`` worker processes, in member order.
+    def _train_in_processes(preps: list[dict], processes: int, torch) -> list[tuple[list, list]]:
+        """Train every member of every protocol in one pool of ``spawn`` workers.
 
-        Each worker rebuilds the training parts once from ``payload`` and then trains
-        whole members; only a member index goes out and only its weights and history
-        come back. The models are rebuilt here from those weights, in eval mode, as
-        ``train_ensemble`` returns them.
+        Each worker builds a protocol's training parts the first time one of its members
+        arrives and then trains whole members; only a (protocol, member) pair goes out
+        and only its weights and history come back. The models are rebuilt here from
+        those weights, in eval mode, as ``train_ensemble`` returns them. Returns
+        ``(models, history)`` per protocol, each in member order.
         """
         import multiprocessing
         import os
@@ -850,18 +924,26 @@ class TLRN(GalleryEntry):
         from concurrent.futures.process import BrokenProcessPool
 
         threads = torch.get_num_threads()
+        jobs = [
+            (i, member)
+            for i, prep in enumerate(preps)
+            for member in range(prep["payload"]["cfg"].ensemble_size)
+        ]
         with tempfile.TemporaryDirectory(prefix="ibnr-tlrn-") as scratch:
-            payload_path = os.path.join(scratch, "payload.pkl")
-            with open(payload_path, "wb") as handle:
-                pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            paths = []
+            for i, prep in enumerate(preps):
+                path = os.path.join(scratch, f"payload{i}.pkl")
+                with open(path, "wb") as handle:
+                    pickle.dump(prep["payload"], handle, protocol=pickle.HIGHEST_PROTOCOL)
+                paths.append(path)
             try:
                 with ProcessPoolExecutor(
-                    max_workers=min(processes, n_members),
+                    max_workers=min(processes, len(jobs)),
                     mp_context=multiprocessing.get_context("spawn"),
                     initializer=_start_worker,
-                    initargs=(payload_path, threads),
+                    initargs=(paths, threads),
                 ) as pool:
-                    trained = list(pool.map(_train_member, range(n_members)))
+                    trained = list(pool.map(_train_member, jobs))
             except BrokenProcessPool as err:
                 raise RuntimeError(
                     "a tlrn worker process stopped before it finished training. The usual "
@@ -878,14 +960,14 @@ class TLRN(GalleryEntry):
                 "asked for; the weights depend on the thread count, so these members are "
                 "not the ones processes=1 would train"
             )
-        models, history = [], []
-        for _, state, records, _ in trained:
-            model = make_model()
+        out: list[tuple[list, list]] = [([], []) for _ in preps]
+        for index, _, state, records, _ in trained:
+            model = preps[index]["make_model"]()
             model.load_state_dict(state)
             model.eval()
-            models.append(model)
-            history.append(records)
-        return models, history
+            out[index][0].append(model)
+            out[index][1].append(records)
+        return out
 
     @staticmethod
     def _ay_line_ape(model, tsets: list[dict], forward, n_l: int, n_d: int) -> float:
@@ -1050,34 +1132,21 @@ class TLRN(GalleryEntry):
 
         return at
 
-    def _retrained_totals(self, contract, cfg, *, c_max, features, dev, seed, processes, torch):
+    def _retrained_totals(self, runs, cutoffs, n_c):
         """``at(v)``: the whole method retrained from scratch at valuation ``v``.
 
-        Everything is rebuilt from what was known at diagonal ``v``: its own training
-        and validation windows, its own members and selection, its own pooled loss
-        ratios and chain ladder. Its forecast of diagonals ``v + 1`` to ``c_max`` is
-        therefore out of sample, which the rescored kind is not. The cost is a full
-        fit per valuation date.
+        ``runs`` holds one trained protocol per cutoff, each rebuilt from what was known
+        at that diagonal alone: its own training and validation windows, its own members
+        and selection, its own pooled loss ratios and chain ladder. Its forecast of the
+        later diagonals is therefore out of sample, which the rescored kind is not. The
+        cost is a full fit per valuation date.
         """
-        n_c = len(contract["companies"])
         cache: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+        by_cutoff = dict(zip(cutoffs, runs, strict=True))
 
         def at(v: int) -> tuple[np.ndarray, np.ndarray]:
             if v not in cache:
-                run = self._run_protocol(
-                    contract,
-                    cfg,
-                    c_max=v,
-                    target_hi=c_max,
-                    final_max_lag=v if cfg.scoring == "reached_cells" else None,
-                    features=features,
-                    dev=dev,
-                    # a valuation date's members must not be the final fit's members
-                    seed=None if seed is None else seed + 10_000 * v,
-                    processes=processes,
-                    show_progress=False,
-                    torch=torch,
-                )
+                run = by_cutoff[v]
                 final = run["final_set"]
                 pred = self._ensemble_pred(run["kept"], run["final_tensors"], run["forward"])
                 cache[v] = (
