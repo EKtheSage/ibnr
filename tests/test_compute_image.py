@@ -100,6 +100,10 @@ NOT_PROMISED = {
         "job. It needs a ruff binary, which the image does not copy, and it "
         "computes nothing."
     ),
+    "check_okf.py": (
+        "checks this repository's own knowledge/ bundle, run by the test suite. It "
+        "needs PyYAML, which the image does not install, and it computes no result."
+    ),
     "conventional_examples.py": (
         "a loader with no command line, imported by the conventional benchmark "
         "driver rather than run on its own. Running it by itself computes "
