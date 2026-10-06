@@ -948,6 +948,7 @@ dev = [
     { name = "packaging" },
     { name = "pandas" },
     { name = "pytest" },
+    { name = "pyyaml" },
     { name = "ruff" },
 ]
 docs = [
@@ -957,6 +958,7 @@ test = [
     { name = "cas-schedule-p" },
     { name = "packaging" },
     { name = "pytest" },
+    { name = "pyyaml" },
     { name = "ruff" },
 ]
 
@@ -994,6 +996,7 @@ dev = [
     { name = "packaging", specifier = ">=22" },
     { name = "pandas", specifier = ">=2" },
     { name = "pytest", specifier = ">=8" },
+    { name = "pyyaml", specifier = ">=6" },
     { name = "ruff", specifier = ">=0.16" },
 ]
 docs = [{ name = "great-docs", specifier = ">=0.15" }]
@@ -1001,6 +1004,7 @@ test = [
     { name = "cas-schedule-p", specifier = ">=2026.6.13" },
     { name = "packaging", specifier = ">=22" },
     { name = "pytest", specifier = ">=8" },
+    { name = "pyyaml", specifier = ">=6" },
     { name = "ruff", specifier = ">=0.16" },
 ]
 

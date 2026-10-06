@@ -225,7 +225,17 @@ Issues = "https://github.com/EKtheSage/ibnr/issues"
 # already present everywhere as a dependency of pytest, and that is the reason
 # to declare it rather than not to: a test the core CI leg requires should not
 # rest on what another package happens to bring with it.
-test = ["pytest>=8", "ruff>=0.16", "cas-schedule-p>=2026.6.13", "packaging>=22"]
+#
+# pyyaml is here because tests/test_knowledge_bundle.py parses the knowledge
+# bundle's front matter (scripts/check_okf.py). Without it the module skips at
+# collection, and the all leg's skip policy refuses a skip for a missing import.
+test = [
+    "pytest>=8",
+    "ruff>=0.16",
+    "cas-schedule-p>=2026.6.13",
+    "packaging>=22",
+    "pyyaml>=6",
+]
 dev = [
     # dev is test plus everything a contributor needs; the floors above are not
     # repeated here, so there is still only one place to bump them.
