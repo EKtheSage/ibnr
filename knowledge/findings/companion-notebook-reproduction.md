@@ -8,10 +8,10 @@ generated: { by: claude-code/claude-sonnet-5-5, at: 2026-10-05T22:20:00Z }
 stale_after: 2027-01-03T00:00:00Z
 sources:
   - id: notebook
-    resource: transformers_reserving/Code/tlrn_pipeline_best.ipynb (sibling repository checkout)
+    resource: Code/tlrn_pipeline_best.ipynb in the companion study's repository (sibling checkout)
     title: The companion notebook (JAX)
   - id: tables
-    resource: transformers_reserving/Exhibits/tab (M_T0_company_reserves.csv, R_T1_rolling_origin.csv, T_T1_members.csv)
+    resource: Exhibits/tab in the companion study's repository (M_T0_company_reserves.csv, R_T1_rolling_origin.csv, T_T1_members.csv)
     title: The notebook's published tables
   - id: pr-164
     resource: https://github.com/EKtheSage/ibnr/pull/164

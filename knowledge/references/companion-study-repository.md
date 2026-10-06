@@ -8,17 +8,17 @@ generated: { by: claude-code/claude-sonnet-5-5, at: 2026-10-05T22:50:00Z }
 stale_after: 2027-01-03T00:00:00Z
 sources:
   - id: repo
-    resource: transformers_reserving (sibling checkout of the companion study, Python and JAX)
+    resource: the companion study's repository (sibling checkout, Python and JAX)
     title: Local checkout next to this repository
 ---
 
 # What is there
 
-A sibling checkout, `transformers_reserving`, next to this repository.[^repo]
+A sibling checkout of the companion study's repository, next to this repository.[^repo]
 
 * `Code/tlrn_pipeline_best.ipynb` is the best notebook: the accident-year variant with
   the multivariate chain ladder blend and retrained calibration. `tlrn_pipeline_final.ipynb`
-  is the earlier version. `04_nn_architectures_vs_classical.ipynb` and `marco_vs_ibnr.ipynb`
+  is the earlier version. `04_nn_architectures_vs_classical.ipynb` and a reconciliation notebook
   are comparison notebooks.
 * `Exhibits/data/*.csv`: the four cached CAS Schedule P files the notebook downloads,
   which can be read from disk instead (`ppauto`, `wkcomp`, `comauto`, `othliab`).
@@ -31,6 +31,6 @@ A sibling checkout, `transformers_reserving`, next to this repository.[^repo]
 # What it is
 
 Python with JAX and `optax`, not R. See [reproducing the companion
-notebook](/findings/marco-notebook-reproduction.md) for how ibnr's variant compares with it.
+notebook](/findings/companion-notebook-reproduction.md) for how ibnr's variant compares with it.
 
 [^repo]: Local checkout next to this repository

@@ -47,9 +47,16 @@ what only matters to one conversation.
   date first.
 * **Checked** by `scripts/check_okf.py`, which `tests/test_knowledge_bundle.py` runs.
 
-# Not migrated
+# What was migrated
 
-The agent's earlier private memory notes (outside the repository) were not moved here.
-Moving them is a separate decision.
+On 2026-10-05 Ethan asked for the agent's earlier private memory notes to be moved here.
+The notes that hold project knowledge became concepts (40 of them); a long dated status
+log was distilled by subject and its pull request and temporary-folder bookkeeping left
+out. Each concept was compared with its source note and a claim the note did not support
+was removed. Notes about how Ethan wants the agent to work (writing style, banned words,
+commit and branch habits) stay in private memory, because they are preferences about the
+agent and not knowledge about ibnr. Nothing in this repository names the companion study's
+author or its repository: Ethan's rule since 2026-09-20 is neutral attribution until the
+paper is out.
 
 [^ethan]: "From now on manage all knowledge you collect in ibnr with this format"

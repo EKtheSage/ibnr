@@ -8,7 +8,7 @@ generated: { by: claude-code/claude-sonnet-5-5, at: 2026-10-05T22:15:00Z }
 stale_after: 2027-01-03T00:00:00Z
 sources:
   - id: notebook
-    resource: transformers_reserving/Code/tlrn_pipeline_best.ipynb (sibling repository checkout)
+    resource: Code/tlrn_pipeline_best.ipynb in the companion study's repository (sibling checkout)
     title: The companion notebook, its recorded run and its manifest
   - id: session
     resource: the 2026-10-05 working session on the dev laptop (jax 0.11.2, cpu backend)
