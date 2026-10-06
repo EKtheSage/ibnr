@@ -28,6 +28,17 @@ cmdstan on this machine: installed at `~/.cmdstan` (2.39.0), built with the RToo
 
 All durable knowledge collected while working on ibnr goes in `knowledge/`, written in the [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format) (markdown files with YAML frontmatter; `knowledge/references/okf-spec.md` summarises the rules). It is shared and version-controlled, not an agent-private store. What belongs: a measurement, finding, decision with its reasons, gotcha, playbook or outside reference that the code and git history do not already say. One concept per file, in `findings/`, `decisions/`, `gotchas/`, `playbooks/` or `references/`; frontmatter carries `type`, `title`, `description`, `tags`, `status`, `generated: { by: claude-code/<model>, at }`, and `sources` for anything a reader could follow, plus `stale_after` for anything that depends on hardware, a library version or a price. The agent never writes `verified` for itself; it is added as `human:<id>` only when a person confirmed the concept. Every change updates the directory's `index.md` and puts a line in `log.md` (newest date first). `scripts/check_okf.py` checks the bundle and `tests/test_knowledge_bundle.py` runs it; the conventions are in `knowledge/decisions/knowledge-in-okf-format.md`.
 
+## When a task finishes - Ethan's instruction, 2026-10-05
+
+Close every finished task with four parts, in this order, so the reply stands on its own:
+
+1. **Summary** of what was done, led by the outcome, with what was verified and what was not.
+2. **Status** of the project: what is merged, released, open or running, and what is blocked and why.
+3. **Next step**: the one thing to do next and who does it (a decision for Ethan, or work the agent can start).
+4. **Knowledge**: whether the task produced anything durable. If so, it is written into `knowledge/` (concept, directory `index.md`, `log.md`, `scripts/check_okf.py` clean) and the reply names the concept; if not, the reply says nothing was added and why.
+
+A turn that only answers a question or reports a background event does not need all four, but a task that changed code, data, a release or a decision does.
+
 ## Core design decisions - do not relitigate without asking
 
 1. **Long-format 2D triangles only.** No 4D arrays. A triangle is a tidy table: `origin_period, dev_lag, eval_date, field, value` + arbitrary segment columns (lob, company, ...). `eval_date` is a first-class stored column, not derived - all backtesting slices on it. Each triangle carries metadata: grain, cumulative/incremental flag, units. Reference design: Ledger Investing's `bermuda`.

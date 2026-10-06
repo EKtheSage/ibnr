@@ -39,6 +39,7 @@ okf_version: "0.2"
 
 # Gotchas
 
+* [A new file in scripts/ needs a compute-image decision](gotchas/new-scripts-need-a-compute-image-decision.md) - tests/test_compute_image.py fails the lean CI legs when a script is neither promised by the Docker image nor listed as excluded with a reason; running only the tests near the change misses it.
 * [A normalization check must integrate over the data's space](gotchas/normalization-check-over-the-data-space.md) - A density normalization test that sums over a grid chosen to make the arithmetic work (ODP's lattice) can pass for any parameters; integrate over the space the observations actually live in.
 * [A scratch venv under a deep path breaks scipy on Windows](gotchas/scratch-venv-path-too-long.md) - A venv built under the session scratchpad directory cannot import scipy.stats or scipy.sparse.linalg because a compiled file's path exceeds Windows' 260-character limit; build scratch venvs at a short path such as a subdirectory of %TEMP%.
 * [An optimizer tolerance must scale with the objective](gotchas/tolerance-must-scale-with-the-objective.md) - An absolute optimizer tolerance on an objective denominated in loss amounts can be smaller than one float spacing, so convergence depends on the machine's floating point rather than the fit; scale it with the objective.
