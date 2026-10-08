@@ -113,6 +113,12 @@ RATIO_EPS = 1e-8
 #: torch's AdamW defaults, which ``train_ensemble`` does not override
 ADAM_BETAS = (0.9, 0.999)
 ADAM_EPS = 1e-8
+#: ``log(beta)`` for each beta, computed in double precision and only then made float32.
+#: torch forms its bias corrections ``1 - beta**t`` in Python floats; raising a float32
+#: beta to ``t`` instead rounds 0.999 to 0.99900001 first, which made every JAX Adam step
+#: about 6.5e-6 (relative) off torch's. ``1 - beta**t = -expm1(t * log(beta))`` keeps it
+#: to float32 rounding (``test_adam_steps_are_torch_steps_to_float32_rounding``).
+ADAM_LOG_BETAS = tuple(np.float32(math.log(b)) for b in ADAM_BETAS)
 #: ``torch.nn.utils.clip_grad_norm_`` adds this to the norm before dividing
 CLIP_EPS = 1e-6
 #: a validation check improves on the best only by more than this, as in ``train_ensemble``
@@ -565,9 +571,10 @@ def adamw_update(params, m, v, t, grads, *, base_lr, mult, weight_decay, decays)
     this step. Returns ``(params, m, v, t + 1)``.
     """
     b1, b2 = ADAM_BETAS
+    log_b1, log_b2 = ADAM_LOG_BETAS
     t1 = t + 1.0
-    bias1 = 1.0 - b1**t1
-    bias2 = 1.0 - b2**t1
+    bias1 = -jnp.expm1(t1 * log_b1)
+    bias2 = -jnp.expm1(t1 * log_b2)
     new_p, new_m, new_v = {}, {}, {}
     for n in params:
         g = grads[n]

@@ -413,6 +413,43 @@ def test_clip_and_adamw_match_torch_step_for_step():
     assert float(t) == 6.0
 
 
+def test_adam_steps_are_torch_steps_to_float32_rounding():
+    """Fifty AdamW updates, each within 1e-6 of torch's, relative.
+
+    The step-for-step test above compares parameters, whose own size hides an error in
+    the step. Here the parameters are put back to zero before every step while Adam's
+    moments and step count carry on, so what each step returns IS the update, and it can
+    be compared tightly. Torch computes the bias corrections ``1 - beta**t`` in double
+    precision; computing them in float32 rounds 0.999 to 0.99900001, which made every
+    JAX step about 6.6e-6 larger than torch's.
+    """
+    rng = np.random.default_rng(1)
+    shape = (3, 7)
+    # gradients of one sign, so the first moment never cancels towards zero, where a
+    # relative comparison would only measure the rounding of the cancellation
+    grads = (np.abs(rng.normal(size=(50, *shape))) + 0.5).astype(np.float32)
+    tensor = torch.nn.Parameter(torch.zeros(shape))
+    lr = 1e-3
+    opt = torch.optim.AdamW([tensor], lr=lr, weight_decay=0.01)
+    params = {"w": jnp.zeros(shape, dtype=jnp.float32)}
+    m = {"w": jnp.zeros(shape, dtype=jnp.float32)}
+    v = {"w": jnp.zeros(shape, dtype=jnp.float32)}
+    t = jnp.float32(0.0)
+    for step, g in enumerate(grads, start=1):
+        with torch.no_grad():
+            tensor.zero_()
+        tensor.grad = torch.tensor(g)
+        opt.step()
+        expected = tensor.detach().numpy().copy()
+        stepped, m, v, t = jb.adamw_update(
+            params, m, v, t, {"w": jnp.asarray(g)},
+            base_lr={"w": lr}, mult=1.0, weight_decay=0.01, decays={"w": True},
+        )  # fmt: skip
+        np.testing.assert_allclose(
+            np.asarray(stepped["w"]), expected, rtol=1e-6, atol=0, err_msg=f"step {step}"
+        )
+
+
 def test_blend_weight_matches_the_numpy_one():
     rng = np.random.default_rng(4)
     for _ in range(20):
@@ -499,6 +536,31 @@ def test_accident_year_training_follows_the_torch_trajectory():
     np.testing.assert_allclose(b.selection_["alpha"], a.selection_["alpha"], rtol=1e-3, atol=1e-5)
     # the calibration is built from the retrained protocols, so it agrees too
     np.testing.assert_allclose(b.backtest_["predicted"], a.backtest_["predicted"], rtol=1e-3)
+
+
+@pytest.mark.parametrize("variant", ["lag_only", "factors_only"])
+def test_weight_decay_skips_the_parameters_torch_gives_no_gradient(variant):
+    """Some variants leave parameters that no forward pass reads: the line attention and
+    its layer norm when attention runs across lags only, and everything but the head
+    when only the factors train. torch hands those no gradient, and AdamW then skips
+    them entirely, weight decay included, so they keep their starting values. The JAX
+    program must leave them alone too (``jax_backend.unused_names``); decaying them
+    would shrink weights torch never touches. The decay here is large enough that doing
+    so moves them well past the tolerance, and the whole state dict is compared.
+    """
+    overrides = {"lag_only": {"cross_line": False}, "factors_only": {"factors_only": True}}
+    cfg = replace(
+        tiny(),
+        **overrides[variant],
+        weight_decay=0.05,
+        grad_clip=0.05,
+        ensemble_size=3,
+        max_epochs=4,
+        dropout=0.0,
+    )
+    a = fit(cfg)
+    b = fit(cfg, backend="jax")
+    _assert_same_training(a, b, rtol=2e-4)
 
 
 def stopping(**overrides) -> TLRNConfig:

@@ -220,9 +220,12 @@ the point, the calibration and the prediction run on torch. With dropout off the
 backends follow the same trajectory to float32 rounding; with dropout on they draw
 different masks, so the members are different draws of the same procedure. One way
 the two can part with neither wrong: where a parameter's true gradient over a batch
-is exactly zero, torch's autograd can leave rounding of about 1e-9 there, and Adam,
-which divides by the gradient's own size, turns that into a full step that JAX does
-not take. On a CPU the torch loop is the faster one, and the TPU speed is not yet
+is exactly zero, torch's autograd can leave rounding there, and Adam, which divides
+by the gradient's own size, turns it into a real step that JAX does not take.
+Measured on the test fixture: a torch gradient of 5e-9 where JAX had exactly 0 made
+Adam move that parameter by about a third of the learning rate, and the two members
+followed different trajectories from there
+(`knowledge/findings/tlrn-jax-backend-parity.md`). On a CPU the torch loop is the faster one, and the TPU speed is not yet
 measured.
 
 ## Prediction

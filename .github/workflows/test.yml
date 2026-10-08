@@ -398,6 +398,35 @@ jobs:
             min_tests: "590"
 
           # ---------------------------------------------------------------
+          # jax: the [jax] extra by itself, which is torch plus jax (tlrn's
+          # optional JAX training backend). Without this leg jax only reached
+          # CI through numpyro on the all leg, so a [jax] extra that stopped
+          # declaring jax, or declared one the backend cannot run on, would
+          # still have passed there. Here the extra is the ONLY source of jax:
+          # numpyro and pymc must be absent, so jax cannot arrive through them.
+          #
+          # tests/test_tlrn_jax.py skips at module level without jax (or torch),
+          # so required_files is what makes this leg check anything: it has to
+          # execute here. tests/test_tlrn.py is named too, because the [jax]
+          # extra must still carry everything the torch path needs.
+          - name: jax
+            python: "3.12"
+            cache: "true"
+            sync_args: "--no-default-groups --group test --extra jax"
+            expect_imports: "torch;jax"
+            absent_imports: "polars;pymc;numpyro;chainladder"
+            forbid_skips: ""
+            allow_skips: ""
+            strict_skips: "false"
+            required_files: "tests/test_tlrn.py;tests/test_tlrn_jax.py"
+            # NOT measured on its own: copied from the nn leg, which this leg
+            # contains (the [jax] extra installs torch, so every nn test runs
+            # here as well, plus test_tlrn_jax.py). It sits above the core
+            # count for the same reason the nn floor does. Re-measure from the
+            # first CI run's "PASTE-BACK: this leg executed N tests" line.
+            min_tests: "590"
+
+          # ---------------------------------------------------------------
           # bayesian: numpyro, pymc, arviz and bayesblend. cmdstanpy installs
           # here too but cmdstan itself does NOT, so the Stan tests stay behind
           # the `slow` marker that pyproject's addopts already excludes - this
