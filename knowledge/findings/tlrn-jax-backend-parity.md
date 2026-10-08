@@ -19,7 +19,7 @@ sources:
 
 On a CPU, with dropout off, `fit(backend="jax")` and the torch path train the same
 members to float32 rounding, when no batch puts a parameter at a true-zero gradient (see
-below). Every piece and both whole-fit forms were compared against torch, and 19
+below). Every piece and both whole-fit forms were compared against torch, and 21
 deliberate breakages of the backend were each caught by the tests.[^tests]
 
 # Numbers (largest relative difference, torch against JAX)
@@ -31,6 +31,11 @@ deliberate breakages of the backend were each caught by the tests.[^tests]
   1e-4 of each parameter's largest; padding the batch with zero-weight rows moves neither.
 * **Six clipped AdamW steps** with two learning rates under the warmup cosine: within
   1e-5 (largest gap 4e-7 on values of order 1).
+* **Fifty Adam updates**, compared as updates (the parameters reset to zero before each
+  step, so a parameter's own size cannot hide an error in the step): within 1e-6
+  relative. Before the bias corrections `1 - beta**t` were computed from double-precision
+  logarithms, raising a float32 beta to `t` rounded 0.999 to 0.99900001, and every JAX
+  update was about 6.5e-6 smaller than torch's, from the first step on.[^tests]
 * **Whole fits, dropout off**:[^session]
   * published model, 3 members, 4 epochs, clipping binding, weight decay on: member
     reserves 2.4e-6, validation scores 3.2e-6, training losses 6.2e-6, same members kept;
@@ -38,6 +43,13 @@ deliberate breakages of the backend were each caught by the tests.[^tests]
     a padded last batch), 2 members, 5 epochs: reserves 1.8e-7, validation 1.9e-6;
   * early stopping, 4 members stopping after 6, 8, 6 and 4 epochs in both backends:
     reserves 3.4e-6, validation 8.4e-6.
+
+  These three were measured before the Adam fix above; after it the same trajectory
+  tests pass at the same tolerances, and the figures were not re-measured. Two more
+  trajectory tests, with weight decay at 0.05, cover the variants that leave parameters
+  no forward pass reads (attention across lags only, and the factors alone): torch hands
+  those no gradient and AdamW skips them, decay included, and the whole state dict must
+  agree.
 * **Dropout on** (0.3), 8 members, 30 epochs, seed 5: best validation scores 0.2506 to
   0.2636 under torch (median 0.2565) and 0.2508 to 0.2622 under JAX (median 0.2574). The
   members differ, as different dropout masks should make them, and look like the same
@@ -66,7 +78,10 @@ Adam count advancing on a skipped batch; patience never reset; `min_epochs` igno
 blend weight not kept with its checkpoint; validation ignoring the blend; dropout off in
 training; the factor support ignored; the observed-count embedding off by one; the final
 blend weight taken from the last check; `backend` ignored by `fit`; `processes > 1`
-accepted with `backend="jax"`.[^session]
+accepted with `backend="jax"`.[^session] Added with the review fixes: Adam's bias
+corrections computed from a float32 beta (6.5e-6 per update); weight decay applied to
+the parameters torch gives no gradient (up to 9e-4 relative on those weights after four
+epochs).
 
 # Not measured
 

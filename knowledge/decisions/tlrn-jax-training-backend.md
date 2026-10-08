@@ -52,7 +52,9 @@ JAX is only worth having on an accelerator, and torch stays the default.
   would do nothing) and `cutoff_sampling="per_example"`.
 * **Fits survive a disconnect** by saving each fitted entry as soon as it is done
   (`scripts/tlrn_colab.py`); a fitted entry pickles and reloads with the same
-  predictions.[^howto]
+  predictions. A saved entry carries a record of its settings and is reused only by a
+  run with the same settings, so a resumed run cannot pass off an old fit of another
+  budget as its own.[^howto]
 
 # Not yet known
 

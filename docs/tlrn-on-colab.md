@@ -5,6 +5,12 @@ trains every member of every valuation date at once, as one compiled program, wh
 what a TPU or a GPU is fast at. On a CPU the torch backend is faster, so torch stays the
 default and this page is for an accelerator runtime.
 
+**What works when.** `backend="jax"`, the `[jax]` extra and `scripts/tlrn_colab.py`
+exist only on the branch that adds them until it is merged into `main`, and the
+`ibnr[jax]` install from PyPI works only from the first release that carries them. The
+instructions below are written for after the merge: until the release, install from
+`main` as shown in step 1.
+
 **The TPU speed has not been measured.** The backend was written and tested on a CPU,
 where it gives the same members as torch (to float32 rounding, with dropout off). The
 companion study trained its 80 members in 1,667 s on a Colab TPU with a program of the
@@ -33,17 +39,31 @@ import jax
 print(jax.__version__, jax.default_backend(), jax.devices())  # want 'tpu' (or 'gpu')
 ```
 
-Then install ibnr with the extra, and the data package the runner reads its cohort from:
+Then install ibnr with the extra, and the data package the runner reads its cohort from.
+Once a release carries the backend:
 
 ```text
 !pip install "ibnr[jax]" cas-schedule-p==2026.6.13
 ```
 
-Until the backend is released, install from the branch instead:
-`!pip install "ibnr[jax] @ git+https://github.com/EKtheSage/ibnr@feat/tlrn-jax"`. The
-runner script is not in the wheel, so clone the repository for it:
-`!git clone https://github.com/EKtheSage/ibnr`. ibnr supports Python 3.11 and 3.12; a
-runtime on a newer Python will be refused by pip.
+Between the merge and that release, install from `main` instead (pip builds the package
+from the repository, which needs no compiler):
+
+```text
+!pip install "ibnr[jax] @ git+https://github.com/EKtheSage/ibnr@main" cas-schedule-p==2026.6.13
+```
+
+The runner script is not in the wheel either way, so fetch it from `main`, either the one
+file or the whole repository:
+
+```text
+!curl -sSLO https://raw.githubusercontent.com/EKtheSage/ibnr/main/scripts/tlrn_colab.py
+!git clone --depth 1 https://github.com/EKtheSage/ibnr
+```
+
+The commands in step 3 run the file `curl` fetched (`tlrn_colab.py`); with the clone it
+is `ibnr/scripts/tlrn_colab.py`. ibnr supports Python 3.11 and 3.12; a runtime on a newer
+Python will be refused by pip.
 
 ## 2. Keep the fits on Google Drive
 
@@ -62,8 +82,8 @@ notebook's own counts and cohort hash checked - and runs the same two fits with
 `backend="jax"`:
 
 ```text
-!python ibnr/scripts/tlrn_colab.py --out /content/drive/MyDrive/ibnr/tlrn_fits --smoke
-!python ibnr/scripts/tlrn_colab.py --out /content/drive/MyDrive/ibnr/tlrn_fits
+!python tlrn_colab.py --out /content/drive/MyDrive/ibnr/tlrn_fits --smoke
+!python tlrn_colab.py --out /content/drive/MyDrive/ibnr/tlrn_fits
 ```
 
 The first line is a ten-epoch check of the setup (four members); run it first. On the
@@ -73,12 +93,18 @@ the published protocol with forty members, all kept. For the companion study's
 accident-year variant (twenty members at each of four valuation dates, eighty in all)
 add `--config accident_year`. `--members` changes the count.
 
-Each fit is written as soon as it is done, as
-`<row>-ibnr<version>.pkl`, through a temporary name so an interrupted write never looks
-like a finished fit, and a `manifest_<config>.json` records the runtime, the jax version
-and the seconds each fit took. **A disconnect loses at most the fit that was running**:
-run the same command again and the fits already saved are skipped. Progress is printed
-every hundred epochs.
+Each fit is written as soon as it is done, as `<row>-ibnr<version>.pkl` (the rows are
+`tlrn_8` and `tlrn_13`, or `tlrn_8_ay` and `tlrn_13_ay` with `--config accident_year`, and
+`--smoke` adds `_smoke` to the row), through a temporary name so an interrupted write
+never looks like a finished fit. Beside each one, `<row>-ibnr<version>.json` records the
+settings it was fitted with (the configuration, members, epochs, seed, publish) and what
+it ran on (jax version, device, seconds). `manifest_<config>.json` gathers those records
+for the fits in the folder. **A disconnect loses at most the fit that was running**: run
+the same command again and the fits already saved are skipped. A saved fit is skipped
+only when its settings match the command's; a command with different settings (another
+`--members`, say) stops with a message naming what differs, and leaves the saved fit as
+it is, so give such a run its own `--out` folder. Progress is printed every hundred
+epochs.
 
 ## 4. Use the fits in the notebook
 
@@ -86,19 +112,26 @@ Copy the folder back (or read it from Drive), then in notebook 04's tlrn cell lo
 entry instead of fitting it, and leave the rest of the notebook as it is:
 
 ```python
+import json
 import pickle
 from pathlib import Path
 
+import ibnr
+
 FITS = Path("tlrn_fits")
+ROWS = ("tlrn_8", "tlrn_13")  # ("tlrn_8_ay", "tlrn_13_ay") for --config accident_year
 tlrn_fits = {}
-for row in ("tlrn_8", "tlrn_13"):
-    (path,) = FITS.glob(f"{row}-ibnr*.pkl")
-    with open(path, "rb") as handle:
+for row in ROWS:
+    stem = f"{row}-ibnr{ibnr.__version__}"  # the name the runner wrote
+    record = json.loads((FITS / f"{stem}.json").read_text(encoding="utf-8"))
+    print(row, record["settings"]["config"]["ensemble_size"], "members")
+    with open(FITS / f"{stem}.pkl", "rb") as handle:
         tlrn_fits[row] = pickle.load(handle)  # a file this project wrote
 ```
 
-Load an entry with the same ibnr version that saved it (the version is in the file
-name) and a torch that can read the saved modules. A pickle runs code when it is loaded,
+The file names carry the ibnr version that saved them, and the snippet looks for the
+version installed, because an entry is loaded with the ibnr that saved it and a torch
+that can read the saved modules. A pickle runs code when it is loaded,
 so only load files you wrote.
 
 ## Calling it directly

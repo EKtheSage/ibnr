@@ -39,10 +39,14 @@ torch backend is faster; the TPU speed is not measured yet.
   training still uses). `ibnr.gallery` and the entry import without it.
 * `backend="jax"` refuses `processes > 1` (it trains in one process) and
   `cutoff_sampling="per_example"` (which the torch path also cannot train, but only
-  says so once training has started).
+  says so once training has started). Without jax installed it says to install
+  `ibnr[jax]` before any feature is built, not after.
 * `scripts/tlrn_colab.py` runs notebook 04's two tlrn fits on the JAX backend and saves
-  each fitted entry as it finishes, so a Colab disconnect loses at most one fit;
-  `docs/tlrn-on-colab.md` is the how-to.
+  each fitted entry as it finishes, so a Colab disconnect loses at most one fit. Each
+  entry is saved with a record of the settings it was fitted with, and a rerun reuses a
+  saved entry only when the settings match: a rerun with another `--members` or
+  `--config` stops and names what differs, rather than keeping the old fits under the
+  new run's manifest. `docs/tlrn-on-colab.md` is the how-to.
 
 ## 0.7.3 - 2026-10-05
 

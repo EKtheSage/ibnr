@@ -7,7 +7,11 @@ hours. This script rebuilds the same triangle the notebook fits on - the same pu
 the same selection rule, with the notebook's own counts and cohort hash asserted - runs
 the same fits with ``backend="jax"``, and writes each fitted entry to ``--out`` as soon as
 it is done. A run that is interrupted (a Colab disconnect) keeps every entry already
-written, and the next run skips them, so at most one fit is ever lost.
+written, and the next run skips them, so at most one fit is ever lost. Each entry is
+written with a settings record beside it (the same name ending ``.json``), and a saved
+entry is reused only when its record matches this run's settings exactly: a rerun with
+a different ``--members``, ``--config`` or ``--smoke`` is refused rather than handed the
+old fits, and the manifest describes the fits in the folder from their own records.
 
 How the saved entries are used is in ``docs/tlrn-on-colab.md``: copy the folder back,
 ``pickle.load`` each file in place of the ``gallery.fit("tlrn", ...)`` call, and run the
@@ -148,6 +152,102 @@ def configs(name: str, members: int, smoke: bool):
     ]
 
 
+def fit_settings(row: str, roles: dict, config, *, config_name: str, smoke: bool) -> dict:
+    """Everything that decides what a saved fit IS, as plain JSON values.
+
+    Two runs with equal settings fit the same members, so a saved fit is reused only
+    under equal settings. The ibnr version is in the file name instead (a fitted entry is
+    loaded with the ibnr that wrote it), and what a run ran on (jax, the device) is
+    recorded beside the settings without deciding anything.
+    """
+    from dataclasses import asdict
+
+    settings = {
+        "row": row,
+        "config_name": config_name,
+        "smoke": smoke,
+        "config": asdict(config),
+        "roles": roles,
+        "backend": "jax",
+        "seed": SEED_FIT,
+        "as_of": AS_OF.isoformat(),
+        "loss_field": FIELD,
+        "publish_id": PUBLISH,
+        "cohort_hash": COHORT_HASH,
+    }
+    # through JSON, so a tuple in the config compares equal to the list read back
+    return json.loads(json.dumps(settings))
+
+
+def fit_paths(out: Path, row: str, *, smoke: bool, version: str) -> tuple[Path, Path]:
+    """``(fitted entry, its settings record)``, e.g. ``tlrn_8-ibnr0.7.3.pkl`` and ``.json``."""
+    stem = f"{row}{'_smoke' if smoke else ''}-ibnr{version}"
+    return out / f"{stem}.pkl", out / f"{stem}.json"
+
+
+def saved_fit(pkl: Path, record: Path, settings: dict) -> dict | None:
+    """The record of a saved fit made with exactly ``settings``, or None if there is none.
+
+    A saved fit made with OTHER settings is refused, not reused and not overwritten:
+    reusing it would put a fit of another budget under this run's name, and overwriting
+    it would destroy a fit someone may still want. The way out is a different ``--out``
+    folder, or deleting the two files.
+    """
+    if not pkl.exists():
+        return None
+    if not record.exists():
+        raise SystemExit(
+            f"{pkl} exists with no settings record ({record.name}), so nothing says what "
+            "it was fitted with. Write this run to a different --out folder, or delete "
+            "the .pkl to refit it"
+        )
+    saved = json.loads(record.read_text(encoding="utf-8"))
+    theirs = saved.get("settings", {})
+    differ = [
+        k for k in sorted(settings.keys() | theirs.keys()) if settings.get(k) != theirs.get(k)
+    ]
+    if differ:
+        if "config" in differ:
+            mine_c, theirs_c = settings.get("config", {}), theirs.get("config") or {}
+            differ.remove("config")
+            differ += [
+                f"config.{k}"
+                for k in sorted(mine_c.keys() | theirs_c.keys())
+                if mine_c.get(k) != theirs_c.get(k)
+            ]
+        raise SystemExit(
+            f"{pkl} was fitted with different settings from this run's (they differ in "
+            f"{', '.join(differ)}). Write this run to a different --out folder, or delete "
+            "the .pkl and its .json to refit it here"
+        )
+    return saved
+
+
+def write_record(record: Path, settings: dict, run: dict) -> None:
+    """The settings a fit was made with and what it ran on, beside the fitted entry.
+
+    Written AFTER the entry, so a record always describes a complete fit; an entry left
+    with no record (an interruption between the two writes) is refused, not trusted.
+    """
+    partial = record.with_name(record.name + ".part")
+    partial.write_text(json.dumps({"settings": settings, "run": run}, indent=2), "utf-8")
+    os.replace(partial, record)
+
+
+def manifest(records: dict[str, dict], *, config_name: str, smoke: bool) -> dict:
+    """The run's manifest, built from the records of the fits actually in the folder.
+
+    Each row's settings and timing come from its own record, so a fit an earlier run
+    saved is described as that run made it, not as this run would have.
+    """
+    return {
+        "config": config_name,
+        "smoke": smoke,
+        "publish_id": PUBLISH,
+        "fits": {row: records[row] for row in sorted(records)},
+    }
+
+
 def save(entry, path: Path) -> None:
     """Write through a temporary name, so an interrupted write never looks like a fit."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -179,16 +279,25 @@ def main(argv=None) -> int:
     if jax.default_backend() == "cpu" and not args.smoke:
         print("warning: jax sees no accelerator; on a CPU the torch backend is faster")
 
-    t0 = time.perf_counter()
-    tri, n_pairs, n_companies = build_triangle()
-    print(f"{n_pairs} pairs over {n_companies} companies, built in {time.perf_counter() - t0:.0f}s")
-
-    timings = {}
+    # check every saved fit before the slow work, so a mismatch stops the run at once
+    plan, records = [], {}
     for row, roles, config in configs(args.config, members, args.smoke):
-        path = args.out / f"{row}{'_smoke' if args.smoke else ''}-ibnr{ibnr.__version__}.pkl"
-        if path.exists():
-            print(f"{row}: already saved at {path}, skipped")
-            continue
+        settings = fit_settings(row, roles, config, config_name=args.config, smoke=args.smoke)
+        pkl, record = fit_paths(args.out, row, smoke=args.smoke, version=ibnr.__version__)
+        saved = saved_fit(pkl, record, settings)
+        if saved is not None:
+            print(f"{row}: already saved at {pkl} with these settings, skipped")
+            records[row] = saved
+        else:
+            plan.append((row, roles, config, settings, pkl, record))
+
+    if plan:
+        t0 = time.perf_counter()
+        tri, n_pairs, n_companies = build_triangle()
+        built = time.perf_counter() - t0
+        print(f"{n_pairs} pairs over {n_companies} companies, built in {built:.0f}s")
+
+    for row, roles, config, settings, pkl, record in plan:
         print(f"{row}: {config.ensemble_size} members, {config.max_epochs} epochs", flush=True)
         t0 = time.perf_counter()
         entry = gallery.fit(
@@ -202,32 +311,28 @@ def main(argv=None) -> int:
             show_progress=True,
             **roles,
         )
-        timings[row] = round(time.perf_counter() - t0, 1)
-        save(entry, path)
-        print(f"{row}: fitted in {timings[row]:.0f}s, saved to {path}", flush=True)
+        seconds = round(time.perf_counter() - t0, 1)
+        save(entry, pkl)
+        run = {
+            "ibnr": ibnr.__version__,
+            "jax": jax.__version__,
+            "jax_backend": jax.default_backend(),
+            "devices": [str(d) for d in jax.devices()],
+            "fit_seconds": seconds,
+            "python": sys.version.split()[0],
+            "platform": platform.platform(),
+        }
+        write_record(record, settings, run)
+        records[row] = {"settings": settings, "run": run}
+        print(f"{row}: fitted in {seconds:.0f}s, saved to {pkl}", flush=True)
         print(entry.selection_.to_string(), flush=True)
 
     stem = "manifest_smoke" if args.smoke else f"manifest_{args.config}"
-    manifest_path = args.out / f"{stem}.json"
-    if manifest_path.exists():
-        # a resumed run keeps the times of the fits an earlier run saved
-        earlier = json.loads(manifest_path.read_text(encoding="utf-8")).get("fit_seconds", {})
-        timings = {**earlier, **timings}
-    manifest = {
-        "ibnr": ibnr.__version__,
-        "jax": jax.__version__,
-        "backend": jax.default_backend(),
-        "devices": [str(d) for d in jax.devices()],
-        "config": args.config,
-        "members": members,
-        "smoke": args.smoke,
-        "fit_seconds": timings,
-        "python": sys.version.split()[0],
-        "platform": platform.platform(),
-        "publish_id": PUBLISH,
-    }
     args.out.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    (args.out / f"{stem}.json").write_text(
+        json.dumps(manifest(records, config_name=args.config, smoke=args.smoke), indent=2),
+        encoding="utf-8",
+    )
     return 0
 
 
