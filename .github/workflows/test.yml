@@ -277,7 +277,7 @@ jobs:
             cache: "false"
             sync_args: "--no-default-groups --group test"
             expect_imports: ""
-            absent_imports: "torch;polars;pymc;numpyro;arviz;bayesblend;chainladder;bermuda;altair"
+            absent_imports: "torch;polars;pymc;numpyro;jax;arviz;bayesblend;chainladder;bermuda;altair"
             forbid_skips: ""
             allow_skips: ""
             strict_skips: "false"
@@ -319,7 +319,7 @@ jobs:
             cache: "false"
             sync_args: "--no-default-groups --group test"
             expect_imports: ""
-            absent_imports: "torch;polars;pymc;numpyro;arviz;bayesblend;chainladder;bermuda;altair"
+            absent_imports: "torch;polars;pymc;numpyro;jax;arviz;bayesblend;chainladder;bermuda;altair"
             forbid_skips: ""
             allow_skips: ""
             strict_skips: "false"
@@ -381,7 +381,7 @@ jobs:
             cache: "true"
             sync_args: "--no-default-groups --group test --extra nn"
             expect_imports: "torch"
-            absent_imports: "polars;pymc;chainladder"
+            absent_imports: "polars;pymc;chainladder;jax"
             forbid_skips: ""
             allow_skips: ""
             strict_skips: "false"
@@ -501,13 +501,13 @@ jobs:
             cache: "true"
             sync_args: >-
               --no-default-groups --group test
-              --extra polars --extra nn --extra bayesian --extra interop --extra viz
-            expect_imports: "torch;polars;pymc;numpyro;arviz;bayesblend;chainladder;bermuda;altair"
+              --extra polars --extra nn --extra jax --extra bayesian --extra interop --extra viz
+            expect_imports: "torch;jax;polars;pymc;numpyro;arviz;bayesblend;chainladder;bermuda;altair"
             absent_imports: ""
             forbid_skips: ""
             allow_skips: "gold mart;cmdstan"
             strict_skips: "true"
-            required_files: "tests/test_transforms.py;tests/test_deeptriangle.py;tests/test_mdn.py;tests/test_resnet.py;tests/test_nn_heldout.py;tests/test_tlrn.py;tests/test_stacking.py;tests/test_tieout_chainladder.py;tests/test_clark.py;tests/test_interop_bermuda.py;tests/test_polars_extra.py;tests/test_import_purity.py;tests/test_codec.py"
+            required_files: "tests/test_transforms.py;tests/test_deeptriangle.py;tests/test_mdn.py;tests/test_resnet.py;tests/test_nn_heldout.py;tests/test_tlrn.py;tests/test_tlrn_jax.py;tests/test_stacking.py;tests/test_tieout_chainladder.py;tests/test_clark.py;tests/test_interop_bermuda.py;tests/test_polars_extra.py;tests/test_import_purity.py;tests/test_codec.py"
             # measured one base earlier: 968 passed, 7 skipped - and the 7 are
             # the allowlisted gold-mart skips above, re-counted rather than
             # assumed. The 7 is the part that must not drift; the total is the
@@ -543,7 +543,7 @@ jobs:
             unlocked: "true"
             sync_args: '-e . --group test "numpy>=2" "pandas>=3"'
             expect_imports: ""
-            absent_imports: "torch;polars;pymc;numpyro;arviz;bayesblend;chainladder;bermuda;altair"
+            absent_imports: "torch;polars;pymc;numpyro;jax;arviz;bayesblend;chainladder;bermuda;altair"
             forbid_skips: ""
             allow_skips: ""
             strict_skips: "false"

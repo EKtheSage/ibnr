@@ -65,7 +65,9 @@ def test_gallery_import_does_not_require_torch():
     code = (
         "import sys; import ibnr.gallery as g; "
         "assert 'nn_transformer' in g.list(); "
-        "assert 'torch' not in sys.modules, 'gallery import pulled in torch'"
+        "assert 'torch' not in sys.modules, 'gallery import pulled in torch'; "
+        # nor jax: tlrn's JAX training backend is imported inside fit(backend="jax") only
+        "assert 'jax' not in sys.modules, 'gallery import pulled in jax'"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
 

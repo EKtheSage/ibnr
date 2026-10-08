@@ -211,6 +211,20 @@ same ten members in 88 minutes. Treat these as one significant figure: in that
 88-minute run the middle round of members took 48 minutes each against 26 in
 the first, with nothing in the run itself to explain the difference.
 
+On a TPU or a GPU, `fit(..., backend="jax")` trains every member of every
+valuation date at once, as one compiled JAX program (the `[jax]` extra;
+`jax_backend.py`, and `docs/tlrn-on-colab.md` for a Colab runtime). It replaces the
+training loop and nothing else: each member starts from the weights the torch path
+would give it and sees the same batches and training cutoffs, and the selection,
+the point, the calibration and the prediction run on torch. With dropout off the two
+backends follow the same trajectory to float32 rounding; with dropout on they draw
+different masks, so the members are different draws of the same procedure. One way
+the two can part with neither wrong: where a parameter's true gradient over a batch
+is exactly zero, torch's autograd can leave rounding of about 1e-9 there, and Adam,
+which divides by the gradient's own size, turns that into a full step that JAX does
+not take. On a CPU the torch loop is the faster one, and the TPU speed is not yet
+measured.
+
 ## Prediction
 
 `point(segment)` gives one company's deterministic ultimates in the multi-line
