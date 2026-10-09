@@ -277,7 +277,7 @@ jobs:
             cache: "false"
             sync_args: "--no-default-groups --group test"
             expect_imports: ""
-            absent_imports: "torch;polars;pymc;numpyro;arviz;bayesblend;chainladder;bermuda;altair"
+            absent_imports: "torch;polars;pymc;numpyro;jax;arviz;bayesblend;chainladder;bermuda;altair"
             forbid_skips: ""
             allow_skips: ""
             strict_skips: "false"
@@ -319,7 +319,7 @@ jobs:
             cache: "false"
             sync_args: "--no-default-groups --group test"
             expect_imports: ""
-            absent_imports: "torch;polars;pymc;numpyro;arviz;bayesblend;chainladder;bermuda;altair"
+            absent_imports: "torch;polars;pymc;numpyro;jax;arviz;bayesblend;chainladder;bermuda;altair"
             forbid_skips: ""
             allow_skips: ""
             strict_skips: "false"
@@ -381,7 +381,7 @@ jobs:
             cache: "true"
             sync_args: "--no-default-groups --group test --extra nn"
             expect_imports: "torch"
-            absent_imports: "polars;pymc;chainladder"
+            absent_imports: "polars;pymc;chainladder;jax"
             forbid_skips: ""
             allow_skips: ""
             strict_skips: "false"
@@ -395,6 +395,35 @@ jobs:
             # tests with them. The floor keeps a cushion and is not raised for
             # the two tlrn files; their required_files entries are what hold
             # them, and a floor is the blunter of the two checks.
+            min_tests: "590"
+
+          # ---------------------------------------------------------------
+          # jax: the [jax] extra by itself, which is torch plus jax (tlrn's
+          # optional JAX training backend). Without this leg jax only reached
+          # CI through numpyro on the all leg, so a [jax] extra that stopped
+          # declaring jax, or declared one the backend cannot run on, would
+          # still have passed there. Here the extra is the ONLY source of jax:
+          # numpyro and pymc must be absent, so jax cannot arrive through them.
+          #
+          # tests/test_tlrn_jax.py skips at module level without jax (or torch),
+          # so required_files is what makes this leg check anything: it has to
+          # execute here. tests/test_tlrn.py is named too, because the [jax]
+          # extra must still carry everything the torch path needs.
+          - name: jax
+            python: "3.12"
+            cache: "true"
+            sync_args: "--no-default-groups --group test --extra jax"
+            expect_imports: "torch;jax"
+            absent_imports: "polars;pymc;numpyro;chainladder"
+            forbid_skips: ""
+            allow_skips: ""
+            strict_skips: "false"
+            required_files: "tests/test_tlrn.py;tests/test_tlrn_jax.py"
+            # NOT measured on its own: copied from the nn leg, which this leg
+            # contains (the [jax] extra installs torch, so every nn test runs
+            # here as well, plus test_tlrn_jax.py). It sits above the core
+            # count for the same reason the nn floor does. Re-measure from the
+            # first CI run's "PASTE-BACK: this leg executed N tests" line.
             min_tests: "590"
 
           # ---------------------------------------------------------------
@@ -501,13 +530,13 @@ jobs:
             cache: "true"
             sync_args: >-
               --no-default-groups --group test
-              --extra polars --extra nn --extra bayesian --extra interop --extra viz
-            expect_imports: "torch;polars;pymc;numpyro;arviz;bayesblend;chainladder;bermuda;altair"
+              --extra polars --extra nn --extra jax --extra bayesian --extra interop --extra viz
+            expect_imports: "torch;jax;polars;pymc;numpyro;arviz;bayesblend;chainladder;bermuda;altair"
             absent_imports: ""
             forbid_skips: ""
             allow_skips: "gold mart;cmdstan"
             strict_skips: "true"
-            required_files: "tests/test_transforms.py;tests/test_deeptriangle.py;tests/test_mdn.py;tests/test_resnet.py;tests/test_nn_heldout.py;tests/test_tlrn.py;tests/test_stacking.py;tests/test_tieout_chainladder.py;tests/test_clark.py;tests/test_interop_bermuda.py;tests/test_polars_extra.py;tests/test_import_purity.py;tests/test_codec.py"
+            required_files: "tests/test_transforms.py;tests/test_deeptriangle.py;tests/test_mdn.py;tests/test_resnet.py;tests/test_nn_heldout.py;tests/test_tlrn.py;tests/test_tlrn_jax.py;tests/test_stacking.py;tests/test_tieout_chainladder.py;tests/test_clark.py;tests/test_interop_bermuda.py;tests/test_polars_extra.py;tests/test_import_purity.py;tests/test_codec.py"
             # measured one base earlier: 968 passed, 7 skipped - and the 7 are
             # the allowlisted gold-mart skips above, re-counted rather than
             # assumed. The 7 is the part that must not drift; the total is the
@@ -543,7 +572,7 @@ jobs:
             unlocked: "true"
             sync_args: '-e . --group test "numpy>=2" "pandas>=3"'
             expect_imports: ""
-            absent_imports: "torch;polars;pymc;numpyro;arviz;bayesblend;chainladder;bermuda;altair"
+            absent_imports: "torch;polars;pymc;numpyro;jax;arviz;bayesblend;chainladder;bermuda;altair"
             forbid_skips: ""
             allow_skips: ""
             strict_skips: "false"

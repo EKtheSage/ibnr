@@ -879,3 +879,24 @@ def test_processes_train_on_the_cpu_only():
     rather than silently trained on the CPU."""
     with pytest.raises(ValueError, match="processes"):
         fit_tiny("duckdb", processes=2, device="meta")
+
+
+def test_backend_jax_without_jax_says_how_to_install_it_before_any_work(monkeypatch):
+    """``backend="jax"`` with jax missing names the extra, and says so before the features
+    are built. This lives here, not in ``test_tlrn_jax.py``, because that file skips
+    without jax and this is the case where jax is absent: it runs on the [nn] leg,
+    which installs torch and not jax. jax is hidden by a ``None`` in ``sys.modules``,
+    which makes ``import jax`` fail as it does when jax is not installed."""
+    import ibnr.gallery.nn.tlrn as tlrn_package
+
+    monkeypatch.setitem(sys.modules, "jax", None)
+    monkeypatch.delitem(sys.modules, "ibnr.gallery.nn.tlrn.jax_backend", raising=False)
+    monkeypatch.delattr(tlrn_package, "jax_backend", raising=False)
+
+    def built(*args, **kwargs):
+        raise AssertionError("the features were built before jax was looked for")
+
+    monkeypatch.setattr("ibnr.gallery.nn.tlrn.model.nn_company_data", built)
+    with pytest.raises(ModuleNotFoundError, match=r"pip install 'ibnr\[jax\]'") as info:
+        fit_tiny("duckdb", backend="jax")
+    assert info.value.name == "jax"

@@ -1,5 +1,10 @@
 # Knowledge Update Log
 
+## 2026-10-08
+* **Creation**: Recorded [tlrn gets an optional JAX training backend](/decisions/tlrn-jax-training-backend.md) and its evidence, [the JAX training backend matches torch](/findings/tlrn-jax-backend-parity.md), including why Adam lets the two backends part where a true gradient is zero.
+* **Update**: [JAX versus torch on a CPU](/findings/jax-versus-torch-on-cpu.md) no longer says no backend was built; it links the accelerator-only one.
+* **Update**: After review, [the JAX training backend matches torch](/findings/tlrn-jax-backend-parity.md) records the Adam bias-correction fix (each update had been 6.5e-6 off torch's) and the weight-decay tests, and [the backend decision](/decisions/tlrn-jax-training-backend.md) notes that the Colab runner reuses a saved fit only under the same settings.
+
 ## 2026-10-05
 * **Initialization**: Created this bundle at Ethan's request ([Knowledge is kept in OKF format](/decisions/knowledge-in-okf-format.md)).
 * **Creation**: Recorded the tlrn work of 0.7.3: [design choices as components](/decisions/tlrn-choices-as-named-components.md), [CPU training throughput](/findings/tlrn-cpu-training-throughput.md), [JAX versus torch on a CPU](/findings/jax-versus-torch-on-cpu.md) and [reproducing the companion notebook](/findings/companion-notebook-reproduction.md).

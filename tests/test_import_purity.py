@@ -91,6 +91,11 @@ NEEDS_NN_EXTRA = frozenset(
     }
 )
 
+#: Modules that need the [jax] extra: tlrn's JAX training backend, written in jax at
+#: module scope as the networks above are written in torch, and imported by
+#: ``TLRN.fit`` only when ``backend="jax"`` asks for it.
+NEEDS_JAX_EXTRA = frozenset({"ibnr.gallery.nn.tlrn.jax_backend"})
+
 
 def _run(code: str) -> subprocess.CompletedProcess[str]:
     """A clean interpreter, with the child's own assertion text surfaced.
@@ -697,7 +702,7 @@ print(json.dumps(failed))
 def test_every_submodule_imports_without_any_extra():
     """The whole package, not just what the collected tests happen to touch.
 
-    Compares the failures to ``NEEDS_NN_EXTRA`` as a SET - a module dropping OUT
+    Compares the failures to ``NEEDS_NN_EXTRA | NEEDS_JAX_EXTRA`` as a SET - a module dropping OUT
     of the allowlist is as much a finding as one joining it, because it means the
     allowlist has gone stale and is no longer describing the package.
     """
@@ -705,9 +710,10 @@ def test_every_submodule_imports_without_any_extra():
 
     failed = json.loads(_run(_WALK.format(blocked=sorted(HEAVY))).stdout.strip().splitlines()[-1])
 
-    assert set(failed) == set(NEEDS_NN_EXTRA), (
+    expected = NEEDS_NN_EXTRA | NEEDS_JAX_EXTRA
+    assert set(failed) == set(expected), (
         "the set of modules needing an extra changed.\n"
-        f"  unexpectedly failing: {sorted(set(failed) - NEEDS_NN_EXTRA)}\n"
-        f"  no longer failing:    {sorted(NEEDS_NN_EXTRA - set(failed))}\n"
+        f"  unexpectedly failing: {sorted(set(failed) - expected)}\n"
+        f"  no longer failing:    {sorted(expected - set(failed))}\n"
         f"  reasons: {failed}"
     )

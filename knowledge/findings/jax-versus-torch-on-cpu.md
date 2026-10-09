@@ -20,7 +20,9 @@ sources:
 The companion notebook is **Python with JAX, not R**, and its 1,667-second training
 time is a TPU result. On this 16-core CPU the same code ran at about **1.5
 member-epochs per second**, against about **6.4** for ibnr's torch loop with four worker
-processes. A JAX backend for ibnr would not make CPU runs faster, so none was built.
+processes. A JAX backend for ibnr would not make CPU runs faster. One was built
+afterwards for accelerators only, with torch kept as the default: see [tlrn gets an
+optional JAX training backend](/decisions/tlrn-jax-training-backend.md).
 
 # The notebook's run
 

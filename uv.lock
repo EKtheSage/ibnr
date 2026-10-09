@@ -925,6 +925,10 @@ interop = [
     { name = "bermuda-ledger" },
     { name = "chainladder" },
 ]
+jax = [
+    { name = "jax" },
+    { name = "torch" },
+]
 nn = [
     { name = "torch" },
 ]
@@ -972,6 +976,7 @@ requires-dist = [
     { name = "cmdstanpy", marker = "extra == 'bayesian'" },
     { name = "ibis-framework", extras = ["duckdb"], specifier = ">=9.5,<13" },
     { name = "ibis-framework", extras = ["polars"], marker = "extra == 'polars'", specifier = ">=9.5,<13" },
+    { name = "jax", marker = "extra == 'jax'", specifier = ">=0.7" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "numpyro", marker = "extra == 'bayesian'" },
     { name = "pandas", specifier = ">=2" },
@@ -979,9 +984,10 @@ requires-dist = [
     { name = "pymc", marker = "extra == 'bayesian'", specifier = "<6" },
     { name = "scipy", specifier = ">=1.11" },
     { name = "sqlglot", specifier = "<30.18" },
+    { name = "torch", marker = "extra == 'jax'", specifier = ">=2.2" },
     { name = "torch", marker = "extra == 'nn'", specifier = ">=2.2" },
 ]
-provides-extras = ["polars", "bayesian", "nn", "viz", "interop"]
+provides-extras = ["polars", "bayesian", "nn", "jax", "viz", "interop"]
 
 [package.metadata.requires-dev]
 dev = [

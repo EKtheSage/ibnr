@@ -170,6 +170,13 @@ bayesian = [
     "bayesblend>=0.0.8,<0.1",
 ]
 nn = ["torch>=2.2"]
+# The optional JAX training backend for the tlrn entry: fit(backend="jax") trains
+# every member of every valuation date in one compiled program, which is what a
+# Colab TPU or a GPU is fast at. Everything after training (selection, the point,
+# the calibration, predict) still runs on torch, so this extra carries torch too.
+# On a CPU the torch loop is the faster one. The jax floor is the release the lock
+# resolves and the tests run on, not a guess at an older one that might work.
+jax = ["torch>=2.2", "jax>=0.7"]
 viz = ["altair"]
 # Needed only to convert OUT to these libraries (`to_chainladder`/`to_bermuda`).
 # Reading FROM them takes a foreign object the caller already built, so it needs

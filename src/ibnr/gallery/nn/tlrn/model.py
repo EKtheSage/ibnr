@@ -63,6 +63,8 @@ from ibnr.triangle.core import Triangle
 _FLOAT_KEYS = ("feat", "target", "target_mask", "premium", "c_lk", "anchor_start", "p_lk")
 #: and as long tensors
 _LONG_KEYS = ("lk", "line_ix", "lag_ix")
+#: what can train the members: the torch loop, or one JAX program for all of them
+BACKENDS: tuple[str, ...] = ("torch", "jax")
 
 
 def _refuse_overlap(train_masks, val_masks) -> None:
@@ -278,6 +280,25 @@ def _train_member(job: tuple[int, int]) -> tuple[int, int, dict, list[dict], int
     return index, member, state, history[0], torch.get_num_threads()
 
 
+def _load_jax_backend():
+    """Import the JAX training backend (``backend="jax"``), or say how to install jax.
+
+    jax is imported here and nowhere else in this module, so the entry registers and
+    ``backend="torch"`` fits without the [jax] extra.
+    """
+    try:
+        from ibnr.gallery.nn.tlrn import jax_backend
+    except ModuleNotFoundError as err:
+        if err.name is None or err.name.split(".")[0] not in ("jax", "jaxlib"):
+            raise
+        raise ModuleNotFoundError(
+            "backend='jax' needs jax, which is not installed: pip install 'ibnr[jax]'. "
+            "On a Colab TPU or GPU runtime keep the jax the runtime already has",
+            name=err.name,
+        ) from err
+    return jax_backend
+
+
 @register
 class TLRN(GalleryEntry):
     """The transformer loss reserving network (see card.md).
@@ -333,6 +354,7 @@ class TLRN(GalleryEntry):
         seed: int | None = None,
         show_progress: bool = False,
         processes: int = 1,
+        backend: str = "torch",
     ) -> TLRN:
         """Pooled fit across every company in the triangle.
 
@@ -357,11 +379,33 @@ class TLRN(GalleryEntry):
         epoch does not fall past four threads), so the machine delivers roughly 10 to 15
         member-epochs per second however the threads are split; one thread per worker
         and as many workers as physical cores is the setting to start from.
+
+        ``backend`` says what trains the members, and is an execution choice like
+        ``processes``. ``"torch"`` (the default) is the loop above. ``"jax"`` trains every
+        member of every valuation date at once, as one compiled JAX program, which is what
+        a TPU or a GPU is fast at; it needs the ``[jax]`` extra and is slower than torch on
+        a CPU. It changes how the members train and nothing after: each member starts from
+        the weights torch would give it and sees the same batches and cutoffs, and the
+        selection, the point, the calibration and ``predict`` run on torch either way. Only
+        the dropout draws differ, so with dropout on the members are different draws of
+        the same procedure, not the same numbers. It trains in one process, so it refuses
+        ``processes > 1`` rather than ignoring it. See ``jax_backend.py``.
         """
         import torch
 
         if isinstance(processes, bool) or not isinstance(processes, int) or processes < 1:
             raise ValueError(f"processes must be a positive int, got {processes!r}")
+        if backend not in BACKENDS:
+            raise ValueError(f"backend must be one of {list(BACKENDS)}, got {backend!r}")
+        if backend == "jax" and processes > 1:
+            raise ValueError(
+                f"backend='jax' trains every member in one compiled program in this process, "
+                f"so processes={processes} would have nothing to do. Use processes=1 with "
+                "backend='jax', or backend='torch' to spread members over worker processes"
+            )
+        # import jax now, before the features are built, so a missing [jax] extra is
+        # reported in a second rather than after the expensive preparation
+        jax_backend = _load_jax_backend() if backend == "jax" else None
         cfg = config or TLRNConfig()
         train = triangle.as_of(as_of) if as_of is not None else triangle
         # BUILD FIRST, ASSIGN AFTER TRAINING SUCCEEDED - fit() must be atomic, so
@@ -442,7 +486,14 @@ class TLRN(GalleryEntry):
                 for v in cfg.calibration_cutoffs
             ]
         runs = self._run_protocols(
-            contract, cfg, specs, features=features, dev=dev, processes=processes, torch=torch
+            contract,
+            cfg,
+            specs,
+            features=features,
+            dev=dev,
+            processes=processes,
+            torch=torch,
+            jax_backend=jax_backend,
         )
         run = runs[0]
         models, kept, kept_history = run["models"], run["kept"], run["kept_history"]
@@ -513,7 +564,7 @@ class TLRN(GalleryEntry):
         return self
 
     def _run_protocols(
-        self, contract, cfg, specs, *, features, dev, processes, torch
+        self, contract, cfg, specs, *, features, dev, processes, torch, jax_backend=None
     ) -> list[dict]:
         """Run the protocol once per spec and return each run, in spec order.
 
@@ -522,7 +573,8 @@ class TLRN(GalleryEntry):
         the workers stay busy across protocols: twenty members on sixteen processes would
         otherwise leave twelve idle while the last four of each protocol finish. What a
         member learns is unchanged, because it is seeded from its own protocol's seed and
-        its own index wherever and whenever it runs.
+        its own index wherever and whenever it runs. ``jax_backend`` is the imported
+        ``jax_backend`` module under ``backend="jax"`` and None otherwise.
         """
         preps = [
             self._prepare_protocol(
@@ -530,7 +582,9 @@ class TLRN(GalleryEntry):
             )
             for spec in specs
         ]
-        if processes == 1:
+        if jax_backend is not None:
+            trained = jax_backend.train_protocols(preps, cfg, torch)
+        elif processes == 1:
             trained = [
                 train_ensemble(
                     prep["n_units"],

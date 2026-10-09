@@ -104,6 +104,11 @@ NOT_PROMISED = {
         "checks this repository's own knowledge/ bundle, run by the test suite. It "
         "needs PyYAML, which the image does not install, and it computes no result."
     ),
+    "tlrn_colab.py": (
+        "runs notebook 04's tlrn fits on the JAX backend on a Colab TPU or GPU runtime. "
+        "It needs jax and torch (the [jax] extra), which the image does not install: "
+        "the image is a CPU Stan image, and on a CPU the torch backend is the faster one."
+    ),
     "conventional_examples.py": (
         "a loader with no command line, imported by the conventional benchmark "
         "driver rather than run on its own. Running it by itself computes "
