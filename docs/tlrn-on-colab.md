@@ -43,14 +43,14 @@ Then install ibnr with the extra, and the data package the runner reads its coho
 Once a release carries the backend:
 
 ```text
-!pip install "ibnr[jax]" cas-schedule-p==2026.6.13
+!pip install --ignore-requires-python "ibnr[jax]" cas-schedule-p==2026.6.13
 ```
 
 Between the merge and that release, install from `main` instead (pip builds the package
 from the repository, which needs no compiler):
 
 ```text
-!pip install "ibnr[jax] @ git+https://github.com/EKtheSage/ibnr@main" cas-schedule-p==2026.6.13
+!pip install --ignore-requires-python "ibnr[jax] @ git+https://github.com/EKtheSage/ibnr@main" cas-schedule-p==2026.6.13
 ```
 
 The runner script is not in the wheel either way, so fetch it from `main`, either the one
@@ -62,8 +62,11 @@ file or the whole repository:
 ```
 
 The commands in step 3 run the file `curl` fetched (`tlrn_colab.py`); with the clone it
-is `ibnr/scripts/tlrn_colab.py`. ibnr supports Python 3.11 and 3.12; a runtime on a newer
-Python will be refused by pip.
+is `ibnr/scripts/tlrn_colab.py`. ibnr declares Python 3.11 to 3.12, and a Colab runtime is on
+3.13, so pip refuses it without `--ignore-requires-python` (the flag in the install
+commands above). The limit comes from two other extras, `bayesian` and `interop`, which
+cannot install on 3.13; the core, `nn` and `jax` parts do, and the JAX backend's focused
+tests pass on 3.13.13.
 
 ## 2. Keep the fits on Google Drive
 
