@@ -59,6 +59,8 @@ Defaults are unchanged throughout. What can break existing code: `AxialBlock.for
 `TLRNConfig.keep` may now be `None`; neither is part of the public surface in
 decision 8.
 
+The Colab how-to and notebook install with `--ignore-requires-python`: a Colab runtime is on Python 3.13 and ibnr declares 3.11 to 3.12, a limit that comes from the `bayesian` and `interop` extras and does not touch `nn` or `jax` (the JAX backend's focused tests pass on 3.13.13).
+
 ### tlrn design choices
 
 `tlrn` takes its design choices by name, so a variant of the network is a config and
