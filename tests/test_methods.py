@@ -446,6 +446,7 @@ def test_the_public_names_are_pinned():
         "cape_cod",
         "chain_ladder",
         "mack",
+        "tweedie_glm",
     ]
 
 
@@ -1829,6 +1830,15 @@ def test_to_polars_gives_a_mack_results_link_ratios(pl):
     # 0.7.2 refused this: a Mack result had no link_ratios table
     result = run("mack")
     assert result.to_polars("link_ratios").equals(pl.from_arrow(result.link_ratios))
+
+
+@pytest.mark.parametrize("method", list(SCHEMAS))
+def test_only_a_fitted_model_carries_cells_and_coefficients(method):
+    result = run(method)
+    assert result.cells is None and result.coefficients is None
+    for table in ("cells", "coefficients"):
+        with pytest.raises(Refusal, match=f"a {method} result has no {table} table"):
+            result.to_polars(table)
 
 
 def test_to_polars_names_the_extra_when_polars_is_missing(monkeypatch):

@@ -100,6 +100,12 @@ cape_cod.to_polars()["expected_loss_ratio"]  # detrended_apriori_
 | `.total_parameter_risk_`, `.total_process_risk_` (their ultimate columns) | `result.totals["parameter_se"]`, `["process_se"]` |
 | `.apriori_` (Cape Cod) | `result.origins["trended_loss_ratio"]` |
 | `.detrended_apriori_` (Cape Cod) | `result.origins["expected_loss_ratio"]` |
+| `cl.TweedieGLM(power=p, link=l)` then `cl.Chainladder()` | `methods.tweedie_glm(cells, power=p, link=l)` |
+| `TweedieGLM(design_matrix="C(development) + C(origin)")` (the default) | `origin="factor"` (the default) |
+| `TweedieGLM(design_matrix="C(development)")` | `origin="none"` |
+| `TweedieGLM(design_matrix="C(development) + valuation")` | `origin="none", calendar="trend"` |
+| `TweedieGLM(max_iter=n)` | `max_iter=n` |
+| `TweedieGLM(alpha=...)`, `tol=` | no penalty, and a stopping rule relative to the amounts (see [The Tweedie GLM](#the-tweedie-glm)) |
 
 Every link ratio, and whether the factor used it, is in `result.link_ratios`,
 with the reason for any that were left out: `zero_cell` when either cumulative
@@ -319,6 +325,85 @@ fewer than two link ratios). The one-year claims development result in
 Merz-Wuthrich formulas are derived for the volume average over every link
 ratio, and the re-reserving re-runs that estimator on next year's triangle.
 
+## The Tweedie GLM
+
+`methods.tweedie_glm` replaces `cl.TweedieGLM` followed by `cl.Chainladder`. It
+fits the increments of the cumulative cells, as chainladder does, with a log
+link and origin and development factors by default, and reports each origin's
+ultimate the way chainladder does (`projection="pattern"`: the latest
+cumulative times the fitted development from the latest age). The fitted
+future increments added to the latest cumulative, R's `glmReserve` answer, are
+in `origins["model_ibnr"]`, or are the ultimate with `projection="increments"`.
+Every fitted cell is in `result.cells` and every coefficient in
+`result.coefficients`.
+
+```python
+glm = methods.tweedie_glm(cells, power=1.5)
+glm.to_polars()  # ultimate and ibnr by the pattern, model_ibnr by the fitted increments
+glm.to_polars("coefficients")  # estimate and std_error for each term
+```
+
+Where the answers differ from chainladder-python 0.9.2, and why:
+
+- **No penalty.** chainladder's `TweedieGLM` never passes `alpha` to
+  scikit-learn, so every fit carries scikit-learn's ridge penalty of 1.0,
+  whatever `alpha` it is given (and the result echoes the `alpha` asked for).
+  The penalty is on the raw coefficients and the loss is on raw amounts, so the
+  answer depends on the units: on ukmotor at power 1 the total IBNR is 1.0422
+  times the chain ladder's as stored and 2.9197 times with the amounts divided
+  by 1,000. `tweedie_glm` has no penalty and scales exactly with the amounts.
+  On genins, total IBNR at power 1 is 18,683,659.86 in chainladder and
+  18,680,855.61 (the chain ladder's) here; at power 1.5 19,696,737.66 against
+  18,472,367.35; at power 2 24,252,472.98 against 18,257,520.17.
+- **A fit that has not settled is refused.** chainladder's solver (lbfgs,
+  `tol=1e-4`) can stop after two iterations at power 0 and report the answer.
+  Here the fit stops when no fitted increment moves by more than 1e-10 of the
+  largest increment, and a fit that has not by `max_iter` is refused as
+  `did_not_converge`. There is no `tol`.
+- **Power 1 is the chain ladder.** With the defaults, `tweedie_glm` gives the
+  volume-weighted chain ladder's ultimates (`chain_ladder(cells,
+  zero_cells="observed")`) to 1e-10, except where an origin's losses start from
+  zero (a cumulative of 0 followed by a positive one): the chain ladder keeps
+  that origin at 0 times its factors, and the GLM gives it a level from its
+  later cells. Where the losses leave the fit with no finite answer at all (an
+  origin whose only losses sit where the other origins have none), it is
+  refused as `degenerate_fit` and the message names `chain_ladder(cells,
+  unsupported_factor="unity")`.
+- **Zeros are data.** chainladder stores a zero cumulative as missing, and its
+  GLM then reads the next increment as the whole cumulative. `tweedie_glm`
+  reads a zero as a zero (there is no `zero_cells` option); under the log link
+  an origin or an age whose increments are all zero is fitted at exactly 0.
+- **Cells that are not a run-off triangle are refused**, as by every method: a
+  missing interior cell (which chainladder turns into a huge increment), an
+  origin whose latest cell is off the latest diagonal (whose ultimate
+  chainladder returns as NaN), and annual origins developed quarterly (whose
+  total chainladder returns as NaN).
+- **The identity link works at every power**, with the pattern differing by
+  origin: `development["factor"]` and `["cdf"]` are then null and each
+  origin's factors are in `cells`. chainladder shows the first origin's
+  pattern only, and its identity link fails at power 1. At a power above 0 a
+  fitted increment of zero or less is refused (`negative_fitted_mean`), and so
+  is one that falls to 1e-8 of the largest increment on a cell whose increment
+  is 0, where the fit runs to a mean of exactly 0 and rounding alone would
+  decide the sign; the log link fits an age or origin of zeros at exactly 0.
+- **A calendar trend** is a straight line in the calendar period, and only
+  beside `origin="none"`: with origin and development factors it cannot be
+  estimated (R returns `NA` for it; chainladder's penalty hides that and
+  returns a number that means nothing), so it is refused. chainladder's
+  `C(valuation)` fails because future calendar periods have no level. Under the
+  log link a calendar trend with development factors fits the same means as a
+  straight line across origins, so do not read it as an inflation rate.
+- **`drop` and `drop_valuation` are not there.** chainladder accepts them and
+  they change nothing (their weights never reach the regression).
+- **Negative increments** are refused at power 1 and above by the cell
+  (`negative_increment`), zero increments at power 2 and above
+  (`zero_increment`). Power 0 accepts negative increments; the cumulatives must
+  still be zero or more, as for every method. Under the default log link every
+  fitted increment is above zero, so an age or an origin whose increments sum
+  to zero or less can leave the fit with no finite answer: it is refused
+  (`degenerate_fit`, or `did_not_converge` if the fit only ran out of
+  iterations) with the age or origin named. `link="identity"` fits it.
+
 ## When a method refuses
 
 chainladder-python has no error class of its own: bad input raises whatever
@@ -384,6 +469,8 @@ What some of chainladder-python's answers become:
 | `MackChainladder` on two origins: NaN standard error | `variance_not_estimable` |
 | `Development(n_periods=1)`, then `MackChainladder`: NaN standard errors | `variance_not_estimable`, `option="history_periods"` |
 | `Development(drop=("1981", 108))` on raa, then `MackChainladder`: factor 1.0, NaN standard errors | `no_link_ratio`, `option="exclude"` |
+| `TweedieGLM` on raa: scikit-learn's `Some value(s) of y are out of the valid range` | `negative_increment`, the cell (1982, 84 months) in `cells` |
+| `TweedieGLM(link="identity")` at power 1: `ValueError: 1 is not in list` | answered, or `negative_fitted_mean` naming the cells |
 
 ## Origin labels
 
@@ -450,6 +537,8 @@ year written `2020-12-31` has its first cell at `dev_lag` 12, valued
   cumulatives.
 - Origin periods longer than a development step, such as annual origins
   developed quarterly: `dev_grain_months` must equal the origin period length.
+- A tail on `methods.tweedie_glm` (refused with `not_supported`), and the
+  GLM's `drop`, `drop_valuation`, other design formulas and `sample_weight`.
 - The bootstrap (`cl.BootstrapODPSample`) through `ibnr.methods`. An
   over-dispersed Poisson bootstrap of next year's diagonal is in
   `ibnr.kernels` for the one-year claims development result.
