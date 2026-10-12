@@ -85,11 +85,15 @@ notebook's own counts and cohort hash checked - and runs the same two fits with
 `backend="jax"`:
 
 ```text
-!python tlrn_colab.py --out /content/drive/MyDrive/ibnr/tlrn_fits --smoke
-!python tlrn_colab.py --out /content/drive/MyDrive/ibnr/tlrn_fits
+import tlrn_colab
+
+tlrn_colab.main(["--out", "/content/drive/MyDrive/ibnr/tlrn_fits_smoke", "--smoke"])
+tlrn_colab.main(["--out", "/content/drive/MyDrive/ibnr/tlrn_fits"])
 ```
 
-The first line is a ten-epoch check of the setup (four members); run it first. On the
+Run these in a notebook cell, in the notebook's own Python process, and not with `!python`: a TPU can be opened by only one process, and the check in step 1 already holds it, so a second process fails with 'The TPU is already in use by process with pid ...'.
+
+The first call is a ten-epoch check of the setup (four members); run it first. On the
 dev laptop's CPU, with one thread, it built the triangle in 3 s and each fit took 25 to
 37 s, compilation included; on an accelerator the compilation is the larger part. The second is the notebook's own budget:
 the published protocol with forty members, all kept. For the companion study's
