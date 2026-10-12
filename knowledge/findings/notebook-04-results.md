@@ -1,7 +1,7 @@
 ---
 type: Finding
-title: Notebook 04 results on 0.7.0 and 0.7.1
-description: The company-reserve scores of analysis/04 in its three published runs (2026-09-22, 2026-09-24, 2026-09-25), with the reference numbers it is checked against and what the breakdowns showed.
+title: Notebook 04 results on 0.7.0, 0.7.1 and 0.7.3
+description: The company-reserve scores of analysis/04 in its four published runs (2026-09-22, 2026-09-24, 2026-09-25, 2026-10-08), with the reference numbers it is checked against and what the breakdowns showed.
 tags: [notebook, tlrn, mcl, results, companion-study]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-05T23:00:00Z }
@@ -20,6 +20,9 @@ sources:
   - id: pr-150
     resource: https://github.com/EKtheSage/ibnr/pull/150
     title: Notebook 04 on 0.7.1, forty tlrn members, and the board broken down
+  - id: run-073
+    resource: analysis/04_nn_architectures_vs_classical.ipynb
+    title: The saved outputs of the 0.7.3 run (company board and run manifest of 2026-10-08)
   - id: pr-145
     resource: https://github.com/EKtheSage/ibnr/pull/145
     title: reserve_rows fixes found by the notebook's first smoke run
@@ -111,6 +114,59 @@ What the breakdown showed for `tlrn_13_blend` against MCL:[^note]
   money) MCL is slightly ahead: 937,858 against 959,808 in absolute error.
 * Company by company it is an even split, 41 against 41.
 
+# Fourth run, 0.7.3, with the accident-year variant (finished 2026-10-08)
+
+1,438 minutes (started 2026-10-07 19:05, finished 2026-10-08 19:02), 53 of 53 code cells,
+no error, in a fresh environment with `ibnr` 0.7.3 from PyPI, `cas-schedule-p` 2026.6.13
+and gold publish `20260613_041006`, protocol `published`. Forty members per tlrn fit. New
+against 0.7.1: a third fit, `tlrn_ay`, the accident-year variant of the 13-feature
+network.[^run-073]
+
+Company Pool_APE over the 82 scored companies, lowest first. Rows marked ref are the
+reference study's constants, not ibnr fits:[^run-073]
+
+| row | Pool_APE | Pool_PE |
+|---|---|---|
+| tlrn_13_blend | 5.16% | +1.95% |
+| ref: blended transformer | 5.09% | |
+| tlrn_8_keep2_blend | 5.26% | +2.29% |
+| ref: raw transformer | 5.63% | |
+| tlrn_8_blend | 5.64% | +3.20% |
+| mcl | 5.66% | -0.19% |
+| ref: chain ladder + MCL | 5.66% | |
+| tlrn_13 | 5.76% | +3.05% |
+| tlrn_13_keep2_blend | 5.77% | +1.30% |
+| mack | 5.77% | +1.03% |
+| ref: chain ladder | 5.77% | |
+| sur (80 companies) | 5.94% | +1.26% |
+| **tlrn_ay** | **6.22%** | -1.46% |
+| tlrn_8_keep2 | 6.51% | +3.58% |
+| tlrn_13_keep2 | 6.77% | +2.08% |
+| tlrn_8 | 7.14% | +4.95% |
+| nn_transformer_ml | 19.3% | +14.4% |
+| deeptriangle | 35.3% | +32.1% |
+| resnet | 40.3% | +37.1% |
+| nn_transformer | 60.3% | +56.1% |
+| mdn | 61.1% | +58.9% |
+| nn_transformer_pic | 84.1% | +81.7% |
+
+* `tlrn_13_blend` (0.0516) is the best ibnr row, 8.8% below MCL (0.0566) and 10.6% below
+  mack (0.0577), and 0.7 tenths of a percentage point above the reference's blended
+  transformer (0.0509). It equals the 0.7.1 run's value, as do the `tlrn_8` and `tlrn_13`
+  rows.
+* The accident-year variant at full budget, `tlrn_ay` (0.0622), is **behind the chain
+  ladder** on this board: 7.8% above mack, 9.9% above MCL, and above the reference's raw
+  transformer (0.0563). Its bias is the only negative one among the tlrn rows (-1.46%,
+  against +3.05% for `tlrn_13`). It is ahead of the keep-two rows and of `tlrn_8` raw
+  (0.0651 to 0.0714) and far ahead of the pooled neural entries, and behind `sur`.
+* Nothing here was tested statistically. The differences between rows near 5.2% to 5.8%
+  are a few tenths of a point on 82 companies, one of which (1767) holds 70.4% of the
+  premium, and the run is one random draw of the training (fit seed 11, draw seed
+  7).[^run-073]
+* The notebook asserts that its `mack` and `mcl` rows equal the reference company
+  reserves, and the saved board agrees with the reference constants (0.057732 and
+  0.056606).
+
 # How the runs relate
 
 The 0.7.0 outputs were reproduced by a later run to 3e-8, apart from the `tlrn_13_early`
@@ -128,3 +184,4 @@ say which fit each of its two numbers belongs to.
 [^pr-146]: Notebook 04 first published run (0.7.0)
 [^pr-150]: Notebook 04 on 0.7.1, forty tlrn members, and the board broken down
 [^pr-145]: reserve_rows fixes found by the notebook's first smoke run
+[^run-073]: The saved outputs of the 0.7.3 run (company board and run manifest of 2026-10-08)
