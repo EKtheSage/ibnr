@@ -1,6 +1,7 @@
 # Knowledge Update Log
 
 ## 2026-10-12
+* **Creation**: Recorded [the tlrn robustness study](/decisions/tlrn-robustness-study.md): ten training draws of the accident-year model on two cohorts, six pre-registered questions and a mechanical verdict rule, written before any real fit exists.
 * **Update**: [tlrn on a Colab TPU](/findings/tlrn-jax-tpu-run.md) now records the accident-year fits on a Colab GPU (451 s and 434 s for 80 members each, about 70 times faster than the laptop's one fit), replacing the cut-off TPU estimate, and adds the GPU-or-TPU runtime lesson.
 * **Update**: [Notebook 04 results](/findings/notebook-04-results.md) gained the 0.7.3 run (1,438 minutes) with the accident-year variant: `tlrn_ay` scores Pool_APE 0.0622, behind mack (0.0577) and MCL (0.0566), while `tlrn_13_blend` stays best at 0.0516. [How long the long runs take](/findings/how-long-runs-take.md) gained the run and its per-fit times.
 * **Creation**: Recorded [tlrn on a Colab TPU](/findings/tlrn-jax-tpu-run.md): the first TPU timing of the JAX backend (618 s for 40 members, 32 to 48 times faster than the laptop), how its members compare with torch's, and the one-process-per-TPU and Python 3.13 lessons.
