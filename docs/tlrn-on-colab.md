@@ -40,18 +40,41 @@ print(jax.__version__, jax.default_backend(), jax.devices())  # want 'tpu' (or '
 ```
 
 Then install ibnr with the extra, and the data package the runner reads its cohort from.
-Once a release carries the backend:
+The install is split in two: ibnr first, with none of its dependencies, then the
+dependencies from prebuilt files only (`--only-binary=:all:`). Without the second flag, a
+conflict with Colab's own packages can make pip back off to an old `ibis-framework`, whose
+`duckdb<1.2` has no prebuilt file for Python 3.13; pip then tries to compile it and fails,
+and `-q` hides the compiler output. With it, pip cannot compile anything.
+
+Once a release carries the backend, step 2 alone is enough:
 
 ```text
-!pip install --ignore-requires-python "ibnr[jax]" cas-schedule-p==2026.6.13
+!pip install -q --only-binary=:all: --ignore-requires-python "ibnr[jax]" cas-schedule-p==2026.6.13
 ```
 
-Between the merge and that release, install from `main` instead (pip builds the package
+Between the merge and that release, install from `main` instead (step 1 builds the package
 from the repository, which needs no compiler):
 
 ```text
-!pip install --ignore-requires-python "ibnr[jax] @ git+https://github.com/EKtheSage/ibnr@main" cas-schedule-p==2026.6.13
+!pip install -q --no-deps --ignore-requires-python "ibnr @ git+https://github.com/EKtheSage/ibnr@main"
+!pip install -q --only-binary=:all: --ignore-requires-python "ibnr[jax]" cas-schedule-p==2026.6.13
 ```
+
+Then check the versions. ibnr's tests and lock use ibis 12.0.0, and a conflict could still
+make pip pick an older ibis that has a prebuilt duckdb, silently:
+
+```python
+import duckdb
+import ibis
+
+import ibnr
+
+print("ibnr", ibnr.__version__, "| ibis", ibis.__version__, "| duckdb", duckdb.__version__)
+assert ibis.__version__.startswith("12."), "pip chose an old ibis; see the pip list command below"
+```
+
+If the assert fires, run `!pip list | grep -i -E "pandas|numpy|pyarrow|sqlglot|packaging|duckdb|ibis"`
+and include its output in a bug report. The notebook's install cell does this check for you.
 
 The runner script is not in the wheel either way, so fetch it from `main`, either the one
 file or the whole repository:
