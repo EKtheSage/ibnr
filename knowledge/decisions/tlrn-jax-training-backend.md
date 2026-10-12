@@ -58,8 +58,8 @@ JAX is only worth having on an accelerator, and torch stays the default.
 
 # Not yet known
 
-The TPU speed. Everything was built and checked on a CPU; the first Colab run decides
-whether the program comes near the companion study's 1,667 s. The parity evidence is in
+The TPU speed was measured on 2026-10-12: 618 s for 40 members, in the range of the
+companion study's 1,667 s for 80 ([tlrn on a Colab TPU](/findings/tlrn-jax-tpu-run.md)). The parity evidence is in
 [the JAX backend matches torch](/findings/tlrn-jax-backend-parity.md).
 
 [^request]: "make a jax backend optional and run this on google colab"

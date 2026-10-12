@@ -1,5 +1,8 @@
 # Knowledge Update Log
 
+## 2026-10-12
+* **Creation**: Recorded [tlrn on a Colab TPU](/findings/tlrn-jax-tpu-run.md): the first TPU timing of the JAX backend (618 s for 40 members, 32 to 48 times faster than the laptop), how its members compare with torch's, and the one-process-per-TPU and Python 3.13 lessons.
+
 ## 2026-10-08
 * **Creation**: Recorded [tlrn gets an optional JAX training backend](/decisions/tlrn-jax-training-backend.md) and its evidence, [the JAX training backend matches torch](/findings/tlrn-jax-backend-parity.md), including why Adam lets the two backends part where a true gradient is zero.
 * **Update**: [JAX versus torch on a CPU](/findings/jax-versus-torch-on-cpu.md) no longer says no backend was built; it links the accelerator-only one.
