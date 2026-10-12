@@ -1,7 +1,7 @@
 ---
 type: Measurement
 title: The JAX training backend matches torch
-description: How closely tlrn's JAX training backend reproduces the torch path on a CPU (forward pass, gradients, optimiser, whole trajectories), the one way the two can part with neither wrong, and what is still unmeasured (the TPU).
+description: How closely tlrn's JAX training backend reproduces the torch path on a CPU (forward pass, gradients, optimiser, whole trajectories), the one way the two can part with neither wrong, and what this evidence does not cover (the TPU, measured separately).
 tags: [tlrn, jax, torch, parity, testing]
 status: draft
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-08T12:00:00Z }
@@ -85,7 +85,7 @@ epochs).
 
 # Not measured
 
-The TPU. The program was compiled and run on a CPU only. On the test fixture (8 tiny
+The TPU was not part of this evidence (the program was compiled and run on a CPU only); its first run is in [tlrn on a Colab TPU](/findings/tlrn-jax-tpu-run.md). On the test fixture (8 tiny
 members, 30 epochs) the JAX fit took 11 s with one thread against 23 s for torch with
 two, compilation included. The Colab runner's ten-epoch check on notebook 04's real cohort
 (93 companies, 4 members) took 25 to 37 s per fit on one CPU thread. Neither says anything

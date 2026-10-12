@@ -19,3 +19,4 @@
 * [What CI actually checks](ci-test-matrix.md) - Since PR #53 (2026-07-27) CI runs a seven-leg pytest matrix whose post-run step fails a leg that silently ran nothing; before that, CI ran only lint and the docs build.
 * [Where the milestones stood in September 2026](milestone-state-2026-09.md) - The state of each roadmap milestone as the agent's status note last recorded it (2026-09-25), with completion dates and the measured results not kept in CLAUDE.md.
 * [Which tlrn members are kept decides the result](tlrn-member-choice.md) - Keeping the best two of ten tlrn members by validation score is close to a random pick; averaging all members is steadier and better, and the gap to the reference study came from which pair was kept.
+* [tlrn on a Colab TPU](tlrn-jax-tpu-run.md) - The first TPU run of the JAX backend: 40 members at the published budget in 618 s against hours on the laptop, how the members compare, and what it took to get it running.
