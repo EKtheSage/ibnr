@@ -1015,3 +1015,170 @@ def test_a_row_is_evaluated_with_the_default_resamples_of_the_right_size():
     )
     assert (row["ci_low"], row["ci_high"]) == (direct["ci_low"], direct["ci_high"])
     assert ev.bootstrap_indices(n).shape == (10_000, n)
+
+
+# -- review fixes: provisional verdicts, missing benchmarks, variance wording, rows --------
+
+
+def _row_inputs(n_draws=10, n=20, seed=21):
+    rng = np.random.default_rng(seed)
+    actual = rng.uniform(100.0, 1000.0, size=n)
+    board = [f"c{i}" for i in range(n)]
+    bench = pd.DataFrame(
+        {
+            "mack": actual * rng.uniform(1.2, 1.4, size=n),
+            "mcl": actual * rng.uniform(1.2, 1.4, size=n),
+            "sur": actual * rng.uniform(0.9, 1.1, size=n),
+            "actual": actual,
+        },
+        index=pd.Index(board, name="company_code"),
+    )
+    R = actual * rng.uniform(0.97, 1.03, size=(n_draws, n))  # clearly better than both
+    return R, bench, board
+
+
+def _verdict_line(text):
+    return next(line for line in text.splitlines() if line.startswith("Q6 VERDICT"))
+
+
+def test_a_complete_set_of_ten_draws_gets_the_plain_verdict():
+    R, bench, board = _row_inputs(10)
+    res = ev.evaluate_row("tlrn_8_ay", R, bench, board, draws=list(range(10)))
+    assert res["verdict"] == "effective" and not res["provisional"]
+    assert "provisional" not in res["verdict_reason"] and res["missing_draws"] == []
+    assert res["verdict_label"] == "effective"
+
+
+def test_fewer_than_ten_draws_or_a_gap_makes_the_verdict_provisional_and_says_so():
+    R, bench, board = _row_inputs(10)
+    # eight draws present, 3 and 7 missing: the rule still gives its word, labelled
+    keep = [0, 1, 2, 4, 5, 6, 8, 9]
+    res = ev.evaluate_row("tlrn_8_ay", R[keep], bench, board, draws=keep)
+    assert res["verdict"] == "effective" and res["provisional"]
+    assert res["missing_draws"] == [3, 7]
+    assert "provisional: 8 of 10 draws" in res["verdict_reason"]
+    assert "3, 7" in res["verdict_reason"]
+    assert res["verdict_label"].startswith("effective (provisional: 8 of 10 draws")
+    # the first three draws: no gap but not the registered ten
+    short = ev.evaluate_row("tlrn_8_ay", R[:3], bench, board, draws=[0, 1, 2])
+    assert short["provisional"] and "provisional: 3 of 10 draws" in short["verdict_reason"]
+    assert short["missing_draws"] == [3, 4, 5, 6, 7, 8, 9]
+    # ten draws that are not 0..9 are also incomplete
+    odd = ev.evaluate_row("tlrn_8_ay", R, bench, board, draws=[0, 1, 2, 3, 4, 5, 6, 7, 8, 10])
+    assert odd["provisional"] and odd["missing_draws"] == [9]
+    # the printed report never shows a bare word
+    text = ev.render(SimpleNamespace(name="A", description="stub"), {"tlrn_8_ay": res}, {}, "")
+    line = _verdict_line(text)
+    assert "provisional: 8 of 10 draws" in line and "EFFECTIVE (provisional" in line
+
+
+def test_a_benchmark_missing_for_a_company_is_named_not_a_key_error():
+    R, bench, board = _row_inputs(10)
+    bench.loc[["c3", "c4"], "mack"] = np.nan
+    res = ev.evaluate_row("tlrn_8_ay", R, bench, board, draws=list(range(10)))
+    assert res["verdict"] == "not distinguishable"
+    assert "mack" in res["verdict_reason"] and "c3" in res["verdict_reason"]
+    assert "c4" in res["verdict_reason"]
+
+
+def test_the_tie_out_names_a_benchmark_missing_on_cohort_a():
+    board = [f"c{i}" for i in range(5)]
+    bench = bench_stub(board, 1.0)
+    bench.loc["c2", "mack"] = np.nan
+    with pytest.raises(SystemExit, match=r"mack.*c2"):
+        ev.tie_out(SimpleNamespace(name="A"), bench, None)
+
+
+def test_variance_output_leads_with_draw_noise_and_labels_the_icc_as_company_size():
+    R, bench, board = _row_inputs(10)
+    res = ev.evaluate_row("tlrn_8_ay", R, bench, board, draws=list(range(10)))
+    text = ev.render(SimpleNamespace(name="A", description="stub"), {"tlrn_8_ay": res}, {}, "")
+    q5 = text.split("Q5a/b")[1].split("Q5c")[0]
+    intro = q5.splitlines()[0]
+    assert "draw_noise_share first" in intro and "company-size effect" in intro
+    q5 = next(line for line in q5.splitlines() if line.startswith("   draw_noise_share "))
+    assert q5.index("draw_noise_share ") < q5.index("draw_noise_share_relative")
+    assert q5.index("draw_noise_share_relative") < q5.index("icc_log_reserve")
+    assert "company-size effect" in q5
+
+
+def test_a_repeated_row_is_planned_and_fitted_once(tmp_path):
+    cohorts = {"A": cohort_stub("A")}
+    todo, done = study.plan_study(
+        tmp_path, cohorts, ["tlrn_8_ay", "tlrn_8_ay"], 2, members=20, smoke=False, version="9.9.9"
+    )
+    assert [(i["row"], i["draw"]) for i in todo] == [("tlrn_8_ay", 0), ("tlrn_8_ay", 1)]
+    assert not done
+    fit_fn = Recorder()
+    summary = run(tmp_path / "r", fit_fn, draws=2, cohorts=cohorts, rows=["tlrn_8_ay"] * 2)
+    assert summary == {"fitted": 2, "skipped": 0} and len(fit_fn.calls) == 2
+
+
+def test_main_dedupes_a_repeated_rows_entry(tmp_path, monkeypatch):
+    pytest.importorskip("jax")
+    pytest.importorskip("torch")
+    seen = {}
+
+    def fake_run_study(out, cohorts, rows, draws, **kw):
+        seen["rows"] = list(rows)
+        return {"fitted": 0, "skipped": 0}
+
+    monkeypatch.setattr(study, "run_study", fake_run_study)
+    monkeypatch.setattr(study, "cells_from_mart", lambda: None)
+
+    def stub(name, **kw):
+        cohort = cohort_stub(name)
+        cohort.description = "stub " + name
+        return cohort
+
+    monkeypatch.setattr(study, "build_cohort", stub)
+    monkeypatch.setattr(study, "write_manifest", lambda *a, **k: None)
+    args = ["--out", str(tmp_path), "--cohort", "A", "--smoke"]
+    study.main([*args, "--rows", "tlrn_8_ay,tlrn_8_ay,tlrn_13_ay"])
+    assert seen["rows"] == ["tlrn_8_ay", "tlrn_13_ay"]
+
+
+def _eval_main(tmp_path, monkeypatch, fit_cohorts):
+    """Run the evaluator's main on stub cohorts; fits are written for ``fit_cohorts`` only."""
+    cohort_a, cohort_b = cohort_stub("A"), cohort_stub("B")
+    actual = cohort_a.actual["actual_reserve"].to_numpy()
+    anchor = cohort_a.actual["anchor"].to_list()
+    fits = tmp_path / "fits"
+    fits.mkdir()
+    for name in fit_cohorts:
+        for draw in range(3):
+            write_fit(fits, name, "tlrn_8_ay", draw, actual * 1.05, anchor=anchor)
+    fitted = []
+    monkeypatch.setattr(ev.study, "cells_from_mart", lambda: None)
+    monkeypatch.setattr(
+        ev.study, "load_cohort", lambda name, **kw: {"A": cohort_a, "B": cohort_b}[name]
+    )
+    for c in (cohort_a, cohort_b):
+        c.description = "stub " + c.name
+
+    def fake_bench(cohort, cache_dir, *, log=print):
+        fitted.append(cohort.name)
+        return pd.DataFrame(
+            {"mack": actual * 1.2, "mcl": actual * 0.8, "sur": actual * 1.1, "actual": actual},
+            index=pd.Index(cohort.board, name="company_code"),
+        )
+
+    monkeypatch.setattr(ev, "cached_benchmarks", fake_bench)
+    monkeypatch.setattr(ev, "tie_out", lambda *a, **k: {})
+    out = tmp_path / "out"
+    ev.main(["--fits", str(fits), "--rows", "tlrn_8_ay", "--out", str(out)])
+    return fitted, out
+
+
+def test_a_cohort_with_no_saved_fits_is_not_benchmarked(tmp_path, monkeypatch):
+    fitted, _ = _eval_main(tmp_path, monkeypatch, fit_cohorts=["A"])
+    assert fitted == ["A"]
+
+
+def test_verdicts_json_marks_an_incomplete_set_provisional(tmp_path, monkeypatch, capsys):
+    _, out = _eval_main(tmp_path, monkeypatch, fit_cohorts=["A"])
+    data = json.loads((out / "verdicts.json").read_text())["verdicts"]["A/tlrn_8_ay"]
+    assert data["provisional"] is True and data["n_draws"] == 3
+    assert "provisional: 3 of 10 draws" in data["reason"]
+    assert "provisional: 3 of 10 draws" in data["label"]
+    assert "provisional: 3 of 10 draws" in capsys.readouterr().out

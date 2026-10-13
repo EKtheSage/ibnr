@@ -184,6 +184,16 @@ multivariate chain ladder reserves on cohort B. It prints the six answers for ev
 and row and one verdict each, and writes the tables and `verdicts.json` to `--out`.
 Add `--smoke` to score a smoke folder; its output is marked and must never be quoted.
 
+Two reading rules. First, the verdict is **provisional** unless the folder holds exactly
+draws 0 to 9 for that cohort and row: with fewer draws, or a gap, the evaluator still
+applies the pre-registered rule but prints (and writes to `verdicts.json`) the word with
+`provisional: N of 10 draws` and the missing draw numbers, never a bare `effective`.
+Second, in the variance decomposition read `draw_noise_share` and
+`draw_noise_share_relative` first (the part of one draw's squared error that averaging
+draws removes). `icc_log_reserve` is a company-size effect: reserves differ by orders of
+magnitude between companies, so it sits near 1 by construction and does not measure draw
+noise. A cohort with no saved fits is skipped before its benchmarks are fitted.
+
 ## Expected cost
 
 | step | time |

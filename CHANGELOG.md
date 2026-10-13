@@ -74,7 +74,11 @@ mart reproduces cell for cell) and saves each fit as it finishes, resumably;
 `scripts/tlrn_study_eval.py` scores the saved fits against `mack`, `mcl` and `sur` with
 questions and a verdict rule written down beforehand. The how-to is `docs/tlrn-study.md`
 and the design is in `knowledge/decisions/tlrn-robustness-study.md`. No library code
-changed.
+changed. The evaluator labels a verdict provisional (with the draw count and the missing
+draw numbers) unless exactly draws 0 to 9 are present, names a missing benchmark and its
+companies instead of raising a `KeyError`, leads the variance output with the draw-noise
+shares and labels the intraclass correlation a company-size effect, and does not fit the
+benchmarks for a cohort with no saved fits. The runner trains a repeated `--rows` entry once.
 
 ### tlrn design choices
 

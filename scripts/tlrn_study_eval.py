@@ -43,7 +43,8 @@ The six questions, answered with numbers for every cohort and row.
 5. Variance decomposition: (a) the share of a single draw's squared error that is
    variance between draws (exact: mean squared error of a draw equals the squared error of
    the draw average plus the between-draw variance), on dollars and on each company's
-   relative error; (b) the intraclass correlation of the log company reserve across draws;
+   relative error; (b) the intraclass correlation of the log company reserve across draws
+   (a company-size effect, near 1 by construction, so draw_noise_share leads the output);
    (c) Pool_APE of the average of every subset of k draws, k = 1 to the number of draws,
    with the share of those averages below ``mack`` and ``mcl``: does a bigger ensemble
    change the answer?
@@ -297,6 +298,25 @@ def verdict(median_draw: float, pool: dict, interval: dict) -> tuple[str, str]:
     return word, "; ".join(parts)
 
 
+def missing_benchmark_text(bench: pd.DataFrame, names=VERDICT_BENCHMARKS) -> str:
+    """Which benchmark lacks a reserve for which companies, empty when none does."""
+    parts = []
+    for b in names:
+        gone = [str(c) for c in bench.index[~bench[b].notna().to_numpy()]]
+        if gone:
+            shown = ", ".join(gone[:8]) + (f" and {len(gone) - 8} more" if len(gone) > 8 else "")
+            noun = "company" if len(gone) == 1 else "companies"
+            parts.append(f"{b} has no reserve for {len(gone)} {noun} ({shown})")
+    return "; ".join(parts)
+
+
+def draw_completeness(draws: list[int]) -> tuple[bool, list[int]]:
+    """``(provisional, missing)``: the pre-registered rule needs draws 0 to 9, all present."""
+    wanted = list(range(study.DEFAULT_DRAWS))
+    missing = sorted(set(wanted) - set(draws))
+    return sorted(draws) != wanted, missing
+
+
 # -- the saved fits --------------------------------------------------------------------
 
 RECORD_NAME = re.compile(
@@ -501,7 +521,16 @@ def evaluate_row(
     *,
     draws: list[int] | None = None,
 ) -> dict:
-    """Questions 1 to 6 for one row of one cohort, from the draw reserves ``R``."""
+    """Questions 1 to 6 for one row of one cohort, from the draw reserves ``R``.
+
+    ``draws`` are the draw indices of the rows of ``R`` (default 0 to n-1). The verdict
+    rule is the pre-registered one whatever is passed, but unless the set is exactly draws
+    0 to 9 the verdict is reported as provisional: ``verdict`` keeps the rule's word and
+    ``verdict_label`` and ``verdict_reason`` say how many of the 10 draws were present.
+    """
+    draws = list(range(R.shape[0])) if draws is None else [int(d) for d in draws]
+    if len(draws) != R.shape[0]:
+        raise ValueError(f"{len(draws)} draw indices for {R.shape[0]} rows of reserves")
     actual = bench["actual"].to_numpy(dtype=float)
     average = R.mean(axis=0)
     top, share = dominant_company(pd.Series(actual, index=board))
@@ -575,20 +604,54 @@ def evaluate_row(
     result["subset_curve"] = subset_curve(R, actual, pools)
     inc = result["comparisons"]
     inc = inc[inc["scope"] == "including dominant"].set_index("benchmark")
-    if all(b in inc.index for b in VERDICT_BENCHMARKS):
+    if all(b in pools and b in inc.index for b in VERDICT_BENCHMARKS):
         word, why = verdict(
             result["summary"]["median"],
             {b: pools[b] for b in VERDICT_BENCHMARKS},
             {b: (inc.loc[b, "ci_low"], inc.loc[b, "ci_high"]) for b in VERDICT_BENCHMARKS},
         )
     else:
-        word, why = "not distinguishable", "mack or mcl is missing for some company"
-    result["verdict"], result["verdict_reason"] = word, why
+        word = "not distinguishable"
+        why = "the rule needs mack and mcl for every company, and " + (
+            missing_benchmark_text(bench) or "a benchmark is missing"
+        )
+    provisional, missing = draw_completeness(draws)
+    label = word
+    if provisional:
+        note = f"provisional: {len(draws)} of {study.DEFAULT_DRAWS} draws"
+        if missing:
+            note += " (missing draws " + ", ".join(str(d) for d in missing) + ")"
+        why = f"{note}; {why}"
+        label = f"{word} ({note})"
+    result.update(
+        verdict=word,
+        verdict_reason=why,
+        verdict_label=label,
+        provisional=provisional,
+        missing_draws=missing,
+        draws=draws,
+    )
     return result
 
 
 def fmt_pct(x: float) -> str:
     return f"{100 * x:.3f}%"
+
+
+VARIANCE_LEAD = ("draw_noise_share", "draw_noise_share_relative")
+
+
+def fmt_variance(v: dict) -> str:
+    """The variance decomposition with the draw-noise shares first and the ICC labelled."""
+    order = [*VARIANCE_LEAD, *(k for k in v if k not in VARIANCE_LEAD)]
+    parts = []
+    for k in order:
+        value = v[k]
+        text = f"{value:.4g}" if isinstance(value, float) else f"{value}"
+        if k == "icc_log_reserve":
+            text += " (company-size effect, not draw noise)"
+        parts.append(f"{k} {text}")
+    return ", ".join(parts)
 
 
 def render(cohort, row_results: dict[str, dict], extras: dict, banner: str) -> str:
@@ -603,7 +666,9 @@ def render(cohort, row_results: dict[str, dict], extras: dict, banner: str) -> s
         s, sx = res["summary"], res["summary_excluding_dominant"]
         lines += [
             "",
-            f"--- {row}: {res['n_draws']} draws; dominant company {res['dominant_company']} "
+            f"--- {row}: {res['n_draws']} draws"
+            + (" (PROVISIONAL, not the registered 10)" if res["provisional"] else "")
+            + f"; dominant company {res['dominant_company']} "
             f"holds {res['dominant_share']:.1%} of the actual reserve",
             "Q1 Pool_APE per draw: " + " ".join(f"{fmt_pct(v)}" for v in res["draw_pool_ape"]),
             f"   min {fmt_pct(s['min'])}  median {fmt_pct(s['median'])}  max {fmt_pct(s['max'])}  "
@@ -625,17 +690,13 @@ def render(cohort, row_results: dict[str, dict], extras: dict, banner: str) -> s
             res["comparisons"].round(5).to_string(index=False),
             "Q4 share of 10,000 company resamples whose model Pool_APE is below the benchmark's:",
             res["bootstrap_claim"].round(4).to_string(index=False),
-            "Q5a/b variance decomposition (including dominant company):",
-            "   "
-            + ", ".join(
-                f"{k} {v:.4g}" if isinstance(v, float) else f"{k} {v}"
-                for k, v in res["variance"].items()
-            ),
-            "   excluding dominant: "
-            + ", ".join(
-                f"{k} {v:.4g}" if isinstance(v, float) else f"{k} {v}"
-                for k, v in res["variance_excluding_dominant"].items()
-            ),
+            "Q5a/b variance decomposition (including dominant company). Read "
+            "draw_noise_share first: the part of a single draw's squared error that "
+            "averaging draws removes. icc_log_reserve is a company-size effect (reserves "
+            "differ by orders of magnitude between companies), near 1 by construction, "
+            "and does not measure draw noise:",
+            "   " + fmt_variance(res["variance"]),
+            "   excluding dominant: " + fmt_variance(res["variance_excluding_dominant"]),
             "Q5c Pool_APE of the average of k draws:",
             res["subset_curve"].round(5).to_string(index=False),
             f"Q6 VERDICT: {row} on cohort {cohort.name} is {res['verdict'].upper()} "
@@ -665,6 +726,9 @@ def tie_out(cohort, bench: pd.DataFrame, companion: pd.DataFrame | None) -> dict
         if bench[b].notna().all()
     }
     if cohort.name == "A":
+        absent = missing_benchmark_text(bench, tuple(REFERENCE_A))
+        if absent:
+            raise SystemExit(f"cannot tie out to notebook 04's Pool_APE on cohort A: {absent}")
         for b, ref in REFERENCE_A.items():
             rel = abs(pools[b] / ref - 1.0)
             out[f"{b} Pool_APE against notebook 04's"] = (
@@ -725,6 +789,11 @@ def main(argv=None) -> int:
         t0 = time.perf_counter()
         cohort = study.load_cohort(name, cas_dir=args.cas_dir if name == "B" else None, cells=cells)
         print(cohort.description, flush=True)
+        # Benchmarks cost about 80 s per cohort: fit them only for a cohort with a finished fit.
+        fits_by_row = {row: load_fits(args.fits, name, row, smoke=args.smoke) for row in rows}
+        if not any(fits_by_row.values()):
+            print(f"cohort {name}: no finished fits in {args.fits}, benchmarks not fitted, skipped")
+            continue
         bench = cached_benchmarks(cohort, args.cache or args.out)
         companion = (
             companion_reserves(args.companion_reserves, cohort.board)
@@ -734,7 +803,7 @@ def main(argv=None) -> int:
         extras = tie_out(cohort, bench, companion)
         results = {}
         for row in rows:
-            fits = load_fits(args.fits, name, row, smoke=args.smoke)
+            fits = fits_by_row[row]
             if not fits:
                 print(f"cohort {name} {row}: no finished fits in {args.fits}, skipped")
                 continue
@@ -748,7 +817,7 @@ def main(argv=None) -> int:
                         "data from the one this evaluator built"
                     )
             R = reserve_matrix(fits, cohort.board, cohort.actual)
-            results[row] = evaluate_row(row, R, bench, cohort.board)
+            results[row] = evaluate_row(row, R, bench, cohort.board, draws=[f.draw for f in fits])
             if companion is not None and "IBNR_TLRN" in companion.columns:
                 ref = pool_ape(
                     companion["IBNR_TLRN"].to_numpy(dtype=float),
@@ -761,6 +830,9 @@ def main(argv=None) -> int:
             verdicts[f"{name}/{row}"] = {
                 "verdict": results[row]["verdict"],
                 "reason": results[row]["verdict_reason"],
+                "label": results[row]["verdict_label"],
+                "provisional": results[row]["provisional"],
+                "missing_draws": results[row]["missing_draws"],
                 "n_draws": results[row]["n_draws"],
             }
         report = render(cohort, results, extras, banner)
@@ -791,7 +863,7 @@ def main(argv=None) -> int:
         )
     print("\nVERDICTS" + (" (SMOKE, not a result)" if args.smoke else ""))
     for key, value in verdicts.items():
-        print(f"  {key}: {value['verdict']} ({value['n_draws']} draws)")
+        print(f"  {key}: {value['label']} ({value['n_draws']} draws)")
     return 0
 
 

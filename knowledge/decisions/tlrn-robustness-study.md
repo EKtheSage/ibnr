@@ -122,7 +122,10 @@ on the cohort with the dominant company included, for the benchmark `b`.
   the lower Pool_APE of the two.
 * **not distinguishable**: everything else.
 
-The rule is mechanical so that nobody reads the result into it. Eight comparisons are
+The rule is mechanical so that nobody reads the result into it. A labelling rule sits
+beside it and does not change it: unless a cohort and row hold exactly draws 0 to 9, the
+evaluator reports the rule's word as provisional (`provisional: N of 10 draws`, with the
+missing draw numbers), in its verdict reason, its printed header and `verdicts.json`. Eight comparisons are
 made (two rows, two benchmarks, two cohorts) and no multiplicity correction is applied;
 a single "effective" is therefore weaker evidence than it reads, and an effective on
 both cohorts counts once, because cohort B lies inside cohort A.

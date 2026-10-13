@@ -615,6 +615,7 @@ def plan_study(
     even set of fits. A saved fit with other settings raises ``SystemExit`` here.
     """
     configs = {row: (roles, cfg) for row, roles, cfg in row_configs(members, smoke)}
+    rows = list(dict.fromkeys(rows))  # a repeated row would train the same fit twice
     todo, done = [], []
     for draw in range(draws):
         for name, cohort in cohorts.items():
@@ -705,7 +706,7 @@ def main(argv=None) -> int:
     parser.add_argument("--quiet", action="store_true", help="no progress line every 100 epochs")
     args = parser.parse_args(argv)
 
-    rows = [r.strip() for r in args.rows.split(",") if r.strip()]
+    rows = list(dict.fromkeys(r.strip() for r in args.rows.split(",") if r.strip()))
     unknown = [r for r in rows if r not in ROWS]
     if unknown or not rows:
         parser.error(f"--rows must be a comma list from {list(ROWS)}, got {args.rows!r}")
