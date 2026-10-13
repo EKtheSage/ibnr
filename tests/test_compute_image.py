@@ -109,6 +109,16 @@ NOT_PROMISED = {
         "It needs jax and torch (the [jax] extra), which the image does not install: "
         "the image is a CPU Stan image, and on a CPU the torch backend is the faster one."
     ),
+    "tlrn_study_colab.py": (
+        "the runner of the tlrn robustness study: it trains the accident-year model many "
+        "times with the JAX backend on a Colab GPU or TPU. It needs jax and torch (the [jax] "
+        "extra), which the image does not install, and it imports tlrn_colab.py beside it."
+    ),
+    "tlrn_study_eval.py": (
+        "scores the saved fits of the tlrn robustness study. It reads the folder the Colab "
+        "runner wrote, which the image never has, and it imports tlrn_study_colab.py, whose "
+        "own entry is listed above; it computes nothing without those fits."
+    ),
     "conventional_examples.py": (
         "a loader with no command line, imported by the conventional benchmark "
         "driver rather than run on its own. Running it by itself computes "
