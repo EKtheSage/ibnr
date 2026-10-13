@@ -59,7 +59,8 @@ commit that says so, not silently.
   pairs, all scored. Its cells are identical to the cas-schedule-p mart's for these lines
   and years, so the runner can build it from the mart (the default) or from the four
   cached CAS files (`--cas-dir`).[^repro] Cohort B is a subset of cohort A: its rule asks
-  more of every pair, so the two cohorts are not independent evidence.
+  more of every pair, so the two cohorts are not independent evidence (see [the two
+  cohorts](/findings/tlrn-study-cohorts.md) for the counts and the tie-outs).
 * **Cost.** 10 draws x 2 rows x 2 cohorts is 40 fits, about 7.5 minutes each on a Colab
   GPU, about 5 hours in all, runnable in pieces and resumable.[^gpu]
 

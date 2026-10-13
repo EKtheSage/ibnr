@@ -66,6 +66,16 @@ decision 8.
 
 The Colab how-to and notebook install with `--ignore-requires-python`: a Colab runtime is on Python 3.13 and ibnr declares 3.11 to 3.12, a limit that comes from the `bayesian` and `interop` extras and does not touch `nn` or `jax` (the JAX backend's focused tests pass on 3.13.13).
 
+### The tlrn robustness study (scripts and knowledge only)
+
+`scripts/tlrn_study_colab.py` trains the accident-year model for many independent fit
+seeds on two cohorts (notebook 04's, and the companion study's, which the cas-schedule-p
+mart reproduces cell for cell) and saves each fit as it finishes, resumably;
+`scripts/tlrn_study_eval.py` scores the saved fits against `mack`, `mcl` and `sur` with
+questions and a verdict rule written down beforehand. The how-to is `docs/tlrn-study.md`
+and the design is in `knowledge/decisions/tlrn-robustness-study.md`. No library code
+changed.
+
 ### tlrn design choices
 
 `tlrn` takes its design choices by name, so a variant of the network is a config and
