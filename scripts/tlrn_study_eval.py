@@ -220,8 +220,10 @@ def variance_decomposition(R, actual) -> dict:
         if R.shape[0] > 1 and np.all(mean != 0)
         else float("nan"),
     }
-    positive = R.shape[0] > 1 and bool(np.all(R > 0))
-    out["icc_log_reserve"] = _icc(np.log(R)) if positive else float("nan")
+    # the log scale needs a positive reserve in every draw; a company without one is left out
+    positive = (R > 0).all(axis=0) if R.shape[0] > 1 else np.zeros(R.shape[1], dtype=bool)
+    out["icc_companies"] = int(positive.sum())
+    out["icc_log_reserve"] = _icc(np.log(R[:, positive])) if positive.sum() >= 2 else float("nan")
     return out
 
 

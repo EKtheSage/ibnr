@@ -677,6 +677,19 @@ def test_draws_that_agree_have_no_draw_noise_and_distinct_companies_give_an_icc_
     assert abs(ev.variance_decomposition(pure_noise, np.full(30, 100.0))["icc_log_reserve"]) < 0.3
 
 
+def test_a_company_without_a_positive_reserve_is_left_out_of_the_log_scale_icc_only():
+    rng = np.random.default_rng(8)
+    actual = rng.uniform(100.0, 1000.0, size=10)
+    R = actual * rng.uniform(0.9, 1.1, size=(5, 10))
+    R[2, 4] = -5.0  # one draw says company 4 has a negative reserve
+    got = ev.variance_decomposition(R, actual)
+    assert got["icc_companies"] == 9 and np.isfinite(got["icc_log_reserve"])
+    clean = ev.variance_decomposition(np.delete(R, 4, axis=1), np.delete(actual, 4))
+    assert got["icc_log_reserve"] == pytest.approx(clean["icc_log_reserve"])
+    # the squared-error decomposition still uses every company
+    assert got["n_companies"] == 10 and got["mse_single_draw"] > clean["mse_single_draw"]
+
+
 def test_the_subset_curve_enumerates_every_subset_and_ends_at_the_full_average():
     rng = np.random.default_rng(2)
     actual = rng.uniform(100.0, 1000.0, size=15)
