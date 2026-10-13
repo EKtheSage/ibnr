@@ -19,7 +19,12 @@ corrected decision 8 - and, from 0.7.2,
 From 0.7.2 the minor number is kept for milestones: additions and fixes ship as
 patch releases, and 0.8 comes when the roadmap's goals are done.
 
-## Unreleased
+## 0.7.4 - 2026-10-12
+
+A patch release over the optional JAX training backend for `tlrn` below. Nothing
+existing changes: the default backend is still torch, and `ibnr[jax]` is a new extra.
+Nothing that can break existing code.
+
 
 ### tlrn trains on JAX, for a TPU or a GPU
 
