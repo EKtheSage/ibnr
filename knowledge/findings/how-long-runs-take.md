@@ -43,6 +43,14 @@ notebook 04's stage times see [re-run notebook 04](/playbooks/rerun-notebook-04.
 | notebook 04 on 0.7.0 | 599 min | 2026-09-22 |
 | notebook 04 on 0.7.1 | 614 min | 2026-09-24 |
 | notebook 04 on 0.7.1, second round | 618 min | 2026-09-25 |
+| notebook 04 on 0.7.3, with the accident-year variant | 1,438 min (24 h) | 2026-10-08 |
+
+The 0.7.3 run (2026-10-07 19:05 to 2026-10-08 19:02, exit 0) trained forty members per
+tlrn fit on CPU. From the fit-cache file times, `tlrn_8` took about 8 h 20 min, `tlrn_13`
+about 5 h 36 min and `tlrn_ay` about 8 h 51 min; the three transformer fits took 22, 16 and
+24 min. The run manifest's own `fit_seconds` agree for `tlrn_13` (20,232 s) and `tlrn_ay`
+(31,874 s) but give 20,793 s (5 h 47 min) for `tlrn_8`, so the 8 h 20 min for `tlrn_8` is
+unexplained; the manifest figure is the better-supported one.
 
 In notebook 03c on 0.5.6 the joint multi-line arm took about 1 hour and the AR arm about
 3.2 hours, 2.7 of them the rollout.[^note]
