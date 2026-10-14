@@ -316,7 +316,11 @@ def test_draw_seeds_start_at_the_earlier_fit_and_no_two_streams_collide():
 
 def cohort_stub(name="A", *, data_hash="d" * 16, board=("1", "2", "3")):
     actual = pd.DataFrame(
-        {"actual_reserve": [100.0, 200.0, 300.0], "anchor": [1000.0, 2000.0, 3000.0]},
+        {
+            "actual_reserve": [100.0, 200.0, 300.0],
+            "anchor": [1000.0, 2000.0, 3000.0],
+            "premium": [1.0, 1.0, 1.0],
+        },
         index=pd.Index(list(board), name="company_code"),
     )
     return SimpleNamespace(
@@ -324,6 +328,8 @@ def cohort_stub(name="A", *, data_hash="d" * 16, board=("1", "2", "3")):
         pairs_hash="p" * 16,
         data_hash=data_hash,
         board=list(board),
+        companies=list(board),
+        pairs=[(c, "wc") for c in board],
         actual=actual,
         triangle=None,
         source="stub",
@@ -1138,16 +1144,32 @@ def test_main_dedupes_a_repeated_rows_entry(tmp_path, monkeypatch):
     assert seen["rows"] == ["tlrn_8_ay", "tlrn_13_ay"]
 
 
-def _eval_main(tmp_path, monkeypatch, fit_cohorts):
-    """Run the evaluator's main on stub cohorts; fits are written for ``fit_cohorts`` only."""
-    cohort_a, cohort_b = cohort_stub("A"), cohort_stub("B")
+def _eval_main(
+    tmp_path, monkeypatch, fit_cohorts, *, evaluator_hash="d" * 16, fit_edit=None, args=()
+):
+    """Run the evaluator's main on stub cohorts; fits are written for ``fit_cohorts`` only.
+
+    ``evaluator_hash`` is the cell hash the evaluator builds, ``fit_edit`` changes the
+    recorded settings of the fits (a dict; its ``anchor`` key changes the stored anchors).
+    """
+    fit_edit = dict(fit_edit or {})
+    anchor_edit = fit_edit.pop("anchor", None)
+    cohort_a, cohort_b = cohort_stub("A", data_hash=evaluator_hash), cohort_stub("B")
     actual = cohort_a.actual["actual_reserve"].to_numpy()
     anchor = cohort_a.actual["anchor"].to_list()
     fits = tmp_path / "fits"
     fits.mkdir()
     for name in fit_cohorts:
         for draw in range(3):
-            write_fit(fits, name, "tlrn_8_ay", draw, actual * 1.05, anchor=anchor)
+            write_fit(
+                fits,
+                name,
+                "tlrn_8_ay",
+                draw,
+                actual * 1.05,
+                anchor=anchor_edit or anchor,
+                mutate=fit_edit,
+            )
     fitted = []
     monkeypatch.setattr(ev.study, "cells_from_mart", lambda: None)
     monkeypatch.setattr(
@@ -1166,7 +1188,7 @@ def _eval_main(tmp_path, monkeypatch, fit_cohorts):
     monkeypatch.setattr(ev, "cached_benchmarks", fake_bench)
     monkeypatch.setattr(ev, "tie_out", lambda *a, **k: {})
     out = tmp_path / "out"
-    ev.main(["--fits", str(fits), "--rows", "tlrn_8_ay", "--out", str(out)])
+    ev.main(["--fits", str(fits), "--rows", "tlrn_8_ay", "--out", str(out), *args])
     return fitted, out
 
 
@@ -1182,3 +1204,75 @@ def test_verdicts_json_marks_an_incomplete_set_provisional(tmp_path, monkeypatch
     assert "provisional: 3 of 10 draws" in data["reason"]
     assert "provisional: 3 of 10 draws" in data["label"]
     assert "provisional: 3 of 10 draws" in capsys.readouterr().out
+
+
+NOTE = "data hash differs (fits recorded " + "d" * 16 + ", evaluator built " + "e" * 16 + ")"
+
+
+def test_a_fit_with_another_data_hash_but_equal_data_is_scored_and_says_so(
+    tmp_path, monkeypatch, capsys
+):
+    # every fit's recorded hash is "d" * 16 and the evaluator builds "e" * 16
+    _eval_main(tmp_path, monkeypatch, ["A"], evaluator_hash="e" * 16)
+    out = capsys.readouterr().out
+    assert NOTE in out
+    assert "equal the cohort's within tolerance, so the fits are scored" in out
+    assert "A/tlrn_8_ay:" in out.split("VERDICTS")[1]
+
+
+def test_another_data_hash_and_a_moved_anchor_is_refused_naming_fit_and_gap(tmp_path, monkeypatch):
+    moved = [1000.0, 2100.0, 3000.0]
+    with pytest.raises(SystemExit, match=r"draw 0.*anchor for company 2.*100\.0000"):
+        _eval_main(
+            tmp_path, monkeypatch, ["A"], evaluator_hash="e" * 16, fit_edit={"anchor": moved}
+        )
+
+
+def test_another_data_hash_and_a_moved_premium_lines_or_companies_is_refused(tmp_path):
+    cohort = cohort_stub("A", data_hash="e" * 16)
+    write_fit(tmp_path, "A", "tlrn_8_ay", 0, [100.0, 200.0, 300.0], anchor=[1000.0, 2000.0, 3000.0])
+    fits = ev.load_fits(tmp_path, "A", "tlrn_8_ay", smoke=False)
+    fits[0].frame.loc["3", "premium"] = 1.5
+    with pytest.raises(SystemExit, match=r"premium for company 3"):
+        ev.check_fits_against_cohort(cohort, "tlrn_8_ay", fits)
+    fits[0].frame.loc["3", "premium"] = 1.0
+    fits[0].frame.loc["2", "n_lines"] = 2
+    with pytest.raises(SystemExit, match=r"2 lines for company 2"):
+        ev.check_fits_against_cohort(cohort, "tlrn_8_ay", fits)
+    fits[0].frame.loc["2", "n_lines"] = 1
+    assert "so the fits are scored" in ev.check_fits_against_cohort(cohort, "tlrn_8_ay", fits)
+    cohort.companies = ["1", "2"]
+    with pytest.raises(SystemExit, match="companies differ"):
+        ev.check_fits_against_cohort(cohort, "tlrn_8_ay", fits)
+
+
+def test_another_cohort_hash_publish_or_study_is_still_refused(tmp_path, monkeypatch):
+    for edit in ({"cohort_hash": "x" * 16}, {"publish_id": "20000101_000000"}, {"study": 99}):
+        (tmp_path / next(iter(edit))).mkdir()
+        with pytest.raises(SystemExit, match="different cohort or data"):
+            _eval_main(
+                tmp_path / next(iter(edit)),
+                monkeypatch,
+                ["A"],
+                evaluator_hash="e" * 16,
+                fit_edit=edit,
+            )
+
+
+def test_strict_data_hash_refuses_a_differing_hash_even_when_the_data_agree(tmp_path, monkeypatch):
+    with pytest.raises(SystemExit, match="--strict-data-hash"):
+        _eval_main(
+            tmp_path, monkeypatch, ["A"], evaluator_hash="e" * 16, args=["--strict-data-hash"]
+        )
+
+
+def test_verdicts_json_carries_the_data_hash_note(tmp_path, monkeypatch):
+    _, out = _eval_main(tmp_path, monkeypatch, ["A"], evaluator_hash="e" * 16)
+    entry = json.loads((out / "verdicts.json").read_text())["verdicts"]["A/tlrn_8_ay"]
+    assert NOTE in entry["data_hash"]["note"]
+    assert entry["data_hash"]["fits_data_hash"] == "d" * 16
+    assert entry["data_hash"]["evaluator_data_hash"] == "e" * 16
+    (tmp_path / "same").mkdir()
+    _, out2 = _eval_main(tmp_path / "same", monkeypatch, ["A"])
+    same = json.loads((out2 / "verdicts.json").read_text())["verdicts"]["A/tlrn_8_ay"]
+    assert "data_hash" not in same

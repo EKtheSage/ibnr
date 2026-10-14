@@ -194,6 +194,18 @@ draws removes). `icc_log_reserve` is a company-size effect: reserves differ by o
 magnitude between companies, so it sits near 1 by construction and does not measure draw
 noise. A cohort with no saved fits is skipped before its benchmarks are fitted.
 
+Third, the data hash. Each fit records two hashes: the cohort hash (which company-line
+pairs) and the data hash (a sha256 of the cells printed as text). The evaluator refuses a
+fit whose cohort hash, publish id or study version differs from its own, because that is
+another cohort. The data hash depends on how every float prints, so a different machine
+can print the same cells with different last digits and give a different hash (a Colab
+A100 and the laptop did). When only the data hash differs, the evaluator does not refuse:
+it checks every fit's anchor and premium (to 1e-6 relative), number of lines and company
+set against the cohort it built, refuses by name any fit that disagrees, and otherwise
+scores the fits and prints a note giving both hashes (also written to `verdicts.json`).
+Pass `--strict-data-hash` to refuse a differing data hash outright. This is a labelling
+and checking detail; the questions and the verdict rule are unchanged.
+
 ## Expected cost
 
 | step | time |

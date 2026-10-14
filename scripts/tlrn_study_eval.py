@@ -85,6 +85,7 @@ import itertools
 import json
 import re
 import time
+from collections import Counter
 from dataclasses import dataclass
 from math import comb
 from pathlib import Path
@@ -379,6 +380,79 @@ def load_fits(folder: Path, cohort: str, row: str, *, smoke: bool) -> list[Fit]:
                     "must hold one study"
                 )
     return fits
+
+
+#: relative tolerance of the check that a fit saw the cohort's own anchors and premiums
+PLUMBING_TOL = 1e-6
+
+
+def check_fits_against_cohort(cohort, row: str, fits: list[Fit], *, strict: bool = False) -> str:
+    """Refuse a fit made for another cohort; return a note when only the cell hash differs.
+
+    The cohort hash (the pairs), the publish id and the study version must equal the
+    evaluator's. The cell hash is the sha256 of the cells printed as text, so another
+    machine can print the same numbers differently (last-bit float differences) and give
+    another hash. When only it differs, every fit's anchor, premium, number of lines and
+    company set are compared with the cohort's own, and any gap is refused by name; if all
+    agree the fits are scored and the returned note says so. ``strict`` refuses instead.
+    """
+    where = f"cohort {cohort.name} {row}"
+    for fit in fits:
+        s = fit.settings
+        for key, want in (
+            ("cohort_hash", cohort.pairs_hash),
+            ("publish_id", tlrn_colab.PUBLISH),
+            ("study", study.STUDY_VERSION),
+        ):
+            if s.get(key) != want:
+                raise SystemExit(
+                    f"{where} draw {fit.draw} was fitted on a different cohort or data from the "
+                    f"one this evaluator built ({key} {s.get(key)} against {want})"
+                )
+    recorded = {f.settings["data_hash"] for f in fits}
+    if recorded == {cohort.data_hash}:
+        return ""
+    shown = ", ".join(sorted(recorded))
+    if strict:
+        raise SystemExit(
+            f"{where} was fitted on data with hash {shown}, but this evaluator built "
+            f"{cohort.data_hash} (--strict-data-hash)"
+        )
+    want = cohort.actual
+    lines = pd.Series(Counter(c for c, _ in cohort.pairs))
+    for fit in fits:
+        frame = fit.frame
+        if set(frame.index) != set(cohort.companies):
+            extra = sorted(set(frame.index) ^ set(cohort.companies))
+            raise SystemExit(
+                f"{where} draw {fit.draw}: the fit's companies differ from the cohort's "
+                f"({len(extra)} in only one of them, e.g. {extra[:5]})"
+            )
+        for col, ours in (("anchor", want["anchor"]), ("premium", want["premium"])):
+            mine = ours.reindex(frame.index)
+            keep = mine.notna()
+            diff = (frame[col] - mine)[keep].abs()
+            scale = PLUMBING_TOL * max(1.0, float(mine[keep].abs().max()))
+            if len(diff) and float(diff.max()) > scale:
+                bad = diff.idxmax()
+                raise SystemExit(
+                    f"{where} draw {fit.draw}: the data hash differs and the fit's {col} for "
+                    f"company {bad} differs from the cohort's by {float(diff.max()):,.4f} "
+                    f"(tolerance {scale:,.4f}); the fit was made on other data"
+                )
+        n_lines = lines.reindex(frame.index).fillna(0).astype(int)
+        if not (frame["n_lines"].astype(int) == n_lines).all():
+            bad = (frame["n_lines"].astype(int) != n_lines).idxmax()
+            raise SystemExit(
+                f"{where} draw {fit.draw}: the data hash differs and the fit has "
+                f"{frame.loc[bad, 'n_lines']} lines for company {bad} against the cohort's "
+                f"{n_lines[bad]}; the fit was made on other data"
+            )
+    return (
+        f"{where}: data hash differs (fits recorded {shown}, evaluator built "
+        f"{cohort.data_hash}); anchors, premiums, lines and companies of every fit equal the "
+        "cohort's within tolerance, so the fits are scored"
+    )
 
 
 def reserve_matrix(fits: list[Fit], board: list[str], actual: pd.DataFrame) -> np.ndarray:
@@ -772,6 +846,13 @@ def main(argv=None) -> int:
         "--companion-reserves", type=Path, default=None, help="cohort B's published table"
     )
     parser.add_argument("--smoke", action="store_true", help="score a smoke folder")
+    parser.add_argument(
+        "--strict-data-hash",
+        action="store_true",
+        help="refuse a fit whose recorded cell hash differs from the one this evaluator builds "
+        "(by default such a fit is scored when its anchors, premiums, lines and companies "
+        "equal the cohort's)",
+    )
     args = parser.parse_args(argv)
 
     rows = [r.strip() for r in args.rows.split(",") if r.strip()]
@@ -784,7 +865,7 @@ def main(argv=None) -> int:
     if banner:
         print(banner)
     cells = study.cells_from_mart()
-    reports, verdicts = [], {}
+    reports, verdicts, data_hash_notes = [], {}, {}
     for name in names:
         t0 = time.perf_counter()
         cohort = study.load_cohort(name, cas_dir=args.cas_dir if name == "B" else None, cells=cells)
@@ -807,15 +888,14 @@ def main(argv=None) -> int:
             if not fits:
                 print(f"cohort {name} {row}: no finished fits in {args.fits}, skipped")
                 continue
-            for fit in fits:
-                if (
-                    fit.settings["cohort_hash"] != cohort.pairs_hash
-                    or fit.settings["data_hash"] != cohort.data_hash
-                ):
-                    raise SystemExit(
-                        f"cohort {name} {row} draw {fit.draw} was fitted on a different cohort or "
-                        "data from the one this evaluator built"
-                    )
+            note = check_fits_against_cohort(cohort, row, fits, strict=args.strict_data_hash)
+            if note:
+                print(note, flush=True)
+                data_hash_notes[f"{name}/{row}"] = {
+                    "note": note,
+                    "fits_data_hash": fits[0].settings["data_hash"],
+                    "evaluator_data_hash": cohort.data_hash,
+                }
             R = reserve_matrix(fits, cohort.board, cohort.actual)
             results[row] = evaluate_row(row, R, bench, cohort.board, draws=[f.draw for f in fits])
             if companion is not None and "IBNR_TLRN" in companion.columns:
@@ -835,6 +915,8 @@ def main(argv=None) -> int:
                 "missing_draws": results[row]["missing_draws"],
                 "n_draws": results[row]["n_draws"],
             }
+            if f"{name}/{row}" in data_hash_notes:
+                verdicts[f"{name}/{row}"]["data_hash"] = data_hash_notes[f"{name}/{row}"]
         report = render(cohort, results, extras, banner)
         print(report)
         reports.append(report)
