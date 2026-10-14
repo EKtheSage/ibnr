@@ -1,7 +1,7 @@
 ---
 type: Playbook
 title: Cut a release
-description: The pre-flight checks run before tagging an ibnr release, the traps hit while publishing to PyPI, and the release history from 0.2.0 to 0.7.1 as the agent's status note recorded it.
+description: The pre-flight checks run before tagging an ibnr release, the traps hit while publishing to PyPI, and the release history from 0.2.0 to 0.7.4 as the agent's status note recorded it.
 tags: [release, pypi, ci, process]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-05T23:00:00Z }
@@ -37,6 +37,14 @@ Since PR #133 (2026-09-07) the release workflow publishes only when the pytest j
 up to 30 minutes, and treats a skipped or neutral run as a failure.[^pr-133] See [the release
 check wants green runs on the tagged commit](/gotchas/release-gate-wants-green-runs-on-the-tagged-commit.md)
 for how that went wrong on 0.7.3.
+
+The check needs the Tests and Lint runs on the release (merge) commit to have finished and
+be green before the tag is pushed. Pushing the tag first makes the release workflow's "Tests
+green on this commit" job fail or wait on runs that are not done (0.7.4 lesson, 2026-10-13).
+
+Cut the release with the CHANGELOG's `## Unreleased` heading renamed to the version and
+date, as 0.7.3 did. A later pull request that adds an entry then needs a fresh
+`## Unreleased` heading above the release section; do not write it under the released one.
 
 Version numbers move slowly: fixes and additions are patch releases (see [ibnr versions
 move slowly](/decisions/slow-versioning.md)). 0.5.9 rather than
@@ -80,7 +88,7 @@ wrong.[^note]
 
 # Release history
 
-As recorded in the note. The CHANGELOG is the authority on contents.
+As recorded in the note up to 0.7.1; the rows from 0.7.2 come from the git tags, the CHANGELOG and the release pull requests. The CHANGELOG is the authority on contents. The 0.7.4 CHANGELOG heading says 2026-10-12; the release commit and tag are dated 2026-10-13.
 
 | version | date | what the note says about it |
 |---|---|---|
@@ -100,6 +108,9 @@ As recorded in the note. The CHANGELOG is the authority on contents.
 | 0.6.0 | 2026-09-16 | conventional candidates, replay and selection |
 | 0.7.0 | 2026-09-22 | tlrn, mcl, point scores, residual calibration |
 | 0.7.1 | 2026-09-23 | member reserves and `processes=` for tlrn |
+| 0.7.2 | 2026-09-24 | tag `v0.7.2` at `eaf34cd` (PR #154); the conventional array fit, `ibnr.methods` and the `zero_cells` option (#149, #152, #153) |
+| 0.7.3 | 2026-10-05 | tag `v0.7.3` at `ebd8ebe` (PR #165); tlrn design choices (premium head, accident-year attention, mcl blend, retrained calibration), with `ibnr.methods` development options and `Refusal` |
+| 0.7.4 | 2026-10-13 | tag `v0.7.4` at `b24fce7` (PR #175); the optional JAX training backend for tlrn (`ibnr[jax]`); on PyPI as wheel and sdist, and `ibnr[jax]==0.7.4` installed on a clean Python 3.13 environment |
 
 [^note]: Project status log, release entries from 2026-07-23 to 2026-09-23 (lines 82-98, 176-180, 262-308, 821-873, 1336-1345, 1411-1455, 1533-1541, 1562-1602)
 [^publishing]: Why the first release is 0.2.0

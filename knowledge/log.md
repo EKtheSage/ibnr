@@ -1,5 +1,8 @@
 # Knowledge Update Log
 
+## 2026-10-13
+* **Update**: [Cut a release](/playbooks/cut-a-release.md) gained the 0.7.2, 0.7.3 and 0.7.4 rows of the release history (from tags, the CHANGELOG and the release pull requests), the rule that the tests and lint on the release commit must be green before the tag is pushed, and the rule that the CHANGELOG's Unreleased heading is renamed at release so later entries need a fresh one.
+
 ## 2026-10-12
 * **Update**: [tlrn on a Colab TPU](/findings/tlrn-jax-tpu-run.md) now records the accident-year fits on a Colab GPU (451 s and 434 s for 80 members each, about 70 times faster than the laptop's one fit), replacing the cut-off TPU estimate, and adds the GPU-or-TPU runtime lesson.
 * **Update**: [Notebook 04 results](/findings/notebook-04-results.md) gained the 0.7.3 run (1,438 minutes) with the accident-year variant: `tlrn_ay` scores Pool_APE 0.0622, behind mack (0.0577) and MCL (0.0566), while `tlrn_13_blend` stays best at 0.0516. [How long the long runs take](/findings/how-long-runs-take.md) gained the run and its per-fit times.
