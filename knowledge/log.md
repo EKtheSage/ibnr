@@ -1,5 +1,8 @@
 # Knowledge Update Log
 
+## 2026-10-13
+* **Update**: [Cut a release](/playbooks/cut-a-release.md) gained the 0.7.2, 0.7.3 and 0.7.4 rows of the release history (from tags, the CHANGELOG and the release pull requests), the rule that the tests and lint on the release commit must be green before the tag is pushed, and the rule that the CHANGELOG's Unreleased heading is renamed at release so later entries need a fresh one.
+
 ## 2026-10-12
 * **Update**: [The tlrn robustness study](/decisions/tlrn-robustness-study.md) gained a labelling rule (not a change to the verdict rule): a verdict over anything but exactly draws 0 to 9 is reported as provisional with its draw count.
 * **Creation**: Recorded [the two cohorts of the tlrn robustness study](/findings/tlrn-study-cohorts.md): cohort B can be built from the cas-schedule-p mart (62,010 cells identical to the CAS files), B lies inside A, and the benchmarks tie out to notebook 04 and to the companion's chain ladder and MCL reserves.
