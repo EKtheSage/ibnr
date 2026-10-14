@@ -19,6 +19,22 @@ corrected decision 8 - and, from 0.7.2,
 From 0.7.2 the minor number is kept for milestones: additions and fixes ship as
 patch releases, and 0.8 comes when the roadmap's goals are done.
 
+## Unreleased
+
+### The tlrn robustness study (scripts and knowledge only)
+
+`scripts/tlrn_study_colab.py` trains the accident-year model for many independent fit
+seeds on two cohorts (notebook 04's, and the companion study's, which the cas-schedule-p
+mart reproduces cell for cell) and saves each fit as it finishes, resumably;
+`scripts/tlrn_study_eval.py` scores the saved fits against `mack`, `mcl` and `sur` with
+questions and a verdict rule written down beforehand. The how-to is `docs/tlrn-study.md`
+and the design is in `knowledge/decisions/tlrn-robustness-study.md`. No library code
+changed. The evaluator labels a verdict provisional (with the draw count and the missing
+draw numbers) unless exactly draws 0 to 9 are present, names a missing benchmark and its
+companies instead of raising a `KeyError`, leads the variance output with the draw-noise
+shares and labels the intraclass correlation a company-size effect, and does not fit the
+benchmarks for a cohort with no saved fits. The runner trains a repeated `--rows` entry once.
+
 ## 0.7.4 - 2026-10-12
 
 A patch release over the optional JAX training backend for `tlrn` below. Nothing
