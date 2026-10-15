@@ -528,6 +528,11 @@ fits.
   the members themselves are not copies.
 * The checkpoint improvement threshold is 1e-6 in ibnr's JAX backend against 1e-12 in the
   companion's code. This is recorded as a difference, thought harmless, and not tested here.
+* The review also named four small differences from the companion's code as harmless: a cap
+  of exp(50) on a factor, steps with a zero gradient, a gap of 1e-9 in the blend weight, and
+  non-positive base cells in the multivariate chain ladder. **This pass did not re-check
+  them**, so they are recorded as the reviewer reported them and as unverified here, not as
+  checked.
 * The evaluator refuses any non-smoke fit in which a member did not run 3,000 epochs, and
   prints the medians of alpha and best epoch beside the companion's published member table
   when its path is given (report only).

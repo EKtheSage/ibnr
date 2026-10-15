@@ -205,7 +205,12 @@ and in companies, so it tests neither a new economic environment nor other compa
 cohort is selected on future cells existing, a survivorship shared by the benchmarks. On a
 single cohort the primary verdict can detect a gain of about three to five points of Pool_APE
 and not a half-point gain. The bootstrap resamples companies, so it measures company-to-company
-sampling and says nothing about other years beyond what C adds. Ten draws sample training randomness thinly. The model blends
+sampling and says nothing about other years beyond what C adds. Member random seeds repeat
+across valuation dates within one fit (members 10 to 19 at valuation 6 share seeds with
+members 0 to 9 at valuation 7, and likewise 7 with 8), so "no two draws share a random
+stream" is true across draws only; the training data differ at each date. The checkpoint
+improvement threshold is 1e-6 in ibnr and 1e-12 in the companion's code. Ten draws sample
+training randomness thinly. The model blends
 the multivariate chain ladder into every member (the blend weight is fitted), so it is
 partly the benchmark. GPU fits are not bit-for-bit repeatable, so a rerun gives different
 draws.
