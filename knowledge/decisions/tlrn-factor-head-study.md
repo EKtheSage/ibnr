@@ -235,5 +235,110 @@ partly the benchmark. GPU fits are not bit-for-bit repeatable, so a rerun gives 
 draws. Nothing has been run on a GPU for this study when this note is written, and no
 result exists.
 
+# Amendment 1 (2026-10-15, before any fit of this study has been run)
+
+This amendment is written before any fit of this study exists on any machine: no fit has
+been run on a GPU, no result exists, and the evaluator has only ever seen CPU smoke fits
+of a few epochs. It adds to the rules above and changes none of them. The primary verdict
+rule, the rows, the draws, the valuation dates and the statistics stand as registered, and
+the evaluator's docstring keeps the text it was committed with. Where a sentence above
+claims more than this amendment allows (for example the calendar-time sentence on cohort C),
+read it as corrected here.
+
+## A1. What the primary verdict can detect
+
+The first study measured the paired company-bootstrap interval of the Pool_APE difference
+between the draw average and each benchmark, at valuation 10, on cohorts A and B (its
+final run: `verdicts.json` and the log of that run, rows `tlrn_8_ay` and `tlrn_13_ay`).
+The 95% intervals, in points of Pool_APE, with the dominant company 1767 holding 66.3% to
+67.3% of the reserve:
+
+| cohort and row | against `mack` | width | against `mcl` | width |
+|---|---|---|---|---|
+| A, `tlrn_8_ay` | -4.82 to +6.13 | 10.95 | -3.46 to +2.42 | 5.88 |
+| A, `tlrn_13_ay` | -5.66 to +3.62 | 9.28 | -5.41 to +1.86 | 7.27 |
+| B, `tlrn_8_ay` | -5.15 to +5.27 | 10.43 | -3.78 to +1.62 | 5.40 |
+| B, `tlrn_13_ay` | -6.30 to +3.40 | 9.70 | -6.28 to +1.52 | 7.81 |
+
+So the intervals were 5.4 to 11.0 points wide: 9.3 to 11.0 against `mack` and 5.4 to 7.8
+against `mcl`. For an interval to lie wholly below zero (condition (i)), the point
+difference has to sit below zero by about the distance from the point difference to the
+interval's upper end. In those runs that distance was 1.3 to 6.1 points (against `mcl`
+1.3 to 2.3, against `mack` 3.2 to 6.1). The factor-head model's intervals are not known
+until it is run, and its rolling statistic (condition (ii)) may be narrower or wider, so
+these figures are the best prior, not a prediction. They do show the scale: the primary
+verdict on a single cohort can detect a gain of roughly one and a half to six points of
+Pool_APE and not much less.
+
+A gain of about half a point, which is the size of the companion's headline gain over the
+multivariate chain ladder (4.97% against 5.41%), cannot be detected at that precision.
+"Not distinguishable" on cohort A or B is therefore the **expected** result of this design,
+whether or not the model is slightly better, and it must not be read as news, as evidence
+that the model does not work, or as evidence that it works the same as the benchmarks. This
+is why the paired ablation (A2) and cohort C (A3) matter more than a second look at A and B.
+
+## A2. A second pre-registered question: does the network add anything?
+
+**Question.** Does the network add anything beyond shrinking toward the multivariate chain
+ladder? The main row `tlrn_13_fh` and the ablation row `tlrn_13_fh_factors` have the same
+cohort, the same scored companies and the same ten draws, and both are blended with the
+multivariate chain ladder. The only difference is the network.
+
+**Statistic.** The paired company-level bootstrap of the draw-average difference in
+Pool_APE, model minus ablation (negative favours the network): 10,000 resamples of
+companies, seed 2008, the 2.5th and 97.5th percentiles, the same resample for both rows and
+for every valuation (a company's dates kept together), as in the primary verdict. It is
+computed at valuation 10 and as the mean over valuations 6, 7, 8 and 10. A third interval,
+valuation 10 with the dominant company left out, is computed the same way.
+
+**Rule.**
+
+* **network adds value** only if the valuation-10 difference interval AND the
+  mean-over-valuations difference interval are both wholly below zero, AND with the
+  dominant company left out the valuation-10 interval is not wholly above zero.
+* **network hurts** if either of the first two intervals is wholly above zero.
+* **not distinguishable** otherwise.
+
+"Wholly below zero" means the upper end is below zero and "wholly above" means the lower
+end is above zero, as in the primary rule. Descriptively, and outside the rule, the raw
+network (the forecast before the blend, `pred_net`) is also reported against the ablation
+with the same bootstrap. The verdict has the same labelling as the primary one (provisional
+unless both rows hold exactly draws 0 to 9; the ablation's draw set must equal the main
+row's). It is reported per cohort next to the primary verdict. It is **not** part of the
+primary "effective" rule and cannot change it.
+
+**Why this question is expected to be sharper.** The two rows' errors are highly
+correlated: they share the data, the head's pooled factors and the multivariate chain
+ladder blend, so the company-to-company noise that makes the primary intervals wide
+largely cancels in their difference. No interval width is claimed here, because no fit of
+this study exists to measure one.
+
+## A3. Run cohort C first
+
+The run order on Colab is cohort C, then A, then B. If the primary verdict on cohort C is
+"not distinguishable" or "worse", no further GPU time is needed to decide the main question:
+A and B are confirmation runs on data the specification was tuned on, with a precision too
+low to show a half-point gain (A1). Whether to run them anyway is the owner's (Ethan's)
+decision.
+
+**What cohort C is, stated without overclaiming.**
+
+* It is independent in accident years (1988 to 1997 against 1998 to 2007).
+* It is NOT independent in calendar time. Its outcomes sit in statement years 1998 to 2006,
+  which overlap the data of A and B and the companion's valuations 6, 7 and 8.
+* It is NOT independent in companies. 67 of its 83 companies are in A and 60 are in B, and
+  155 of its 232 pairs are B's pairs.
+* So it does not test a new economic environment or other companies.
+* Whether the companion tuned on cohort C is **not tuned on as far as we know (assumed, not
+  known)**. Wherever this study or its documents say C was not tuned on, they mean that,
+  and the phrases "the only cohort the companion did not tune on" and "the one test it was
+  not tuned against" are withdrawn as statements of fact.
+* Every cohort, C included, is selected on future cells existing: the selection requires a
+  complete 10-by-10 square, outcome cells included. That is a shared survivorship (a company
+  that stops reporting after the cutoff is not in any cohort). It applies to the benchmarks
+  as well as to the model, so it does not favour one over the other, but it tends to flatter the
+  level of every method's error.
+
+
 [^request]: Ethan's instruction in the 2026-10-15 working session
 [^first]: The first study, whose machinery and style this one extends
