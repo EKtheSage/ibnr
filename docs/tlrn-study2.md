@@ -9,7 +9,9 @@ it more accurate than the chain ladder (`mack`) and the multivariate chain ladde
 The rules were fixed before any fit and before any evaluator code, in
 [the decision note](../knowledge/decisions/tlrn-factor-head-study.md), and the evaluator's
 module docstring repeats them. Read them before the results, and do not change a rule after
-seeing them.
+seeing them. The note carries a dated **Amendment 1** (2026-10-15, made before any fit
+existed) that adds a second question, fixes the run order and states what the primary verdict
+can detect; it changes none of the original rules.
 
 **Nothing in this study has been run on a GPU yet, and no result exists.** The runner and
 the evaluator were checked on a laptop CPU with tiny budgets only (two members, ten epochs),
@@ -30,8 +32,35 @@ so any number from those smoke runs must never be quoted.
 
 That is 10 x 2 x 3 = 60 fits (40 on A and B alone). **The verdicts on A and B are labelled
 confirmatory of a fixed specification, not out-of-sample**: the companion chose its design
-and its hyperparameters with their test data in view. Only cohort C is a test the
-specification was not tuned against, and it shares most of its companies with A and B.
+and its hyperparameters with their test data in view. Cohort C is out-of-sample in accident
+years only. As far as we know the companion did not tune on it (assumed, not known). It is
+not independent in calendar time (its outcomes sit in statement years 1998 to 2006, which
+overlap A and B and the companion's valuations 6, 7 and 8) nor in companies (67 of its 83
+companies are in A, 60 in B, and 155 of its 232 pairs are B's pairs), so it does not test a
+new economic environment or other companies. Every cohort is selected on future cells
+existing (a complete 10-by-10 square, outcome cells included), a survivorship shared by the
+model and the benchmarks.
+
+**Run cohort C first, then A, then B.** If the primary verdict on C is `not distinguishable`
+or `worse`, no further GPU time is needed to decide the main question: A and B are
+confirmation runs on data the specification was tuned on, with a precision too low to show a
+half-point gain. Whether to run them is Ethan's decision.
+
+**What the primary verdict can detect.** In the first study the paired 95% intervals of the
+Pool_APE difference on A and B were 5.4 to 11.0 points wide (9.3 to 11.0 against `mack`, 5.4
+to 7.8 against `mcl`), so a gain has to be about three points or more to clear both benchmarks. A gain of about
+half a point cannot be detected on a single cohort, and `not distinguishable` on A or B is
+therefore the expected result, not news.
+
+**A second question, beside the verdict.** Does the network add anything beyond shrinking
+toward the multivariate chain ladder? The evaluator compares the main row with the
+factors-only row (same cohort, companies and draws, both blended) by the same paired
+bootstrap of Pool_APE, model minus factors-only: `network adds value` only if the
+valuation-10 and the mean-over-dates intervals are both wholly below zero and the
+valuation-10 interval without the dominant company is not wholly above zero; `network hurts`
+if either of the first two is wholly above zero; `not distinguishable` otherwise. It is
+printed after the verdict, written to `verdicts.json` (`network_question`) and
+`<cohort>_network_check.csv`, and never changes the verdict.
 
 ## Running on Colab
 
@@ -45,7 +74,8 @@ wheel and no GitHub access are needed. Every runner call is in-process and carri
 import tlrn_study_colab
 
 tlrn_study_colab.main(["--study", "factor_head", "--out", OUT, "--smoke", "--draws", "1"])
-tlrn_study_colab.main(["--study", "factor_head", "--out", OUT, "--cohort", "A", "--draws", "10"])
+tlrn_study_colab.main(["--study", "factor_head", "--out", OUT, "--cohort", "C", "--draws", "10"])
+# then the same with "A", then "B", if the owner decides to run them
 ```
 
 Each fit saves, under a shared stem such as `A_tlrn_13_fh_d03-ibnr0.7.4`: the settings
@@ -61,17 +91,20 @@ estimates, not measurements: plan on about 4 hours for all 60 fits on a G4 or an
 
 ## Scoring on the laptop
 
-Copy the folder back, for example to `analysis/results/tlrn_study2/fits`, and run the
-evaluator from a checkout. It needs `uv sync` and the cas-schedule-p data, and neither jax
-nor torch.
+Download the `study2` folder from Drive (`My Drive/ibnr_colab_fh/study2`) to
+`C:\Temp\study2`, and run the evaluator from a checkout. This is the one folder name used
+everywhere: the kit's README, notebook 05 (`TLRN_STUDY2_FITS` defaults to it) and the commands
+below. It needs `uv sync` and the cas-schedule-p data, and neither jax nor torch.
 
 ```text
-uv run python scripts/tlrn_study2_eval.py --fits analysis/results/tlrn_study2/fits \
-    --out analysis/results/tlrn_study2/report
-uv run python scripts/tlrn_study2_eval.py --fits analysis/results/tlrn_study2/fits \
-    --cohort B --companion-rolling path/to/the/companion/R_T1_rolling_origin.csv \
-    --tie-out-first-study --out analysis/results/tlrn_study2/report
+uv run python scripts/tlrn_study2_eval.py --fits C:\Temp\study2 --out C:\Temp\study2_report
+uv run python scripts/tlrn_study2_eval.py --fits C:\Temp\study2 --cohort B ^
+    --companion-rolling path\to\the\companion\R_T1_rolling_origin.csv ^
+    --tie-out-first-study --out C:\Temp\study2_report
 ```
+
+(The `^` continues a line in `cmd`; in PowerShell use a backtick, in a POSIX shell a
+backslash.)
 
 For each valuation date the evaluator fits `mack` (per company-line pair) and `mcl` (per
 company) with ibnr's gallery entries on the cells known at that date and reads their
@@ -92,8 +125,8 @@ On cohort A the valuation-10 Pool_APE of `mack` and `mcl` must reproduce noteboo
 It prints, for each cohort, Pool_APE per draw and for the draw average at every valuation
 and rolling, the pre-registered differences from `mack` and `mcl` with 95% bootstrap
 intervals, the dominant company left out, the secondary and descriptive metrics, size
-quartiles, the ablations, and one verdict, and it writes the tables and `verdicts.json`
-to `--out`. Add `--smoke` to score a smoke folder; its output is marked and must never
+quartiles, the ablations, one verdict and, separately, the paired network question, and it
+writes the tables and `verdicts.json` to `--out`. Add `--smoke` to score a smoke folder; its output is marked and must never
 be quoted.
 
 Reading rules. The verdict is **provisional** unless a cohort holds exactly draws 0 to 9 of
@@ -107,8 +140,8 @@ descriptive only.
 
 ## Notebook 05
 
-`analysis/05_tlrn_factor_head_study.ipynb` loads the saved fits from a folder (the path is
-a variable at the top, with `TLRN_STUDY2_FITS` as an override), runs the evaluator's
+`analysis/05_tlrn_factor_head_study.ipynb` loads the saved fits from `C:\Temp\study2` (the
+path is a variable at the top, with `TLRN_STUDY2_FITS` as an override), cohort C first, runs the evaluator's
 functions and shows the verdict tables and a few plain figures: the spread of the draws at
 each valuation, the differences from the benchmarks with their intervals, the results with
 and without the dominant company, and the ablations. Every sentence about results is
@@ -118,10 +151,13 @@ fits are in the folder.
 
 ## What this cannot show
 
-The companion's design was tuned on A and B, so only C is a test the specification could fail
-for a reason it was not tuned against, and C overlaps A and B in companies. The bootstrap
-resamples companies, so it measures company-to-company sampling and says nothing about
-other years beyond what C adds. Ten draws sample training randomness thinly. The model blends
+The companion's design was tuned on A and B. Cohort C is independent in accident years only
+(not tuned on as far as we know, assumed, not known): it overlaps A and B in calendar time
+and in companies, so it tests neither a new economic environment nor other companies. Every
+cohort is selected on future cells existing, a survivorship shared by the benchmarks. On a
+single cohort the primary verdict can detect a gain of about three points or more of Pool_APE and
+not a half-point gain. The bootstrap resamples companies, so it measures company-to-company
+sampling and says nothing about other years beyond what C adds. Ten draws sample training randomness thinly. The model blends
 the multivariate chain ladder into every member (the blend weight is fitted), so it is
 partly the benchmark. GPU fits are not bit-for-bit repeatable, so a rerun gives different
 draws.
