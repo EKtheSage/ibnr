@@ -77,9 +77,11 @@ out from the others.
   at every valuation date and the reported transformer is the plain mean of all twenty
   blended members. No member is selected. (From the earlier review: a table of seed
   selection in the repository is a leftover of an older pipeline and is not used.)
-* **Verified.** 14,245 parameters per member. ibnr's count differs a little because its
-  embeddings are 1-based and its random streams differ, so ibnr trains the same procedure,
-  not the same numbers.
+* **Verified.** 14,245 parameters per member in the companion's architecture table. The ibnr
+  network built from the configuration below has 14,309 trainable parameters, exactly 64
+  more: its line and lag embeddings are 1-based, so each has one extra row of 32 (5 rows
+  for 4 lines, 11 for 10 lags). Its random streams differ too, so ibnr trains the same
+  procedure, not the same numbers.
 * **Verified, about run-to-run noise.** The committed notebook source is identical across
   its versions, and two stored runs of it report a Pool_APE of 5.04% and 4.97%, so
   run-to-run noise of about that size exists.
