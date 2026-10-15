@@ -9,9 +9,12 @@ it more accurate than the chain ladder (`mack`) and the multivariate chain ladde
 The rules were fixed before any fit and before any evaluator code, in
 [the decision note](../knowledge/decisions/tlrn-factor-head-study.md), and the evaluator's
 module docstring repeats them. Read them before the results, and do not change a rule after
-seeing them. The note carries a dated **Amendment 1** (2026-10-15, made before any fit
-existed) that adds a second question, fixes the run order and states what the primary verdict
-can detect; it changes none of the original rules.
+seeing them. The note carries two dated amendments, both made on 2026-10-15 before any fit
+existed. **Amendment 1** adds a second question, fixes the run order and states what the
+primary verdict can detect. **Amendment 2**, written after an outside review, changes three
+of the original rules (the second condition becomes a dollar-pooled statistic, the fourth is
+tightened, and what a mixed result across cohorts means is written down) and adds a
+sensitivity analysis; it is listed under "The rule" below.
 
 **Nothing in this study has been run on a GPU yet, and no result exists.** The runner and
 the evaluator were checked on a laptop CPU with tiny budgets only (two members, ten epochs),
@@ -48,9 +51,37 @@ half-point gain. Whether to run them is Ethan's decision.
 
 **What the primary verdict can detect.** In the first study the paired 95% intervals of the
 Pool_APE difference on A and B were 5.4 to 11.0 points wide (9.3 to 11.0 against `mack`, 5.4
-to 7.8 against `mcl`), so a gain has to be about three points or more to clear both benchmarks. A gain of about
-half a point cannot be detected on a single cohort, and `not distinguishable` on A or B is
-therefore the expected result, not news.
+to 7.8 against `mcl`; those were for another model, at one date). An interval lies wholly
+below zero only if the gain is about half its width, so a gain has to be about three to five
+points to clear both benchmarks (4.6 to 5.5 against `mack`, the harder one). The companion's
+own headline gain is about half a point, a tenth of that: if the true gain were half a point,
+the chance of a clear result would be roughly 4% to 6% (a normal approximation, not a
+simulation), hardly above the 2.5% it would be with no gain at all. So `not distinguishable`
+on A or B is the expected result, not news. The evaluator prints the width of every interval
+and the gain it could just detect, so the precision is stated beside each verdict.
+
+**The rule, with Amendment 2.** `effective` needs four things on a cohort, from the draw
+average: (i) at valuation 10 the Pool_APE difference (model minus benchmark) has a 95%
+interval wholly below zero against both `mack` and `mcl`; (ii) the same for the
+**dollar-pooled** difference over valuations 6, 7, 8 and 10 (the sum of the absolute
+company errors over the sum of the company actuals, so a date counts in proportion to its
+dollars; it replaces an unweighted mean over the dates, which one small noisy date could
+flip, and which is now only reported); (iii) the median over the draws of the valuation-10
+Pool_APE is below both benchmarks; (iv) without the dominant company, either the
+valuation-10 difference is at or below zero against both benchmarks or condition (i) holds
+without it (the old test, "not wholly above zero", passes a model that is worse than both).
+`worse` is an interval of (i) or (ii) wholly above zero against **either** benchmark (the
+first study judged only the stronger one; this is deliberate). Cohort C is the headline
+cohort for the out-of-sample statement and A and B confirm a specification the companion
+tuned on, so the overall statement is: C `not distinguishable` gives `not distinguishable`
+whatever A and B say; C `worse` gives `worse on the fresh cohort`; C `effective` gives
+`confirmed on A and B` if both are effective, `mixed` if either is worse, and otherwise
+`effective on the fresh cohort; on A and B not worse`. The evaluator prints that sentence.
+
+**A sensitivity analysis, beside the verdict.** About 37% of uniform company resamples leave
+the dominant company out. A stratified bootstrap keeps it in every resample exactly once and
+resamples the rest; the evaluator prints its intervals and what the same rule would say, as a
+sensitivity analysis only. It conditions on that company being present.
 
 **A second question, beside the verdict.** Does the network add anything beyond shrinking
 toward the multivariate chain ladder? The evaluator compares the main row with the
@@ -60,15 +91,21 @@ valuation-10 and the mean-over-dates intervals are both wholly below zero and th
 valuation-10 interval without the dominant company is not wholly above zero; `network hurts`
 if either of the first two is wholly above zero; `not distinguishable` otherwise. It is
 printed after the verdict, written to `verdicts.json` (`network_question`) and
-`<cohort>_network_check.csv`, and never changes the verdict.
+`<cohort>_network_check.csv`, and never changes the verdict. The same table also holds the
+main row minus the raw network (the forecast before the blend) with the same interval rules
+(`blend_question`: `blend adds value`, `blend hurts` or `not distinguishable`).
 
 ## Running on Colab
 
 The fits run in Colab; the scoring runs on your laptop. The Colab kit is a folder of three
 files (`tlrn_colab.py`, `tlrn_study_colab.py` and a notebook, `ibnr_study2_colab.ipynb`)
-with its own plain `README.txt`; it installs the published ibnr 0.7.4 from PyPI, so no
+with its own plain `README.txt`; it installs the published ibnr 0.7.4 from PyPI
+(`ibnr[jax]==0.7.4`, and the install cell asserts `ibnr.__version__ == "0.7.4"`), so no
 wheel and no GitHub access are needed. Every runner call is in-process and carries
-`--study factor_head`; without it the first study runs instead.
+`--study factor_head`; without it the first study runs instead. If the runner stops with an
+`AssertionError` saying a cohort does not match its published selection (counts or hash), it
+has stopped the whole call: it does not skip that cohort. Do not edit the check. Send the
+message, because the mart or the code has changed.
 
 ```python
 import tlrn_study_colab
@@ -100,8 +137,17 @@ below. It needs `uv sync` and the cas-schedule-p data, and neither jax nor torch
 uv run python scripts/tlrn_study2_eval.py --fits C:\Temp\study2 --out C:\Temp\study2_report
 uv run python scripts/tlrn_study2_eval.py --fits C:\Temp\study2 --cohort B ^
     --companion-rolling path\to\the\companion\R_T1_rolling_origin.csv ^
+    --companion-members path\to\the\companion\T_T1_members.csv ^
     --tie-out-first-study --out C:\Temp\study2_report
 ```
+
+Add `--first-study-fits path\to\the\first\study\fits` to compare the first study's
+accident-year rows on cohorts A and B (its fits are in `analysis/results/tlrn_study/fits`
+on the branch of the pull request that holds its results). A run without it says in its
+output and in `verdicts.json` that those rows were not compared; it does not leave them out
+silently. `--companion-members` prints the medians of the blend weight and the best epoch
+beside the companion's published member table, as a fidelity check that never has to match.
+Every member of a registered fit must have run 3,000 epochs, or the evaluator stops.
 
 (The `^` continues a line in `cmd`; in PowerShell use a backtick, in a POSIX shell a
 backslash.)
@@ -125,18 +171,20 @@ On cohort A the valuation-10 Pool_APE of `mack` and `mcl` must reproduce noteboo
 It prints, for each cohort, Pool_APE per draw and for the draw average at every valuation
 and rolling, the pre-registered differences from `mack` and `mcl` with 95% bootstrap
 intervals, the dominant company left out, the secondary and descriptive metrics, size
-quartiles, the ablations, one verdict and, separately, the paired network question, and it
-writes the tables and `verdicts.json` to `--out`. Add `--smoke` to score a smoke folder; its output is marked and must never
-be quoted.
+quartiles, the comparison rows, the precision of every interval, the stratified
+sensitivity analysis, the spread of the blend weight, one verdict and, separately, the paired
+network question and the raw-network question, and with all three cohorts the overall
+statement. It writes the tables and `verdicts.json` to `--out`. Add `--smoke` to score a
+smoke folder; its output is marked and must never be quoted.
 
 Reading rules. The verdict is **provisional** unless a cohort holds exactly draws 0 to 9 of
 the main row: it is printed as `effective (provisional: 3 of 10 draws ...)`, never as a bare
 word. A company a benchmark refuses at any valuation is left out of every row and named in
 the output. The word `effective` needs four things at once (a valuation-10 interval and a
-rolling interval wholly below zero against both benchmarks, a median-draw Pool_APE below
-both, and no interval wholly above zero once the dominant company is left out); the
-decision note has the exact rule. MAPE and the reserve-weighted RMSE are shown as
-descriptive only.
+dollar-pooled interval wholly below zero against both benchmarks, a median-draw Pool_APE
+below both, and a model that is not behind either benchmark once the dominant company is
+left out); the decision note has the exact rule. The unweighted mean over the dates, MAPE and
+the reserve-weighted RMSE are shown as descriptive only.
 
 ## Notebook 05
 
@@ -144,7 +192,7 @@ descriptive only.
 path is a variable at the top, with `TLRN_STUDY2_FITS` as an override), cohort C first, runs the evaluator's
 functions and shows the verdict tables and a few plain figures: the spread of the draws at
 each valuation, the differences from the benchmarks with their intervals, the results with
-and without the dominant company, and the ablations. Every sentence about results is
+and without the dominant company, and the comparison rows. Every sentence about results is
 written from the computed values or phrased conditionally, and it says nothing about
 results before they exist. The committed notebook has no outputs: run it after the Colab
 fits are in the folder.
@@ -155,8 +203,8 @@ The companion's design was tuned on A and B. Cohort C is independent in accident
 (not tuned on as far as we know, assumed, not known): it overlaps A and B in calendar time
 and in companies, so it tests neither a new economic environment nor other companies. Every
 cohort is selected on future cells existing, a survivorship shared by the benchmarks. On a
-single cohort the primary verdict can detect a gain of about three points or more of Pool_APE and
-not a half-point gain. The bootstrap resamples companies, so it measures company-to-company
+single cohort the primary verdict can detect a gain of about three to five points of Pool_APE
+and not a half-point gain. The bootstrap resamples companies, so it measures company-to-company
 sampling and says nothing about other years beyond what C adds. Ten draws sample training randomness thinly. The model blends
 the multivariate chain ladder into every member (the blend weight is fitted), so it is
 partly the benchmark. GPU fits are not bit-for-bit repeatable, so a rerun gives different
