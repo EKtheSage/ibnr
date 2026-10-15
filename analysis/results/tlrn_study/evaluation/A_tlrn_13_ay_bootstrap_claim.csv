@@ -1,0 +1,7 @@
+scope,benchmark,n,draw_min,draw_median,draw_max,draw_average
+including dominant,mack,82,0.3711,0.40790000000000004,0.4329,0.404
+including dominant,mcl,82,0.3726,0.40535,0.4324,0.4027
+including dominant,sur,80,0.4136,0.4515,0.479,0.4471
+excluding dominant,mack,81,0.6757,0.69855,0.7147,0.6982
+excluding dominant,mcl,81,0.8657,0.8955,0.9237,0.8976
+excluding dominant,sur,79,0.7398,0.7597499999999999,0.7799,0.7608

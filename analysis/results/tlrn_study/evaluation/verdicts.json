@@ -1,0 +1,57 @@
+{
+  "smoke": false,
+  "verdicts": {
+    "A/tlrn_8_ay": {
+      "verdict": "not distinguishable",
+      "reason": "median-draw Pool_APE 5.7693% against mack 5.7732% and mcl 5.6606%; draw-average difference interval vs mack [-4.8202%, +6.1267%], vs mcl [-3.4626%, +2.4210%]",
+      "label": "not distinguishable",
+      "provisional": false,
+      "missing_draws": [],
+      "n_draws": 10,
+      "data_hash": {
+        "note": "cohort A tlrn_8_ay: data hash differs (fits recorded 819b8101576f90be, evaluator built 13dd7df7e326044a); anchors, premiums, lines and companies of every fit equal the cohort's within tolerance, so the fits are scored",
+        "fits_data_hash": "819b8101576f90be",
+        "evaluator_data_hash": "13dd7df7e326044a"
+      }
+    },
+    "A/tlrn_13_ay": {
+      "verdict": "not distinguishable",
+      "reason": "median-draw Pool_APE 6.2187% against mack 5.7732% and mcl 5.6606%; draw-average difference interval vs mack [-5.6584%, +3.6240%], vs mcl [-5.4113%, +1.8564%]",
+      "label": "not distinguishable",
+      "provisional": false,
+      "missing_draws": [],
+      "n_draws": 10,
+      "data_hash": {
+        "note": "cohort A tlrn_13_ay: data hash differs (fits recorded 819b8101576f90be, evaluator built 13dd7df7e326044a); anchors, premiums, lines and companies of every fit equal the cohort's within tolerance, so the fits are scored",
+        "fits_data_hash": "819b8101576f90be",
+        "evaluator_data_hash": "13dd7df7e326044a"
+      }
+    },
+    "B/tlrn_8_ay": {
+      "verdict": "not distinguishable",
+      "reason": "median-draw Pool_APE 5.7923% against mack 5.4810% and mcl 5.4098%; draw-average difference interval vs mack [-5.1530%, +5.2735%], vs mcl [-3.7844%, +1.6174%]",
+      "label": "not distinguishable",
+      "provisional": false,
+      "missing_draws": [],
+      "n_draws": 10,
+      "data_hash": {
+        "note": "cohort B tlrn_8_ay: data hash differs (fits recorded bce499efbb6bde4e, evaluator built 2d9ecc777b088fcd); anchors, premiums, lines and companies of every fit equal the cohort's within tolerance, so the fits are scored",
+        "fits_data_hash": "bce499efbb6bde4e",
+        "evaluator_data_hash": "2d9ecc777b088fcd"
+      }
+    },
+    "B/tlrn_13_ay": {
+      "verdict": "not distinguishable",
+      "reason": "median-draw Pool_APE 5.6331% against mack 5.4810% and mcl 5.4098%; draw-average difference interval vs mack [-6.2969%, +3.4016%], vs mcl [-6.2840%, +1.5238%]",
+      "label": "not distinguishable",
+      "provisional": false,
+      "missing_draws": [],
+      "n_draws": 10,
+      "data_hash": {
+        "note": "cohort B tlrn_13_ay: data hash differs (fits recorded bce499efbb6bde4e, evaluator built 2d9ecc777b088fcd); anchors, premiums, lines and companies of every fit equal the cohort's within tolerance, so the fits are scored",
+        "fits_data_hash": "bce499efbb6bde4e",
+        "evaluator_data_hash": "2d9ecc777b088fcd"
+      }
+    }
+  }
+}

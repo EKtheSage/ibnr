@@ -1,7 +1,13 @@
 # Knowledge Update Log
 
+<<<<<<< HEAD
 ## 2026-10-14
 * **Update**: `docs/tlrn-study.md` (and the CHANGELOG) now say what the study evaluator does when a fit's recorded data hash differs from the one it builds: it checks anchors, premiums, lines and companies of every fit against the cohort and scores the fits when they agree (first seen on Colab A100 fits of cohort A; the pre-registered questions and verdict rule are unchanged).
+=======
+## 2026-10-15
+* **Creation**: Recorded [the results of the tlrn robustness study](/findings/tlrn-robustness-study-results.md): all four verdicts are not distinguishable over 10 draws, draw noise is small, company 1767 holds two thirds of the reserve; the small result files are kept in analysis/results/tlrn_study.
+* **Update**: [The tlrn robustness study](/decisions/tlrn-robustness-study.md) notes it was run on 2026-10-14 to 15 (rules unchanged), and [tlrn on a Colab TPU](/findings/tlrn-jax-tpu-run.md) points to the Blackwell, A100 and T4 fit times.
+>>>>>>> c65a475 (docs(knowledge): results of the tlrn robustness study)
 
 ## 2026-10-13
 * **Update**: [Cut a release](/playbooks/cut-a-release.md) gained the 0.7.2, 0.7.3 and 0.7.4 rows of the release history (from tags, the CHANGELOG and the release pull requests), the rule that the tests and lint on the release commit must be green before the tag is pushed, and the rule that the CHANGELOG's Unreleased heading is renamed at release so later entries need a fresh one.
