@@ -110,9 +110,11 @@ NOT_PROMISED = {
         "the image is a CPU Stan image, and on a CPU the torch backend is the faster one."
     ),
     "tlrn_study_colab.py": (
-        "the runner of the tlrn robustness study: it trains the accident-year model many "
-        "times with the JAX backend on a Colab GPU or TPU. It needs jax and torch (the [jax] "
-        "extra), which the image does not install, and it imports tlrn_colab.py beside it."
+        "the runner of both tlrn robustness studies (the accident-year model and, with "
+        "--study factor_head, the factor-head model): it trains them many times with the JAX "
+        "backend on a Colab GPU or TPU. It needs jax and torch (the [jax] extra), which the "
+        "image does not install, and it imports tlrn_colab.py beside it. The second study "
+        "added no script, so this decision covers it."
     ),
     "tlrn_study_eval.py": (
         "scores the saved fits of the tlrn robustness study. It reads the folder the Colab "
