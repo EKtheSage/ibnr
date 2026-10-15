@@ -1014,3 +1014,217 @@ def test_main_skips_a_cohort_with_no_fits_and_does_not_fit_its_benchmarks(
 def test_the_first_evaluators_statistics_are_the_ones_used_here():
     assert ev.pool_ape is first.pool_ape
     assert ev.N_BOOT == first.N_BOOT and ev.BOOT_SEED == first.BOOT_SEED
+
+
+# -- Amendment 1: does the network add anything beyond the blend? -------------------------
+
+
+def net_stats(**changes):
+    base = {
+        "last": interval(-0.03, -0.005),
+        "rolling": interval(-0.02, -0.002),
+        "excluding": interval(-0.02, 0.01),
+    }
+    base.update(changes)
+    return base
+
+
+def test_the_original_docstring_is_unchanged_by_the_amendment():
+    # sha256 of the module docstring as committed in 817720e, before any evaluator code
+    import hashlib
+
+    digest = hashlib.sha256(ev.__doc__.encode()).hexdigest()
+    assert digest == "5dfb05270aff8e07afec79828017b835ccfb1bdd67ef2ab16f743f35e057a1fa"
+    amendment = " ".join(ev.AMENDMENT_1.split())
+    for phrase in (
+        "Amendment 1 (2026-10-15, before any fit",
+        "network adds value",
+        "network hurts",
+        "wholly below zero",
+        "not part of the primary ``effective`` rule",
+    ):
+        assert phrase in amendment
+    assert ev.NETWORK_VERDICTS == ("network adds value", "network hurts", "not distinguishable")
+
+
+def test_network_adds_value_needs_all_three_conditions():
+    word, conditions, reason = ev.decide_network(net_stats())
+    assert word == "network adds value" and all(conditions.values())
+    assert "valuation 10" in reason and "rolling" in reason and "dominant company" in reason
+
+
+@pytest.mark.parametrize(
+    "changes, failed",
+    [
+        ({"last": interval(-0.03, 0.001)}, "a_"),
+        ({"rolling": interval(-0.03, 0.0)}, "b_"),
+        ({"excluding": interval(0.001, 0.02)}, "c_"),
+    ],
+)
+def test_each_network_condition_alone_stops_network_adds_value(changes, failed):
+    word, conditions, _ = ev.decide_network(net_stats(**changes))
+    assert word == "not distinguishable"
+    assert [k for k, v in conditions.items() if not v][0].startswith(failed)
+    assert sum(not v for v in conditions.values()) == 1
+
+
+def test_network_hurts_when_either_the_last_or_the_rolling_interval_is_wholly_above_zero():
+    above = interval(0.001, 0.02)
+    assert ev.decide_network(net_stats(last=above))[0] == "network hurts"
+    assert ev.decide_network(net_stats(rolling=above))[0] == "network hurts"
+    # one below and one above is a hurt, not an add
+    mixed = net_stats(last=interval(-0.03, -0.01), rolling=above)
+    assert ev.decide_network(mixed)[0] == "network hurts"
+    # touching zero is not wholly above, and an interval above zero without the dominant
+    # company alone does not make it hurt
+    assert ev.decide_network(net_stats(last=interval(0.0, 0.02)))[0] == "not distinguishable"
+    assert ev.decide_network(net_stats(excluding=above))[0] == "not distinguishable"
+
+
+def test_a_network_interval_that_could_not_be_computed_is_neither_adds_nor_hurts():
+    nan = interval(float("nan"), float("nan"))
+    for key in ("last", "rolling", "excluding"):
+        assert ev.decide_network(net_stats(**{key: nan}))[0] == "not distinguishable"
+
+
+def network_result(tmp_path, cohort, main, factors, *, draws=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9)):
+    return evaluate(
+        tmp_path,
+        cohort,
+        bench_for(cohort, 0.3, 0.3),
+        {ev.MAIN_ROW: main, ev.FACTORS_ROW: factors},
+        draws=draws,
+    )
+
+
+def test_a_network_row_equal_to_the_ablation_has_a_zero_interval_and_is_not_distinguishable(
+    tmp_path, cohort
+):
+    res = network_result(tmp_path, cohort, perfect, perfect)
+    stats = res["network_statistics"]
+    for key in ("last", "rolling", "excluding"):
+        assert (stats[key]["low"], stats[key]["high"]) == pytest.approx((0.0, 0.0), abs=1e-12)
+    assert res["network_verdict"] == "not distinguishable"
+    assert not res["network_provisional"]
+
+
+def test_a_network_with_smaller_error_than_the_ablation_adds_value(tmp_path, cohort):
+    res = network_result(tmp_path, cohort, perfect, lambda i, a: a * 1.2)
+    assert res["network_verdict"] == "network adds value"
+    assert all(res["network_conditions"].values())
+    # the sign is model minus ablation: the model is exact, the ablation 20% off
+    assert res["network_statistics"]["last"]["diff"] == pytest.approx(-0.2)
+    assert res["network_statistics"]["rolling"]["high"] < 0
+
+
+def test_a_network_with_larger_error_than_the_ablation_hurts(tmp_path, cohort):
+    res = network_result(tmp_path, cohort, lambda i, a: a * 1.2, perfect)
+    assert res["network_verdict"] == "network hurts"
+    assert res["network_statistics"]["last"]["diff"] == pytest.approx(0.2)
+
+
+def test_the_dominant_company_is_left_out_of_both_rows_in_the_network_check(tmp_path, cohort):
+    # the ablation is wrong only on the dominant company, the model exact everywhere: without
+    # that company the two rows are identical, so the third interval is exactly zero
+    dominant = cohort.actual["actual_reserve"].idxmax()
+    col = sorted(cohort.board).index(dominant)
+
+    def off_on_dominant(i, actual):
+        out = np.array(actual, dtype=float)
+        out[col] *= 1.5
+        return out
+
+    res = network_result(tmp_path, cohort, perfect, off_on_dominant)
+    assert res["dominant_company"] == dominant
+    stats = res["network_statistics"]
+    assert (stats["excluding"]["low"], stats["excluding"]["high"]) == pytest.approx(
+        (0.0, 0.0), abs=1e-12
+    )
+    assert stats["last"]["diff"] < 0  # with the dominant company the model is better
+    keep = np.array([c != dominant for c in res["companies"]])
+    want = ev.last_difference(
+        res["series"][ev.MAIN_ROW][LAST_I][keep],
+        res["series"][ev.FACTORS_ROW][LAST_I][keep],
+        res["actual"][LAST_I][keep],
+        first.bootstrap_indices(int(keep.sum())),
+    )
+    assert (stats["excluding"]["low"], stats["excluding"]["high"]) == pytest.approx(
+        (want["low"], want["high"])
+    )
+
+
+def test_the_network_question_never_changes_the_primary_verdict(tmp_path, cohort):
+    bench = bench_for(cohort, 0.3, 0.3)
+    alone = evaluate(tmp_path / "a", cohort, bench, {ev.MAIN_ROW: perfect})
+    both = evaluate(
+        tmp_path / "b", cohort, bench, {ev.MAIN_ROW: perfect, ev.FACTORS_ROW: lambda i, a: a * 3}
+    )
+    assert alone["verdict"] == both["verdict"] == "effective"
+    assert alone["conditions"] == both["conditions"]
+    assert alone["network_verdict"] is None and "not scored" in alone["network_label"]
+
+
+def test_the_network_verdict_is_provisional_unless_both_rows_hold_draws_0_to_9(tmp_path, cohort):
+    bench = bench_for(cohort, 0.3, 0.3)
+    by_row = {
+        ev.MAIN_ROW: loaded(tmp_path / "m", cohort, row=ev.MAIN_ROW, draws=tuple(range(10))),
+        ev.FACTORS_ROW: loaded(
+            tmp_path / "f", cohort, row=ev.FACTORS_ROW, draws=(0, 1, 2, 3, 4, 5, 6, 7, 8)
+        ),
+    }
+    res = ev.evaluate_cohort(cohort, by_row, bench)
+    assert res["network_provisional"] and not res["provisional"]
+    assert "tlrn_13_fh_factors has 9 of 10 draws (missing 9)" in res["network_label"]
+    assert "draw sets differ" in res["network_label"]
+    # equal but short sets are provisional too, and name the shortfall
+    short = network_result(tmp_path / "s", cohort, perfect, perfect, draws=(0, 1, 2))
+    assert short["network_provisional"] and "3 of 10 draws" in short["network_label"]
+    # ten draws of both rows are not provisional
+    assert not network_result(tmp_path / "t", cohort, perfect, perfect)["network_provisional"]
+
+
+def test_the_raw_network_is_reported_against_the_ablation_outside_the_verdict(tmp_path, cohort):
+    res = network_result(tmp_path, cohort, perfect, lambda i, a: a * 1.2)
+    check = res["network_check"]
+    assert set(check["model"]) == {ev.MAIN_ROW, ev.RAW_NETWORK}
+    assert set(check["statistic"]) == {"last", "rolling", "excluding"}
+    raw = check[(check["model"] == ev.RAW_NETWORK) & (check["statistic"] == "last")].iloc[0]
+    # tables_for writes the raw network 1% above the blend, the ablation is 20% off
+    assert raw["diff"] == pytest.approx(0.01 - 0.2)
+
+
+def test_main_reports_the_network_question_next_to_the_primary_verdict(
+    tmp_path, monkeypatch, cohort, capsys
+):
+    out = _main(tmp_path, monkeypatch, cohort, draws=tuple(range(10)))
+    record = json.loads((out / "verdicts.json").read_text())["verdicts"]["A"]
+    assert record["verdict"] == "effective"
+    network = record["network_question"]
+    # _main writes the factors-only row 10% off the exact main row
+    assert network["verdict"] == "network adds value" and network["provisional"] is False
+    assert set(network["conditions"]) == {
+        "a_last_below",
+        "b_rolling_below",
+        "c_excluding_not_above",
+    }
+    assert (out / "A_network_check.csv").exists()
+    text = (out / "report.txt").read_text()
+    assert "NETWORK QUESTION for tlrn_13_fh on cohort A: NETWORK ADDS VALUE" in text
+    assert text.index("VERDICT for tlrn_13_fh") < text.index("NETWORK QUESTION")
+    assert "network question: network adds value" in capsys.readouterr().out
+
+
+def test_the_rolling_interval_is_the_mean_over_valuations_not_valuation_10(tmp_path, cohort):
+    # the ablation is 20% off at valuations 6, 7 and 8 and exact at 10: valuation 10 shows
+    # nothing, the mean over the four dates does, so the verdict waits on condition (a)
+    res = network_result(tmp_path, cohort, perfect, lambda i, a: a * (1.2 if i < 3 else 1.0))
+    stats = res["network_statistics"]
+    assert (stats["last"]["low"], stats["last"]["high"]) == pytest.approx((0.0, 0.0), abs=1e-12)
+    assert stats["rolling"]["diff"] == pytest.approx(-0.15)
+    assert stats["rolling"]["high"] < 0
+    assert res["network_conditions"] == {
+        "a_last_below": False,
+        "b_rolling_below": True,
+        "c_excluding_not_above": True,
+    }
+    assert res["network_verdict"] == "not distinguishable"

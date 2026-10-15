@@ -126,6 +126,26 @@ import tlrn_colab
 import tlrn_study_colab as study
 import tlrn_study_eval as first
 
+AMENDMENT_1 = """Amendment 1 (2026-10-15, before any fit of this study had been run). It adds a
+second question and changes nothing in the rules above; it is repeated from
+``knowledge/decisions/tlrn-factor-head-study.md``.
+
+The question. Does the network add anything beyond shrinking toward the multivariate chain
+ladder? The main row ``tlrn_13_fh`` is compared with the ablation row ``tlrn_13_fh_factors``
+(same cohort, same scored companies, same draws, both blended with the multivariate chain
+ladder). The statistic is the paired company-level bootstrap of the draw-average difference in
+Pool_APE, model minus ablation, with the primary verdict's resample (10,000, seed 2008, 2.5th
+and 97.5th percentiles, a company's valuation dates kept together), at valuation 10 and as the
+mean over valuations 6, 7, 8 and 10, and at valuation 10 with the dominant company left out.
+
+``network adds value`` only if the valuation-10 interval AND the mean-over-valuations interval
+are both wholly below zero AND the valuation-10 interval without the dominant company is not
+wholly above zero. ``network hurts`` if either of the first two intervals is wholly above
+zero. ``not distinguishable`` otherwise. The raw network against the ablation is reported,
+descriptively. The verdict is reported beside the primary one and is not part of the primary
+``effective`` rule.
+"""
+
 #: the four valuation dates, as the companion calls them (10 is the last known diagonal)
 VALUATIONS = (6, 7, 8, 10)
 LAST = max(VALUATIONS)
@@ -140,13 +160,18 @@ N_BOOT = first.N_BOOT
 BOOT_SEED = first.BOOT_SEED
 LEVEL = first.LEVEL
 VERDICTS = ("effective", "not distinguishable", "worse")
+#: Amendment 1 (A2): the paired question 'does the network add anything beyond the blend?'
+NETWORK_VERDICTS = ("network adds value", "network hurts", "not distinguishable")
 #: how far a saved table may differ from the evaluator's own cell sums (the tables come
 #: from float32 tensors)
 TABLE_RTOL = 1e-4
 TABLE_ATOL = 1e-3
 #: what each cohort's verdict means
 CONFIRMATORY = "confirmatory of a fixed specification, not out-of-sample"
-OUT_OF_SAMPLE = "out-of-sample (accident years the specification was not tuned on)"
+OUT_OF_SAMPLE = (
+    "out-of-sample in accident years only (not tuned on as far as we know, assumed not known; "
+    "its companies and calendar years overlap A and B)"
+)
 STATUS = {"A": CONFIRMATORY, "B": CONFIRMATORY, "C": OUT_OF_SAMPLE}
 
 
@@ -808,6 +833,48 @@ def last_difference(pred_last, ref_last, actual_last, idx: np.ndarray) -> dict:
     }
 
 
+def decide_network(stats: dict) -> tuple[str, dict, str]:
+    """Amendment 1's verdict on whether the network adds anything beyond the blend.
+
+    ``stats`` has ``last``, ``rolling`` and ``excluding``, each ``{"low", "high"}``: the
+    interval of the Pool_APE difference ``main row minus ablation row`` at valuation 10, as
+    the mean over the valuations, and at valuation 10 without the dominant company.
+    """
+
+    def below(i):
+        return bool(np.isfinite(i["high"]) and i["high"] < 0)
+
+    def above(i):
+        return bool(np.isfinite(i["low"]) and i["low"] > 0)
+
+    conditions = {
+        "a_last_below": below(stats["last"]),
+        "b_rolling_below": below(stats["rolling"]),
+        "c_excluding_not_above": bool(
+            np.isfinite(stats["excluding"]["low"]) and not above(stats["excluding"])
+        ),
+    }
+    if all(conditions.values()):
+        word = "network adds value"
+    elif above(stats["last"]) or above(stats["rolling"]):
+        word = "network hurts"
+    else:
+        word = "not distinguishable"
+    reason = (
+        "; ".join(
+            f"{name} [{stats[key]['low']:+.4%}, {stats[key]['high']:+.4%}]"
+            for name, key in (
+                ("valuation 10", "last"),
+                ("rolling", "rolling"),
+                ("valuation 10 without the dominant company", "excluding"),
+            )
+        )
+        + "; conditions "
+        + ", ".join(f"{k} {'yes' if v else 'no'}" for k, v in conditions.items())
+    )
+    return word, conditions, reason
+
+
 def metric_table(series: dict, actual: np.ndarray, bench: dict) -> pd.DataFrame:
     """Every reported metric, per method and valuation, and their mean over valuations.
 
@@ -860,6 +927,48 @@ def alpha_summary(fits: list[Fit]) -> pd.DataFrame:
     """Median blend weight (alpha) over all members of all draws, per valuation."""
     members = pd.concat([f.members for f in fits], ignore_index=True)
     return members.groupby("valuation")["alpha"].median().rename("alpha_median").reset_index()
+
+
+def network_verdict_fields(network_stats: dict | None, draw_sets: dict) -> dict:
+    """Amendment 1's verdict, labelled like the primary one, as fields of a cohort's result.
+
+    The draw sets of the two rows must both be exactly draws 0 to 9 and equal to each other,
+    or the verdict is labelled provisional with what is missing.
+    """
+    if network_stats is None:
+        return {
+            "network_verdict": None,
+            "network_label": f"not scored (needs fits of {MAIN_ROW} and {FACTORS_ROW})",
+            "network_reason": f"no fits of both {MAIN_ROW} and {FACTORS_ROW} for this cohort",
+            "network_provisional": True,
+            "network_conditions": {},
+            "network_statistics": None,
+        }
+    word, conditions, reason = decide_network(network_stats)
+    main_draws, other_draws = draw_sets[MAIN_ROW], draw_sets[FACTORS_ROW]
+    notes = []
+    for row, draws in ((MAIN_ROW, main_draws), (FACTORS_ROW, other_draws)):
+        provisional, missing = first.draw_completeness(draws)
+        if provisional:
+            notes.append(
+                f"{row} has {len(draws)} of {study.DEFAULT_DRAWS} draws"
+                + (f" (missing {', '.join(str(d) for d in missing)})" if missing else "")
+            )
+    if sorted(main_draws) != sorted(other_draws):
+        notes.append("the two rows' draw sets differ")
+    label = word
+    if notes:
+        note = "provisional: " + "; ".join(notes)
+        reason = f"{note}; {reason}"
+        label = f"{word} ({note})"
+    return {
+        "network_verdict": word,
+        "network_label": label,
+        "network_reason": reason,
+        "network_provisional": bool(notes),
+        "network_conditions": conditions,
+        "network_statistics": network_stats,
+    }
 
 
 def evaluate_cohort(
@@ -967,6 +1076,39 @@ def evaluate_cohort(
             ablations.append({"row": other, "against": MAIN_ROW, "statistic": "last", **d})
     result["ablations"] = pd.DataFrame(ablations)
 
+    # Amendment 1: the paired question, main row minus the factors-only row (not the verdict)
+    network_rows, network_stats = [], None
+    if MAIN_ROW in series and FACTORS_ROW in series:
+        d = difference_summary(series[MAIN_ROW], series[FACTORS_ROW], actual, idx)
+        ex = last_difference(
+            series[MAIN_ROW][last][keep_ex],
+            series[FACTORS_ROW][last][keep_ex],
+            actual[last][keep_ex],
+            idx_ex,
+        )
+        network_stats = {"last": d["last"], "rolling": d["rolling"], "excluding": ex}
+        for scope, cell in (("last", d["last"]), ("rolling", d["rolling"]), ("excluding", ex)):
+            network_rows.append(
+                {"model": MAIN_ROW, "ablation": FACTORS_ROW, "statistic": scope, **cell}
+            )
+        if RAW_NETWORK in series:
+            raw = difference_summary(series[RAW_NETWORK], series[FACTORS_ROW], actual, idx)
+            raw_ex = last_difference(
+                series[RAW_NETWORK][last][keep_ex],
+                series[FACTORS_ROW][last][keep_ex],
+                actual[last][keep_ex],
+                idx_ex,
+            )
+            for scope, cell in (
+                ("last", raw["last"]),
+                ("rolling", raw["rolling"]),
+                ("excluding", raw_ex),
+            ):
+                network_rows.append(
+                    {"model": RAW_NETWORK, "ablation": FACTORS_ROW, "statistic": scope, **cell}
+                )
+    result["network_check"] = pd.DataFrame(network_rows)
+
     # the draws
     draw_rows = []
     summaries = {}
@@ -1028,6 +1170,7 @@ def evaluate_cohort(
             missing_draws=list(range(study.DEFAULT_DRAWS)),
             n_draws=0,
         )
+    result.update(network_verdict_fields(network_stats, draw_sets))
     return result
 
 
@@ -1231,6 +1374,17 @@ def render(cohort, result: dict, extras: dict, banner: str) -> str:
         f"VERDICT for {MAIN_ROW} on cohort {cohort.name} ({result['status']}): "
         f"{(result['verdict'] or 'not scored').upper()}",
         f"   {result['verdict_reason']}",
+        "",
+        "Amendment 1, a separate question (not part of the verdict above): does the network add "
+        "anything beyond the blend? Pool_APE difference, model minus the factors-only row, "
+        "negative favours the model:",
+    ]
+    if len(result["network_check"]):
+        lines.append(result["network_check"].round(5).to_string(index=False))
+    lines += [
+        f"NETWORK QUESTION for {MAIN_ROW} on cohort {cohort.name}: "
+        f"{(result['network_verdict'] or 'not scored').upper()}",
+        f"   {result['network_reason']}",
     ]
     return "\n".join(lines)
 
@@ -1318,6 +1472,7 @@ def save_tables(out: Path, cohort, result: dict) -> None:
     result["excluding_dominant"].to_csv(out / f"{name}_excluding_dominant.csv", index=False)
     result["quartiles"].to_csv(out / f"{name}_size_quartiles.csv", index=False)
     result["ablations"].to_csv(out / f"{name}_ablations.csv", index=False)
+    result["network_check"].to_csv(out / f"{name}_network_check.csv", index=False)
     result["draw_pool_ape"].to_csv(out / f"{name}_draw_pool_ape.csv", index=False)
     company_table(result).to_csv(out / f"{name}_company_predictions.csv", index=False)
     if "companion_rolling" in result:
@@ -1343,6 +1498,13 @@ def verdict_record(result: dict) -> dict:
     }
     if result["verdict"] is not None:
         record["conditions"] = result["conditions"]
+    record["network_question"] = {
+        "verdict": result["network_verdict"],
+        "label": result["network_label"],
+        "reason": result["network_reason"],
+        "provisional": result["network_provisional"],
+        "conditions": result["network_conditions"],
+    }
     return record
 
 
@@ -1414,6 +1576,7 @@ def main(argv=None) -> int:
     print("\nVERDICTS" + (" (SMOKE, not a result)" if args.smoke else ""))
     for key, value in verdicts.items():
         print(f"  {key}: {value['label']} [{value['status']}] ({value['n_draws']} draws)")
+        print(f"     network question: {value['network_question']['label']}")
     return 0
 
 
