@@ -1276,3 +1276,51 @@ def test_verdicts_json_carries_the_data_hash_note(tmp_path, monkeypatch):
     _, out2 = _eval_main(tmp_path / "same", monkeypatch, ["A"])
     same = json.loads((out2 / "verdicts.json").read_text())["verdicts"]["A/tlrn_8_ay"]
     assert "data_hash" not in same
+
+
+def half_then_die(target: Path) -> None:
+    target.write_bytes(b"half a fi")
+    raise OSError("the disk filled up half way")
+
+
+def test_a_write_that_dies_half_way_leaves_no_file_under_the_final_name(tmp_path):
+    final = tmp_path / "A_row_d00.csv"
+    with pytest.raises(OSError, match="half way"):
+        study.write_atomic(final, half_then_die)
+    assert not final.exists()
+    # the half-written bytes sit under a temporary name only
+    assert [p.name for p in tmp_path.iterdir()] == ["A_row_d00.csv.part"]
+
+
+def test_a_write_that_dies_half_way_leaves_an_earlier_file_untouched(tmp_path):
+    final = tmp_path / "A_row_d00.csv"
+    final.write_bytes(b"the good one")
+    with pytest.raises(OSError, match="half way"):
+        study.write_atomic(final, half_then_die)
+    assert final.read_bytes() == b"the good one"
+
+
+def test_a_table_saver_that_dies_half_way_is_atomic_too(tmp_path, monkeypatch):
+    def dying_to_csv(self, path, *args, **kwargs):
+        Path(path).write_text("company_code,anchor\nc1,1.0\nc2,", encoding="utf-8")
+        raise OSError("killed")
+
+    monkeypatch.setattr(pd.DataFrame, "to_csv", dying_to_csv)
+    final = tmp_path / "A_row_d00_reserves.csv"
+    with pytest.raises(OSError, match="killed"):
+        study.save_reserves(pd.DataFrame({"company_code": ["c1"], "anchor": [1.0]}), final)
+    assert not final.exists()
+
+
+def test_a_leftover_temporary_file_does_not_stop_or_confuse_a_resume(tmp_path):
+    flaky = Recorder(fail_on=3)
+    with pytest.raises(KeyboardInterrupt):
+        run(tmp_path, flaky)
+    # a kill in the middle of a write leaves a temporary file beside the finished ones
+    stray = tmp_path / "A_tlrn_8_ay_d02-ibnr9.9.9_reserves.csv.part"
+    stray.write_text("company_code,anchor\nc1,", encoding="utf-8")
+    resumed = Recorder()
+    assert run(tmp_path, resumed) == {"fitted": 5, "skipped": 3}
+    # only finished fits count as finished: the stray file was neither read nor renamed
+    assert stray.exists() and stray.read_text(encoding="utf-8").endswith("c1,")
+    assert not [p for p in tmp_path.glob("*.csv") if p.name == stray.name]
