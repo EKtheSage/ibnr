@@ -341,19 +341,27 @@ def test_the_difference_summary_resamples_a_companys_valuations_together():
     def pa(p, a, rows):
         return np.abs(p[rows] - a[rows]).sum() / a[rows].sum()
 
-    diff_last, diff_roll = [], []
+    diff_last, diff_roll, diff_pooled = [], [], []
     for rows in idx:
         m = [pa(model[i], actual[i], rows) for i in range(V)]
         b = [pa(bench[i], actual[i], rows) for i in range(V)]
         diff_last.append(m[LAST_I] - b[LAST_I])
         diff_roll.append(np.mean(m) - np.mean(b))
-    for key, boot in (("last", diff_last), ("rolling", diff_roll)):
+        top = sum(np.abs(model[i][rows] - actual[i][rows]).sum() for i in range(V))
+        bot = sum(actual[i][rows].sum() for i in range(V))
+        top_b = sum(np.abs(bench[i][rows] - actual[i][rows]).sum() for i in range(V))
+        diff_pooled.append(top / bot - top_b / bot)
+    for key, boot in (("last", diff_last), ("rolling", diff_roll), ("pooled", diff_pooled)):
         assert got[key]["low"] == pytest.approx(np.quantile(boot, 0.025))
         assert got[key]["high"] == pytest.approx(np.quantile(boot, 0.975))
         assert got[key]["share_favour"] == pytest.approx(np.mean(np.array(boot) < 0))
     point = ev.pool_ape_by_valuation(model, actual) - ev.pool_ape_by_valuation(bench, actual)
     assert got["last"]["diff"] == pytest.approx(point[LAST_I])
     assert got["rolling"]["diff"] == pytest.approx(point.mean())
+    pooled_point = np.abs(model - actual).sum() / actual.sum() - np.abs(bench - actual).sum() / (
+        actual.sum()
+    )
+    assert got["pooled"]["diff"] == pytest.approx(pooled_point)
 
 
 def test_the_rolling_statistic_is_the_plain_mean_over_the_four_valuations():
@@ -417,11 +425,16 @@ def interval(low, high):
     return {"low": low, "high": high}
 
 
+def excl(low, high, diff):
+    """A valuation-10 interval without the dominant company: it also has the point difference."""
+    return {"low": low, "high": high, "diff": diff}
+
+
 def stats_for(**changes):
     base = {
         "last": {b: interval(-0.03, -0.005) for b in ev.BENCHMARKS},
-        "rolling": {b: interval(-0.02, -0.002) for b in ev.BENCHMARKS},
-        "excluding": {b: interval(-0.02, 0.01) for b in ev.BENCHMARKS},
+        "pooled": {b: interval(-0.02, -0.002) for b in ev.BENCHMARKS},
+        "excluding": {b: excl(-0.02, 0.01, -0.005) for b in ev.BENCHMARKS},
         "median_draw_last": 0.04,
         "pool_last": {"mack": 0.055, "mcl": 0.054},
     }
@@ -440,11 +453,14 @@ def test_all_four_conditions_give_effective():
     [
         ({"last": {"mack": interval(-0.03, -0.005), "mcl": interval(-0.03, 0.001)}}, "i_"),
         (
-            {"rolling": {"mack": interval(-0.03, 0.0), "mcl": interval(-0.03, -0.002)}},
+            {"pooled": {"mack": interval(-0.03, 0.0), "mcl": interval(-0.03, -0.002)}},
             "ii_",
         ),
         ({"median_draw_last": 0.0545}, "iii_"),
-        ({"excluding": {"mack": interval(0.001, 0.02), "mcl": interval(-0.02, 0.01)}}, "iv_"),
+        (
+            {"excluding": {"mack": excl(-0.02, 0.01, 0.003), "mcl": excl(-0.02, 0.01, -0.005)}},
+            "iv_",
+        ),
     ],
 )
 def test_each_condition_alone_stops_effective(changes, failed):
@@ -462,25 +478,29 @@ def test_median_draw_must_be_below_both_benchmarks_not_just_one():
 def test_worse_needs_an_interval_wholly_above_zero_at_the_last_valuation_or_rolling():
     above = {"mack": interval(-0.01, 0.02), "mcl": interval(0.001, 0.02)}
     assert ev.decide(stats_for(last=above))[0] == "worse"
-    assert ev.decide(stats_for(rolling=above))[0] == "worse"
+    assert ev.decide(stats_for(pooled=above))[0] == "worse"
     # either benchmark counts, the weaker one too (the first study's rule used the stronger)
     weaker = {"mack": interval(0.001, 0.02), "mcl": interval(-0.01, 0.02)}
     assert stats_for()["pool_last"]["mack"] > stats_for()["pool_last"]["mcl"]
     assert ev.decide(stats_for(last=weaker))[0] == "worse"
-    assert ev.decide(stats_for(rolling=weaker))[0] == "worse"
+    assert ev.decide(stats_for(pooled=weaker))[0] == "worse"
     # touching zero is not wholly above
     touching = {"mack": interval(-0.01, 0.02), "mcl": interval(0.0, 0.02)}
-    assert ev.decide(stats_for(last=touching, rolling=touching))[0] == "not distinguishable"
+    assert ev.decide(stats_for(last=touching, pooled=touching))[0] == "not distinguishable"
     # an interval above zero in the dominant-excluded check alone does not make it worse
-    ex = {"mack": interval(0.001, 0.02), "mcl": interval(0.001, 0.02)}
+    ex = {"mack": excl(0.001, 0.02, 0.01), "mcl": excl(0.001, 0.02, 0.01)}
     assert ev.decide(stats_for(excluding=ex))[0] == "not distinguishable"
 
 
 def test_an_interval_that_could_not_be_computed_is_neither_effective_nor_worse():
     nan = {b: interval(float("nan"), float("nan")) for b in ev.BENCHMARKS}
-    for key in ("last", "rolling", "excluding"):
+    for key in ("last", "pooled"):
         word, _, _ = ev.decide(stats_for(**{key: nan}))
         assert word == "not distinguishable"
+    # without the dominant company: no point difference and no interval is not a pass either
+    nothing = {b: excl(float("nan"), float("nan"), float("nan")) for b in ev.BENCHMARKS}
+    word, conditions, _ = ev.decide(stats_for(excluding=nothing))
+    assert word == "not distinguishable" and not conditions["iv_excluding_dominant_not_worse"]
 
 
 def test_the_pre_registered_constants():
@@ -547,6 +567,8 @@ def tables_for(cohort, predict, *, truth=None):
             "valuation": np.repeat(ev.VALUATIONS, 2),
             "member": [0, 1] * V,
             "alpha": 0.5,
+            "best_epoch": 100,
+            "epochs_run": ev.EXPECTED_EPOCHS,
             "kept": True,
         }
     )
@@ -849,18 +871,17 @@ def test_the_raw_network_is_the_main_fits_pre_blend_forecast_and_needs_no_extra_
     # tables_for writes predicted_net as 1% above predicted
     np.testing.assert_allclose(res["series"][ev.RAW_NETWORK], res["series"][ev.MAIN_ROW] * 1.01)
     assert ev.FACTORS_ROW not in res["series"]
-    ablated = set(res["ablations"]["row"])
-    assert ablated == {ev.RAW_NETWORK}
+    assert set(res["comparison_rows"]["row"]) == {ev.RAW_NETWORK}
 
 
-def test_the_ablations_are_the_difference_from_the_main_row(tmp_path, cohort):
+def test_the_comparison_rows_are_the_difference_from_the_main_row(tmp_path, cohort):
     res = evaluate(
         tmp_path,
         cohort,
         bench_for(cohort, 0.3, 0.3),
         {ev.MAIN_ROW: perfect, ev.FACTORS_ROW: lambda i, a: a * 1.2},
     )
-    abl = res["ablations"].set_index(["row", "statistic"])
+    abl = res["comparison_rows"].set_index(["row", "statistic"])
     # the factors row is 20% off, the main row exact: row minus main is its Pool_APE, 0.2
     assert abl.loc[(ev.FACTORS_ROW, "last"), "diff"] == pytest.approx(0.2)
     assert abl.loc[(ev.FACTORS_ROW, "rolling"), "diff"] == pytest.approx(0.2)
@@ -872,7 +893,7 @@ def test_a_first_study_row_is_compared_at_the_last_valuation_only(tmp_path, coho
     by_row = {ev.MAIN_ROW: loaded(tmp_path, cohort, draws=(0, 1))}
     reserve = cohort.actual["actual_reserve"].to_numpy() * 1.3
     res = ev.evaluate_cohort(cohort, by_row, bench, first_study={"first_study:tlrn_13_ay": reserve})
-    row = res["ablations"].set_index("row").loc["first_study:tlrn_13_ay"]
+    row = res["comparison_rows"].set_index("row").loc["first_study:tlrn_13_ay"]
     assert row["statistic"] == "last" and row["diff"] == pytest.approx(0.3)
 
 
@@ -977,7 +998,7 @@ def test_main_writes_the_report_the_tables_and_verdicts(tmp_path, monkeypatch, c
         "A_differences.csv",
         "A_excluding_dominant.csv",
         "A_size_quartiles.csv",
-        "A_ablations.csv",
+        "A_comparison_rows.csv",
         "A_draw_pool_ape.csv",
         "A_company_predictions.csv",
         "report.txt",
@@ -1097,7 +1118,7 @@ def network_result(tmp_path, cohort, main, factors, *, draws=(0, 1, 2, 3, 4, 5, 
     )
 
 
-def test_a_network_row_equal_to_the_ablation_has_a_zero_interval_and_is_not_distinguishable(
+def test_a_main_row_equal_to_the_network_off_row_has_a_zero_interval_and_is_not_distinguishable(
     tmp_path, cohort
 ):
     res = network_result(tmp_path, cohort, perfect, perfect)
@@ -1108,23 +1129,23 @@ def test_a_network_row_equal_to_the_ablation_has_a_zero_interval_and_is_not_dist
     assert not res["network_provisional"]
 
 
-def test_a_network_with_smaller_error_than_the_ablation_adds_value(tmp_path, cohort):
+def test_a_network_with_smaller_error_than_the_network_off_row_adds_value(tmp_path, cohort):
     res = network_result(tmp_path, cohort, perfect, lambda i, a: a * 1.2)
     assert res["network_verdict"] == "network adds value"
     assert all(res["network_conditions"].values())
-    # the sign is model minus ablation: the model is exact, the ablation 20% off
+    # the sign is model minus network-off row: the model is exact, the other is 20% off
     assert res["network_statistics"]["last"]["diff"] == pytest.approx(-0.2)
     assert res["network_statistics"]["rolling"]["high"] < 0
 
 
-def test_a_network_with_larger_error_than_the_ablation_hurts(tmp_path, cohort):
+def test_a_network_with_larger_error_than_the_network_off_row_hurts(tmp_path, cohort):
     res = network_result(tmp_path, cohort, lambda i, a: a * 1.2, perfect)
     assert res["network_verdict"] == "network hurts"
     assert res["network_statistics"]["last"]["diff"] == pytest.approx(0.2)
 
 
 def test_the_dominant_company_is_left_out_of_both_rows_in_the_network_check(tmp_path, cohort):
-    # the ablation is wrong only on the dominant company, the model exact everywhere: without
+    # the network-off row is wrong only on the dominant company, the model exact: without
     # that company the two rows are identical, so the third interval is exactly zero
     dominant = cohort.actual["actual_reserve"].idxmax()
     col = sorted(cohort.board).index(dominant)
@@ -1183,13 +1204,15 @@ def test_the_network_verdict_is_provisional_unless_both_rows_hold_draws_0_to_9(t
     assert not network_result(tmp_path / "t", cohort, perfect, perfect)["network_provisional"]
 
 
-def test_the_raw_network_is_reported_against_the_ablation_outside_the_verdict(tmp_path, cohort):
+def test_the_raw_network_is_reported_against_the_network_off_row_outside_the_verdict(
+    tmp_path, cohort
+):
     res = network_result(tmp_path, cohort, perfect, lambda i, a: a * 1.2)
     check = res["network_check"]
     assert set(check["model"]) == {ev.MAIN_ROW, ev.RAW_NETWORK}
-    assert set(check["statistic"]) == {"last", "rolling", "excluding"}
+    assert set(check["statistic"]) == {"last", "rolling", "pooled", "excluding"}
     raw = check[(check["model"] == ev.RAW_NETWORK) & (check["statistic"] == "last")].iloc[0]
-    # tables_for writes the raw network 1% above the blend, the ablation is 20% off
+    # tables_for writes the raw network 1% above the blend, the network-off row is 20% off
     assert raw["diff"] == pytest.approx(0.01 - 0.2)
 
 
@@ -1215,7 +1238,7 @@ def test_main_reports_the_network_question_next_to_the_primary_verdict(
 
 
 def test_the_rolling_interval_is_the_mean_over_valuations_not_valuation_10(tmp_path, cohort):
-    # the ablation is 20% off at valuations 6, 7 and 8 and exact at 10: valuation 10 shows
+    # the network-off row is 20% off at valuations 6, 7 and 8, exact at 10: valuation 10 shows
     # nothing, the mean over the four dates does, so the verdict waits on condition (a)
     res = network_result(tmp_path, cohort, perfect, lambda i, a: a * (1.2 if i < 3 else 1.0))
     stats = res["network_statistics"]
@@ -1228,3 +1251,431 @@ def test_the_rolling_interval_is_the_mean_over_valuations_not_valuation_10(tmp_p
         "c_excluding_not_above": True,
     }
     assert res["network_verdict"] == "not distinguishable"
+
+
+# -- Amendment 2: the dollar-pooled statistic, the new rules and what is reported ---------
+
+
+def test_amendment_texts_are_pinned_and_state_their_rules():
+    import hashlib
+
+    # Amendment 1 only changed one word (see the decision note, B9); Amendment 2 is new
+    assert (
+        hashlib.sha256(ev.AMENDMENT_1.encode()).hexdigest()
+        == "5edf86bb920c42b63cbaa30e08915296be078b3cb2e21bbfa94ec8bac94e9fe7"
+    )
+    assert (
+        hashlib.sha256(ev.AMENDMENT_2.encode()).hexdigest()
+        == "3ca6e4975286be6226bcfa4a7dda9f70842f73cb27710fa317dab971a744dd0f"
+    )
+    flat = " ".join(ev.AMENDMENT_2.split())
+    for phrase in (
+        "no real result exists",
+        "DOLLAR-POOLED",
+        "BOTH benchmarks",
+        "EITHER benchmark",
+        "headline cohort",
+        "random seed 2009",
+        "3,000 epochs",
+        "cohort A is not affected",
+    ):
+        assert phrase in flat
+    note = Path(__file__).parents[1] / "knowledge" / "decisions" / "tlrn-factor-head-study.md"
+    text = " ".join(note.read_text(encoding="utf-8").split())
+    assert "# Amendment 2 (2026-10-15, before any fit of this study has been run)" in text
+    for phrase in (
+        "dollar-pooled Pool_APE over valuations 6, 7, 8 and 10",
+        "either the valuation-10 point difference",
+        "random seed 2009",
+        'the first study, which judged "worse" against the stronger benchmark only',
+    ):
+        assert phrase in text
+
+
+def test_the_pooled_statistic_is_dollars_of_error_over_dollars_of_reserve():
+    # valuation 6 is small and 50% off; the others are exact and a hundred times larger
+    actual = np.array([[10.0, 30.0], [100.0, 300.0], [1000.0, 3000.0], [10_000.0, 30_000.0]])
+    pred = actual.copy()
+    pred[0] *= 1.5
+    assert ev.pooled_ape(pred, actual) == pytest.approx(20.0 / actual.sum())
+    # the plain mean of the four Pool_APE values would be 0.125: valuation 6 no longer rules
+    assert ev.rolling(ev.pool_ape_by_valuation(pred, actual)) == pytest.approx(0.125)
+    assert ev.pooled_ape(pred, actual) < 0.001
+    idx = first.bootstrap_indices(2, 50, 3)
+    got = ev.resampled_pooled_ape(pred, actual, idx)
+    for k, rows in enumerate(idx):
+        want = np.abs(pred[:, rows] - actual[:, rows]).sum() / actual[:, rows].sum()
+        assert got[k] == pytest.approx(want)
+
+
+def test_the_pooled_interval_resamples_a_company_once_for_all_four_dates():
+    rng = np.random.default_rng(4)
+    actual = rng.uniform(100, 1000, size=(V, 25))
+    model = actual * rng.uniform(0.8, 1.2, size=(V, 25))
+    bench = actual * rng.uniform(0.8, 1.2, size=(V, 25))
+    idx = first.bootstrap_indices(25, 500, 9)
+    got = ev.difference_summary(model, bench, actual, idx)["pooled"]
+    boot = [
+        (np.abs(model[:, r] - actual[:, r]).sum() - np.abs(bench[:, r] - actual[:, r]).sum())
+        / actual[:, r].sum()
+        for r in idx
+    ]
+    assert (got["low"], got["high"]) == pytest.approx(
+        (np.quantile(boot, 0.025), np.quantile(boot, 0.975))
+    )
+
+
+def test_stratified_resamples_keep_the_dominant_company_once_and_a_uniform_one_often_does_not():
+    idx = ev.stratified_indices(20, 7, n_boot=400, seed=1)
+    assert idx.shape == (400, 20)
+    assert ((idx == 7).sum(axis=1) == 1).all()
+    assert (idx[:, 1:] != 7).all() and idx.min() >= 0 and idx.max() < 20
+    # the other places repeat companies (with replacement) and the result is reproducible
+    assert any(len(set(row)) < 20 for row in idx)
+    np.testing.assert_array_equal(idx, ev.stratified_indices(20, 7, n_boot=400, seed=1))
+    assert ev.STRATIFIED_SEED == ev.BOOT_SEED + 1 == 2009
+    # a uniform resample leaves one company out about (1 - 1/n)^n = 37% of the time
+    uniform = first.bootstrap_indices(82, 4000, 5)
+    share_out = np.mean((uniform == 0).sum(axis=1) == 0)
+    assert share_out == pytest.approx((1 - 1 / 82) ** 82, abs=0.03)
+
+
+def test_the_stratified_intervals_and_sensitivity_verdict_are_reported_beside_the_primary(
+    tmp_path, cohort
+):
+    dominant = cohort.actual["actual_reserve"].idxmax()
+    col = sorted(cohort.board).index(dominant)
+
+    def off_on_dominant(i, actual):
+        out = np.array(actual, dtype=float)
+        out[col] *= 1.1
+        return out
+
+    res = evaluate(tmp_path, cohort, bench_for(cohort, 0.05, 0.05), {ev.MAIN_ROW: off_on_dominant})
+    n = len(res["companies"])
+    strat_idx = ev.stratified_indices(n, res["companies"].index(res["dominant_company"]))
+    for b in ev.BENCHMARKS:
+        want = ev.difference_summary(
+            res["series"][ev.MAIN_ROW], res["series"][b], res["actual"], strat_idx
+        )
+        got = res["stratified"].set_index(["benchmark", "statistic"])
+        for scope in ("last", "pooled"):
+            row = got.loc[(b, scope)]
+            assert (row["low"], row["high"]) == pytest.approx(
+                (want[scope]["low"], want[scope]["high"])
+            )
+    # the primary verdict still comes from the uniform resamples, not from these
+    prim = res["differences"]
+    prim = prim[(prim["method"] == ev.MAIN_ROW) & (prim["benchmark"] == "mack")]
+    prim = prim.set_index("statistic").loc["last"]
+    used = res["verdict_statistics"]["last"]["mack"]
+    assert (used["low"], used["high"]) == (prim["low"], prim["high"])
+    # a 10% miss on the dominant company: the uniform resamples that drop it dilute the result,
+    # the stratified ones never do, so the same rule reads the two differently
+    assert res["verdict"] == "not distinguishable"
+    assert res["sensitivity_verdict"] == "worse"
+    strat_stats = {
+        **res["verdict_statistics"],
+        "last": {
+            b: res["stratified"]
+            .set_index(["benchmark", "statistic"])
+            .loc[(b, "last")][["low", "high"]]
+            .to_dict()
+            for b in ev.BENCHMARKS
+        },
+        "pooled": {
+            b: res["stratified"]
+            .set_index(["benchmark", "statistic"])
+            .loc[(b, "pooled")][["low", "high"]]
+            .to_dict()
+            for b in ev.BENCHMARKS
+        },
+    }
+    assert ev.decide(strat_stats)[0] == res["sensitivity_verdict"]
+    # an interval that keeps the dominant company differs from one that sometimes drops it
+    strat = res["stratified"].set_index(["benchmark", "statistic"]).loc[("mack", "last")]
+    assert (prim["low"], prim["high"]) != (strat["low"], strat["high"])
+
+
+def test_precision_is_the_interval_width_and_the_gain_it_could_just_detect(tmp_path, cohort):
+    res = evaluate(tmp_path, cohort, bench_for(cohort, 0.3, 0.3), {ev.MAIN_ROW: perfect})
+    table = res["precision"]
+    assert set(table["bootstrap"]) == {"uniform", "stratified"}
+    assert set(table["statistic"]) == {"last", "pooled", "rolling"}
+    np.testing.assert_allclose(table["width"], table["high"] - table["low"])
+    np.testing.assert_allclose(table["detectable_gain"], table["width"] / 2)
+    text = ev.render(cohort, res, {}, "")
+    for heading in (
+        "Precision (Amendment 2)",
+        "Sensitivity analysis, a stratified bootstrap",
+        "Spread of the blend weight alpha",
+        "BLEND QUESTION for tlrn_13_fh",
+        "Comparison rows",
+    ):
+        assert heading in text
+
+
+def test_condition_iv_needs_a_point_difference_at_or_below_zero_or_condition_i_without_it():
+    both_below = {b: excl(-0.02, 0.01, -0.005) for b in ev.BENCHMARKS}
+    assert ev.decide(stats_for(excluding=both_below))[1]["iv_excluding_dominant_not_worse"]
+    # worse than one benchmark without the dominant company, interval across zero: fails
+    mixed = {"mack": excl(-0.02, 0.03, 0.004), "mcl": excl(-0.02, 0.01, -0.005)}
+    assert not ev.decide(stats_for(excluding=mixed))[1]["iv_excluding_dominant_not_worse"]
+    # worse than both, as on the companion's own numbers (+0.26 and +0.76 points): fails, and
+    # the registered rule (not wholly above zero) would have passed it
+    companions = {"mack": excl(-0.025, 0.04, 0.0076), "mcl": excl(-0.02, 0.03, 0.0026)}
+    word, conditions, _ = ev.decide(stats_for(excluding=companions))
+    assert word == "not distinguishable"
+    assert not conditions["iv_excluding_dominant_not_worse"]
+    assert all(not (c["low"] > 0) for c in companions.values())
+    # condition (i) holding without the dominant company is the other way through
+    wholly_below = {b: excl(-0.03, -0.001, 0.0004) for b in ev.BENCHMARKS}
+    assert ev.decide(stats_for(excluding=wholly_below))[1]["iv_excluding_dominant_not_worse"]
+
+
+def test_worse_fires_on_either_benchmark_unlike_the_first_study_which_judged_the_stronger():
+    # the first study: only the benchmark with the lower Pool_APE decides 'worse'
+    pool = {"mack": 0.055, "mcl": 0.054}
+    interval_vs = {"mack": (0.001, 0.02), "mcl": (-0.01, 0.02)}  # above zero against mack only
+    assert first.verdict(0.06, pool, interval_vs)[0] == "not distinguishable"
+    assert pool["mcl"] < pool["mack"]  # mcl is the stronger benchmark here
+    above = {"mack": interval(0.001, 0.02), "mcl": interval(-0.01, 0.02)}
+    assert ev.decide(stats_for(last=above))[0] == "worse"
+
+
+OUTCOMES = ("effective", "not distinguishable", "worse", None)
+
+
+@pytest.mark.parametrize("c", OUTCOMES)
+@pytest.mark.parametrize("a", OUTCOMES)
+@pytest.mark.parametrize("b", OUTCOMES)
+def test_the_overall_statement_follows_cohort_c_and_then_a_and_b(c, a, b):
+    got = ev.overall_statement({"A": a, "B": b, "C": c})
+    if c is None:
+        assert got == ev.OVERALL["none"]
+        return
+    if c == "not distinguishable":
+        assert got.startswith(ev.OVERALL["nd"] + " (")
+    elif c == "worse":
+        assert got.startswith(ev.OVERALL["worse"] + " (")
+    elif "worse" in (a, b):
+        assert got.startswith(ev.OVERALL["mixed"])
+    elif a == b == "effective":
+        assert got.startswith(ev.OVERALL["confirmed"])
+    else:
+        assert got.startswith(ev.OVERALL["not_worse"])
+    # A and B are always listed, and a cohort that was not run is said not to have been run
+    assert f"A {a or 'not run'}" in got and f"B {b or 'not run'}" in got
+
+
+def test_the_overall_statement_table_of_the_decision_note():
+    s = ev.overall_statement
+    assert s({"A": "effective", "B": "effective", "C": "effective"}).startswith(
+        "effective on the fresh cohort, confirmed on A and B"
+    )
+    assert s({"A": "not distinguishable", "B": "effective", "C": "effective"}).startswith(
+        "effective on the fresh cohort; on A and B not worse"
+    )
+    assert s({"A": "worse", "B": "effective", "C": "effective"}).startswith("mixed:")
+    # C decides, whatever A and B say
+    assert s({"A": "effective", "B": "effective", "C": "not distinguishable"}).startswith(
+        "not distinguishable"
+    )
+    assert s({"A": "worse", "B": "worse", "C": "not distinguishable"}).startswith(
+        "not distinguishable"
+    )
+    assert s({"A": "effective", "B": "effective", "C": "worse"}).startswith(
+        "worse on the fresh cohort"
+    )
+    # a provisional cohort makes the statement provisional, and names it
+    text = s({"A": "effective", "B": "effective", "C": "effective"}, {"C": True, "A": False})
+    assert text.startswith("provisional (C not exactly draws 0 to 9)")
+
+
+def test_the_blend_question_reads_the_main_row_against_the_raw_network(tmp_path, cohort):
+    # tables_for writes the raw network 1% above the blend; an exact main row is 1% better
+    res = network_result(tmp_path / "a", cohort, perfect, perfect)
+    assert res["blend_verdict"] == "blend adds value"
+    assert res["blend_statistics"]["last"]["diff"] == pytest.approx(-0.01)
+    assert not res["blend_provisional"]
+    # a main row that is 50% low is worse than its raw network (0.5% closer to the actual)
+    worse = network_result(tmp_path / "b", cohort, lambda i, a: a * 0.5, perfect)
+    assert worse["blend_verdict"] == "blend hurts"
+    assert worse["blend_statistics"]["last"]["diff"] == pytest.approx(0.005)
+    # it never changes the primary verdict or the network question
+    assert res["verdict"] == network_result(tmp_path / "c", cohort, perfect, perfect)["verdict"]
+    # the same table that holds the network question holds it, with the pooled interval too
+    check = res["network_check"]
+    sel = check[(check["model"] == ev.MAIN_ROW) & (check["compared_with"] == ev.RAW_NETWORK)]
+    assert set(sel["statistic"]) == {"last", "rolling", "pooled", "excluding"}
+    # without the main row's fits there is no raw network and no blend question
+    only = ev.evaluate_cohort(
+        cohort,
+        {ev.FACTORS_ROW: loaded(tmp_path / "d", cohort, row=ev.FACTORS_ROW, draws=(0,))},
+        bench_for(cohort, 0.3, 0.3),
+    )
+    assert only["blend_verdict"] is None and "not scored" in only["blend_label"]
+
+
+def test_the_spread_of_alpha_is_reported_per_valuation(tmp_path, cohort):
+    fits = loaded(tmp_path, cohort)
+    fits[0].members["alpha"] = [0.1, 0.9] * V
+    fits[1].members["alpha"] = [0.3, 0.5] * V
+    got = ev.alpha_spread(fits).set_index("valuation")
+    for v in ev.VALUATIONS:
+        assert got.loc[v, "alpha_min"] == pytest.approx(0.1)
+        assert got.loc[v, "alpha_max"] == pytest.approx(0.9)
+        assert got.loc[v, "alpha_median"] == pytest.approx(0.4)
+        assert got.loc[v, "alpha_q25"] == pytest.approx(0.25)
+        assert got.loc[v, "alpha_q75"] == pytest.approx(0.6)
+        assert got.loc[v, "alpha_count"] == 4
+        assert got.loc[v, "alpha_std"] == pytest.approx(np.std([0.1, 0.9, 0.3, 0.5], ddof=1))
+
+
+def _bad_epochs(folder, cohort, *, smoke):
+    stem = write_fit(folder, cohort, ev.MAIN_ROW, 0, perfect, smoke=smoke)
+    path = folder / f"{stem}_members.csv"
+    members = pd.read_csv(path)
+    members.loc[3, "epochs_run"] = ev.EXPECTED_EPOCHS - 1
+    members.to_csv(path, index=False)
+
+
+def test_a_registered_fit_with_a_member_that_did_not_run_3000_epochs_is_refused(tmp_path, cohort):
+    assert ev.EXPECTED_EPOCHS == 3000
+    _bad_epochs(tmp_path, cohort, smoke=False)
+    with pytest.raises(SystemExit, match="1 of 8 members did not run 3000 epochs.*ran 2999"):
+        ev.load_fits(tmp_path, "A", ev.MAIN_ROW, smoke=False)
+
+
+def test_a_smoke_fit_is_not_held_to_the_registered_epochs(tmp_path, cohort):
+    _bad_epochs(tmp_path, cohort, smoke=True)
+    assert len(ev.load_fits(tmp_path, "A", ev.MAIN_ROW, smoke=True)) == 1
+
+
+def test_a_registered_fit_without_the_epochs_column_is_refused(tmp_path, cohort):
+    stem = write_fit(tmp_path, cohort, ev.MAIN_ROW, 0, perfect)
+    path = tmp_path / f"{stem}_members.csv"
+    pd.read_csv(path).drop(columns="epochs_run").to_csv(path, index=False)
+    with pytest.raises(SystemExit, match="no epochs_run column"):
+        ev.load_fits(tmp_path, "A", ev.MAIN_ROW, smoke=False)
+
+
+def test_members_are_compared_with_the_companions_published_table(tmp_path, cohort):
+    fits = loaded(tmp_path, cohort)
+    for f in fits:
+        f.members["alpha"] = 0.5
+        f.members["best_epoch"] = [100, 300] * V
+    theirs = pd.DataFrame(
+        {
+            "valuation": [6, 6, 7, 7, 8, 10],
+            "member": [0, 1, 0, 1, 0, 0],
+            "alpha": [0.4, 0.6, 0.7, 0.9, 0.8, 0.63],
+            "best_epoch": [150, 250, 400, 600, 90, 77],
+        }
+    )
+    path = tmp_path / "T_T1_members.csv"
+    theirs.to_csv(path, index=False)
+    table = ev.members_fidelity(path, fits).set_index("valuation")
+    assert table.loc[6, "alpha_median_theirs"] == pytest.approx(0.5)
+    assert table.loc[7, "alpha_median_theirs"] == pytest.approx(0.8)
+    assert table.loc[10, "best_epoch_median_theirs"] == pytest.approx(77)
+    assert table.loc[6, "alpha_median_ours"] == pytest.approx(0.5)
+    assert table.loc[6, "best_epoch_median_ours"] == pytest.approx(200)
+    assert table.loc[6, "members_ours"] == 4 and table.loc[6, "members_theirs"] == 2
+
+
+def test_the_run_says_when_the_first_studys_rows_were_not_compared(tmp_path, monkeypatch, cohort):
+    out = _main(tmp_path, monkeypatch, cohort, cohort_name="A", draws=(0,))
+    record = json.loads((out / "verdicts.json").read_text())["verdicts"]["A"]
+    assert record["first_study_rows"].startswith("NOT COMPARED")
+    assert "--first-study-fits" in record["first_study_rows"]
+    assert "blend_question" in record and "sensitivity_verdict" in record
+    out_c = _main(tmp_path / "c", monkeypatch, cohort, cohort_name="C", draws=(0,))
+    record = json.loads((out_c / "verdicts.json").read_text())["verdicts"]["C"]
+    assert record["first_study_rows"].startswith("not applicable")
+
+
+def test_main_prints_and_writes_the_overall_statement_for_all_three_cohorts(
+    tmp_path, monkeypatch, cohort, capsys
+):
+    named = {
+        k: SimpleNamespace(**{**vars(cohort), "name": k, "as_of": study.AS_OF[k]})
+        for k in study.ALL_COHORTS
+    }
+    fits = tmp_path / "fits"
+    for c in named.values():
+        for draw in range(10):
+            write_fit(fits, c, ev.MAIN_ROW, draw, perfect, smoke=True)
+            write_fit(fits, c, ev.FACTORS_ROW, draw, lambda i, a: a * 1.1, smoke=True)
+    monkeypatch.setattr(ev.study, "cells_from_mart", lambda years=None: None)
+    monkeypatch.setattr(ev.study, "load_cohort", lambda name, **kw: named[name])
+    bench = bench_for(cohort, 0.3, 0.3)
+    monkeypatch.setattr(ev, "cached_benchmark_cells", lambda c, cache, *, log=print: bench)
+    out = tmp_path / "out"
+    ev.main(["--fits", str(fits), "--cohort", "all", "--smoke", "--out", str(out)])
+    overall = json.loads((out / "verdicts.json").read_text())["overall"]
+    assert overall.startswith("effective on the fresh cohort, confirmed on A and B")
+    assert "(C effective; A effective, B effective)" in overall
+    assert "OVERALL (Amendment 2, B5): " + overall in capsys.readouterr().out
+    # one cohort alone makes no overall statement
+    out2 = tmp_path / "out2"
+    ev.main(["--fits", str(fits), "--cohort", "C", "--smoke", "--out", str(out2)])
+    assert json.loads((out2 / "verdicts.json").read_text())["overall"] is None
+    for name in (
+        "A_stratified.csv",
+        "A_precision.csv",
+        "A_alpha_spread.csv",
+        "A_comparison_rows.csv",
+    ):
+        assert (out / name).exists(), name
+
+
+def test_the_first_evaluators_benchmarks_use_the_cohorts_own_valuation_date():
+    import datetime as dt
+
+    base = cohort_of(synthetic_cells(("c1", "c2"), ("L1", "L2"), seed=4))
+    own = dt.date(AY0 + N - 1, 12, 31)
+    c = SimpleNamespace(**{**vars(base), "name": "C", "as_of": own})
+    assert own != tlrn_colab.AS_OF
+    out = first.benchmark_reserves(c, log=lambda *_: None)
+    # with the other date the anchors do not match the cohort's and the evaluator stops
+    assert out[["mack", "mcl"]].notna().all().all()
+    np.testing.assert_allclose(out["actual"], c.actual["actual_reserve"])
+
+
+def test_the_first_study_tie_out_runs_on_a_cohort_valued_at_another_date(
+    tmp_path, monkeypatch, cohort
+):
+    import datetime as dt
+
+    seen = []
+
+    def fake(c, *, log=print):
+        seen.append(c.as_of)
+        return pd.DataFrame(
+            {"mack": 1.0, "mcl": 1.0, "actual": 1.0}, index=pd.Index(c.board, name="company_code")
+        )
+
+    monkeypatch.setattr(ev.first, "benchmark_reserves", fake)
+    c = SimpleNamespace(**{**vars(cohort), "name": "C", "as_of": dt.date(1997, 12, 31)})
+    res = evaluate(tmp_path, c, bench_for(c, 0.3, 0.3), {ev.MAIN_ROW: perfect}, draws=(0,))
+    out = ev.first_study_tie_out(c, res, log=lambda *_: None)
+    assert seen == [dt.date(1997, 12, 31)] and "note" not in out and "mack" in out
+
+
+def test_the_second_condition_reads_the_pooled_interval_and_not_the_mean_over_the_dates(
+    tmp_path, cohort
+):
+    res = evaluate(tmp_path, cohort, bench_for(cohort, 0.3, 0.3), {ev.MAIN_ROW: perfect})
+    table = res["differences"]
+    table = table[table["method"] == ev.MAIN_ROW].set_index(["benchmark", "statistic"])
+    for b in ev.BENCHMARKS:
+        used = res["verdict_statistics"]["pooled"][b]
+        assert (used["low"], used["high"]) == (
+            table.loc[(b, "pooled"), "low"],
+            table.loc[(b, "pooled"), "high"],
+        )
+        mean_over_dates = table.loc[(b, "rolling"), ["low", "high"]]
+        assert (used["low"], used["high"]) != tuple(mean_over_dates)
+    assert "rolling" not in res["verdict_statistics"]
+    assert "ii_pooled_below_both" in res["conditions"]

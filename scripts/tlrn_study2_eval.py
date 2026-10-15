@@ -131,19 +131,58 @@ second question and changes nothing in the rules above; it is repeated from
 ``knowledge/decisions/tlrn-factor-head-study.md``.
 
 The question. Does the network add anything beyond shrinking toward the multivariate chain
-ladder? The main row ``tlrn_13_fh`` is compared with the ablation row ``tlrn_13_fh_factors``
+ladder? The main row ``tlrn_13_fh`` is compared with the network-off row ``tlrn_13_fh_factors``
 (same cohort, same scored companies, same draws, both blended with the multivariate chain
 ladder). The statistic is the paired company-level bootstrap of the draw-average difference in
-Pool_APE, model minus ablation, with the primary verdict's resample (10,000, seed 2008, 2.5th
-and 97.5th percentiles, a company's valuation dates kept together), at valuation 10 and as the
-mean over valuations 6, 7, 8 and 10, and at valuation 10 with the dominant company left out.
+Pool_APE, model minus the network-off row, with the primary verdict's resample (10,000, seed
+2008, 2.5th and 97.5th percentiles, a company's valuation dates kept together), at valuation 10
+and as the mean over valuations 6, 7, 8 and 10, and at valuation 10 with the dominant company
+left out.
 
 ``network adds value`` only if the valuation-10 interval AND the mean-over-valuations interval
 are both wholly below zero AND the valuation-10 interval without the dominant company is not
 wholly above zero. ``network hurts`` if either of the first two intervals is wholly above
-zero. ``not distinguishable`` otherwise. The raw network against the ablation is reported,
-descriptively. The verdict is reported beside the primary one and is not part of the primary
-``effective`` rule.
+zero. ``not distinguishable`` otherwise. The raw network against the network-off row is
+reported, descriptively. The verdict is reported beside the primary one and is not part of the
+primary ``effective`` rule.
+"""
+
+AMENDMENT_2 = """Amendment 2 (2026-10-15, before any fit of this study had been run). No fit of this
+study has ever been run on a GPU and no real result exists. It changes the rules above as
+follows, and is repeated from ``knowledge/decisions/tlrn-factor-head-study.md``.
+
+Condition (ii) is the DOLLAR-POOLED difference: over valuations 6, 7, 8 and 10, the sum of the
+absolute company errors divided by the sum of the company actuals (a company's error and actual
+at a valuation are sums over the cells scored at that valuation), model minus benchmark, with a
+95% interval wholly below zero against both ``mack`` and ``mcl``. The unweighted mean over the
+four valuations is reported as a descriptive only. Condition (iv) is: without the dominant
+company, either the valuation-10 point difference is at or below zero against BOTH benchmarks,
+or condition (i) holds without it. ``worse`` is an interval of (i) or (ii) wholly above zero
+against EITHER benchmark (the first study judged the stronger benchmark only; the difference is
+deliberate). Conditions (i) and (iii) are unchanged.
+
+Mixed verdicts. Cohort C is the headline cohort for the out-of-sample statement and A and B
+confirm a fixed specification. If C is ``not distinguishable`` the overall statement is
+``not distinguishable`` whatever A and B say; if C is ``worse`` it is ``worse on the fresh
+cohort``; if C is ``effective`` it is ``effective on the fresh cohort, confirmed on A and B``
+when A and B are both effective, ``effective on the fresh cohort; on A and B not worse`` when
+neither is worse, and ``mixed`` when either is worse. A provisional cohort verdict makes the
+statement provisional; with no finished fits of C there is no overall statement.
+
+Precision. The widths of the 95% intervals are printed with the gain each could just detect
+(about half the width); a gain of half a point cannot be detected on one cohort, so
+``not distinguishable`` on A and B is the expected result. A secondary sensitivity analysis,
+never replacing the primary one, repeats the intervals with a stratified bootstrap that keeps
+the dominant company in every resample exactly once and resamples the others (10,000
+resamples, random seed 2009). It conditions on the dominant company being present.
+
+Reported, outside the primary verdict: the paired difference of the main row from the raw
+network (words ``blend adds value``, ``blend hurts``, ``not distinguishable``, by the same
+interval rules); the spread of the blend weight alpha per valuation; the first study's
+accident-year rows, which exist and are compared on A and B whenever their folder is given (a
+run without it says so). Every non-smoke member must have run 3,000 epochs. The selection
+look-ahead of cohorts B and C (selection at cutoff 10 reads cells scored at valuations 6 to 8)
+is named; cohort A is not affected in the same way.
 """
 
 #: the four valuation dates, as the companion calls them (10 is the last known diagonal)
@@ -152,7 +191,7 @@ LAST = max(VALUATIONS)
 MAIN_ROW = "tlrn_13_fh"
 FACTORS_ROW = "tlrn_13_fh_factors"
 ROWS = (MAIN_ROW, FACTORS_ROW)
-#: the first study's rows, scored at valuation 10 only when their fits are supplied
+#: the first study's rows, scored at valuation 10 on cohorts A and B from their folder
 FIRST_STUDY_ROWS = ("tlrn_8_ay", "tlrn_13_ay")
 BENCHMARKS = ("mack", "mcl")
 RAW_NETWORK = "raw_network"
@@ -162,6 +201,23 @@ LEVEL = first.LEVEL
 VERDICTS = ("effective", "not distinguishable", "worse")
 #: Amendment 1 (A2): the paired question 'does the network add anything beyond the blend?'
 NETWORK_VERDICTS = ("network adds value", "network hurts", "not distinguishable")
+#: Amendment 2 (B6): the same rules for the main row against the raw network (the blend)
+BLEND_VERDICTS = ("blend adds value", "blend hurts", "not distinguishable")
+#: Amendment 2 (B1): the stratified bootstrap keeps the dominant company in every resample
+STRATIFIED_SEED = BOOT_SEED + 1
+#: Amendment 2 (B8): every member of a registered (non-smoke) fit trains this many epochs
+EXPECTED_EPOCHS = 3000
+#: the overall statements across cohorts (Amendment 2, B5)
+OVERALL = {
+    "none": "no overall statement: cohort C has no finished fits",
+    "worse": "worse on the fresh cohort",
+    "nd": "not distinguishable",
+    "confirmed": "effective on the fresh cohort, confirmed on A and B",
+    "not_worse": "effective on the fresh cohort; on A and B not worse",
+    "mixed": (
+        "mixed: effective on the fresh cohort, worse on A or B; no overall claim of effectiveness"
+    ),
+}
 #: how far a saved table may differ from the evaluator's own cell sums (the tables come
 #: from float32 tensors)
 TABLE_RTOL = 1e-4
@@ -413,6 +469,26 @@ class Fit:
     members: pd.DataFrame
 
 
+def check_epochs(name: str, members: pd.DataFrame) -> None:
+    """Refuse a registered fit in which a member did not train for ``EXPECTED_EPOCHS`` epochs.
+
+    Early stopping cannot fire in this study (600 checks without improvement is the whole
+    3,000 epochs), so every member of a non-smoke fit must have run all of them. A fit with
+    fewer was run with other settings than the registered ones (Amendment 2, B8).
+    """
+    if "epochs_run" not in members.columns:
+        raise SystemExit(f"{name}: the members table has no epochs_run column to check")
+    ran = members["epochs_run"]
+    bad = members[ran != EXPECTED_EPOCHS]
+    if len(bad):
+        first_bad = bad.iloc[0]
+        raise SystemExit(
+            f"{name}: {len(bad)} of {len(members)} members did not run {EXPECTED_EPOCHS} epochs "
+            f"(for example valuation {first_bad['valuation']} member {first_bad['member']} ran "
+            f"{first_bad['epochs_run']}); this is not a registered fit"
+        )
+
+
 def load_fits(folder: Path, cohort: str, row: str, *, smoke: bool) -> list[Fit]:
     """Every finished fit of one cohort and row, in draw order, checked to be one study.
 
@@ -452,6 +528,8 @@ def load_fits(folder: Path, cohort: str, row: str, *, smoke: bool) -> list[Fit]:
             if not needed.exists():
                 raise SystemExit(f"{path.name} has no {needed.name}")
         read = {name: pd.read_csv(p, dtype={"company_code": str}) for name, p in tables.items()}
+        if not smoke:
+            check_epochs(path.name, read["members"])
         frame = pd.read_csv(reserves, dtype={"company_code": str}).set_index("company_code")
         fits.append(
             Fit(
@@ -650,6 +728,39 @@ def resampled_pool_ape(pred: np.ndarray, actual: np.ndarray, idx: np.ndarray) ->
     )
 
 
+def pooled_ape(pred: np.ndarray, actual: np.ndarray) -> float:
+    """The dollar-pooled Pool_APE over the valuations (Amendment 2, B3).
+
+    The sum over valuations and companies of the absolute error over the sum of the actuals.
+    ``pred`` and ``actual`` are ``(valuations, companies)``.
+    """
+    return float(np.abs(pred - actual).sum() / actual.sum())
+
+
+def resampled_pooled_ape(pred: np.ndarray, actual: np.ndarray, idx: np.ndarray) -> np.ndarray:
+    """Dollar-pooled Pool_APE of each resample; one ``idx`` for all valuations."""
+    top = np.zeros(idx.shape[0])
+    bottom = np.zeros(idx.shape[0])
+    for i in range(actual.shape[0]):
+        top += np.abs(pred[i] - actual[i])[idx].sum(axis=1)
+        bottom += actual[i][idx].sum(axis=1)
+    return top / np.where(bottom != 0, bottom, np.nan)
+
+
+def stratified_indices(
+    n: int, keep: int, n_boot: int = N_BOOT, seed: int = STRATIFIED_SEED
+) -> np.ndarray:
+    """``(n_boot, n)`` company indices with company ``keep`` exactly once in every row.
+
+    The other ``n - 1`` places are drawn with replacement from the other ``n - 1`` companies
+    (Amendment 2, B1). A uniform resample leaves any one company out with probability
+    ``(1 - 1/n)^n``, about 37%.
+    """
+    others = np.delete(np.arange(n), keep)
+    drawn = others[np.random.default_rng(seed).integers(0, n - 1, size=(n_boot, n - 1))]
+    return np.hstack([np.full((n_boot, 1), keep), drawn])
+
+
 def interval(diff: np.ndarray, level: float = LEVEL) -> tuple[float, float]:
     """The percentile interval of the bootstrap differences (NaN resamples left out)."""
     tail = (1.0 - level) / 2.0
@@ -659,20 +770,24 @@ def interval(diff: np.ndarray, level: float = LEVEL) -> tuple[float, float]:
 def difference_summary(
     pred: np.ndarray, bench: np.ndarray, actual: np.ndarray, idx: np.ndarray
 ) -> dict:
-    """Pool_APE of ``pred`` minus ``bench`` at valuation 10 and rolling, with intervals.
+    """Pool_APE of ``pred`` minus ``bench`` at valuation 10, dollar-pooled and rolling.
 
     ``pred``, ``bench`` and ``actual`` are ``(valuations, companies)``. Negative favours
-    ``pred``. ``share_favour_*`` is the share of resamples where ``pred`` is better.
+    ``pred``. ``pooled`` is the rule's statistic (Amendment 2, B3) and ``rolling`` the plain
+    mean over the valuations, kept as a descriptive. ``share_favour`` is the share of
+    resamples where ``pred`` is better.
     """
     last = VALUATIONS.index(LAST)
     boot_p = resampled_pool_ape(pred, actual, idx)
     boot_b = resampled_pool_ape(bench, actual, idx)
     diff_v = boot_p - boot_b
     diff_roll = rolling(boot_p, axis=0) - rolling(boot_b, axis=0)
+    diff_pooled = resampled_pooled_ape(pred, actual, idx) - resampled_pooled_ape(bench, actual, idx)
     point_v = pool_ape_by_valuation(pred, actual) - pool_ape_by_valuation(bench, actual)
     out = {}
     for name, point, boot in (
         ("last", point_v[last], diff_v[last]),
+        ("pooled", pooled_ape(pred, actual) - pooled_ape(bench, actual), diff_pooled),
         ("rolling", rolling(point_v), diff_roll),
     ):
         lo, hi = interval(boot)
@@ -692,13 +807,14 @@ def difference_summary(
 
 
 def decide(stats: dict) -> tuple[str, dict, str]:
-    """The pre-registered verdict, the four conditions and the sentence that justifies it.
+    """The pre-registered verdict (with Amendment 2), its conditions and the justifying text.
 
-    ``stats`` has, for each benchmark ``b`` in ``BENCHMARKS``: ``last[b]`` and
-    ``rolling[b]`` (``low``, ``high`` of the difference interval at valuation 10 and over
-    the mean of the valuations), ``excluding[b]`` (the valuation-10 interval without the
-    dominant company); ``median_draw_last`` (the median over draws of the valuation-10
-    Pool_APE) and ``pool_last[b]`` (the benchmarks' valuation-10 Pool_APE).
+    ``stats`` has, for each benchmark ``b`` in ``BENCHMARKS``: ``last[b]`` and ``pooled[b]``
+    (``low``, ``high`` of the difference interval at valuation 10 and of the dollar-pooled
+    statistic over the valuations), ``excluding[b]`` (``diff``, ``low``, ``high`` at
+    valuation 10 without the dominant company); ``median_draw_last`` (the median over draws
+    of the valuation-10 Pool_APE) and ``pool_last[b]`` (the benchmarks' valuation-10
+    Pool_APE).
     """
 
     def below(i):
@@ -707,18 +823,20 @@ def decide(stats: dict) -> tuple[str, dict, str]:
     def above(i):
         return bool(np.isfinite(i["low"]) and i["low"] > 0)
 
+    def at_or_below(i):
+        return bool(np.isfinite(i["diff"]) and i["diff"] <= 0)
+
+    ex = stats["excluding"]
     conditions = {
         "i_last_below_both": all(below(stats["last"][b]) for b in BENCHMARKS),
-        "ii_rolling_below_both": all(below(stats["rolling"][b]) for b in BENCHMARKS),
+        "ii_pooled_below_both": all(below(stats["pooled"][b]) for b in BENCHMARKS),
         "iii_median_draw_below_both": all(
             stats["median_draw_last"] < stats["pool_last"][b] for b in BENCHMARKS
         ),
-        "iv_excluding_dominant_not_above": all(
-            np.isfinite(stats["excluding"][b]["low"]) and not above(stats["excluding"][b])
-            for b in BENCHMARKS
-        ),
+        "iv_excluding_dominant_not_worse": all(at_or_below(ex[b]) for b in BENCHMARKS)
+        or all(below(ex[b]) for b in BENCHMARKS),
     }
-    worse = any(above(stats["last"][b]) or above(stats["rolling"][b]) for b in BENCHMARKS)
+    worse = any(above(stats["last"][b]) or above(stats["pooled"][b]) for b in BENCHMARKS)
     if all(conditions.values()):
         word = "effective"
     elif worse:
@@ -727,11 +845,11 @@ def decide(stats: dict) -> tuple[str, dict, str]:
         word = "not distinguishable"
     parts = []
     for b in BENCHMARKS:
-        a, r, x = stats["last"][b], stats["rolling"][b], stats["excluding"][b]
+        a, r, x = stats["last"][b], stats["pooled"][b], ex[b]
         parts.append(
-            f"vs {b}: valuation 10 [{a['low']:+.4%}, {a['high']:+.4%}], rolling "
+            f"vs {b}: valuation 10 [{a['low']:+.4%}, {a['high']:+.4%}], pooled "
             f"[{r['low']:+.4%}, {r['high']:+.4%}], valuation 10 without the dominant company "
-            f"[{x['low']:+.4%}, {x['high']:+.4%}]"
+            f"{x['diff']:+.4%} [{x['low']:+.4%}, {x['high']:+.4%}]"
         )
     reason = (
         "; ".join(parts)
@@ -833,12 +951,14 @@ def last_difference(pred_last, ref_last, actual_last, idx: np.ndarray) -> dict:
     }
 
 
-def decide_network(stats: dict) -> tuple[str, dict, str]:
+def decide_network(stats: dict, words=NETWORK_VERDICTS) -> tuple[str, dict, str]:
     """Amendment 1's verdict on whether the network adds anything beyond the blend.
 
     ``stats`` has ``last``, ``rolling`` and ``excluding``, each ``{"low", "high"}``: the
-    interval of the Pool_APE difference ``main row minus ablation row`` at valuation 10, as
-    the mean over the valuations, and at valuation 10 without the dominant company.
+    interval of the Pool_APE difference ``main row minus network-off row`` at valuation 10, as
+    the mean over the valuations, and at valuation 10 without the dominant company. With
+    ``words=BLEND_VERDICTS`` the same rules read the main row against the raw network
+    (Amendment 2, B6).
     """
 
     def below(i):
@@ -855,11 +975,11 @@ def decide_network(stats: dict) -> tuple[str, dict, str]:
         ),
     }
     if all(conditions.values()):
-        word = "network adds value"
+        word = words[0]
     elif above(stats["last"]) or above(stats["rolling"]):
-        word = "network hurts"
+        word = words[1]
     else:
-        word = "not distinguishable"
+        word = words[2]
     reason = (
         "; ".join(
             f"{name} [{stats[key]['low']:+.4%}, {stats[key]['high']:+.4%}]"
@@ -929,25 +1049,35 @@ def alpha_summary(fits: list[Fit]) -> pd.DataFrame:
     return members.groupby("valuation")["alpha"].median().rename("alpha_median").reset_index()
 
 
-def network_verdict_fields(network_stats: dict | None, draw_sets: dict) -> dict:
-    """Amendment 1's verdict, labelled like the primary one, as fields of a cohort's result.
+def network_verdict_fields(
+    network_stats: dict | None,
+    draw_sets: dict,
+    *,
+    other_row: str = FACTORS_ROW,
+    prefix: str = "network",
+    words=NETWORK_VERDICTS,
+) -> dict:
+    """A paired question's verdict, labelled like the primary one, as fields of a result.
 
-    The draw sets of the two rows must both be exactly draws 0 to 9 and equal to each other,
-    or the verdict is labelled provisional with what is missing.
+    The default is Amendment 1's (main row against the network-off row, fields beginning
+    ``network_``). With ``other_row=RAW_NETWORK``, ``prefix="blend"`` and
+    ``words=BLEND_VERDICTS`` it is Amendment 2's main row against the raw network. The draw
+    sets of the two rows must both be exactly draws 0 to 9 and equal to each other, or the
+    verdict is labelled provisional with what is missing.
     """
     if network_stats is None:
         return {
-            "network_verdict": None,
-            "network_label": f"not scored (needs fits of {MAIN_ROW} and {FACTORS_ROW})",
-            "network_reason": f"no fits of both {MAIN_ROW} and {FACTORS_ROW} for this cohort",
-            "network_provisional": True,
-            "network_conditions": {},
-            "network_statistics": None,
+            f"{prefix}_verdict": None,
+            f"{prefix}_label": f"not scored (needs fits of {MAIN_ROW} and {other_row})",
+            f"{prefix}_reason": f"no fits of both {MAIN_ROW} and {other_row} for this cohort",
+            f"{prefix}_provisional": True,
+            f"{prefix}_conditions": {},
+            f"{prefix}_statistics": None,
         }
-    word, conditions, reason = decide_network(network_stats)
-    main_draws, other_draws = draw_sets[MAIN_ROW], draw_sets[FACTORS_ROW]
+    word, conditions, reason = decide_network(network_stats, words)
+    main_draws, other_draws = draw_sets[MAIN_ROW], draw_sets[other_row]
     notes = []
-    for row, draws in ((MAIN_ROW, main_draws), (FACTORS_ROW, other_draws)):
+    for row, draws in ((MAIN_ROW, main_draws), (other_row, other_draws)):
         provisional, missing = first.draw_completeness(draws)
         if provisional:
             notes.append(
@@ -962,13 +1092,74 @@ def network_verdict_fields(network_stats: dict | None, draw_sets: dict) -> dict:
         reason = f"{note}; {reason}"
         label = f"{word} ({note})"
     return {
-        "network_verdict": word,
-        "network_label": label,
-        "network_reason": reason,
-        "network_provisional": bool(notes),
-        "network_conditions": conditions,
-        "network_statistics": network_stats,
+        f"{prefix}_verdict": word,
+        f"{prefix}_label": label,
+        f"{prefix}_reason": reason,
+        f"{prefix}_provisional": bool(notes),
+        f"{prefix}_conditions": conditions,
+        f"{prefix}_statistics": network_stats,
     }
+
+
+def alpha_spread(fits: list[Fit]) -> pd.DataFrame:
+    """The spread of the blend weight alpha over all members of all draws, per valuation.
+
+    Minimum, quartiles, median, maximum, standard deviation and the member count
+    (Amendment 2, B6), to read beside the median the companion publishes.
+    """
+    members = pd.concat([f.members for f in fits], ignore_index=True)
+    grouped = members.groupby("valuation")["alpha"]
+    out = grouped.agg(["min", "median", "max", "std", "count"])
+    out["q25"] = grouped.quantile(0.25)
+    out["q75"] = grouped.quantile(0.75)
+    out = out[["min", "q25", "median", "q75", "max", "std", "count"]]
+    return out.rename(columns=lambda c: f"alpha_{c}").reset_index()
+
+
+def overall_statement(verdicts: dict, provisional: dict | None = None) -> str:
+    """Amendment 2's overall statement from the cohort verdicts (B5).
+
+    ``verdicts`` maps a cohort name to its verdict word, or None when it has no finished
+    fits. Cohort C is the headline cohort: when it is ``not distinguishable`` the statement
+    is that, whatever A and B say, and when it is ``worse`` so is the statement. When it is
+    ``effective`` the statement depends on A and B: confirmed when both are effective,
+    mixed when either is worse, otherwise not worse. A cohort that is not run is listed as
+    not run and is not counted as worse. ``provisional`` names the cohorts whose verdict is
+    provisional; any of them makes the statement provisional.
+    """
+    c = verdicts.get("C")
+    if c is None:
+        return OVERALL["none"]
+    others = {k: verdicts.get(k) for k in ("A", "B")}
+    if c == "not distinguishable":
+        text = OVERALL["nd"]
+    elif c == "worse":
+        text = OVERALL["worse"]
+    elif any(v == "worse" for v in others.values()):
+        text = OVERALL["mixed"]
+    elif all(v == "effective" for v in others.values()):
+        text = OVERALL["confirmed"]
+    else:
+        text = OVERALL["not_worse"]
+    listing = ", ".join(f"{k} {v if v is not None else 'not run'}" for k, v in others.items())
+    text += f" (C {c}; {listing})"
+    flagged = sorted(k for k, v in (provisional or {}).items() if v)
+    if flagged:
+        text = f"provisional ({', '.join(flagged)} not exactly draws 0 to 9): {text}"
+    return text
+
+
+def precision_table(rows: pd.DataFrame, source: str) -> pd.DataFrame:
+    """The width of each 95% interval and the gain it could just detect (about half of it).
+
+    ``rows`` has ``low`` and ``high``; the gain is in the units of the statistic (Pool_APE,
+    so 0.03 is three points).
+    """
+    out = rows.copy()
+    out["width"] = out["high"] - out["low"]
+    out["detectable_gain"] = out["width"] / 2.0
+    out.insert(0, "bootstrap", source)
+    return out
 
 
 def evaluate_cohort(
@@ -996,6 +1187,8 @@ def evaluate_cohort(
     keep_ex = np.array([c != top for c in companies])
     idx = first.bootstrap_indices(len(companies))
     idx_ex = first.bootstrap_indices(int(keep_ex.sum()))
+    # Amendment 2, B1: the secondary bootstrap that keeps the dominant company in every resample
+    idx_strat = stratified_indices(len(companies), companies.index(top))
 
     draws, series, draw_sets = {}, {b: bench_arrays[b] for b in BENCHMARKS}, {}
     main_fits = fits_by_row.get(MAIN_ROW) or []
@@ -1030,7 +1223,7 @@ def evaluate_cohort(
         for b in BENCHMARKS:
             d = difference_summary(series[method], bench_arrays[b], actual, idx)
             differences[(method, b)] = d
-            for scope in ("last", "rolling"):
+            for scope in ("last", "pooled", "rolling"):
                 rows_out.append({"method": method, "benchmark": b, "statistic": scope, **d[scope]})
             for v, cell in d["by_valuation"].items():
                 rows_out.append(
@@ -1062,19 +1255,19 @@ def evaluate_cohort(
     pools = {b: pool_ape_by_valuation(bench_arrays[b], actual) for b in BENCHMARKS}
     result["benchmark_pool_ape"] = pools
 
-    # the ablations: every comparison row against the main row, same bootstrap
-    ablations = []
+    # the comparison rows: every other row against the main row, same bootstrap
+    comparison_rows = []
     if MAIN_ROW in series:
         for other in (r for r in (RAW_NETWORK, FACTORS_ROW) if r in series):
             d = difference_summary(series[other], series[MAIN_ROW], actual, idx)
-            for scope in ("last", "rolling"):
-                ablations.append(
+            for scope in ("last", "pooled", "rolling"):
+                comparison_rows.append(
                     {"row": other, "against": MAIN_ROW, "statistic": scope, **d[scope]}
                 )
         for other, reserve in (first_study or {}).items():
             d = last_difference(reserve, series[MAIN_ROW][last], actual[last], idx)
-            ablations.append({"row": other, "against": MAIN_ROW, "statistic": "last", **d})
-    result["ablations"] = pd.DataFrame(ablations)
+            comparison_rows.append({"row": other, "against": MAIN_ROW, "statistic": "last", **d})
+    result["comparison_rows"] = pd.DataFrame(comparison_rows)
 
     # Amendment 1: the paired question, main row minus the factors-only row (not the verdict)
     network_rows, network_stats = [], None
@@ -1087,9 +1280,14 @@ def evaluate_cohort(
             idx_ex,
         )
         network_stats = {"last": d["last"], "rolling": d["rolling"], "excluding": ex}
-        for scope, cell in (("last", d["last"]), ("rolling", d["rolling"]), ("excluding", ex)):
+        for scope, cell in (
+            ("last", d["last"]),
+            ("rolling", d["rolling"]),
+            ("pooled", d["pooled"]),
+            ("excluding", ex),
+        ):
             network_rows.append(
-                {"model": MAIN_ROW, "ablation": FACTORS_ROW, "statistic": scope, **cell}
+                {"model": MAIN_ROW, "compared_with": FACTORS_ROW, "statistic": scope, **cell}
             )
         if RAW_NETWORK in series:
             raw = difference_summary(series[RAW_NETWORK], series[FACTORS_ROW], actual, idx)
@@ -1105,9 +1303,64 @@ def evaluate_cohort(
                 ("excluding", raw_ex),
             ):
                 network_rows.append(
-                    {"model": RAW_NETWORK, "ablation": FACTORS_ROW, "statistic": scope, **cell}
+                    {"model": RAW_NETWORK, "compared_with": FACTORS_ROW, "statistic": scope, **cell}
                 )
+    # Amendment 2, B6: the main row against the raw network, by the same interval rules
+    blend_stats = None
+    if MAIN_ROW in series and RAW_NETWORK in series:
+        d = difference_summary(series[MAIN_ROW], series[RAW_NETWORK], actual, idx)
+        ex = last_difference(
+            series[MAIN_ROW][last][keep_ex],
+            series[RAW_NETWORK][last][keep_ex],
+            actual[last][keep_ex],
+            idx_ex,
+        )
+        blend_stats = {"last": d["last"], "rolling": d["rolling"], "excluding": ex}
+        for scope, cell in (
+            ("last", d["last"]),
+            ("rolling", d["rolling"]),
+            ("pooled", d["pooled"]),
+            ("excluding", ex),
+        ):
+            network_rows.append(
+                {"model": MAIN_ROW, "compared_with": RAW_NETWORK, "statistic": scope, **cell}
+            )
     result["network_check"] = pd.DataFrame(network_rows)
+
+    # Amendment 2, B1: the stratified bootstrap, as a sensitivity analysis beside the primary one
+    strat_rows, strat = [], {}
+    if MAIN_ROW in series:
+        for b in BENCHMARKS:
+            d = difference_summary(series[MAIN_ROW], bench_arrays[b], actual, idx_strat)
+            strat[b] = d
+            for scope in ("last", "pooled", "rolling"):
+                strat_rows.append(
+                    {"method": MAIN_ROW, "benchmark": b, "statistic": scope, **d[scope]}
+                )
+        if FACTORS_ROW in series:
+            d = difference_summary(series[MAIN_ROW], series[FACTORS_ROW], actual, idx_strat)
+            for scope in ("last", "pooled", "rolling"):
+                strat_rows.append(
+                    {
+                        "method": MAIN_ROW,
+                        "benchmark": FACTORS_ROW,
+                        "statistic": scope,
+                        **d[scope],
+                    }
+                )
+    result["stratified"] = pd.DataFrame(strat_rows)
+
+    # Amendment 2, B1: the width of each interval and the gain it could just detect
+    precision = [
+        precision_table(
+            result["differences"][result["differences"]["method"] == MAIN_ROW], "uniform"
+        )
+    ]
+    if len(result["stratified"]):
+        precision.append(precision_table(result["stratified"], "stratified"))
+    keep_stat = ["last", "pooled", "rolling"]
+    result["precision"] = pd.concat(precision, ignore_index=True)
+    result["precision"] = result["precision"][result["precision"]["statistic"].isin(keep_stat)]
 
     # the draws
     draw_rows = []
@@ -1131,18 +1384,28 @@ def evaluate_cohort(
     result["draw_summary"] = summaries
     if main_fits:
         result["alpha"] = alpha_summary(main_fits)
+        result["alpha_spread"] = alpha_spread(main_fits)
 
     # the verdict
     if main_fits:
         per_main = draw_pool_ape(draws[MAIN_ROW], actual)
         stats = {
             "last": {b: differences[(MAIN_ROW, b)]["last"] for b in BENCHMARKS},
-            "rolling": {b: differences[(MAIN_ROW, b)]["rolling"] for b in BENCHMARKS},
+            "pooled": {b: differences[(MAIN_ROW, b)]["pooled"] for b in BENCHMARKS},
             "excluding": {b: excluding[(MAIN_ROW, b)] for b in BENCHMARKS},
             "median_draw_last": float(np.median(per_main[:, last])),
             "pool_last": {b: float(pools[b][last]) for b in BENCHMARKS},
         }
         word, conditions, reason = decide(stats)
+        # the same rule on the stratified resamples (condition (iv) does not use a resample
+        # that keeps the dominant company, so it is the primary one)
+        sens_word, _, sens_reason = decide(
+            {
+                **stats,
+                "last": {b: strat[b]["last"] for b in BENCHMARKS},
+                "pooled": {b: strat[b]["pooled"] for b in BENCHMARKS},
+            }
+        )
         provisional, missing = first.draw_completeness(draw_sets[MAIN_ROW])
         label = word
         if provisional:
@@ -1160,6 +1423,8 @@ def evaluate_cohort(
             missing_draws=missing,
             n_draws=len(draw_sets[MAIN_ROW]),
             verdict_statistics=stats,
+            sensitivity_verdict=sens_word,
+            sensitivity_reason=sens_reason,
         )
     else:
         result.update(
@@ -1169,8 +1434,19 @@ def evaluate_cohort(
             provisional=True,
             missing_draws=list(range(study.DEFAULT_DRAWS)),
             n_draws=0,
+            sensitivity_verdict=None,
+            sensitivity_reason="not scored",
         )
     result.update(network_verdict_fields(network_stats, draw_sets))
+    result.update(
+        network_verdict_fields(
+            blend_stats,
+            draw_sets,
+            other_row=RAW_NETWORK,
+            prefix="blend",
+            words=BLEND_VERDICTS,
+        )
+    )
     return result
 
 
@@ -1243,6 +1519,35 @@ def companion_rolling_tie_out(path: Path, result: dict) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def members_fidelity(path: Path, fits: list[Fit]) -> pd.DataFrame:
+    """Medians of alpha and best epoch per valuation, ours beside the companion's published.
+
+    ``path`` is his ``T_T1_members.csv`` (columns ``valuation``, ``alpha``, ``best_epoch``).
+    A fidelity check of the training, reported and never required to match: ibnr trains the
+    same procedure, not the same numbers. The best epoch is the checkpoint chosen by the
+    blended validation error.
+    """
+    theirs = pd.read_csv(path)
+    ours = pd.concat([f.members for f in fits], ignore_index=True)
+    rows = []
+    for v in VALUATIONS:
+        mine, his = ours[ours["valuation"] == v], theirs[theirs["valuation"] == v]
+        rows.append(
+            {
+                "valuation": v,
+                "members_ours": len(mine),
+                "members_theirs": len(his),
+                "alpha_median_ours": float(mine["alpha"].median()),
+                "alpha_median_theirs": float(his["alpha"].median()) if len(his) else np.nan,
+                "best_epoch_median_ours": float(mine["best_epoch"].median()),
+                "best_epoch_median_theirs": (
+                    float(his["best_epoch"].median()) if len(his) else np.nan
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def reference_tie_out(cohort, result: dict) -> dict:
     """Notebook 04's Pool_APE of the two classical rows on cohort A, at valuation 10."""
     out = {}
@@ -1264,13 +1569,12 @@ def reference_tie_out(cohort, result: dict) -> dict:
 
 
 def first_study_tie_out(cohort, result: dict, *, log=print) -> dict:
-    """The valuation-10 benchmarks against the first study's own reserves (cohorts A and B).
+    """The valuation-10 benchmarks against the first study's own reserves.
 
-    Runs the first evaluator's benchmark fits (about a minute) and compares ``mack`` and
-    ``mcl`` company by company; the two evaluators must agree to rounding.
+    Runs the first evaluator's benchmark fits (about a minute) at the cohort's own
+    valuation date (cohort C is valued at 1997-12-31, not 2007-12-31) and compares ``mack``
+    and ``mcl`` company by company; the two evaluators must agree to rounding.
     """
-    if cohort.as_of != tlrn_colab.AS_OF:
-        return {"note": f"not applicable: cohort {cohort.name} is valued at {cohort.as_of}"}
     old = first.benchmark_reserves(cohort, log=log)
     last = VALUATIONS.index(LAST)
     companies = result["companies"]
@@ -1363,12 +1667,38 @@ def render(cohort, result: dict, extras: dict, banner: str) -> str:
         index=["valuation", "quartile", "n"], columns="method", values="pool_ape"
     )
     lines.append(wide_q.round(5).to_string())
-    if len(result["ablations"]):
-        lines += ["", "Ablations (row minus the main row; positive means the main row is better):"]
-        lines.append(result["ablations"].round(5).to_string(index=False))
+    if len(result["precision"]):
+        lines += [
+            "",
+            "Precision (Amendment 2): the width of each 95% interval and the gain it could just "
+            "detect, about half the width, in Pool_APE (0.03 is three points). A gain of half a "
+            "point (0.005) is far below these, so 'not distinguishable' is the expected result "
+            "on one cohort:",
+        ]
+        cols = ["bootstrap", "benchmark", "statistic", "width", "detectable_gain"]
+        lines.append(result["precision"][cols].round(4).to_string(index=False))
+    if len(result["stratified"]):
+        lines += [
+            "",
+            "Sensitivity analysis, a stratified bootstrap (the dominant company in every "
+            "resample once; it conditions on that company being present; not the verdict):",
+        ]
+        lines.append(result["stratified"].round(5).to_string(index=False))
+        lines.append(
+            f"   the same rule on the stratified intervals gives: "
+            f"{(result['sensitivity_verdict'] or 'not scored').upper()}"
+        )
+    if len(result["comparison_rows"]):
+        lines += [
+            "",
+            "Comparison rows (row minus the main row; positive means the main row is better):",
+        ]
+        lines.append(result["comparison_rows"].round(5).to_string(index=False))
     if "alpha" in result:
         lines += ["", "Median blend weight alpha over members and draws:"]
         lines.append(result["alpha"].round(4).to_string(index=False))
+        lines += ["", "Spread of the blend weight alpha over members and draws:"]
+        lines.append(result["alpha_spread"].round(4).to_string(index=False))
     lines += [
         "",
         f"VERDICT for {MAIN_ROW} on cohort {cohort.name} ({result['status']}): "
@@ -1385,6 +1715,12 @@ def render(cohort, result: dict, extras: dict, banner: str) -> str:
         f"NETWORK QUESTION for {MAIN_ROW} on cohort {cohort.name}: "
         f"{(result['network_verdict'] or 'not scored').upper()}",
         f"   {result['network_reason']}",
+        "",
+        "Amendment 2, another question (outside the verdict): main row minus the raw network, "
+        "by the same interval rules (negative favours the main row, i.e. the blend adds value):",
+        f"BLEND QUESTION for {MAIN_ROW} on cohort {cohort.name}: "
+        f"{(result['blend_verdict'] or 'not scored').upper()}",
+        f"   {result['blend_reason']}",
     ]
     return "\n".join(lines)
 
@@ -1400,6 +1736,7 @@ def run_cohort(
     strict: bool = False,
     first_study_dir: Path | None = None,
     companion_rolling: Path | None = None,
+    companion_members: Path | None = None,
     tie_out_first: bool = False,
     rows=ROWS,
     log=print,
@@ -1430,15 +1767,27 @@ def run_cohort(
             extras[f"data hash, {row}"] = note
         check_tables_against_truth(cohort, row, fits, truth)
     first_rows = {}
-    if first_study_dir is not None and name in study.COHORTS:
+    if name not in study.COHORTS:
+        extras[FIRST_STUDY_KEY] = "not applicable: the first study ran cohorts A and B only"
+    elif first_study_dir is None:
+        extras[FIRST_STUDY_KEY] = (
+            "NOT COMPARED: no --first-study-fits folder was given. The first study's fits exist "
+            "(analysis/results/tlrn_study/fits on the branch of the pull request that holds its "
+            "results); Amendment 2 (B6) says to compare them on A and B"
+        )
+    else:
         companies, _ = scored_companies(bench, list(cohort.board))
+        notes = []
         for row in FIRST_STUDY_ROWS:
             old = first.load_fits(first_study_dir, name, row, smoke=smoke)
             if old:
                 matrix = first.reserve_matrix(old, list(cohort.board), cohort.actual)
                 reserve = pd.Series(matrix.mean(axis=0), index=list(cohort.board))
                 first_rows[f"first_study:{row}"] = reserve.reindex(companies).to_numpy()
-                extras[f"first study {row}"] = f"{len(old)} draws read from {first_study_dir}"
+                notes.append(f"{row}: {len(old)} draws")
+            else:
+                notes.append(f"{row}: NO FITS FOUND")
+        extras[FIRST_STUDY_KEY] = f"read from {first_study_dir}; " + "; ".join(notes)
     result = evaluate_cohort(cohort, fits_by_row, bench, first_study=first_rows)
     result["n_cells_by_valuation"] = {
         v: int(
@@ -1459,6 +1808,12 @@ def run_cohort(
         table = companion_rolling_tie_out(companion_rolling, result)
         result["companion_rolling"] = table
         extras["companion's rolling table"] = "\n" + table.round(6).to_string(index=False)
+    if companion_members is not None and name == "B" and fits_by_row.get(MAIN_ROW):
+        table = members_fidelity(companion_members, fits_by_row[MAIN_ROW])
+        result["members_fidelity"] = table
+        extras["members against the companion's published table (report only)"] = (
+            "\n" + table.round(4).to_string(index=False)
+        )
     result["extras"] = extras
     return cohort, result
 
@@ -1471,7 +1826,13 @@ def save_tables(out: Path, cohort, result: dict) -> None:
     result["differences"].to_csv(out / f"{name}_differences.csv", index=False)
     result["excluding_dominant"].to_csv(out / f"{name}_excluding_dominant.csv", index=False)
     result["quartiles"].to_csv(out / f"{name}_size_quartiles.csv", index=False)
-    result["ablations"].to_csv(out / f"{name}_ablations.csv", index=False)
+    result["comparison_rows"].to_csv(out / f"{name}_comparison_rows.csv", index=False)
+    result["stratified"].to_csv(out / f"{name}_stratified.csv", index=False)
+    result["precision"].to_csv(out / f"{name}_precision.csv", index=False)
+    if "alpha_spread" in result:
+        result["alpha_spread"].to_csv(out / f"{name}_alpha_spread.csv", index=False)
+    if "members_fidelity" in result:
+        result["members_fidelity"].to_csv(out / f"{name}_members_fidelity.csv", index=False)
     result["network_check"].to_csv(out / f"{name}_network_check.csv", index=False)
     result["draw_pool_ape"].to_csv(out / f"{name}_draw_pool_ape.csv", index=False)
     company_table(result).to_csv(out / f"{name}_company_predictions.csv", index=False)
@@ -1479,6 +1840,10 @@ def save_tables(out: Path, cohort, result: dict) -> None:
         result["companion_rolling"].to_csv(
             out / f"{name}_companion_rolling_tie_out.csv", index=False
         )
+
+
+#: the extras key under which a run says whether the first study's rows were compared
+FIRST_STUDY_KEY = "first study accident-year rows"
 
 
 def verdict_record(result: dict) -> dict:
@@ -1495,6 +1860,8 @@ def verdict_record(result: dict) -> dict:
         "left_out": result["left_out"],
         "dominant_company": result["dominant_company"],
         "dominant_share": result["dominant_share"],
+        "sensitivity_verdict": result.get("sensitivity_verdict"),
+        "first_study_rows": result.get("extras", {}).get(FIRST_STUDY_KEY),
     }
     if result["verdict"] is not None:
         record["conditions"] = result["conditions"]
@@ -1504,6 +1871,13 @@ def verdict_record(result: dict) -> dict:
         "reason": result["network_reason"],
         "provisional": result["network_provisional"],
         "conditions": result["network_conditions"],
+    }
+    record["blend_question"] = {
+        "verdict": result["blend_verdict"],
+        "label": result["blend_label"],
+        "reason": result["blend_reason"],
+        "provisional": result["blend_provisional"],
+        "conditions": result["blend_conditions"],
     }
     return record
 
@@ -1521,7 +1895,16 @@ def main(argv=None) -> int:
         "--companion-rolling", type=Path, default=None, help="the companion's rolling table"
     )
     parser.add_argument(
-        "--first-study-fits", type=Path, default=None, help="the first study's folder (A and B)"
+        "--companion-members",
+        type=Path,
+        default=None,
+        help="the companion's T_T1_members.csv, to print the medians of alpha and best epoch",
+    )
+    parser.add_argument(
+        "--first-study-fits",
+        type=Path,
+        default=None,
+        help="the first study's fits folder (A and B); a run without it says so",
     )
     parser.add_argument("--tie-out-first-study", action="store_true")
     parser.add_argument("--strict-data-hash", action="store_true")
@@ -1555,6 +1938,7 @@ def main(argv=None) -> int:
             strict=args.strict_data_hash,
             first_study_dir=args.first_study_fits,
             companion_rolling=args.companion_rolling,
+            companion_members=args.companion_members,
             tie_out_first=args.tie_out_first_study,
         )
         if got is None:
@@ -1567,16 +1951,31 @@ def main(argv=None) -> int:
         print(f"(cohort {name} evaluated in {time.perf_counter() - t0:.0f}s)")
         if args.out is not None:
             save_tables(args.out, cohort, result)
+    overall = None
+    if args.cohort == "all":
+        overall = overall_statement(
+            {k: v["verdict"] for k, v in verdicts.items()},
+            {k: v["provisional"] for k, v in verdicts.items()},
+        )
     if args.out is not None:
         args.out.mkdir(parents=True, exist_ok=True)
         (args.out / "report.txt").write_text("\n\n".join(reports), encoding="utf-8")
         (args.out / "verdicts.json").write_text(
-            json.dumps({"smoke": args.smoke, "verdicts": verdicts}, indent=2, default=str), "utf-8"
+            json.dumps(
+                {"smoke": args.smoke, "verdicts": verdicts, "overall": overall},
+                indent=2,
+                default=str,
+            ),
+            "utf-8",
         )
     print("\nVERDICTS" + (" (SMOKE, not a result)" if args.smoke else ""))
     for key, value in verdicts.items():
         print(f"  {key}: {value['label']} [{value['status']}] ({value['n_draws']} draws)")
         print(f"     network question: {value['network_question']['label']}")
+        print(f"     blend question: {value['blend_question']['label']}")
+        print(f"     stratified sensitivity: {value['sensitivity_verdict']}")
+    if overall is not None:
+        print(f"OVERALL (Amendment 2, B5): {overall}")
     return 0
 
 
