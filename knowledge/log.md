@@ -3,6 +3,7 @@
 ## 2026-10-15
 * **Creation**: Recorded [the results of the tlrn robustness study](/findings/tlrn-robustness-study-results.md): all four verdicts are not distinguishable over 10 draws, draw noise is small, company 1767 holds two thirds of the reserve; the small result files are kept in analysis/results/tlrn_study.
 * **Update**: [The tlrn robustness study](/decisions/tlrn-robustness-study.md) notes it was run on 2026-10-14 to 15 (rules unchanged), and [tlrn on a Colab TPU](/findings/tlrn-jax-tpu-run.md) points to the Blackwell, A100 and T4 fit times.
+* **Creation**: Recorded [the second tlrn study](/decisions/tlrn-factor-head-study.md): the companion's newest factor-head model run ten times on three cohorts (A, B and a new out-of-sample cohort C of accident years 1988 to 1997), four valuation dates and a mechanical verdict rule, written before any fit or evaluator code exists.
 
 ## 2026-10-14
 * **Update**: `docs/tlrn-study.md` (and the CHANGELOG) now say what the study evaluator does when a fit's recorded data hash differs from the one it builds: it checks anchors, premiums, lines and companies of every fit against the cohort and scores the fits when they agree (first seen on Colab A100 fits of cohort A; the pre-registered questions and verdict rule are unchanged).
