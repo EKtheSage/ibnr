@@ -171,7 +171,9 @@ def test_the_methods_default_to_chainladders_tie_rule(method, side):
     by_volume = fit(**{side: 1}, trim_ties="volume")
     by_origin = fit(**{side: 1}, trim_ties="origin")
     for name in methods.TABLES:
-        assert getattr(default, name).equals(getattr(by_volume, name)), name
+        ours, theirs = getattr(default, name), getattr(by_volume, name)
+        # cells and coefficients are tweedie_glm's alone, None on both here
+        assert ours.equals(theirs) if ours is not None else theirs is None, name
     assert not default.development.equals(by_origin.development)
     assert not np.array_equal(ultimates(default), ultimates(by_origin))
 
@@ -505,6 +507,10 @@ def test_benktander_with_one_iteration_is_bornhuetter_ferguson_byte_for_byte():
     one = methods.benktander(RAA, n_iters=1, **options)
     bf = methods.bornhuetter_ferguson(RAA, **options)
     for name in methods.TABLES:
+        if getattr(one, name) is None:
+            # cells and coefficients are tweedie_glm's alone
+            assert getattr(bf, name) is None, name
+            continue
         assert getattr(one, name).equals(getattr(bf, name)), name
         for column_name in getattr(one, name).column_names:
             ours, theirs = getattr(one, name)[column_name], getattr(bf, name)[column_name]

@@ -72,6 +72,7 @@ if TYPE_CHECKING:
         align_panel,
         leaderboard,
     )
+    from ibnr.kernels.glm import TweedieFit, TweedieSpec, fit_tweedie_grid
     from ibnr.kernels.holdout import HoldoutCells, next_diagonal
     from ibnr.kernels.mack import MackFit, fit_mack, fit_mack_grid, simulate_ultimates
     from ibnr.kernels.parity import ParityReport, compare_posteriors
@@ -133,6 +134,9 @@ _LAZY = {
     "SCORE_DIRECTION": "forecast",
     "align_panel": "forecast",
     "leaderboard": "forecast",
+    "TweedieFit": "glm",
+    "TweedieSpec": "glm",
+    "fit_tweedie_grid": "glm",
     "HoldoutCells": "holdout",
     "next_diagonal": "holdout",
     "MackFit": "mack",
@@ -201,6 +205,8 @@ __all__ = [
     "ODPBootstrapDiagonal",
     "ParityReport",
     "PredictiveDistribution",
+    "TweedieFit",
+    "TweedieSpec",
     "align_panel",
     "calibrate",
     "calibrated_draws",
@@ -214,6 +220,7 @@ __all__ = [
     "fit_conventional_grid",
     "fit_mack",
     "fit_mack_grid",
+    "fit_tweedie_grid",
     "from_arrow",
     "get_cdr_method",
     "leaderboard",

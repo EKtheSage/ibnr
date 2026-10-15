@@ -7,8 +7,8 @@ triangle data layer backed by duckdb and polars (via ibis). A companion to
 
 **Coming from chainladder-python?** `from ibnr import methods`, then
 `methods.chain_ladder(cells)`, `methods.mack(cells)`,
-`methods.bornhuetter_ferguson(...)`, `methods.benktander(...)` or
-`methods.cape_cod(...)`: see [Run a chain
+`methods.bornhuetter_ferguson(...)`, `methods.benktander(...)`,
+`methods.cape_cod(...)` or `methods.tweedie_glm(cells, power=...)`: see [Run a chain
 ladder](#run-a-chain-ladder) and [the lookup table from chainladder-python to
 ibnr](https://github.com/EKtheSage/ibnr/blob/main/docs/coming-from-chainladder.md).
 
@@ -229,9 +229,12 @@ development options (`average`, `history_periods`, `drop_high`, `drop_low`,
 `preserve`, `drop_above`, `drop_below`, `exclude`, `exclude_valuations`,
 `trim_ties`) are keyword arguments of all four point methods, and of `mack`,
 which refuses `average="median"` and has no `unsupported_factor`. So is
-`zero_cells`, which all five methods take: by default they read a cumulative
-of zero as a missing cell, as chainladder-python does, and
+`zero_cells`, which all five link-ratio methods take: by default they read a
+cumulative of zero as a missing cell, as chainladder-python does, and
 `zero_cells="observed"` keeps it as data.
+`methods.tweedie_glm(cells, power=1.5)` fits a Tweedie GLM to the increments
+(power 1, the default, is the over-dispersed Poisson model and gives the chain
+ladder's ultimates) and adds `cells` and `coefficients` tables to the result.
 Coming from chainladder-python,
 [this lookup table](https://github.com/EKtheSage/ibnr/blob/main/docs/coming-from-chainladder.md) maps its classes and
 attributes onto these functions. Import it with `from ibnr import methods`: a
