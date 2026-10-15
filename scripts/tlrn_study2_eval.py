@@ -605,9 +605,14 @@ def pool_ape_by_valuation(pred: np.ndarray, actual: np.ndarray) -> np.ndarray:
     return np.array([pool_ape(pred[i], actual[i]) for i in range(actual.shape[0])])
 
 
-def rolling(values: np.ndarray) -> float:
-    """The plain mean over valuations of a per-valuation statistic."""
-    return float(np.mean(values))
+def rolling(values: np.ndarray, axis: int | None = None):
+    """The plain mean over valuations of a per-valuation statistic.
+
+    ``axis`` is the valuation axis of an array of resampled statistics; without it the
+    mean of all the values is returned as a float.
+    """
+    mean = np.mean(values, axis=axis)
+    return float(mean) if axis is None else mean
 
 
 def resampled_pool_ape(pred: np.ndarray, actual: np.ndarray, idx: np.ndarray) -> np.ndarray:
@@ -638,12 +643,12 @@ def difference_summary(
     boot_p = resampled_pool_ape(pred, actual, idx)
     boot_b = resampled_pool_ape(bench, actual, idx)
     diff_v = boot_p - boot_b
-    diff_roll = boot_p.mean(axis=0) - boot_b.mean(axis=0)
+    diff_roll = rolling(boot_p, axis=0) - rolling(boot_b, axis=0)
     point_v = pool_ape_by_valuation(pred, actual) - pool_ape_by_valuation(bench, actual)
     out = {}
     for name, point, boot in (
         ("last", point_v[last], diff_v[last]),
-        ("rolling", point_v.mean(), diff_roll),
+        ("rolling", rolling(point_v), diff_roll),
     ):
         lo, hi = interval(boot)
         finite = boot[np.isfinite(boot)]

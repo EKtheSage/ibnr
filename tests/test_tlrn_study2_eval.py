@@ -40,11 +40,14 @@ LAST_I = ev.VALUATIONS.index(ev.LAST)
 # -- a synthetic cohort ------------------------------------------------------------------
 
 
-def synthetic_cells(companies=("c1", "c2", "c3"), lines=("L1", "L2"), *, seed=0, later=None):
+def synthetic_cells(
+    companies=("c1", "c2", "c3"), lines=("L1", "L2"), *, seed=0, later=None, after=N
+):
     """Complete 10 x 10 squares of cumulative paid in the cell layout, with noise.
 
-    ``later`` multiplies every cell on a calendar diagonal past the last known one (10), so
-    a test can change only the development nobody has seen.
+    ``later`` multiplies every cell on a calendar diagonal past ``after`` (default 10, the
+    last known one), so a test can change only the development a valuation date has not
+    seen.
     """
     rng = np.random.default_rng(seed)
     rows = []
@@ -57,7 +60,7 @@ def synthetic_cells(companies=("c1", "c2", "c3"), lines=("L1", "L2"), *, seed=0,
                 for d in range(1, N + 1):
                     cum += level * 0.6 ** (d - 1) * 0.4 * rng.uniform(0.9, 1.1)
                     shown = cum
-                    if later is not None and w + d > N:
+                    if later is not None and w + d > after:
                         shown = cum * later
                     rows.append(
                         {
@@ -216,18 +219,30 @@ def test_mack_at_each_valuation_is_a_chain_ladder_on_the_cells_known_then(benchm
             assert got.iloc[0] == pytest.approx(total, rel=1e-9)
 
 
-def test_the_benchmarks_do_not_see_cells_past_the_valuation():
-    """Changing only the development nobody has seen moves the actual and nothing else."""
+@pytest.mark.parametrize("after", [6, 7, 8, 10])
+def test_the_benchmarks_do_not_see_cells_past_the_valuation(after):
+    """Changing only the diagonals past ``after`` moves the benchmarks at later valuations only.
+
+    A valuation at or before ``after`` has not seen the changed cells, so both benchmarks
+    there must not move (a leak of a later diagonal into a fit is the mistake that matters,
+    and it needs a test of the multivariate chain ladder as well as the chain ladder). A
+    valuation past ``after`` has seen them, which shows the test can fail.
+    """
     base = synthetic_cells(("c1", "c2"), ("L1", "L2"), seed=5)
-    moved = synthetic_cells(("c1", "c2"), ("L1", "L2"), seed=5, later=1.7)
+    moved = synthetic_cells(("c1", "c2"), ("L1", "L2"), seed=5, later=1.7, after=after)
     a = ev.benchmark_cells(cohort_of(base), log=lambda *_: None)
     b = ev.benchmark_cells(cohort_of(moved), log=lambda *_: None)
-    # the cells past the last known diagonal are only the valuation-10 outcome
+    seen = a["valuation"] <= after
     for column in ("mack", "mcl"):
-        np.testing.assert_allclose(a[column], b[column], rtol=1e-12)
-    early = a["valuation"] < ev.LAST
-    np.testing.assert_allclose(a.loc[early, "actual"], b.loc[early, "actual"])
-    assert not np.allclose(a.loc[~early, "actual"], b.loc[~early, "actual"])
+        np.testing.assert_allclose(a.loc[seen, column], b.loc[seen, column], rtol=1e-12)
+        if (~seen).any():
+            assert not np.allclose(a.loc[~seen, column], b.loc[~seen, column])
+    # the actual is the development the date has not seen: with every changed cell past the
+    # last known diagonal it moves only at the last valuation
+    if after == ev.LAST:
+        early = a["valuation"] < ev.LAST
+        np.testing.assert_allclose(a.loc[early, "actual"], b.loc[early, "actual"])
+        assert not np.allclose(a.loc[~early, "actual"], b.loc[~early, "actual"])
 
 
 def test_the_benchmarks_at_the_last_valuation_are_the_whole_run_off(benchmarks):
@@ -343,6 +358,8 @@ def test_the_difference_summary_resamples_a_companys_valuations_together():
 
 def test_the_rolling_statistic_is_the_plain_mean_over_the_four_valuations():
     assert ev.rolling(np.array([0.08, 0.04, 0.04, 0.04])) == pytest.approx(0.05)
+    by_resample = np.array([[0.08, 0.1], [0.04, 0.2], [0.04, 0.3], [0.04, 0.4]])
+    np.testing.assert_allclose(ev.rolling(by_resample, axis=0), [0.05, 0.25])
     assert ev.VALUATIONS == (6, 7, 8, 10)
 
 
@@ -379,8 +396,8 @@ def test_point_metrics_match_a_hand_worked_example():
     assert got["n_log"] == 3
     assert got["log_ratio"] == pytest.approx(np.mean(np.abs(np.log([1.1, 0.5, 1.0]))))
     assert got["wrmse"] == pytest.approx(np.sqrt((actual * err**2).sum() / actual.sum()))
-    # the model beats the benchmark at company 0 (10 < 0) no: bench errs 0 there; at 2 bench 0
-    # errs, at 3 bench errs 2 and the model 0, at 1 both... only company 3 is a win
+    # the benchmark's errors are 0, 0, 0 and 2 and the model's are 10, 5, 25 and 0, so the
+    # model's error is the smaller at company 3 only
     assert got["share_better_than_benchmark"] == pytest.approx(1 / 4)
 
 
@@ -446,6 +463,11 @@ def test_worse_needs_an_interval_wholly_above_zero_at_the_last_valuation_or_roll
     above = {"mack": interval(-0.01, 0.02), "mcl": interval(0.001, 0.02)}
     assert ev.decide(stats_for(last=above))[0] == "worse"
     assert ev.decide(stats_for(rolling=above))[0] == "worse"
+    # either benchmark counts, the weaker one too (the first study's rule used the stronger)
+    weaker = {"mack": interval(0.001, 0.02), "mcl": interval(-0.01, 0.02)}
+    assert stats_for()["pool_last"]["mack"] > stats_for()["pool_last"]["mcl"]
+    assert ev.decide(stats_for(last=weaker))[0] == "worse"
+    assert ev.decide(stats_for(rolling=weaker))[0] == "worse"
     # touching zero is not wholly above
     touching = {"mack": interval(-0.01, 0.02), "mcl": interval(0.0, 0.02)}
     assert ev.decide(stats_for(last=touching, rolling=touching))[0] == "not distinguishable"
@@ -702,10 +724,11 @@ def test_draw_arrays_put_valuation_and_company_on_the_right_axes(tmp_path, cohor
 
 def test_alpha_summary_is_the_median_over_members_and_draws(tmp_path, cohort):
     fits = loaded(tmp_path, cohort)
-    fits[0].members["alpha"] = [0.2, 0.4] * V
-    fits[1].members["alpha"] = [0.6, 0.8] * V
+    # four members, two per draw; the median is 0.3 and the mean 0.55
+    fits[0].members["alpha"] = [0.2, 0.3] * V
+    fits[1].members["alpha"] = [0.3, 1.4] * V
     got = ev.alpha_summary(fits).set_index("valuation")["alpha_median"]
-    assert got.loc[6] == pytest.approx(0.5)
+    assert got.loc[6] == pytest.approx(0.3)
 
 
 # -- one cohort, end to end ---------------------------------------------------------------
@@ -784,6 +807,39 @@ def test_the_dominant_company_is_the_largest_actual_reserve_at_the_last_valuatio
     last = cohort.actual.loc[res["companies"], "actual_reserve"]
     assert res["dominant_company"] == last.idxmax()
     assert res["dominant_share"] == pytest.approx(last.max() / last.sum())
+
+
+def test_the_draw_average_is_the_mean_over_draws_not_the_median(tmp_path, cohort):
+    for draw, factor in enumerate((0.9, 1.0, 1.8)):
+        write_fit(tmp_path, cohort, ev.MAIN_ROW, draw, lambda i, a, f=factor: a * f)
+    fits = ev.load_fits(tmp_path, "A", ev.MAIN_ROW, smoke=False)
+    res = ev.evaluate_cohort(cohort, {ev.MAIN_ROW: fits}, bench_for(cohort, 0.3, 0.3))
+    np.testing.assert_allclose(res["series"][ev.MAIN_ROW], res["actual"] * (0.9 + 1.0 + 1.8) / 3)
+    # the per-draw Pool_APE is the draw's own, so its median is the middle draw's 0
+    table = res["draw_pool_ape"]
+    per = table[table["row"] == ev.MAIN_ROW].set_index("draw")["valuation_10"]
+    np.testing.assert_allclose(per.to_numpy(), [0.1, 0.0, 0.8], atol=1e-12)
+
+
+def test_excluding_the_dominant_company_removes_it_from_the_model_and_the_benchmark(
+    tmp_path, cohort
+):
+    ramp = np.linspace(0.7, 1.5, len(cohort.board))
+    res = evaluate(
+        tmp_path,
+        cohort,
+        bench_for(cohort, 0.3, 0.3),
+        {ev.MAIN_ROW: lambda i, a: a * ramp},
+        draws=(0,),
+    )
+    keep = np.array([c != res["dominant_company"] for c in res["companies"]])
+    assert keep.sum() == len(keep) - 1
+    got = res["excluding_dominant"].set_index(["method", "benchmark"]).loc[(ev.MAIN_ROW, "mack")]
+    model, bench = res["series"][ev.MAIN_ROW][LAST_I][keep], res["series"]["mack"][LAST_I][keep]
+    actual = res["actual"][LAST_I][keep]
+    assert got["diff"] == pytest.approx(ev.pool_ape(model, actual) - ev.pool_ape(bench, actual))
+    want = ev.last_difference(model, bench, actual, first.bootstrap_indices(int(keep.sum())))
+    assert (got["low"], got["high"]) == pytest.approx((want["low"], want["high"]))
 
 
 def test_the_raw_network_is_the_main_fits_pre_blend_forecast_and_needs_no_extra_row(

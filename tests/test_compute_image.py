@@ -121,6 +121,13 @@ NOT_PROMISED = {
         "runner wrote, which the image never has, and it imports tlrn_study_colab.py, whose "
         "own entry is listed above; it computes nothing without those fits."
     ),
+    "tlrn_study2_eval.py": (
+        "scores the saved fits of the second tlrn study (the factor-head model) at four "
+        "valuation dates against the chain ladder and the multivariate chain ladder. It "
+        "reads the folder the Colab runner wrote, which the image never has, needs the "
+        "Schedule P mart for the benchmarks, and imports tlrn_study_colab.py and "
+        "tlrn_study_eval.py, whose own entries are listed above."
+    ),
     "conventional_examples.py": (
         "a loader with no command line, imported by the conventional benchmark "
         "driver rather than run on its own. Running it by itself computes "
