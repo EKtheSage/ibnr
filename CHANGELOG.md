@@ -405,11 +405,17 @@ out-of-sample in accident years only (1988 to 1997, from the cas-schedule-p mart
 forecasts at four valuation dates. `scripts/tlrn_study2_eval.py` scores them against `mack`
 and `mcl`, each fitted by ibnr on the cells known at every date and read cell by cell, with
 a verdict rule written down beforehand and, from a dated amendment made before any fit, a
-second paired question (does the network add anything beyond the blend?); `analysis/05_tlrn_factor_head_study.ipynb` shows the
+second paired question (does the network add anything beyond the blend?) and, from a second amendment made after an outside
+review and also before any fit, a dollar-pooled second condition, a tightened fourth, a stated reading of mixed verdicts
+across cohorts, a stratified-bootstrap sensitivity analysis, the precision of every interval, the spread of the blend weight
+and a check that every member ran its 3,000 epochs; `analysis/05_tlrn_factor_head_study.ipynb` shows the
 results from a folder of saved fits. The model is built with `TLRNConfig` keywords in the
 runner, so the study runs on the published ibnr 0.7.4. The how-to is `docs/tlrn-study2.md`
 and the design is in `knowledge/decisions/tlrn-factor-head-study.md`. No library code
-changed. Nothing has run on a GPU and no result exists yet.
+changed. Nothing has run on a GPU and no result exists yet. Fixed in the first study's
+evaluator (`scripts/tlrn_study_eval.py`): its benchmarks used the 2007-12-31 valuation date for every cohort and stopped on
+an anchor mismatch for cohort C (valued 1997-12-31); they now use the cohort's own date. The how-to for the first study
+installed a 0.7.3 wheel built from `main`; it now pins `ibnr[jax]==0.7.4` from PyPI and checks the version.
 
 ## 0.7.4 - 2026-10-12
 

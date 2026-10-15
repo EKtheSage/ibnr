@@ -1,7 +1,7 @@
 ---
 type: Decision
 title: The second tlrn study, on the companion's factor-head model
-description: "How ibnr tests whether the companion study's newest model (the factor head with line and lag attention) beats the chain ladder and the multivariate chain ladder: ten draws of two rows on three cohorts, four valuation dates and a verdict rule, all fixed before any result exists (Ethan, 2026-10-15). Amendment 1, made before any fit, adds the smallest difference the primary verdict can detect, a paired question on whether the network adds value, and cohort C first."
+description: "How ibnr tests whether the companion study's newest model (the factor head with line and lag attention) beats the chain ladder and the multivariate chain ladder: ten draws of two rows on three cohorts, four valuation dates and a verdict rule, all fixed before any result exists (Ethan, 2026-10-15). Amendment 1, made before any fit, adds the smallest difference the primary verdict can detect, a paired question on whether the network adds value, and cohort C first. Amendment 2, also before any fit and after an outside review, makes the second condition a dollar-pooled statistic, tightens the fourth, writes down how mixed verdicts across cohorts read, adds a stratified sensitivity analysis and states the precision."
 tags: [tlrn, evaluation, preregistration, colab, companion-study, decision]
 status: draft
 generated: { by: claude-code/claude-sonnet-5-5, at: 2026-10-15T15:00:00Z }
