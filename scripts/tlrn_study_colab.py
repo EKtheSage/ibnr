@@ -83,6 +83,9 @@ import numpy as np
 import pandas as pd
 import tlrn_colab
 
+#: the ibnr release both studies are run with on Colab. The install cells of the Colab kits and
+#: the how-to documents pin exactly this version, and a test holds them equal to it
+PINNED_IBNR = "0.7.4"
 #: bump when the study's definition changes, so old fits are never reused under a new one
 STUDY_VERSION = 1
 COHORTS = ("A", "B")
@@ -578,7 +581,7 @@ def fit_settings(
 def fit_paths(out: Path, cohort: str, row: str, draw: int, *, smoke: bool, version: str):
     """``(fitted entry, settings record, company reserves)`` of one fit.
 
-    For example ``A_tlrn_8_ay_d03-ibnr0.7.3.pkl``, ``.json`` and ``_reserves.csv``.
+    For example ``A_tlrn_8_ay_d03-ibnr0.7.4.pkl``, ``.json`` and ``_reserves.csv``.
     """
     stem = f"{cohort}_{row}_d{draw:02d}{'_smoke' if smoke else ''}-ibnr{version}"
     return out / f"{stem}.pkl", out / f"{stem}.json", out / f"{stem}_reserves.csv"

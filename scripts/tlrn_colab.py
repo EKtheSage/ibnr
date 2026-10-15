@@ -255,7 +255,7 @@ def fit_settings(row: str, roles: dict, config, *, config_name: str, smoke: bool
 
 
 def fit_paths(out: Path, row: str, *, smoke: bool, version: str) -> tuple[Path, Path]:
-    """``(fitted entry, its settings record)``, e.g. ``tlrn_8-ibnr0.7.3.pkl`` and ``.json``."""
+    """``(fitted entry, its settings record)``, e.g. ``tlrn_8-ibnr0.7.4.pkl`` and ``.json``."""
     stem = f"{row}{'_smoke' if smoke else ''}-ibnr{version}"
     return out / f"{stem}.pkl", out / f"{stem}.json"
 
