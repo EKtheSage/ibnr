@@ -52,6 +52,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from ibnr.errors import Refusal
 from ibnr.gallery.cdr import GalleryDiagonal
 from ibnr.gallery.entry import PredictsHeldout
 from ibnr.gallery.registry import get
@@ -65,7 +66,8 @@ from ibnr.kernels.cdr import (
 )
 from ibnr.kernels.contract import cohort_grid, stan_data
 from ibnr.kernels.holdout import next_diagonal
-from ibnr.kernels.mack import MackFit, _next_step_draws, fit_mack
+from ibnr.kernels.mack import MackFit, _next_step_draws, fit_mack, fit_mack_grid
+from ibnr.kernels.tail import TailSpec
 from ibnr.triangle.core import Triangle
 
 from .conftest import make_cohort_triangle
@@ -466,6 +468,20 @@ def test_the_mack_positivity_precondition_is_not_applied_here():
         fit, n_draws=8, seed=1, contract=cohort_grid(tri.as_of(AS_OF), loss_field="paid_loss")
     )
     GalleryDiagonal(entry, cells).check(fit)
+
+
+def test_a_tailed_fit_is_refused():
+    """The one-year result has no tail, and this generator's check says so itself,
+    not only the routes that call it. The same fit without the tail is accepted,
+    so the tail is the one thing refused."""
+    grid = cohort_grid(_triangle().as_of(AS_OF), loss_field="paid_loss")
+    plain = fit_mack_grid(grid)
+    tailed = fit_mack_grid(grid, tail=TailSpec("constant", factor=1.05, sigma=0.1, std_err=0.01))
+    generator = GalleryDiagonal(_MackEchoEntry(plain, n_draws=8, seed=1), _cells())
+    generator.check(plain)
+    with pytest.raises(Refusal, match="the one-year claims development result has no tail") as e:
+        generator.check(tailed)
+    assert e.value.reason == "not_supported"
 
 
 # -- the draw-count negotiation -----------------------------------------------

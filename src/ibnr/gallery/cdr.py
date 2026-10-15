@@ -102,7 +102,7 @@ import numpy as np
 import pandas as pd
 
 from ibnr.gallery.entry import PredictsHeldout
-from ibnr.kernels.cdr import DiagonalGenerator, _require_zero_cells_unused
+from ibnr.kernels.cdr import DiagonalGenerator, _require_untailed, _require_zero_cells_unused
 from ibnr.kernels.holdout import HoldoutCells, training_index
 from ibnr.kernels.mack import MackFit
 
@@ -424,6 +424,7 @@ class GalleryDiagonal(DiagonalGenerator):
         to fit; the fit already happened.
         """
         _require_zero_cells_unused(fit)
+        _require_untailed(fit)
         self._align(fit)
 
     def resolve_n_draws(self, requested: int | None) -> int | None:
