@@ -23,8 +23,8 @@ sources:
     resource: scripts/tlrn_study_colab.py
     title: The Colab runner, which runs this study with --study factor_head
   - id: evaluator
-    resource: scripts/tlrn_study_eval.py
-    title: The evaluator, whose docstring repeats these rules
+    resource: scripts/tlrn_study2_eval.py
+    title: The evaluator, whose docstring repeats these rules (it reuses the first study's statistics in scripts/tlrn_study_eval.py)
 ---
 
 # Decision
@@ -41,9 +41,10 @@ interval from -3.14 to +2.43 points, and 68.4% of its resamples favour the trans
 The study is fixed here, before any fit or any evaluator code exists. If a rule below turns
 out to be wrong, change it in a new commit that says so, not silently. The machinery is the
 first study's: the runner is `scripts/tlrn_study_colab.py` (now with `--study
-factor_head`), the evaluator is `scripts/tlrn_study_eval.py` and its second-study
-extension, and the first study's decision note[^first] explains the ideas that carry over
-(ten independent draws, a mechanical verdict rule, provisional labelling).
+factor_head`), the evaluator is `scripts/tlrn_study2_eval.py`, which reuses the first study's
+`scripts/tlrn_study_eval.py` statistics, and the first study's decision note[^first]
+explains the ideas that carry over (ten independent draws, a mechanical verdict rule,
+provisional labelling).
 
 # The model, and what is verified about it
 

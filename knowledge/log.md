@@ -3,6 +3,9 @@
 ## 2026-10-15
 * **Creation**: Recorded [the results of the tlrn robustness study](/findings/tlrn-robustness-study-results.md): all four verdicts are not distinguishable over 10 draws, draw noise is small, company 1767 holds two thirds of the reserve; the small result files are kept in analysis/results/tlrn_study.
 * **Update**: [The tlrn robustness study](/decisions/tlrn-robustness-study.md) notes it was run on 2026-10-14 to 15 (rules unchanged), and [tlrn on a Colab TPU](/findings/tlrn-jax-tpu-run.md) points to the Blackwell, A100 and T4 fit times.
+* **Creation**: Recorded [the companion study's final model](/findings/companion-final-architecture.md): the factor-head model of 2026-10-08, what it is and scores, and which facts were read directly.
+* **Update**: [The companion study's repository](/references/companion-study-repository.md) and [reproducing the companion notebook](/findings/companion-notebook-reproduction.md) gained dated corrections: `Code/tlrn_pipeline_best.ipynb`, which they called the best notebook, was deleted upstream on 2026-10-08, and the final model is now in `Code/tlrn_pipeline_final.ipynb`.
+* **Update**: [The second tlrn study's decision note](/decisions/tlrn-factor-head-study.md) now points its evaluator source at `scripts/tlrn_study2_eval.py`, where the pre-registered rules sit in the module docstring (a path correction, no change to any rule).
 * **Creation**: Recorded [the second tlrn study](/decisions/tlrn-factor-head-study.md): the companion's newest factor-head model run ten times on three cohorts (A, B and a new out-of-sample cohort C of accident years 1988 to 1997), four valuation dates and a mechanical verdict rule, written before any fit or evaluator code exists.
 
 ## 2026-10-14

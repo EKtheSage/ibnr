@@ -396,6 +396,19 @@ both zero rules, on raa, GenIns, UKMotor, ABC, MW2014 and every sixth clrd
 paid triangle (135 triangles): 2,835 cases, 1,452 answers and 1,383 refusals,
 identical except for that message in 71 of them. `fit_mack_grid`'s
 comparison covers its ultimates, factors and run-off standard errors.
+### The second tlrn study, on the companion's final model (scripts, tests, notebook and knowledge only)
+
+`scripts/tlrn_study_colab.py --study factor_head` trains the companion study's newest model
+(13 features, a factor head, line and lag attention, blended with the multivariate chain
+ladder, 20 members averaged) ten times on cohorts A, B and a new out-of-sample cohort C
+(accident years 1988 to 1997, from the cas-schedule-p mart), and saves each fit's company
+forecasts at four valuation dates. `scripts/tlrn_study2_eval.py` scores them against `mack`
+and `mcl`, each fitted by ibnr on the cells known at every date and read cell by cell, with
+a verdict rule written down beforehand; `analysis/05_tlrn_factor_head_study.ipynb` shows the
+results from a folder of saved fits. The model is built with `TLRNConfig` keywords in the
+runner, so the study runs on the published ibnr 0.7.4. The how-to is `docs/tlrn-study2.md`
+and the design is in `knowledge/decisions/tlrn-factor-head-study.md`. No library code
+changed. Nothing has run on a GPU and no result exists yet.
 
 ## 0.7.4 - 2026-10-12
 

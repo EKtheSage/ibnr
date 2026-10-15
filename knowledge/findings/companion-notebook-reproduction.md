@@ -9,7 +9,7 @@ stale_after: 2027-01-03T00:00:00Z
 sources:
   - id: notebook
     resource: Code/tlrn_pipeline_best.ipynb in the companion study's repository (sibling checkout)
-    title: The companion notebook (JAX)
+    title: The companion notebook (JAX); deleted upstream on 2026-10-08, see the correction below
   - id: tables
     resource: Exhibits/tab in the companion study's repository (M_T0_company_reserves.csv, R_T1_rolling_origin.csv, T_T1_members.csv)
     title: The notebook's published tables
@@ -17,6 +17,17 @@ sources:
     resource: https://github.com/EKtheSage/ibnr/pull/164
     title: The design choices and the fidelity fixes
 ---
+
+# Correction (2026-10-15)
+
+This note describes the companion notebook as it stood on 2026-10-05, when
+`Code/tlrn_pipeline_best.ipynb` was the best one. That file was deleted upstream on
+2026-10-08 (commit `bf4e52c`), and the companion study's final model is now a different,
+factor-head model in `Code/tlrn_pipeline_final.ipynb`. What follows is still an accurate
+account of the accident-year variant and the notebook it was checked against, but it is no
+longer about the companion's final model: see [the companion's final
+architecture](/findings/companion-final-architecture.md) and [the second
+study](/decisions/tlrn-factor-head-study.md).
 
 # Result
 
