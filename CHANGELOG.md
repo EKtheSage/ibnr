@@ -34,6 +34,12 @@ draw numbers) unless exactly draws 0 to 9 are present, names a missing benchmark
 companies instead of raising a `KeyError`, leads the variance output with the draw-noise
 shares and labels the intraclass correlation a company-size effect, and does not fit the
 benchmarks for a cohort with no saved fits. The runner trains a repeated `--rows` entry once.
+The evaluator no longer refuses fits only because their recorded cell hash differs from the
+one it builds (another machine can print the same cells with different last digits): it
+compares every fit's anchors, premiums, lines and companies with the cohort's, scores the
+fits when they agree, and prints the note (and writes it to `verdicts.json`); a different
+cohort hash, publish id or study version is still refused, and `--strict-data-hash` restores
+the old refusal.
 
 ## 0.7.4 - 2026-10-12
 

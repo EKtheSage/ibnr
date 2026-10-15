@@ -1,5 +1,8 @@
 # Knowledge Update Log
 
+## 2026-10-14
+* **Update**: `docs/tlrn-study.md` (and the CHANGELOG) now say what the study evaluator does when a fit's recorded data hash differs from the one it builds: it checks anchors, premiums, lines and companies of every fit against the cohort and scores the fits when they agree (first seen on Colab A100 fits of cohort A; the pre-registered questions and verdict rule are unchanged).
+
 ## 2026-10-13
 * **Update**: [Cut a release](/playbooks/cut-a-release.md) gained the 0.7.2, 0.7.3 and 0.7.4 rows of the release history (from tags, the CHANGELOG and the release pull requests), the rule that the tests and lint on the release commit must be green before the tag is pushed, and the rule that the CHANGELOG's Unreleased heading is renamed at release so later entries need a fresh one.
 
