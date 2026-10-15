@@ -21,6 +21,7 @@ Usage, on the runtime::
 
     python scripts/tlrn_colab.py --out /content/drive/MyDrive/ibnr/tlrn_fits
     python scripts/tlrn_colab.py --out ... --config accident_year --members 20
+    python scripts/tlrn_colab.py --out ... --config factor_head    # the second study's rows
     python scripts/tlrn_colab.py --out ... --smoke      # a few epochs, to check the setup
 
 The TPU speed is unmeasured: this script was checked on a CPU only (in ``--smoke`` form).
@@ -130,10 +131,84 @@ def build_triangle():
     return tri, len(pairs), len(companies)
 
 
+def factor_head_config(**overrides):
+    """The companion study's newest model (the factor head), as one ``TLRNConfig``.
+
+    Every choice that defines the model is written out here and not left to the library's
+    defaults, so a change of default in a later ibnr cannot change the model unnoticed. The
+    network reads each cell's features, attends across the company's lines and across
+    lags (one block, no accident-year attention), and corrects a learned development factor
+    per line and step; each member is blended with the multivariate chain ladder by a fitted
+    weight, twenty members are averaged, and the whole method is retrained at valuation
+    dates 6, 7 and 8. ``overrides`` replace any choice, which is how ``factors_only`` and
+    the smoke budget are set. The choices and the evidence for them are in
+    ``knowledge/decisions/tlrn-factor-head-study.md``.
+    """
+    from ibnr.gallery.nn.tlrn.config import TLRNConfig
+
+    choices = {
+        # the head: softplus(phi + eps * net), phi starting at init_step / lag
+        "head": "ldf",
+        "eps": 0.5,
+        "init_step": 0.57,
+        "cl_anchor": False,
+        "factors_only": False,
+        "tail_policy": "observed_cl",
+        # one block, line and lag attention only
+        "attention": None,
+        "cross_line": True,
+        "n_layers": 1,
+        "d_model": 32,
+        "n_heads": 2,
+        "dropout": 0.3,
+        "mask": "unwritten_lines",
+        # the member and the ensemble
+        "member": "mcl_blend",
+        "ensemble_size": 20,
+        "keep": None,
+        # batches, cutoffs and validation
+        "batch_unit": "example",
+        "batch_size": 64,
+        "cutoff_sampling": "per_epoch",
+        "min_cutoff": 2,
+        "val_diagonals": 2,
+        "scoring": "reached_cells",
+        # the loss and the optimiser
+        "w_pe": 0.5,
+        "w_mse": 0.1,
+        "mse_scale": 0.005,
+        "lr": 3e-3,
+        "lr_phi": 3e-2,
+        "weight_decay": 0.0,
+        "warmup": 20,
+        "grad_clip": 1.0,
+        "max_epochs": 3000,
+        "min_epochs": 500,
+        "check_every": 5,
+        "patience": 600,
+        # the earlier valuation dates the whole method is retrained at
+        "calibration": "retrain_per_valuation",
+        "calibration_cutoffs": (6, 7, 8),
+        "calibration_horizons": (2, 3, 4),
+    }
+    return TLRNConfig(**{**choices, **overrides})
+
+
 def configs(name: str, members: int, smoke: bool):
     """``(row, fit keyword arguments, TLRNConfig)`` for each fit of the cell."""
     from ibnr.gallery.nn.tlrn.config import TLRNConfig
 
+    if name == "factor_head":
+        # the second study's two rows: the full model, and the same model with the network
+        # switched off (the head's pooled factors blended with the multivariate chain ladder)
+        budget = {"ensemble_size": members}
+        if smoke:
+            budget |= {"max_epochs": 10, "min_epochs": 0, "check_every": 5, "patience": 100}
+        roles = {"incurred_field": INCURRED_FIELD, "case_field": CASE_FIELD}
+        return [
+            ("tlrn_13_fh", roles, factor_head_config(**budget)),
+            ("tlrn_13_fh_factors", roles, factor_head_config(factors_only=True, **budget)),
+        ]
     if name == "published":
         # notebook 04's own budget: the published protocol, forty members all kept
         budget = {"ensemble_size": members, "keep": members}
@@ -260,7 +335,9 @@ def save(entry, path: Path) -> None:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--out", type=Path, required=True, help="folder for the fitted entries")
-    parser.add_argument("--config", choices=("published", "accident_year"), default="published")
+    parser.add_argument(
+        "--config", choices=("published", "accident_year", "factor_head"), default="published"
+    )
     parser.add_argument("--members", type=int, default=None, help="40 published, 20 variant")
     parser.add_argument("--smoke", action="store_true", help="ten epochs, to check the setup")
     args = parser.parse_args(argv)
