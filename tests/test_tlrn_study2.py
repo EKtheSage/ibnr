@@ -640,6 +640,15 @@ def test_the_last_valuation_is_the_entrys_own_reserve_and_has_no_actual(tiny_fit
 def test_the_cells_scored_are_the_diagonals_after_the_date_within_its_development_lags(tiny_fits):
     _, _, tables = tiny_fits["main"]
     n = 10
+    # the companion's published rolling table scores 2,968, 3,180, 2,756 and 9,540 cells at
+    # valuations 6, 7, 8 and 10 over its 212 pairs: 14, 15, 13 and 45 cells per pair
+    published_per_pair = {6: 14, 7: 15, 8: 13, 10: 45}
+    assert {v: 212 * k for v, k in published_per_pair.items()} == {
+        6: 2968,
+        7: 3180,
+        8: 2756,
+        10: 9540,
+    }
     for v, got in tables["valuations"].groupby("valuation"):
         if v == n:
             per_line = [(w, d) for w in range(n) for d in range(n) if w + d + 1 > n]
@@ -651,6 +660,7 @@ def test_the_cells_scored_are_the_diagonals_after_the_date_within_its_developmen
                 if v < w + d + 1 <= n and d + 1 <= v and w <= v - 1
             ]
         n_lines = 2  # the synthetic companies write both of the fixture's lines
+        assert len(per_line) == published_per_pair[v], v
         assert (got["n_cells"] == n_lines * len(per_line)).all(), v
 
 

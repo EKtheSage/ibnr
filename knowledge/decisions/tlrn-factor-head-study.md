@@ -33,8 +33,8 @@ The first study asked about the companion study's accident-year model. That mode
 longer the companion's final one: its repository moved, on 2026-10-08, to a model with a
 factor head and line and lag attention, which it reports at a company-reserve Pool_APE of
 4.97% against 5.41% for the multivariate chain ladder and 5.48% for the chain ladder. The
-same repository's own paired bootstrap against the multivariate chain ladder runs from
--3.14 to +2.43 points, and 68.4% of its resamples favour the transformer. Ethan's call
+same repository's own paired bootstrap against the multivariate chain ladder gives a 90%
+interval from -3.14 to +2.43 points, and 68.4% of its resamples favour the transformer. Ethan's call
 (2026-10-15) is to run the second study on that final architecture, in a new notebook
 (05), built with ibnr, and to see what the testing itself should do better.[^request]
 
@@ -49,7 +49,11 @@ extension, and the first study's decision note[^first] explains the ideas that c
 
 Read from the companion's newest notebook (its repository at commit f74addd, 2026-10-08)
 through git objects, without checking anything out. **Verified** means read in that
-notebook or its published tables; **inferred** means worked out from them.
+notebook, its run manifest or its published tables when this note was written (the
+constants, the loss, the parameter count, the table figures and the two runs' outputs were
+read again by the author of this note); **from the earlier review** means reported by a
+read-only review of the repository that this note did not repeat; **inferred** means worked
+out from the others.
 
 * **Verified.** 13 features per cell. One axial block with attention across lines and
   across lags only (d_model 32, 2 heads, dropout 0.3); there is no accident-year
@@ -57,9 +61,10 @@ notebook or its published tables; **inferred** means worked out from them.
 * **Verified.** The head reads the network output as a log development factor per
   (line, step): `logf = softplus(phi + 0.5 * net)`. `phi` is a learned line-by-9-steps
   parameter shared by all companies, starting at `softplus(phi) = 0.57 / lag`, a decaying
-  start and not the company's own chain ladder factors. A transition that no training
-  target supervised falls back to the pooled chain ladder factor. The forecast is the
-  cumulative projection from the latest paid, with no tail factor.
+  start and not the company's own chain ladder factors. The forecast is the cumulative
+  projection from the latest paid, with no tail factor. (From the earlier review: a
+  transition that no training target supervised falls back to the pooled chain ladder
+  factor, which is what `tail_policy="observed_cl"` does in ibnr.)
 * **Verified.** Loss: absolute error per (example, line) over the absolute actual, plus
   0.5 times the pooled signed error over the same base, plus 0.1 times a squared error
   scaled by 0.005. Adam, learning rate 0.003 (0.03 for `phi`), 20 warmup epochs then a
@@ -70,22 +75,30 @@ notebook or its published tables; **inferred** means worked out from them.
 * **Verified.** Each member forecasts `MCL + alpha * (network - MCL)` cell by cell, with
   alpha refitted as an exact weighted median clipped to [0, 1]. Twenty members are trained
   at every valuation date and the reported transformer is the plain mean of all twenty
-  blended members. No member is selected. (A table of seed selection in the repository is
-  a leftover of an older pipeline and is not used.)
+  blended members. No member is selected. (From the earlier review: a table of seed
+  selection in the repository is a leftover of an older pipeline and is not used.)
 * **Verified.** 14,245 parameters per member. ibnr's count differs a little because its
   embeddings are 1-based and its random streams differ, so ibnr trains the same procedure,
   not the same numbers.
-* **Verified, about the history.** The design moved from the accident-year model (5.55%,
-  worse than the multivariate chain ladder) to this one after results were visible, and its
-  hyperparameters were chosen with the test data visible. The committed notebook source is
-  identical across two runs that reported 5.04% and 4.97%, so run-to-run noise of about
-  that size exists.
+* **Verified, about run-to-run noise.** The committed notebook source is identical across
+  its versions, and two stored runs of it report a Pool_APE of 5.04% and 4.97%, so
+  run-to-run noise of about that size exists.
+* **From the earlier review, about the history.** The design moved from the accident-year
+  model (5.55%, worse than the multivariate chain ladder) to this one after results were
+  visible, and its hyperparameters were chosen with the test data visible. This is why the
+  verdicts on A and B are labelled as they are below.
 * **Verified, about the headline.** Company 1767 holds 67.3% of the cohort's reserve. Without
   it the transformer is at 13.07% against 12.81% for the multivariate chain ladder and
   12.31% for the chain ladder. The transformer beats the multivariate chain ladder on 52.4%
   of companies. Its rolling table gives Pool_APE at valuations 6, 7, 8 and 10 of 8.24, 3.50,
   3.58 and 4.97 for the transformer against 6.11, 4.41, 3.61 and 5.41 for the multivariate
   chain ladder (means 5.07 and 4.88).
+* **Verified, a tie-out the runner already meets.** That table scores 2,968, 3,180, 2,756
+  and 9,540 cells at valuations 6, 7, 8 and 10 over its 212 pairs, which is 14, 15, 13 and
+  45 cells per pair. The scored-cell rule below (diagonals after the date, development lag
+  at most the date, every cell past the last diagonal at valuation 10) gives exactly those
+  numbers per pair, and a test pins them; the evaluator should find the same totals in the
+  `n_cells` column of cohort B's fits.
 * **Inferred.** The companion's selection rule reads data through diagonal 10 at every
   valuation date, so at valuations 6, 7 and 8 the cohort is chosen with later data in view.
   This study keeps that rule unchanged, because the aim is to reproduce the companion's
@@ -94,7 +107,9 @@ notebook or its published tables; **inferred** means worked out from them.
 # How ibnr runs it
 
 `TLRNConfig(...)` keyword arguments, written out in `scripts/tlrn_colab.py` (no new preset
-and no library change, so the study runs on the published ibnr 0.7.4):
+and no library change, so the study runs on the published ibnr 0.7.4; the library source
+the runner was written and smoke-tested against is identical to the tag `v0.7.4`, which
+`git diff v0.7.4 HEAD -- src/` shows, while the PyPI wheel itself was not installed here):
 
 | companion choice | ibnr setting |
 |---|---|
