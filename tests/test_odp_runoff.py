@@ -1023,6 +1023,9 @@ def test_a_drawn_run_counts_the_tail_fallbacks():
 # -- 5. chainladder-python on shared random numbers ---------------------------------
 
 
+LEVERAGE_ONE_TOLERANCE = 1e-9
+
+
 @pytest.fixture
 def chainladder_hat_zero_at_leverage_one(monkeypatch):
     """Give chainladder-python's hat adjustment a defined value where it has none.
@@ -1042,6 +1045,13 @@ def chainladder_hat_zero_at_leverage_one(monkeypatch):
     Filled with zero here, so chainladder drops the cell, as ibnr does (a
     leverage-one cell has no residual to resample). Measured: filled with 5
     instead, the genins draw-for-draw tests fail as they did on that runner.
+
+    A second route to the same failure: ``1 - hat`` at those cells is exactly
+    zero on one BLAS and about 1e-16 on another (it is 6.7e-16 on raa with
+    ``n_periods=5, drop_high=True`` even on Windows), and ``!= 0`` then lets
+    the division run. So the condition is also tightened to ``abs(1 - hat) >
+    1e-9``. Measured by making the corner 1e-16 instead of 0: without the
+    tightening the genins tests fail, with it they pass.
     """
     pytest.importorskip("chainladder")
     from chainladder.adjustments import bootstrap
@@ -1052,6 +1062,10 @@ def chainladder_hat_zero_at_leverage_one(monkeypatch):
     def zero_filled(a, b, *, where=True, out=None, **kwargs):
         if out is None and where is not True:
             out = np.zeros(np.broadcast(a, b).shape)
+            # 1 - hat is exactly zero or a few ULP off it depending on the
+            # BLAS, and a few ULP gives a hat factor near 1e8 that keeps a
+            # residual of -1e-12 in the pool, so call anything that close zero.
+            where = np.asarray(where) & (np.abs(b) > LEVERAGE_ONE_TOLERANCE)
         return divide(a, b, where=where, out=out, **kwargs)
 
     def get_hat(self, X, exp_incr_triangle):
