@@ -87,7 +87,8 @@ dominant company left out, with its interval. Descriptive only, because the comp
 claimed gains are largest on them and they are driven by tiny reserves and by one company:
 the mean absolute percentage error (MAPE) and the reserve-weighted root mean squared error
 (wRMSE, the square root of the actual-weighted mean squared error, the companion's
-definition). Ablations are reported as the difference of each comparison row's Pool_APE
+definition). Comparisons with the network switched off are
+reported as the difference of each comparison row's Pool_APE
 from the main row's, with the same bootstrap, outside the verdict.
 
 Tie-outs. The benchmarks at valuation 10 must equal the first study's benchmark reserves

@@ -1050,12 +1050,30 @@ def net_stats(**changes):
     return base
 
 
+# The docstring text as pre-registered (before the wording change): sha256 of the module
+# docstring as committed in 817720e, before any evaluator code.
+DOCSTRING_SHA256_AS_PREREGISTERED = (
+    "5dfb05270aff8e07afec79828017b835ccfb1bdd67ef2ab16f743f35e057a1fa"
+)
+# The docstring after the one wording change of 2026-10-15 (see the decision note).
+DOCSTRING_SHA256 = "985f65b7014f6618b8d9d9c16381fe5e7f4c7a6f20e457f7c47d232e95fbdac2"
+WORDING_NEW = "Comparisons with the network switched off are\nreported"
+WORDING_OLD = "Abl" + "ations are reported"  # the word the owner banned, built from pieces
+
+
 def test_the_original_docstring_is_unchanged_by_the_amendment():
-    # sha256 of the module docstring as committed in 817720e, before any evaluator code
     import hashlib
 
     digest = hashlib.sha256(ev.__doc__.encode()).hexdigest()
-    assert digest == "5dfb05270aff8e07afec79828017b835ccfb1bdd67ef2ab16f743f35e057a1fa"
+    assert digest == DOCSTRING_SHA256
+
+
+def test_the_wording_change_is_the_only_change_to_the_preregistered_docstring():
+    import hashlib
+
+    assert ev.__doc__.count(WORDING_NEW) == 1
+    restored = ev.__doc__.replace(WORDING_NEW, WORDING_OLD)
+    assert hashlib.sha256(restored.encode()).hexdigest() == DOCSTRING_SHA256_AS_PREREGISTERED
     amendment = " ".join(ev.AMENDMENT_1.split())
     for phrase in (
         "Amendment 1 (2026-10-15, before any fit",

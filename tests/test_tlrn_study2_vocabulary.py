@@ -5,10 +5,10 @@ of a model off to see what it did) and, earlier, a list of jargon words. This ch
 files of the second study: its evaluator, its runner, its tests, its how-to, the decision
 note, the findings written for it and the source of notebook 05.
 
-Two things are left out on purpose. This file is not scanned, because it has to name the
-words. And the evaluator's module docstring is skipped: its text is pinned by a sha256 in
-``tests/test_tlrn_study2_eval.py`` (it proves the pre-registration was not edited after the
-fact), so it keeps the one word it was committed with.
+One thing is left out on purpose: this file is not scanned, because it has to name the
+words. The evaluator's module docstring is scanned like the rest: its one use of the banned
+word was replaced before any fit existed (a wording-only change, proved by a test in
+``tests/test_tlrn_study2_eval.py``).
 
 The words are built from pieces so that this file does not contain them.
 """
@@ -87,8 +87,6 @@ def test_the_study_files_do_not_use_banned_words(path):
     if not file.exists():
         pytest.skip(f"{path} is not part of this checkout")
     text = file.read_text(encoding="utf-8")
-    if path.endswith(".py"):
-        text = without_module_docstring(text)
     assert hits(text) == [], f"{path} uses a banned word"
 
 
@@ -98,12 +96,12 @@ def test_notebook_05_source_does_not_use_banned_words():
     assert hits(text) == []
 
 
-def test_the_check_itself_finds_each_word_and_skips_only_the_module_docstring():
+def test_the_check_itself_finds_each_word_and_can_blank_a_module_docstring():
     word = STEM + "ion"
     assert hits(f"the {word} row") and hits("a seed" + " noise problem")
     assert hits("the " + "pa" + "nel here") and not hits("the cabinet is fine")
     source = f'"""the {word} is pinned."""\nx = 1  # {word}\n'
     assert hits(without_module_docstring(source)) == ["line 2: x = 1  # " + word]
-    # the evaluator's pinned docstring is the one place the word survives
+    # the evaluator's pinned docstring no longer holds the word
     ev_source = (REPO / "scripts/tlrn_study2_eval.py").read_text(encoding="utf-8")
-    assert hits(ev_source) and hits(without_module_docstring(ev_source)) == []
+    assert hits(ev_source) == []

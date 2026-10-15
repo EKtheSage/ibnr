@@ -547,9 +547,20 @@ Ethan has banned one word family. Amendment 1 above, the evaluator's `AMENDMENT_
 constant, the tables the evaluator writes and its tests used one of those words for the row
 with the network switched off. They now say "network-off row" or "comparison row", and the
 file that carried the word in its name is now `<cohort>_comparison_rows.csv`. No rule changed. The
-evaluator's original module docstring is pinned by its sha256 and was not edited, so it
-still contains one use of the banned word; the test that looks for the word skips that one
-text.
+evaluator's original module docstring is pinned by its sha256; it held one use of the
+banned word, which the Wording note below replaced.
+
+## Wording note (2026-10-15)
+
+Before any fit of this study existed, with Ethan's approval, one use of the banned word in
+the evaluator's pinned module docstring was replaced: the sentence that began with that
+word about the comparison rows now begins "Comparisons with the network switched off are
+reported" (with a line break after "are", to keep the line short). The change is wording only and no rule changed. The docstring's sha256 as
+pre-registered was `5dfb05270aff8e07afec79828017b835ccfb1bdd67ef2ab16f743f35e057a1fa`;
+after the change it is `985f65b7014f6618b8d9d9c16381fe5e7f4c7a6f20e457f7c47d232e95fbdac2`.
+The test `test_the_wording_change_is_the_only_change_to_the_preregistered_docstring` proves
+nothing else changed: it applies the inverse substitution to the new text and requires the
+old sha256. The vocabulary test now scans that docstring too.
 
 
 [^request]: Ethan's instruction in the 2026-10-15 working session
