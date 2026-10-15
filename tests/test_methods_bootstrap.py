@@ -146,7 +146,9 @@ def test_central_is_the_point_method_for_the_same_options(method):
     result = boot(method=method, **METHODS[method], **options)
     point = getattr(methods, method)(RAA, **METHODS[method], **options)
     for name in methods.TABLES:
-        assert getattr(result.central, name).equals(getattr(point, name)), name
+        central, expected = getattr(result.central, name), getattr(point, name)
+        # cells and coefficients are None for every method but tweedie_glm
+        assert (central is None and expected is None) or central.equals(expected), name
     origins = result.origins
     assert origins["central_ultimate"].equals(point.origins["ultimate"])
     assert origins["central_ibnr"].equals(point.origins["ibnr"])
