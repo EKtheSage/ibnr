@@ -90,7 +90,10 @@ read-only review of the repository reported it and this note did not repeat the 
   ladder: a difference of +0.19 points with a 90% interval from -1.02 to +0.93, and 29.1% of
   the resamples favour the model. So its own rolling comparison does not favour the model.
 * **Verified.** The committed notebook source is identical across two stored runs, and they
-  report 5.04% and 4.97%, so run-to-run noise of about that size exists.
+  report 5.04% and 4.97%. That change of the headline between two runs of the same source
+  may reflect a precision or matrix-multiplication setting or run-to-run variation; git
+  cannot say which. Nothing is claimed here about how either run was made beyond what git
+  and the published tables show.
 
 # What is not known
 

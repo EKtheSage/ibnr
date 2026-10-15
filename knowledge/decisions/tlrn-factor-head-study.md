@@ -1,7 +1,7 @@
 ---
 type: Decision
 title: The second tlrn study, on the companion's factor-head model
-description: "How ibnr tests whether the companion study's newest model (the factor head with line and lag attention) beats the chain ladder and the multivariate chain ladder: ten draws of two rows on three cohorts, four valuation dates and a verdict rule, all fixed before any result exists (Ethan, 2026-10-15)."
+description: "How ibnr tests whether the companion study's newest model (the factor head with line and lag attention) beats the chain ladder and the multivariate chain ladder: ten draws of two rows on three cohorts, four valuation dates and a verdict rule, all fixed before any result exists (Ethan, 2026-10-15). Amendment 1, made before any fit, adds the smallest difference the primary verdict can detect, a paired question on whether the network adds value, and cohort C first."
 tags: [tlrn, evaluation, preregistration, colab, companion-study, decision]
 status: draft
 generated: { by: claude-code/claude-sonnet-5-5, at: 2026-10-15T15:00:00Z }
@@ -83,9 +83,10 @@ out from the others.
   more: its line and lag embeddings are 1-based, so each has one extra row of 32 (5 rows
   for 4 lines, 11 for 10 lags). Its random streams differ too, so ibnr trains the same
   procedure, not the same numbers.
-* **Verified, about run-to-run noise.** The committed notebook source is identical across
-  its versions, and two stored runs of it report a Pool_APE of 5.04% and 4.97%, so
-  run-to-run noise of about that size exists.
+* **Verified, about the two stored runs.** The committed notebook source is identical across its
+  versions, and two stored runs of it report a Pool_APE of 5.04% and 4.97%. That change may
+  reflect a precision or matrix-multiplication setting or run-to-run variation; git cannot
+  say which.
 * **From the earlier review, about the history.** The design moved from the accident-year
   model (5.55%, worse than the multivariate chain ladder) to this one after results were
   visible, and its hyperparameters were chosen with the test data visible. This is why the
@@ -147,7 +148,8 @@ are 6, 7, 8 and 10 (10 is the last known diagonal, 2007-12-31 on cohorts A and B
   as in the first study.
 * **Cohort A.** Notebook 04's: 93 companies, 243 pairs, 82 scored (selection cutoff 5).
 * **Cohort B.** The companion's: 84 companies, 212 pairs, all scored, inside A.
-* **Cohort C.** New, and the only cohort that can support an out-of-sample claim. Accident
+* **Cohort C.** New, and out-of-sample in accident years (not tuned on as far as we know,
+  assumed, not known; see Amendment 1). Accident
   years 1988 to 1997, the same four lines, the companion's selection rule with the cutoff
   at the last known diagonal (10), valuation 1997-12-31. It is built from the same
   cas-schedule-p publish (20260613_041006), which carries those accident years as complete
@@ -156,7 +158,8 @@ are 6, 7, 8 and 10 (10 is the last known diagonal, 2007-12-31 on cohorts A and B
   and 232 pairs (83 companies, all scored; pairs hash `4a613cc4cb5f0f94`), and company 1767
   holds the largest reserve here too. The cohort is not independent of A and B in its
   companies: 67 of its 83 companies also appear in A and 60 in B (155 of the 232 pairs are
-  also B's pairs). It is independent in accident years and calendar time.
+  also B's pairs). It is independent in accident years only: its outcomes sit in statement
+  years 1998 to 2006, so it overlaps A and B in calendar time too.
 * **Cost.** 10 draws x 2 rows x 3 cohorts is 60 fits (40 on cohorts A and B alone). A fit
   trains 20 members at each of 4 valuation dates. The first study measured about 250 s on
   a Blackwell GPU (Colab G4), about 460 s on an A100 and about 3,200 s on a T4 for the
@@ -208,7 +211,7 @@ cohorts counts less than it reads.
 with the A and B test data in view. A verdict on A or B is therefore labelled **confirmatory
 of a fixed specification, not out-of-sample**: it says whether that specification, run
 many times, beats the benchmarks on the data it was tuned on. The verdict on C is the only
-out-of-sample claim, with two caveats that go beside it: C is the older accident-year
+claim out-of-sample in accident years, with two caveats that go beside it: C is the older accident-year
 window, and it shares most of its companies with A and B.
 
 # Reported, not in the verdict (fixed in advance)
@@ -226,8 +229,8 @@ study's accident-year rows when their fits exist.
 
 # What this cannot show
 
-The companion's design was tuned on A and B, so only C is a test the specification could
-fail for a reason it was not tuned against, and C overlaps A and B in companies. The
+The companion's design was tuned on A and B. Cohort C is not tuned on as far as we know
+(assumed, not known), and it overlaps A and B in companies and calendar time. The
 bootstrap resamples companies, so it measures company-to-company sampling and says nothing
 about other years beyond what C adds. Ten draws sample training randomness thinly. The
 model blends the multivariate chain ladder into every member (alpha is fitted), so it is
@@ -268,7 +271,11 @@ interval's upper end. In those runs that distance was 1.3 to 6.1 points (against
 until it is run, and its rolling statistic (condition (ii)) may be narrower or wider, so
 these figures are the best prior, not a prediction. They do show the scale: the primary
 verdict on a single cohort can detect a gain of roughly one and a half to six points of
-Pool_APE and not much less.
+Pool_APE and not much less. Because `effective` needs both benchmarks cleared, the binding
+distance is the one against `mack`: for the primary verdict the figure to remember is about
+three points or more. The first study's result files were local to that run and are not
+committed to the repository, so the intervals above are quoted from them and cannot be
+followed from here.
 
 A gain of about half a point, which is the size of the companion's headline gain over the
 multivariate chain ladder (4.97% against 5.41%), cannot be detected at that precision.
