@@ -139,40 +139,6 @@ the other 40 are empty or have holes where chainladder dropped a zero), and
 the gallery `mack` entry's `cdr_distribution` and `predict` draws on raa and
 GenIns: 9,381 hashed answers and 330 refusals, all identical.
 
-## 0.7.4 - 2026-10-12
-
-A patch release over the optional JAX training backend for `tlrn` below. Nothing
-existing changes: the default backend is still torch, and `ibnr[jax]` is a new extra.
-Nothing that can break existing code.
-
-
-### tlrn trains on JAX, for a TPU or a GPU
-
-`TLRN.fit` (and `gallery.fit("tlrn", ...)`) takes `backend="torch"` (the default,
-unchanged) or `backend="jax"`. The JAX backend trains every member of every valuation
-date at once, as one compiled program (`vmap` over valuation dates and members,
-`lax.scan` over epochs and batches), which is what a Colab TPU or a GPU is fast at. It
-replaces the training only: each member starts from the weights torch would give it and
-sees the same batches and training cutoffs, the result is the same torch modules and
-history records, and the selection, point, calibration and `predict` run on torch as
-before. With dropout off the two backends give the same members to float32 rounding
-(checked epoch by epoch on the published model and on the accident-year variant with
-its retrained valuation dates); with dropout on they draw different masks. On a CPU the
-torch backend is faster; the TPU speed is not measured yet.
-
-* New optional extra `ibnr[jax]` (`jax>=0.7`, plus torch, which everything after
-  training still uses). `ibnr.gallery` and the entry import without it.
-* `backend="jax"` refuses `processes > 1` (it trains in one process) and
-  `cutoff_sampling="per_example"` (which the torch path also cannot train, but only
-  says so once training has started). Without jax installed it says to install
-  `ibnr[jax]` before any feature is built, not after.
-* `scripts/tlrn_colab.py` runs notebook 04's two tlrn fits on the JAX backend and saves
-  each fitted entry as it finishes, so a Colab disconnect loses at most one fit. Each
-  entry is saved with a record of the settings it was fitted with, and a rerun reuses a
-  saved entry only when the settings match: a rerun with another `--members` or
-  `--config` stops and names what differs, rather than keeping the old fits under the
-  new run's manifest. `docs/tlrn-on-colab.md` is the how-to.
-
 ### The full run-off ODP bootstrap: `methods.odp_bootstrap`
 
 England and Verrall's over-dispersed Poisson residual bootstrap of the whole
@@ -313,6 +279,40 @@ out, or a leverage the hat adjustment cannot use), `not_identified` (no more
 cells than the model's parameters), `empty_residual_pool` and
 `result_not_finite`. The one-year CDR route's `degenerate_fit` and
 `not_identified` messages are worded more plainly; their codes are unchanged.
+
+## 0.7.4 - 2026-10-12
+
+A patch release over the optional JAX training backend for `tlrn` below. Nothing
+existing changes: the default backend is still torch, and `ibnr[jax]` is a new extra.
+Nothing that can break existing code.
+
+
+### tlrn trains on JAX, for a TPU or a GPU
+
+`TLRN.fit` (and `gallery.fit("tlrn", ...)`) takes `backend="torch"` (the default,
+unchanged) or `backend="jax"`. The JAX backend trains every member of every valuation
+date at once, as one compiled program (`vmap` over valuation dates and members,
+`lax.scan` over epochs and batches), which is what a Colab TPU or a GPU is fast at. It
+replaces the training only: each member starts from the weights torch would give it and
+sees the same batches and training cutoffs, the result is the same torch modules and
+history records, and the selection, point, calibration and `predict` run on torch as
+before. With dropout off the two backends give the same members to float32 rounding
+(checked epoch by epoch on the published model and on the accident-year variant with
+its retrained valuation dates); with dropout on they draw different masks. On a CPU the
+torch backend is faster; the TPU speed is not measured yet.
+
+* New optional extra `ibnr[jax]` (`jax>=0.7`, plus torch, which everything after
+  training still uses). `ibnr.gallery` and the entry import without it.
+* `backend="jax"` refuses `processes > 1` (it trains in one process) and
+  `cutoff_sampling="per_example"` (which the torch path also cannot train, but only
+  says so once training has started). Without jax installed it says to install
+  `ibnr[jax]` before any feature is built, not after.
+* `scripts/tlrn_colab.py` runs notebook 04's two tlrn fits on the JAX backend and saves
+  each fitted entry as it finishes, so a Colab disconnect loses at most one fit. Each
+  entry is saved with a record of the settings it was fitted with, and a rerun reuses a
+  saved entry only when the settings match: a rerun with another `--members` or
+  `--config` stops and names what differs, rather than keeping the old fits under the
+  new run's manifest. `docs/tlrn-on-colab.md` is the how-to.
 
 ### Tails: constant, exponential, inverse power and Weibull
 
