@@ -1,0 +1,181 @@
+cohort A: 93 companies, 243 pairs, 82 scored; selection [668, 414, 330, 243]; hash 08605b3c80513bca; data 13dd7df7e326044a; from cas-schedule-p publish 20260613_041006
+  benchmarks fitted in 79s; refusals {'mack': 0, 'mcl': 0, 'sur': 2}
+cohort A tlrn_8_ay: data hash differs (fits recorded 819b8101576f90be, evaluator built 13dd7df7e326044a); anchors, premiums, lines and companies of every fit equal the cohort's within tolerance, so the fits are scored
+cohort A tlrn_13_ay: data hash differs (fits recorded 819b8101576f90be, evaluator built 13dd7df7e326044a); anchors, premiums, lines and companies of every fit equal the cohort's within tolerance, so the fits are scored
+=== cohort A: 93 companies, 243 pairs, 82 scored; selection [668, 414, 330, 243]; hash 08605b3c80513bca; data 13dd7df7e326044a; from cas-schedule-p publish 20260613_041006
+mack Pool_APE against notebook 04's: 0.0577322331 vs 0.0577322331 (relative 6.66e-16)
+mcl Pool_APE against notebook 04's: 0.0566061422 vs 0.0566061422 (relative 2.27e-13)
+
+--- tlrn_8_ay: 10 draws; dominant company 1767 holds 66.3% of the actual reserve
+Q1 Pool_APE per draw: 5.715% 5.845% 5.537% 5.649% 5.651% 5.917% 5.939% 5.774% 5.861% 5.765%
+   min 5.537%  median 5.769%  max 5.939%  sd 0.129%  | draw average 5.765%
+   excluding the dominant company: median 12.467%, draw average 12.488%
+   benchmarks: mack 5.773%  mcl 5.661%  | excluding dominant: mack 12.885%  mcl 13.236%
+Q2 win rate (draws below the benchmark): mack 50%  mcl 30%  | excluding dominant: mack 100%  mcl 100%
+Q3 paired company comparison of the draw average (negative favours the model):
+             scope benchmark  n  pool_ape_model  pool_ape_benchmark  pool_ape_diff  share_companies_won  median_ape_diff   ci_low  ci_high  share_resamples_favour_model  wilcoxon_p
+including dominant      mack 82         0.05765             0.05773       -0.00008              0.51220         -0.00446 -0.04820  0.06127                        0.4751     0.59979
+including dominant       mcl 82         0.05765             0.05661        0.00104              0.53659         -0.00615 -0.03463  0.02421                        0.4502     0.28661
+including dominant       sur 80         0.05766             0.05938       -0.00173              0.52500         -0.01132 -0.05659  0.05243                        0.5358     0.26377
+excluding dominant      mack 81         0.12488             0.12885       -0.00397              0.51852         -0.00707 -0.05848  0.07533                        0.5076     0.59307
+excluding dominant       mcl 81         0.12488             0.13236       -0.00748              0.54321         -0.00809 -0.04216  0.03464                        0.6402     0.27781
+excluding dominant       sur 79         0.12498             0.13594       -0.01096              0.53165         -0.01612 -0.06811  0.06967                        0.5889     0.25688
+Q4 share of 10,000 company resamples whose model Pool_APE is below the benchmark's:
+             scope benchmark  n  draw_min  draw_median  draw_max  draw_average
+including dominant      mack 82    0.4297       0.4758    0.5498        0.4751
+including dominant       mcl 82    0.3938       0.4492    0.5736        0.4502
+including dominant       sur 80    0.4835       0.5347    0.6029        0.5358
+excluding dominant      mack 81    0.4895       0.5110    0.5292        0.5076
+excluding dominant       mcl 81    0.6038       0.6437    0.6777        0.6402
+excluding dominant       sur 79    0.5689       0.5910    0.6077        0.5889
+Q5a/b variance decomposition (including dominant company). Read draw_noise_share first: the part of a single draw's squared error that averaging draws removes. icc_log_reserve is a company-size effect (reserves differ by orders of magnitude between companies), near 1 by construction, and does not measure draw noise:
+   draw_noise_share 0.00705, draw_noise_share_relative 0.0004732, n_draws 10, n_companies 82, mse_single_draw 2.019e+11, mse_draw_average 2.005e+11, between_draw_variance 1.423e+09, median_cv_across_draws 0.00628, icc_companies 81, icc_log_reserve 1 (company-size effect, not draw noise)
+   excluding dominant: draw_noise_share 0.00206, draw_noise_share_relative 0.0004732, n_draws 10, n_companies 81, mse_single_draw 7.32e+10, mse_draw_average 7.305e+10, between_draw_variance 1.508e+08, median_cv_across_draws 0.006288, icc_companies 80, icc_log_reserve 1 (company-size effect, not draw noise)
+Q5c Pool_APE of the average of k draws:
+ k  subsets  exhaustive     min  median     max  below_mack  below_mcl
+ 1       10        True 0.05537 0.05769 0.05939     0.50000    0.30000
+ 2       45        True 0.05593 0.05769 0.05928     0.51111    0.13333
+ 3      120        True 0.05612 0.05767 0.05905     0.52500    0.05833
+ 4      210        True 0.05638 0.05766 0.05890     0.55714    0.01429
+ 5      252        True 0.05663 0.05765 0.05867     0.57143    0.00000
+ 6      210        True 0.05682 0.05764 0.05850     0.59048    0.00000
+ 7      120        True 0.05705 0.05764 0.05831     0.63333    0.00000
+ 8       45        True 0.05724 0.05764 0.05808     0.66667    0.00000
+ 9       10        True 0.05746 0.05765 0.05790     0.70000    0.00000
+10        1        True 0.05765 0.05765 0.05765     1.00000    0.00000
+Q6 VERDICT: tlrn_8_ay on cohort A is NOT DISTINGUISHABLE (median-draw Pool_APE 5.7693% against mack 5.7732% and mcl 5.6606%; draw-average difference interval vs mack [-4.8202%, +6.1267%], vs mcl [-3.4626%, +2.4210%])
+
+--- tlrn_13_ay: 10 draws; dominant company 1767 holds 66.3% of the actual reserve
+Q1 Pool_APE per draw: 6.089% 6.323% 6.456% 6.187% 6.201% 6.198% 6.057% 6.236% 6.336% 6.276%
+   min 6.057%  median 6.219%  max 6.456%  sd 0.119%  | draw average 6.236%
+   excluding the dominant company: median 10.977%, draw average 10.979%
+   benchmarks: mack 5.773%  mcl 5.661%  | excluding dominant: mack 12.885%  mcl 13.236%
+Q2 win rate (draws below the benchmark): mack 0%  mcl 0%  | excluding dominant: mack 100%  mcl 100%
+Q3 paired company comparison of the draw average (negative favours the model):
+             scope benchmark  n  pool_ape_model  pool_ape_benchmark  pool_ape_diff  share_companies_won  median_ape_diff   ci_low  ci_high  share_resamples_favour_model  wilcoxon_p
+including dominant      mack 82         0.06236             0.05773        0.00463              0.57317         -0.01791 -0.05658  0.03624                        0.4040     0.25064
+including dominant       mcl 82         0.06236             0.05661        0.00575              0.57317         -0.01961 -0.05411  0.01856                        0.4027     0.07398
+including dominant       sur 80         0.06237             0.05938        0.00299              0.61250         -0.03034 -0.06694  0.02963                        0.4471     0.06910
+excluding dominant      mack 81         0.10979             0.12885       -0.01906              0.58025         -0.01836 -0.06474  0.05230                        0.6982     0.24390
+excluding dominant       mcl 81         0.10979             0.13236       -0.02257              0.58025         -0.01996 -0.06753  0.01436                        0.8976     0.06808
+excluding dominant       sur 79         0.10988             0.13594       -0.02607              0.62025         -0.03250 -0.07619  0.04687                        0.7608     0.06685
+Q4 share of 10,000 company resamples whose model Pool_APE is below the benchmark's:
+             scope benchmark  n  draw_min  draw_median  draw_max  draw_average
+including dominant      mack 82    0.3711       0.4079    0.4329        0.4040
+including dominant       mcl 82    0.3726       0.4054    0.4324        0.4027
+including dominant       sur 80    0.4136       0.4515    0.4790        0.4471
+excluding dominant      mack 81    0.6757       0.6986    0.7147        0.6982
+excluding dominant       mcl 81    0.8657       0.8955    0.9237        0.8976
+excluding dominant       sur 79    0.7398       0.7597    0.7799        0.7608
+Q5a/b variance decomposition (including dominant company). Read draw_noise_share first: the part of a single draw's squared error that averaging draws removes. icc_log_reserve is a company-size effect (reserves differ by orders of magnitude between companies), near 1 by construction, and does not measure draw noise:
+   draw_noise_share 0.00191, draw_noise_share_relative 0.0008001, n_draws 10, n_companies 82, mse_single_draw 4.031e+11, mse_draw_average 4.024e+11, between_draw_variance 7.699e+08, median_cv_across_draws 0.007145, icc_companies 81, icc_log_reserve 1 (company-size effect, not draw noise)
+   excluding dominant: draw_noise_share 0.001306, draw_noise_share_relative 0.0008001, n_draws 10, n_companies 81, mse_single_draw 6.409e+10, mse_draw_average 6.4e+10, between_draw_variance 8.372e+07, median_cv_across_draws 0.007224, icc_companies 80, icc_log_reserve 1 (company-size effect, not draw noise)
+Q5c Pool_APE of the average of k draws:
+ k  subsets  exhaustive     min  median     max  below_mack  below_mcl
+ 1       10        True 0.06057 0.06219 0.06456         0.0        0.0
+ 2       45        True 0.06073 0.06237 0.06396         0.0        0.0
+ 3      120        True 0.06111 0.06237 0.06372         0.0        0.0
+ 4      210        True 0.06133 0.06235 0.06348         0.0        0.0
+ 5      252        True 0.06146 0.06236 0.06326         0.0        0.0
+ 6      210        True 0.06161 0.06237 0.06305         0.0        0.0
+ 7      120        True 0.06178 0.06236 0.06290         0.0        0.0
+ 8       45        True 0.06196 0.06236 0.06277         0.0        0.0
+ 9       10        True 0.06212 0.06238 0.06256         0.0        0.0
+10        1        True 0.06236 0.06236 0.06236         0.0        0.0
+Q6 VERDICT: tlrn_13_ay on cohort A is NOT DISTINGUISHABLE (median-draw Pool_APE 6.2187% against mack 5.7732% and mcl 5.6606%; draw-average difference interval vs mack [-5.6584%, +3.6240%], vs mcl [-5.4113%, +1.8564%])
+(cohort A evaluated in 84s)
+cohort B: 84 companies, 212 pairs, 84 scored; selection [668, 414, 297, 212]; hash de51bae56cca563c; data 2d9ecc777b088fcd; from cas-schedule-p publish 20260613_041006
+  benchmarks fitted in 80s; refusals {'mack': 0, 'mcl': 0, 'sur': 0}
+cohort B tlrn_8_ay: data hash differs (fits recorded bce499efbb6bde4e, evaluator built 2d9ecc777b088fcd); anchors, premiums, lines and companies of every fit equal the cohort's within tolerance, so the fits are scored
+cohort B tlrn_13_ay: data hash differs (fits recorded bce499efbb6bde4e, evaluator built 2d9ecc777b088fcd); anchors, premiums, lines and companies of every fit equal the cohort's within tolerance, so the fits are scored
+=== cohort B: 84 companies, 212 pairs, 84 scored; selection [668, 414, 297, 212]; hash de51bae56cca563c; data 2d9ecc777b088fcd; from cas-schedule-p publish 20260613_041006
+mack reserves against the companion's IBNR_CL: max relative difference 2.84e-15
+mcl reserves against the companion's IBNR_CL_MCL: max relative difference 3.70e-13
+actual reserves against the companion's IBNR_obs: max relative difference 0.00e+00
+tlrn_8_ay: companion's published transformer Pool_APE: 5.5541%; 0% of these draws are below it
+tlrn_13_ay: companion's published transformer Pool_APE: 5.5541%; 30% of these draws are below it
+
+--- tlrn_8_ay: 10 draws; dominant company 1767 holds 67.3% of the actual reserve
+Q1 Pool_APE per draw: 5.814% 5.803% 5.743% 5.837% 5.809% 5.782% 5.688% 5.808% 5.738% 5.763%
+   min 5.688%  median 5.792%  max 5.837%  sd 0.045%  | draw average 5.777%
+   excluding the dominant company: median 11.327%, draw average 11.302%
+   benchmarks: mack 5.481%  mcl 5.410%  sur 5.669%  | excluding dominant: mack 12.308%  mcl 12.806%  sur 13.102%
+Q2 win rate (draws below the benchmark): mack 0%  mcl 0%  sur 0%  | excluding dominant: mack 100%  mcl 100%  sur 100%
+Q3 paired company comparison of the draw average (negative favours the model):
+             scope benchmark  n  pool_ape_model  pool_ape_benchmark  pool_ape_diff  share_companies_won  median_ape_diff   ci_low  ci_high  share_resamples_favour_model  wilcoxon_p
+including dominant      mack 84         0.05777             0.05481        0.00296              0.54762         -0.01187 -0.05153  0.05274                        0.3954     0.27065
+including dominant       mcl 84         0.05777             0.05410        0.00367              0.54762         -0.01305 -0.03784  0.01617                        0.3920     0.06484
+including dominant       sur 84         0.05777             0.05669        0.00108              0.57143         -0.01830 -0.06004  0.04504                        0.4571     0.08516
+excluding dominant      mack 83         0.11302             0.12308       -0.01007              0.55422         -0.01755 -0.06044  0.06735                        0.5614     0.26211
+excluding dominant       mcl 83         0.11302             0.12806       -0.01504              0.55422         -0.01368 -0.04491  0.02119                        0.7965     0.06016
+excluding dominant       sur 83         0.11302             0.13102       -0.01800              0.57831         -0.01842 -0.07164  0.06078                        0.6545     0.08126
+Q4 share of 10,000 company resamples whose model Pool_APE is below the benchmark's:
+             scope benchmark  n  draw_min  draw_median  draw_max  draw_average
+including dominant      mack 84    0.3802       0.3972    0.4169        0.3954
+including dominant       mcl 84    0.3760       0.3892    0.4173        0.3920
+including dominant       sur 84    0.4425       0.4548    0.4776        0.4571
+excluding dominant      mack 83    0.5420       0.5603    0.5759        0.5614
+excluding dominant       mcl 83    0.7611       0.7990    0.8091        0.7965
+excluding dominant       sur 83    0.6311       0.6557    0.6659        0.6545
+Q5a/b variance decomposition (including dominant company). Read draw_noise_share first: the part of a single draw's squared error that averaging draws removes. icc_log_reserve is a company-size effect (reserves differ by orders of magnitude between companies), near 1 by construction, and does not measure draw noise:
+   draw_noise_share 0.0008875, draw_noise_share_relative 0.00085, n_draws 10, n_companies 84, mse_single_draw 2.734e+11, mse_draw_average 2.731e+11, between_draw_variance 2.426e+08, median_cv_across_draws 0.006154, icc_companies 83, icc_log_reserve 1 (company-size effect, not draw noise)
+   excluding dominant: draw_noise_share 0.00172, draw_noise_share_relative 0.00085, n_draws 10, n_companies 83, mse_single_draw 5.265e+10, mse_draw_average 5.256e+10, between_draw_variance 9.056e+07, median_cv_across_draws 0.006163, icc_companies 82, icc_log_reserve 1 (company-size effect, not draw noise)
+Q5c Pool_APE of the average of k draws:
+ k  subsets  exhaustive     min  median     max  below_mack  below_mcl  below_sur
+ 1       10        True 0.05688 0.05792 0.05837         0.0        0.0        0.0
+ 2       45        True 0.05713 0.05778 0.05826         0.0        0.0        0.0
+ 3      120        True 0.05722 0.05779 0.05820         0.0        0.0        0.0
+ 4      210        True 0.05732 0.05778 0.05816         0.0        0.0        0.0
+ 5      252        True 0.05742 0.05778 0.05813         0.0        0.0        0.0
+ 6      210        True 0.05752 0.05777 0.05808         0.0        0.0        0.0
+ 7      120        True 0.05760 0.05777 0.05801         0.0        0.0        0.0
+ 8       45        True 0.05766 0.05778 0.05794         0.0        0.0        0.0
+ 9       10        True 0.05771 0.05776 0.05787         0.0        0.0        0.0
+10        1        True 0.05777 0.05777 0.05777         0.0        0.0        0.0
+Q6 VERDICT: tlrn_8_ay on cohort B is NOT DISTINGUISHABLE (median-draw Pool_APE 5.7923% against mack 5.4810% and mcl 5.4098%; draw-average difference interval vs mack [-5.1530%, +5.2735%], vs mcl [-3.7844%, +1.6174%])
+
+--- tlrn_13_ay: 10 draws; dominant company 1767 holds 67.3% of the actual reserve
+Q1 Pool_APE per draw: 5.658% 5.663% 5.613% 5.797% 5.502% 5.737% 5.619% 5.648% 5.512% 5.498%
+   min 5.498%  median 5.633%  max 5.797%  sd 0.100%  | draw average 5.622%
+   excluding the dominant company: median 9.914%, draw average 9.903%
+   benchmarks: mack 5.481%  mcl 5.410%  sur 5.669%  | excluding dominant: mack 12.308%  mcl 12.806%  sur 13.102%
+Q2 win rate (draws below the benchmark): mack 0%  mcl 0%  sur 80%  | excluding dominant: mack 100%  mcl 100%  sur 100%
+Q3 paired company comparison of the draw average (negative favours the model):
+             scope benchmark  n  pool_ape_model  pool_ape_benchmark  pool_ape_diff  share_companies_won  median_ape_diff   ci_low  ci_high  share_resamples_favour_model  wilcoxon_p
+including dominant      mack 84         0.05622             0.05481        0.00141              0.58333         -0.02061 -0.06297  0.03402                        0.4636     0.07590
+including dominant       mcl 84         0.05622             0.05410        0.00213              0.63095         -0.03016 -0.06284  0.01524                        0.4730     0.00679
+including dominant       sur 84         0.05622             0.05669       -0.00047              0.63095         -0.03208 -0.07385  0.02815                        0.5198     0.00957
+excluding dominant      mack 83         0.09903             0.12308       -0.02405              0.59036         -0.02213 -0.07028  0.05097                        0.7379     0.07292
+excluding dominant       mcl 83         0.09903             0.12806       -0.02903              0.63855         -0.03067 -0.07991  0.00982                        0.9331     0.00602
+excluding dominant       sur 83         0.09903             0.13102       -0.03199              0.63855         -0.03209 -0.08468  0.04503                        0.8010     0.00904
+Q4 share of 10,000 company resamples whose model Pool_APE is below the benchmark's:
+             scope benchmark  n  draw_min  draw_median  draw_max  draw_average
+including dominant      mack 84    0.4384       0.4645    0.4912        0.4636
+including dominant       mcl 84    0.4370       0.4720    0.5049        0.4730
+including dominant       sur 84    0.4874       0.5178    0.5465        0.5198
+excluding dominant      mack 83    0.7168       0.7332    0.7580        0.7379
+excluding dominant       mcl 83    0.9191       0.9300    0.9501        0.9331
+excluding dominant       sur 83    0.7841       0.7970    0.8176        0.8010
+Q5a/b variance decomposition (including dominant company). Read draw_noise_share first: the part of a single draw's squared error that averaging draws removes. icc_log_reserve is a company-size effect (reserves differ by orders of magnitude between companies), near 1 by construction, and does not measure draw noise:
+   draw_noise_share 0.003111, draw_noise_share_relative 0.0004763, n_draws 10, n_companies 84, mse_single_draw 3.441e+11, mse_draw_average 3.431e+11, between_draw_variance 1.071e+09, median_cv_across_draws 0.006603, icc_companies 83, icc_log_reserve 1 (company-size effect, not draw noise)
+   excluding dominant: draw_noise_share 0.00286, draw_noise_share_relative 0.0004763, n_draws 10, n_companies 83, mse_single_draw 5.362e+10, mse_draw_average 5.347e+10, between_draw_variance 1.534e+08, median_cv_across_draws 0.006637, icc_companies 82, icc_log_reserve 1 (company-size effect, not draw noise)
+Q5c Pool_APE of the average of k draws:
+ k  subsets  exhaustive     min  median     max  below_mack  below_mcl  below_sur
+ 1       10        True 0.05498 0.05633 0.05797         0.0        0.0    0.80000
+ 2       45        True 0.05500 0.05625 0.05766         0.0        0.0    0.75556
+ 3      120        True 0.05504 0.05626 0.05731         0.0        0.0    0.80833
+ 4      210        True 0.05531 0.05625 0.05713         0.0        0.0    0.86667
+ 5      252        True 0.05548 0.05623 0.05700         0.0        0.0    0.94048
+ 6      210        True 0.05563 0.05622 0.05686         0.0        0.0    0.97619
+ 7      120        True 0.05576 0.05622 0.05674         0.0        0.0    0.99167
+ 8       45        True 0.05586 0.05622 0.05653         0.0        0.0    1.00000
+ 9       10        True 0.05603 0.05622 0.05637         0.0        0.0    1.00000
+10        1        True 0.05622 0.05622 0.05622         0.0        0.0    1.00000
+Q6 VERDICT: tlrn_13_ay on cohort B is NOT DISTINGUISHABLE (median-draw Pool_APE 5.6331% against mack 5.4810% and mcl 5.4098%; draw-average difference interval vs mack [-6.2969%, +3.4016%], vs mcl [-6.2840%, +1.5238%])
+(cohort B evaluated in 83s)
+
+VERDICTS
+  A/tlrn_8_ay: not distinguishable (10 draws)
+  A/tlrn_13_ay: not distinguishable (10 draws)
+  B/tlrn_8_ay: not distinguishable (10 draws)
+  B/tlrn_13_ay: not distinguishable (10 draws)

@@ -86,6 +86,8 @@ ranking of GPUs and TPUs: the JAX versions differ (0.11.1 against 0.7.2) and the
 is unknown. The fits of the published protocol (40 members of tlrn_8 and tlrn_13) are the
 ones that ran on the TPU, in 618 s each.
 
+Later GPU speeds, from the 40 fits of the robustness study ([results](/findings/tlrn-robustness-study-results.md)): 247 to 277 s per fit on an RTX PRO 6000 Blackwell, about 460 s on an A100 and 3,207 s on a T4.
+
 # Lessons from getting it to run
 
 * A TPU can be opened by one process only. The notebook's first cell holds it, so the

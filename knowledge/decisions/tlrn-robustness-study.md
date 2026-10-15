@@ -42,6 +42,8 @@ The study is fixed here, before any real fit exists. The runner is
 how-to is `docs/tlrn-study.md`. If a rule below turns out to be wrong, change it in a new
 commit that says so, not silently.
 
+*Run on 2026-10-14 to 15; the results are in [the study results](/findings/tlrn-robustness-study-results.md). The rules above were not changed.*
+
 # What is run
 
 * **Rows.** `tlrn_8_ay` (paid only) and `tlrn_13_ay` (paid, incurred and case reserve),
