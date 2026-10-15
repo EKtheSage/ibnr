@@ -114,7 +114,8 @@ NOT_PROMISED = {
         "--study factor_head, the factor-head model): it trains them many times with the JAX "
         "backend on a Colab GPU or TPU. It needs jax and torch (the [jax] extra), which the "
         "image does not install, and it imports tlrn_colab.py beside it. The second study "
-        "added no script, so this decision covers it."
+        "added no runner of its own, so this decision covers its runs too; its evaluator, "
+        "scripts/tlrn_study2_eval.py, is a separate script with its own entry below."
     ),
     "tlrn_study_eval.py": (
         "scores the saved fits of the tlrn robustness study. It reads the folder the Colab "
