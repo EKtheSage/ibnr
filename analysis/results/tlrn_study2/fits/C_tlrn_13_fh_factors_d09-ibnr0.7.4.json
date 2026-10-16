@@ -1,0 +1,87 @@
+{
+  "settings": {
+    "study": 2,
+    "cohort": "C",
+    "row": "tlrn_13_fh_factors",
+    "draw": 9,
+    "seed": 900038,
+    "smoke": false,
+    "config": {
+      "d_model": 32,
+      "n_heads": 2,
+      "n_layers": 1,
+      "dropout": 0.3,
+      "eps": 0.5,
+      "init_step": 0.57,
+      "cross_line": true,
+      "factors_only": true,
+      "cl_anchor": false,
+      "anchor_width": 0.1,
+      "tail_policy": "observed_cl",
+      "head": "ldf",
+      "attention": null,
+      "mask": "unwritten_lines",
+      "member": "mcl_blend",
+      "scoring": "reached_cells",
+      "lr_cap": 5.0,
+      "w_pe": 0.5,
+      "w_mse": 0.1,
+      "mse_scale": 0.005,
+      "lr": 0.003,
+      "lr_phi": 0.03,
+      "weight_decay": 0.0,
+      "warmup": 20,
+      "batch_unit": "example",
+      "batch_size": 64,
+      "max_epochs": 3000,
+      "min_epochs": 500,
+      "check_every": 5,
+      "patience": 600,
+      "grad_clip": 1.0,
+      "min_cutoff": 2,
+      "val_diagonals": 2,
+      "cutoff_sampling": "per_epoch",
+      "ensemble_size": 20,
+      "keep": null,
+      "calibration": "retrain_per_valuation",
+      "calibration_cutoffs": [
+        6,
+        7,
+        8
+      ],
+      "calibration_horizons": [
+        2,
+        3,
+        4
+      ],
+      "n_strata": 4,
+      "min_per_stratum": 40,
+      "n_draws": 4000
+    },
+    "roles": {
+      "incurred_field": "incurred_loss",
+      "case_field": "case_reserve"
+    },
+    "backend": "jax",
+    "as_of": "1997-12-31",
+    "loss_field": "paid_loss",
+    "publish_id": "20260613_041006",
+    "cohort_hash": "4a613cc4cb5f0f94",
+    "data_hash": "e52d50e002d50e16",
+    "study_name": "factor_head"
+  },
+  "run": {
+    "ibnr": "0.7.4",
+    "jax": "0.11.1",
+    "jax_backend": "gpu",
+    "devices": [
+      "cuda:0"
+    ],
+    "device_kind": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "fit_seconds": 8.5,
+    "finished_at": "2026-10-15T23:09:41+00:00",
+    "cohort_source": "cas-schedule-p publish 20260613_041006",
+    "python": "3.13.15",
+    "platform": "Linux-6.6.122+-x86_64-with-glibc2.39"
+  }
+}
