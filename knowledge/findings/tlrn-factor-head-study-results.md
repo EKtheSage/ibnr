@@ -208,6 +208,68 @@ Google Drive and not in the repository. The evaluator accepts these Colab fits a
 recorded cell hash text differs from a laptop build, because it checks the anchors,
 premiums, lines and companies instead (the change in PR 177).[^pr177]
 
+# Independent check of cohort C's benchmarks
+
+The benchmark side of cohort C was rebuilt without the evaluator's benchmark function in a
+read-only check on 2026-10-16.
+
+* **Selection.** From the mart's raw fact tables (publish 20260613_041006) the pre-registered
+  rule gives the same counts: 675, 405, 322 and 232 pairs, and 83 companies. All 232 pairs are
+  complete 10-by-10 squares. The data hold 939 cells where cumulative paid decreases (in 203
+  of the 232 pairs).
+* **Chain ladder (`mack`).** A separate volume-weighted chain ladder with no tail, and
+  chainladder-python 0.9.2 `MackChainladder` run on each pair and summed to company reserves,
+  both match ibnr on all 83 companies at valuation 10. The largest relative difference is
+  8.9e-16 (separate code) and 2.2e-15 (chainladder-python). Valuations 6, 7 and 8 match to
+  about 3e-16. The actual reserves equal the evaluator's exactly at all four valuations
+  (largest difference 0.0; total 19,486,048).
+* **Multivariate chain ladder (`mcl`).** The companion's own R code (`fit_mcl_betas` and
+  `fit_mcl_ibnr` from his `Code/01_functions.R`, run unchanged on C's triangles) agrees with
+  ibnr on all 83 companies at valuation 10 (largest relative difference 8.2e-13, median
+  1.2e-14). His code's Pool_APE on C is 0.04969326913082 against ibnr's 0.04969326913083.
+  The R code was not run at valuations 6, 7 and 8, because his function assumes a full
+  square horizon.
+* **Spot check.** Five random companies (seed 20261016: 15393, 1716, 26077, 34606, 833)
+  match the evaluator's rows.
+* **Coincidence.** C's `mcl` value (4.969327%) and the companion's published value for the
+  transformer on B (4.968726%) differ at the fifth digit. Of 60 companies shared by B and C,
+  none has the same `mcl` value in the two benchmark tables.
+
+## What explains the gap between the two benchmarks at valuation 10
+
+The difference (11.947% for `mack`, 4.969% for `mcl`) comes from company 1767 (66.7% of the
+actual reserve), in its private passenger auto line: the chain ladder reserves 12.59 million
+against an actual of 11.56 million (+8.9%), and the cross-line coefficients of `mcl` bring
+that line to 11.82 million (+2.2%).
+
+| Company | Actual | `mack` | `mcl` | Model (mean of 10 draws) |
+|---|---|---|---|---|
+| 1767 | 13,003,982 | 14,533,198 | 13,411,632 | 15,041,474 |
+| 2003 | 1,833,639 | 2,064,730 | 1,833,610 | 1,949,200 |
+| 7080 | 937,814 | 951,036 | 989,437 | 1,072,635 |
+| 388 | 646,335 | 746,802 | 679,436 | 722,164 |
+| 620 | 316,699 | 304,020 | 284,714 | 344,818 |
+
+For company 1767 the absolute errors are 1,529,216 (`mack`), 407,650 (`mcl`) and 2,037,492
+(model).
+
+| Valuation 10 | `mack` | `mcl` | Model |
+|---|---|---|---|
+| Pool_APE, all 83 companies | 11.947% | 4.969% | 16.04% |
+| Pool_APE without company 1767 | 12.323% | 8.650% | 16.79% |
+| Points contributed by company 1767 | 7.85 | 2.09 | 10.46 |
+| Points contributed by the other 82 | 4.10 | 2.88 | 5.59 |
+
+## What this does to the headline
+
+The benchmark side stands: both benchmarks are reproduced by independent code, so the
+comparison does not rest on an error in ibnr's re-implementation. The valuation-10
+comparison is dominated by one company, and the `mcl` figure of 4.97% rises to 8.65%
+without it. The model is nevertheless worse than both benchmarks on cohort C also without
+company 1767 (16.79% against 12.32% and 8.65%). The scripts and outputs of this check are
+scratch files outside the repository and are not committed (`C:\Temp\verifyC` and
+`C:\Temp\study2_report` on the dev laptop).
+
 # Limits
 
 * **C is independent in accident years only.** Its companies and calendar years overlap A
@@ -221,9 +283,13 @@ premiums, lines and companies instead (the change in PR 177).[^pr177]
   the 95% intervals are wide: the valuation-10 interval is 5 to 11 points across, and the
   pooled one 3 to 5 points. They could only show a gain of several points.
 * **The multivariate chain ladder on C is unusually accurate at valuation 10 (4.969%)** while
-  the chain ladder is at 11.947% on the same cells. Neither is tied out to an external table
-  on C, unlike B, where both tie out to the companion's published numbers. Much of the C
-  verdict at valuation 10 rests on how close `mcl` is to the answer there.
+  the chain ladder is at 11.947% on the same cells. Both are now tied to external
+  calculations (see the section above), but `mcl` only at valuation 10: at valuations 6, 7
+  and 8 it is not tied to external code on C. Much of the C verdict at valuation 10 rests on
+  how close `mcl` is to the answer there, and that closeness comes largely from one company.
+* **The model fits themselves were not independently verified.** Only their inputs were
+  checked (anchors, line counts, and that the evaluator's rows equal the saved fits' draw
+  means); the fits were not retrained.
 * **One valuation date per cohort for the verdict.** The pooled-over-dates statistic uses
   four dates, but the three earlier ones are scored with later data in view of the company
   selection, as in the companion's design.
@@ -234,8 +300,7 @@ premiums, lines and companies instead (the change in PR 177).[^pr177]
 # What would settle it
 
 More fresh cohorts and dates (a rolling set of cutoffs, other accident-year windows), a
-size-balanced metric that does not let one company decide, a check of the cohort C
-benchmarks against an independent implementation, and running the companion's own notebook
+size-balanced metric that does not let one company decide, and running the companion's own notebook
 on cohort C so that the comparison does not rest on ibnr's re-implementation of it.
 
 [^decision]: The questions and verdict rules, fixed before any fit

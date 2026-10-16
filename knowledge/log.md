@@ -1,6 +1,7 @@
 # Knowledge Update Log
 
 ## 2026-10-16
+* **Update**: [The results of the second tlrn study](/findings/tlrn-factor-head-study-results.md) gained a section recording an independent check of cohort C's benchmarks (chain ladder against separate code and chainladder-python on all 83 companies, multivariate chain ladder against the companion's R code at valuation 10 only), and its Limits wording on C's benchmarks was changed to match.
 * **Creation**: Recorded [the results of the second tlrn study](/findings/tlrn-factor-head-study-results.md): the companion's factor-head model, ten draws on three cohorts, is not distinguishable from the chain ladder and the multivariate chain ladder on A and B and worse on the fresh cohort C (overall: worse on the fresh cohort); the network adds nothing detectable beyond the pooled factors with the blend, the blend helps on C, and the benchmarks tie out to the companion's published table on B.
 * **Update**: [The second tlrn study's decision note](/decisions/tlrn-factor-head-study.md) gained a dated line saying the study was run on 2026-10-15 to 16 with the results in the finding and the rules untouched.
 
