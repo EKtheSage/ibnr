@@ -604,6 +604,85 @@ def _bounds_exhausted(rules: LinkRules, j: int, step: int, n: int, left: int) ->
     )
 
 
+def position_rules(rules: LinkRules) -> LinkRules:
+    """``rules`` without the rules that pick a link ratio by its size.
+
+    The zero rule, the history window and the explicit and valuation
+    exclusions pick link ratios by where they are; the bounds
+    (``drop_above``/``drop_below``) and the trims (``drop_high``/``drop_low``)
+    pick them by size. The first four run before the last two, so selecting
+    with these rules keeps exactly the ratios the full rules had left when the
+    bounds began. The bootstrap refits every simulated triangle with them.
+    """
+    return LinkRules(
+        history_periods=rules.history_periods,
+        exclude=rules.exclude,
+        exclude_valuations=rules.exclude_valuations,
+        trim_ties=rules.trim_ties,
+        exhausted_exclusions=rules.exhausted_exclusions,
+        zero_cells=rules.zero_cells,
+    )
+
+
+def link_factors_many(
+    previous: np.ndarray, following: np.ndarray, keep: np.ndarray, average: str
+) -> np.ndarray:
+    """Each link's factor for many triangles at once, from the same positions.
+
+    ``previous`` and ``following`` are ``(S, n_w, n_links)``: the cumulatives at
+    the two ends of each pair, one triangle per row of the first axis (a
+    bootstrap draw). ``keep`` is ``(n_w, n_links)``, the pairs to use, the same
+    for every triangle. Returns ``(S, n_links)`` factors, NaN where a link has
+    no usable pair or where the result is not a positive finite number; the
+    caller decides what that means.
+
+    The volume and regression averages add their sums origin by origin, in
+    origin order, as :func:`link_factors` does, so on one triangle they give its
+    factors bit for bit. Every kept pair enters those sums, whatever the sign of
+    its earlier amount (a simulated triangle can have a negative one); a sum of
+    earlier amounts that is not positive gives NaN. The simple and median
+    averages are of ratios, and a ratio from an earlier amount of zero or less
+    is not one, so such a pair is left out of that triangle's average only.
+    """
+    if average not in AVERAGES:
+        _choose("average", average, AVERAGES)
+    n_sims, _, n_links = previous.shape
+    factor = np.full((n_sims, n_links), np.nan)
+    for j in range(n_links):
+        rows = np.flatnonzero(keep[:, j])
+        if not rows.size:
+            continue
+        x = previous[:, rows, j]
+        y = following[:, rows, j]
+        if average in ("volume", "regression"):
+            numerator = np.zeros(n_sims)
+            denominator = np.zeros(n_sims)
+            for r in range(rows.size):
+                # one origin at a time, in origin order: link_factors' order
+                if average == "volume":
+                    numerator += y[:, r]
+                    denominator += x[:, r]
+                else:
+                    numerator += x[:, r] * y[:, r]
+                    denominator += x[:, r] * x[:, r]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                factor[:, j] = np.where(denominator > 0, numerator / denominator, np.nan)
+            continue
+        reducer = np.mean if average == "simple" else np.median
+        usable = x > 0
+        whole = usable.all(axis=1)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = np.ascontiguousarray(y / x)
+        if whole.any():
+            factor[whole, j] = reducer(ratio[whole], axis=1)
+        for s in np.flatnonzero(~whole):
+            if usable[s].any():
+                factor[s, j] = float(reducer(ratio[s, usable[s]]))
+    with np.errstate(invalid="ignore"):
+        factor[~(np.isfinite(factor) & (factor > 0))] = np.nan
+    return factor
+
+
 def link_factors(selection: LinkSelection, average: str) -> tuple[np.ndarray, np.ndarray]:
     """Each link's factor from the ratios ``selection`` uses, and how many there are.
 
