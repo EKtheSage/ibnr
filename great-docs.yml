@@ -102,7 +102,10 @@ reference:
       - methods.benktander
       - methods.cape_cod
       - methods.tweedie_glm
+      - methods.one_year_cdr
       - name: methods.ReserveResult
+        members: true
+      - name: methods.OneYearCDRResult
         members: true
       - name: methods.Refusal
         members: true

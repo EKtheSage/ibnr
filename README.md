@@ -8,7 +8,8 @@ triangle data layer backed by duckdb and polars (via ibis). A companion to
 **Coming from chainladder-python?** `from ibnr import methods`, then
 `methods.chain_ladder(cells)`, `methods.mack(cells)`,
 `methods.bornhuetter_ferguson(...)`, `methods.benktander(...)`,
-`methods.cape_cod(...)` or `methods.tweedie_glm(cells, power=...)`: see [Run a chain
+`methods.cape_cod(...)`, `methods.tweedie_glm(cells, power=...)` or
+`methods.one_year_cdr(cells)`: see [Run a chain
 ladder](#run-a-chain-ladder) and [the lookup table from chainladder-python to
 ibnr](https://github.com/EKtheSage/ibnr/blob/main/docs/coming-from-chainladder.md).
 
@@ -242,6 +243,10 @@ All five link-ratio methods take a tail too:
 carries the tail in its standard errors and also takes `tail_sigma` and
 `tail_std_err`. With a tail, `development` goes on past the last observed age
 and `totals` has the tail factor.
+`methods.one_year_cdr(cells, seed=42)` gives the one-year claims development
+result on Mack's chain ladder: the Merz-Wuthrich standard error beside a
+simulation of next year, with quantiles and every draw
+([details](https://github.com/EKtheSage/ibnr/blob/main/docs/coming-from-chainladder.md#the-one-year-claims-development-result)).
 Coming from chainladder-python,
 [this lookup table](https://github.com/EKtheSage/ibnr/blob/main/docs/coming-from-chainladder.md) maps its classes and
 attributes onto these functions. Import it with `from ibnr import methods`: a
