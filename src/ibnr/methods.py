@@ -2068,7 +2068,6 @@ BOOTSTRAP_PROCESSES = ("gamma", "od_poisson", "none")
 _BOOTSTRAP_QUANTILES = (0.5, 0.75, 0.9, 0.95, 0.99)
 
 
-
 @dataclass(frozen=True)
 class BootstrapResult:
     """What :func:`odp_bootstrap` returns: pyarrow Tables with fixed column types.
