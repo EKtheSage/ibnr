@@ -40,8 +40,9 @@ Kind ``"input"``:
 Kind ``"model"``:
 
 - ``no_link_ratio``: no link ratio is left at an age to estimate a factor from,
-  or the ones left give a factor of 0 (every origin closing at zero), and the
-  options ask to refuse rather than use 1.0.
+  or the ones left give a factor of 0 (every origin closing at zero), or, for a
+  model fitted to the cells, no cell is left at an age to fit, and the options
+  ask to refuse rather than use 1.0.
 - ``exclusions_exhausted``: the trims (``drop_high``/``drop_low``) or the bounds
   (``drop_above``/``drop_below``) would leave fewer link ratios at an age than
   ``preserve`` allows.
