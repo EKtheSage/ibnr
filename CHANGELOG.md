@@ -396,6 +396,7 @@ both zero rules, on raa, GenIns, UKMotor, ABC, MW2014 and every sixth clrd
 paid triangle (135 triangles): 2,835 cases, 1,452 answers and 1,383 refusals,
 identical except for that message in 71 of them. `fit_mack_grid`'s
 comparison covers its ultimates, factors and run-off standard errors.
+
 ### The second tlrn study, on the companion's final model (scripts, tests, notebook and knowledge only)
 
 `scripts/tlrn_study_colab.py --study factor_head` trains the companion study's newest model
