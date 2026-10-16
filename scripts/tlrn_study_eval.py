@@ -498,13 +498,15 @@ def benchmark_reserves(cohort, *, log=print) -> pd.DataFrame:
     # with an OR on every query, which made the fits several times slower for the same cells.
     tri = study.triangle_from_cells(cohort.cells, cohort.pairs)
     e = tri.expr
+    # the cohort's own valuation date: cohort C is valued at 1997-12-31, not 2007-12-31
+    as_of = getattr(cohort, "as_of", tlrn_colab.AS_OF)
     kwargs = dict(
-        as_of=tlrn_colab.AS_OF,
+        as_of=as_of,
         loss_field=tlrn_colab.FIELD,
         premium_field="earned_premium",
         point="native",
     )
-    fit_kwargs = dict(loss_field=tlrn_colab.FIELD, as_of=tlrn_colab.AS_OF)
+    fit_kwargs = dict(loss_field=tlrn_colab.FIELD, as_of=as_of)
     board = list(cohort.board)
     expected_lines = {c: sum(1 for cc, _ in cohort.pairs if cc == c) for c in board}
     parts, refused = [], {b: 0 for b in BENCHMARKS}

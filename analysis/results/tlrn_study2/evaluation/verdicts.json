@@ -1,0 +1,135 @@
+{
+  "smoke": false,
+  "verdicts": {
+    "A": {
+      "verdict": "not distinguishable",
+      "label": "not distinguishable",
+      "reason": "vs mack: valuation 10 [-2.1657%, +2.5779%], pooled [-0.9340%, +2.0711%], valuation 10 without the dominant company +0.0932% [-3.2128%, +3.3891%]; vs mcl: valuation 10 [-5.1431%, +2.1364%], pooled [-1.6669%, +1.3422%], valuation 10 without the dominant company -0.2575% [-7.2369%, +2.7197%]; median-draw valuation-10 Pool_APE 5.1273% against mack 5.7732% and mcl 5.6606%; conditions i_last_below_both no, ii_pooled_below_both no, iii_median_draw_below_both yes, iv_excluding_dominant_not_worse no",
+      "status": "confirmatory of a fixed specification, not out-of-sample",
+      "provisional": false,
+      "missing_draws": [],
+      "n_draws": 10,
+      "scored_companies": 82,
+      "left_out": {},
+      "dominant_company": "1767",
+      "dominant_share": 0.6629655211646549,
+      "sensitivity_verdict": "not distinguishable",
+      "first_study_rows": "read from C:\\Users\\EthanKang\\Projects\\ibnr\\analysis\\results\\tlrn_study\\fits; tlrn_8_ay: 10 draws; tlrn_13_ay: 10 draws",
+      "conditions": {
+        "i_last_below_both": false,
+        "ii_pooled_below_both": false,
+        "iii_median_draw_below_both": true,
+        "iv_excluding_dominant_not_worse": false
+      },
+      "network_question": {
+        "verdict": "not distinguishable",
+        "label": "not distinguishable",
+        "reason": "valuation 10 [-8.3031%, +2.9022%]; rolling [-5.1493%, +0.6781%]; valuation 10 without the dominant company [-10.2767%, +3.8454%]; conditions a_last_below no, b_rolling_below no, c_excluding_not_above yes",
+        "provisional": false,
+        "conditions": {
+          "a_last_below": false,
+          "b_rolling_below": false,
+          "c_excluding_not_above": true
+        }
+      },
+      "blend_question": {
+        "verdict": "not distinguishable",
+        "label": "not distinguishable",
+        "reason": "valuation 10 [-4.1858%, +0.1024%]; rolling [-3.2144%, -0.4468%]; valuation 10 without the dominant company [-4.7952%, -1.3634%]; conditions a_last_below no, b_rolling_below yes, c_excluding_not_above yes",
+        "provisional": false,
+        "conditions": {
+          "a_last_below": false,
+          "b_rolling_below": true,
+          "c_excluding_not_above": true
+        }
+      }
+    },
+    "B": {
+      "verdict": "not distinguishable",
+      "label": "not distinguishable",
+      "reason": "vs mack: valuation 10 [-1.8735%, +3.5050%], pooled [-1.0720%, +2.1289%], valuation 10 without the dominant company +0.6109% [-2.6954%, +4.4065%]; vs mcl: valuation 10 [-4.8581%, +2.8596%], pooled [-1.6887%, +1.4583%], valuation 10 without the dominant company +0.1131% [-7.0214%, +3.5489%]; median-draw valuation-10 Pool_APE 5.0128% against mack 5.4810% and mcl 5.4098%; conditions i_last_below_both no, ii_pooled_below_both no, iii_median_draw_below_both yes, iv_excluding_dominant_not_worse no",
+      "status": "confirmatory of a fixed specification, not out-of-sample",
+      "provisional": false,
+      "missing_draws": [],
+      "n_draws": 10,
+      "scored_companies": 84,
+      "left_out": {},
+      "dominant_company": "1767",
+      "dominant_share": 0.6726052618078442,
+      "sensitivity_verdict": "not distinguishable",
+      "first_study_rows": "read from C:\\Users\\EthanKang\\Projects\\ibnr\\analysis\\results\\tlrn_study\\fits; tlrn_8_ay: 10 draws; tlrn_13_ay: 10 draws",
+      "conditions": {
+        "i_last_below_both": false,
+        "ii_pooled_below_both": false,
+        "iii_median_draw_below_both": true,
+        "iv_excluding_dominant_not_worse": false
+      },
+      "network_question": {
+        "verdict": "not distinguishable",
+        "label": "not distinguishable",
+        "reason": "valuation 10 [-8.5217%, +3.4806%]; rolling [-5.7932%, +0.6233%]; valuation 10 without the dominant company [-10.6151%, +4.3353%]; conditions a_last_below no, b_rolling_below no, c_excluding_not_above yes",
+        "provisional": false,
+        "conditions": {
+          "a_last_below": false,
+          "b_rolling_below": false,
+          "c_excluding_not_above": true
+        }
+      },
+      "blend_question": {
+        "verdict": "not distinguishable",
+        "label": "not distinguishable",
+        "reason": "valuation 10 [-4.7329%, +0.2235%]; rolling [-3.3316%, -0.5088%]; valuation 10 without the dominant company [-5.4460%, -1.1792%]; conditions a_last_below no, b_rolling_below yes, c_excluding_not_above yes",
+        "provisional": false,
+        "conditions": {
+          "a_last_below": false,
+          "b_rolling_below": true,
+          "c_excluding_not_above": true
+        }
+      }
+    },
+    "C": {
+      "verdict": "worse",
+      "label": "worse",
+      "reason": "vs mack: valuation 10 [-0.0015%, +10.8673%], pooled [+0.0538%, +5.0159%], valuation 10 without the dominant company +4.4681% [-0.9914%, +12.2643%]; vs mcl: valuation 10 [+6.3661%, +12.3242%], pooled [+1.8392%, +4.8068%], valuation 10 without the dominant company +8.1414% [+5.7419%, +11.5200%]; median-draw valuation-10 Pool_APE 15.8857% against mack 11.9470% and mcl 4.9693%; conditions i_last_below_both no, ii_pooled_below_both no, iii_median_draw_below_both no, iv_excluding_dominant_not_worse no",
+      "status": "out-of-sample in accident years only (not tuned on as far as we know, assumed not known; its companies and calendar years overlap A and B)",
+      "provisional": false,
+      "missing_draws": [],
+      "n_draws": 10,
+      "scored_companies": 83,
+      "left_out": {},
+      "dominant_company": "1767",
+      "dominant_share": 0.6673483509842529,
+      "sensitivity_verdict": "worse",
+      "first_study_rows": "not applicable: the first study ran cohorts A and B only",
+      "conditions": {
+        "i_last_below_both": false,
+        "ii_pooled_below_both": false,
+        "iii_median_draw_below_both": false,
+        "iv_excluding_dominant_not_worse": false
+      },
+      "network_question": {
+        "verdict": "not distinguishable",
+        "label": "not distinguishable",
+        "reason": "valuation 10 [-10.0917%, +13.4768%]; rolling [-5.4856%, +6.2104%]; valuation 10 without the dominant company [-11.6605%, +3.3854%]; conditions a_last_below no, b_rolling_below no, c_excluding_not_above yes",
+        "provisional": false,
+        "conditions": {
+          "a_last_below": false,
+          "b_rolling_below": false,
+          "c_excluding_not_above": true
+        }
+      },
+      "blend_question": {
+        "verdict": "blend adds value",
+        "label": "blend adds value",
+        "reason": "valuation 10 [-1.5685%, -0.8276%]; rolling [-5.7272%, -0.7218%]; valuation 10 without the dominant company [-1.7679%, -0.7719%]; conditions a_last_below yes, b_rolling_below yes, c_excluding_not_above yes",
+        "provisional": false,
+        "conditions": {
+          "a_last_below": true,
+          "b_rolling_below": true,
+          "c_excluding_not_above": true
+        }
+      }
+    }
+  },
+  "overall": "worse on the fresh cohort (C worse; A not distinguishable, B not distinguishable)"
+}

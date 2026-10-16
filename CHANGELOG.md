@@ -397,6 +397,27 @@ paid triangle (135 triangles): 2,835 cases, 1,452 answers and 1,383 refusals,
 identical except for that message in 71 of them. `fit_mack_grid`'s
 comparison covers its ultimates, factors and run-off standard errors.
 
+### The second tlrn study, on the companion's final model (scripts, tests, notebook and knowledge only)
+
+`scripts/tlrn_study_colab.py --study factor_head` trains the companion study's newest model
+(13 features, a factor head, line and lag attention, blended with the multivariate chain
+ladder, 20 members averaged) ten times on cohorts A, B and a new cohort C that is
+out-of-sample in accident years only (1988 to 1997, from the cas-schedule-p mart), and saves each fit's company
+forecasts at four valuation dates. `scripts/tlrn_study2_eval.py` scores them against `mack`
+and `mcl`, each fitted by ibnr on the cells known at every date and read cell by cell, with
+a verdict rule written down beforehand and, from a dated amendment made before any fit, a
+second paired question (does the network add anything beyond the blend?) and, from a second amendment made after an outside
+review and also before any fit, a dollar-pooled second condition, a tightened fourth, a stated reading of mixed verdicts
+across cohorts, a stratified-bootstrap sensitivity analysis, the precision of every interval, the spread of the blend weight
+and a check that every member ran its 3,000 epochs; `analysis/05_tlrn_factor_head_study.ipynb` shows the
+results from a folder of saved fits. The model is built with `TLRNConfig` keywords in the
+runner, so the study runs on the published ibnr 0.7.4. The how-to is `docs/tlrn-study2.md`
+and the design is in `knowledge/decisions/tlrn-factor-head-study.md`. No library code
+changed. The study has run (60 fits on a GPU, 2026-10-15 to 16): not distinguishable on A and B, worse on cohort C; the saved fits, the evaluator's output and the executed notebook 05 are in `analysis/results/tlrn_study2`, and the finding is `knowledge/findings/tlrn-factor-head-study-results.md`. Fixed in the first study's
+evaluator (`scripts/tlrn_study_eval.py`): its benchmarks used the 2007-12-31 valuation date for every cohort and stopped on
+an anchor mismatch for cohort C (valued 1997-12-31); they now use the cohort's own date. The how-to for the first study
+installed a 0.7.3 wheel built from `main`; it now pins `ibnr[jax]==0.7.4` from PyPI and checks the version.
+
 ## 0.7.4 - 2026-10-12
 
 A patch release over the optional JAX training backend for `tlrn` below. Nothing

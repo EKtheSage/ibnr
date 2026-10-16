@@ -42,17 +42,9 @@ is the check that the two routes agree. You do not have to upload the CAS files.
 
 ## What to upload
 
-The repository is private, so Colab cannot fetch it. Put these in one Drive folder, for
-example `MyDrive/ibnr/study`:
+Colab installs ibnr 0.7.4 from PyPI (that release carries the JAX backend), so no wheel
+is built or uploaded. Put these in one Drive folder, for example `MyDrive/ibnr/study`:
 
-* the ibnr wheel, built on your machine from a checkout of `main`
-  (the PyPI release does not carry the JAX backend yet):
-
-  ```text
-  uv build --wheel
-  ```
-
-  which writes `dist/ibnr-0.7.3-py3-none-any.whl`;
 * `scripts/tlrn_colab.py` and `scripts/tlrn_study_colab.py` (the second imports the first);
 * optionally the four CAS files in a subfolder `cas`, if you want `--cas-dir`.
 
@@ -84,12 +76,12 @@ one process only, and the first cell already holds it.
    OUT = "/content/drive/MyDrive/ibnr/study_fits"
    ```
 
-3. Install ibnr from the wheel, in two steps so that pip cannot compile anything (Colab runs
+3. Install ibnr 0.7.4 from PyPI, in two steps so that pip cannot compile anything (Colab runs
    Python 3.13 and ibnr declares 3.11 to 3.12, hence `--ignore-requires-python`):
 
    ```text
-   !pip install -q --no-deps --ignore-requires-python {STUDY}/ibnr-0.7.3-py3-none-any.whl
-   !pip install -q --only-binary=:all: --ignore-requires-python "{STUDY}/ibnr-0.7.3-py3-none-any.whl[jax]" cas-schedule-p==2026.6.13
+   !pip install -q --no-deps --ignore-requires-python "ibnr==0.7.4"
+   !pip install -q --only-binary=:all: --ignore-requires-python "ibnr[jax]==0.7.4" cas-schedule-p==2026.6.13
    ```
 
 4. Check the versions, then make the scripts importable.
@@ -103,6 +95,7 @@ one process only, and the first cell already holds it.
    import ibnr
 
    print("ibnr", ibnr.__version__, "| ibis", ibis.__version__, "| duckdb", duckdb.__version__)
+   assert ibnr.__version__ == "0.7.4", f"ibnr {ibnr.__version__} is installed, not 0.7.4"
    assert ibis.__version__.startswith("12."), "pip chose an old ibis"
    sys.path.insert(0, STUDY)
    ```
@@ -149,7 +142,7 @@ one process only, and the first cell already holds it.
 
 ## What is saved
 
-For each fit, three files that share a stem such as `A_tlrn_8_ay_d03-ibnr0.7.3`:
+For each fit, three files that share a stem such as `A_tlrn_8_ay_d03-ibnr0.7.4`:
 
 * `.json`, the settings record (configuration, members, epochs, seed, cohort hash, data
   hash) and what it ran on (device, jax version, seconds). It is written last, and it is

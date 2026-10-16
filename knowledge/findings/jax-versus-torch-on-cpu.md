@@ -9,7 +9,7 @@ stale_after: 2027-01-03T00:00:00Z
 sources:
   - id: notebook
     resource: Code/tlrn_pipeline_best.ipynb in the companion study's repository (sibling checkout)
-    title: The companion notebook, its recorded run and its manifest
+    title: The companion notebook, its recorded run and its manifest (the notebook was deleted upstream on 2026-10-08; its training code is the accident-year model)
   - id: session
     resource: the 2026-10-05 working session on the dev laptop (jax 0.11.2, cpu backend)
     title: JAX spike run
