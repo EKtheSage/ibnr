@@ -1,5 +1,9 @@
 # Knowledge Update Log
 
+## 2026-10-16
+* **Creation**: Recorded [the results of the second tlrn study](/findings/tlrn-factor-head-study-results.md): the companion's factor-head model, ten draws on three cohorts, is not distinguishable from the chain ladder and the multivariate chain ladder on A and B and worse on the fresh cohort C (overall: worse on the fresh cohort); the network adds nothing detectable beyond the pooled factors with the blend, the blend helps on C, and the benchmarks tie out to the companion's published table on B.
+* **Update**: [The second tlrn study's decision note](/decisions/tlrn-factor-head-study.md) gained a dated line saying the study was run on 2026-10-15 to 16 with the results in the finding and the rules untouched.
+
 ## 2026-10-15
 * **Update**: [The second tlrn study's decision note](/decisions/tlrn-factor-head-study.md) gained a wording note: one banned word in the evaluator's pinned docstring was replaced before any fit existed (wording only, no rule changed), with both sha256 values and an executable proof.
 * **Creation**: Recorded [the results of the tlrn robustness study](/findings/tlrn-robustness-study-results.md): all four verdicts are not distinguishable over 10 draws, draw noise is small, company 1767 holds two thirds of the reserve; the small result files are kept in analysis/results/tlrn_study.

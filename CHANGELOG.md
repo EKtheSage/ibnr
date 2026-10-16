@@ -412,7 +412,7 @@ and a check that every member ran its 3,000 epochs; `analysis/05_tlrn_factor_hea
 results from a folder of saved fits. The model is built with `TLRNConfig` keywords in the
 runner, so the study runs on the published ibnr 0.7.4. The how-to is `docs/tlrn-study2.md`
 and the design is in `knowledge/decisions/tlrn-factor-head-study.md`. No library code
-changed. Nothing has run on a GPU and no result exists yet. Fixed in the first study's
+changed. The study has run (60 fits on a GPU, 2026-10-15 to 16): not distinguishable on A and B, worse on cohort C; the saved fits, the evaluator's output and the executed notebook 05 are in `analysis/results/tlrn_study2`, and the finding is `knowledge/findings/tlrn-factor-head-study-results.md`. Fixed in the first study's
 evaluator (`scripts/tlrn_study_eval.py`): its benchmarks used the 2007-12-31 valuation date for every cohort and stopped on
 an anchor mismatch for cohort C (valued 1997-12-31); they now use the cohort's own date. The how-to for the first study
 installed a 0.7.3 wheel built from `main`; it now pins `ibnr[jax]==0.7.4` from PyPI and checks the version.

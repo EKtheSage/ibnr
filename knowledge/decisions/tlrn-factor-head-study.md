@@ -562,6 +562,9 @@ The test `test_the_wording_change_is_the_only_change_to_the_preregistered_docstr
 nothing else changed: it applies the inverse substitution to the new text and requires the
 old sha256. The vocabulary test now scans that docstring too.
 
+## Run (2026-10-16)
+
+The study was run on 2026-10-15 to 16 (60 fits, draws 0 to 9 of both rows on cohorts A, B and C). The results are in [the findings note](/findings/tlrn-factor-head-study-results.md). The rules above were not changed.
 
 [^request]: Ethan's instruction in the 2026-10-15 working session
 [^first]: The first study, whose machinery and style this one extends

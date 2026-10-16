@@ -48,6 +48,7 @@ FILES = [
     "knowledge/findings/companion-final-architecture.md",
     "knowledge/findings/companion-notebook-reproduction.md",
     "knowledge/findings/jax-versus-torch-on-cpu.md",
+    "knowledge/findings/tlrn-factor-head-study-results.md",
     "knowledge/references/companion-study-repository.md",
     "tests/test_tlrn_study2.py",
     "tests/test_tlrn_study2_eval.py",
