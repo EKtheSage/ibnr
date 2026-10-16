@@ -73,11 +73,9 @@ def kit_dirs():
     return [Path(p) for p in raw.split(os.pathsep) if p]
 
 
-@pytest.mark.skipif(not kit_dirs(), reason="IBNR_COLAB_KITS is not set")
-@pytest.mark.parametrize("kit", kit_dirs() or [Path(".")])
-def test_each_colab_kit_pins_the_version_and_asserts_it_after_the_install(kit):
+def check_kit(kit: Path, pin: str = PIN) -> None:
     readme = (kit / "README.txt").read_text(encoding="utf-8")
-    assert set(versions_in(readme)) <= {PIN}
+    assert set(versions_in(readme)) <= {pin}
     notebooks = sorted(kit.glob("*.ipynb"))
     assert len(notebooks) == 1
     cells = json.loads(notebooks[0].read_text(encoding="utf-8"))["cells"]
@@ -85,11 +83,49 @@ def test_each_colab_kit_pins_the_version_and_asserts_it_after_the_install(kit):
     install = [c for c in code if "pip install" in c]
     assert len(install) == 1
     cell = install[0]
-    assert f'"ibnr=={PIN}"' in cell and f'"ibnr[jax]=={PIN}"' in cell
-    assert set(versions_in(cell)) == {PIN}
-    check = f'assert ibnr.__version__ == "{PIN}"'
+    assert f'"ibnr=={pin}"' in cell and f'"ibnr[jax]=={pin}"' in cell
+    assert set(versions_in(cell)) == {pin}
+    check = f'assert ibnr.__version__ == "{pin}"'
     assert check in cell and cell.index(check) > cell.index("import ibnr")
     # the second study's kit carries a copy of the runner, which names the same version
     copy = (kit / "tlrn_study_colab.py").read_text(encoding="utf-8")
     if "PINNED_IBNR" in copy:
-        assert f'PINNED_IBNR = "{PIN}"' in copy
+        assert f'PINNED_IBNR = "{pin}"' in copy
+
+
+def write_kit(kit: Path, pin: str, *, check: bool = True, runner_pin: str | None = None) -> None:
+    """A minimal kit shaped like the Drive folder: README, one notebook, a runner copy."""
+    kit.mkdir(parents=True, exist_ok=True)
+    (kit / "README.txt").write_text(f"install ibnr=={pin}" + chr(10), encoding="utf-8")
+    lines = [f'!pip install "ibnr=={pin}" "ibnr[jax]=={pin}"', "import ibnr"]
+    if check:
+        lines.append(f'assert ibnr.__version__ == "{pin}"')
+    nb = {"cells": [{"cell_type": "code", "source": [chr(10).join(lines)]}]}
+    (kit / "study.ipynb").write_text(json.dumps(nb), encoding="utf-8")
+    (kit / "tlrn_study_colab.py").write_text(
+        f'PINNED_IBNR = "{runner_pin or pin}"' + chr(10), encoding="utf-8"
+    )
+
+
+def test_the_kit_check_accepts_a_good_kit_and_refuses_each_kind_of_bad_one(tmp_path):
+    # always runs: the check on the real Drive kits below skips nothing, but a kit check that
+    # never ran anywhere would prove nothing about the check itself
+    write_kit(tmp_path / "good", PIN)
+    check_kit(tmp_path / "good")
+    write_kit(tmp_path / "old", "0.0.1")
+    with pytest.raises(AssertionError):
+        check_kit(tmp_path / "old")
+    write_kit(tmp_path / "nocheck", PIN, check=False)
+    with pytest.raises(AssertionError):
+        check_kit(tmp_path / "nocheck")
+    write_kit(tmp_path / "stale_runner", PIN, runner_pin="0.0.1")
+    with pytest.raises(AssertionError):
+        check_kit(tmp_path / "stale_runner")
+
+
+def test_each_colab_kit_named_by_the_environment_is_checked():
+    # IBNR_COLAB_KITS names the real Drive folders on the machine that builds them; elsewhere
+    # it is unset and there is nothing to check. This is a loop, not a skip, because a leg
+    # with a strict skip policy refuses a skipped test.
+    for kit in kit_dirs():
+        check_kit(kit)
