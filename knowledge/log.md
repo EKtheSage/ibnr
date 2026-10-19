@@ -1,5 +1,6 @@
 # Knowledge Update Log
 
+<<<<<<< HEAD
 ## 2026-10-22
 * **Update**: [The third tlrn study's pre-registration](/decisions/tlrn-study3-preregistration.md) gained a second dated amendment before any fit: the notebook installs from PyPI and downloads the runner scripts with a read-only token (no zip), the evaluator adds RMSE, SMAPE and the over-estimated count, a descriptive table sets the companion's published figures beside ibnr's draws, and the median alpha discrepancy (0.45 against 0.476) is recorded. No decision rule and not the evaluator's docstring changed. No fit exists.
 * **Update**: [The third tlrn study's pre-registration](/decisions/tlrn-study3-preregistration.md) gained a dated amendment before any fit: two opt-in network options (`empty_query_bias`, `compact_embeddings`) make ibnr's preset the companion's network in function and size (18,537 parameters, built and counted), the earlier account of the extra 64 parameters is corrected (unreachable embedding rows), and the remaining deviations are listed. [The companion's final architecture](/findings/companion-final-architecture.md) gained a pointer to the new count. No fit exists.
@@ -8,6 +9,10 @@
 * **Update**: [The third tlrn study's pre-registration](/decisions/tlrn-study3-preregistration.md) gained a dated amendments section before any fit: the fallback is matched, the per-date seed offset is 20,000, the refit stops at the stored epoch, the evaluator docstring hash is recorded, and the evaluator's interpretation choices are written down.
 * **Update**: [The companion's final architecture](/findings/companion-final-architecture.md), [the companion study's repository](/references/companion-study-repository.md) and [reproducing the companion notebook](/findings/companion-notebook-reproduction.md) each gained a dated correction saying the factor-head model (commit `f74addd`) is superseded by the companion's 21 October model (commits `f50871d` and `9e118a7`), which returns to accident-year attention and the premium head and refits every network. The original text was left as written.
 * **Creation**: Recorded [the pre-registration of the third tlrn study](/decisions/tlrn-study3-preregistration.md), before any code or fit exists: the companion's newest model (premium loss-ratio head, accident-year attention, company batches, a refit of every network, alpha and epoch chosen on different diagonals, companies picked at each valuation date), two co-primary questions with written rules, the benchmarks on the same per-date company sets, the known deviations, the budget and the open decisions. No fit with the new options exists at the time of writing.
+=======
+## 2026-10-18
+* **Update**: [Cut a release](/playbooks/cut-a-release.md) gained the 0.7.5 row. Lesson: `gh run list --commit` needs the full hash; a short hash returns nothing and looks like no runs.
+>>>>>>> de60da2 (docs(knowledge): release history row for 0.7.5)
 
 ## 2026-10-16
 * **Update**: [The results of the second tlrn study](/findings/tlrn-factor-head-study-results.md) gained a section recording an independent check of cohort C's benchmarks (chain ladder against separate code and chainladder-python on all 83 companies, multivariate chain ladder against the companion's R code at valuation 10 only), and its Limits wording on C's benchmarks was changed to match.

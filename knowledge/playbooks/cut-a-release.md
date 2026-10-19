@@ -1,7 +1,7 @@
 ---
 type: Playbook
 title: Cut a release
-description: The pre-flight checks run before tagging an ibnr release, the traps hit while publishing to PyPI, and the release history from 0.2.0 to 0.7.4 as the agent's status note recorded it.
+description: The pre-flight checks run before tagging an ibnr release, the traps hit while publishing to PyPI, and the release history from 0.2.0 to 0.7.5 as the agent's status note recorded it.
 tags: [release, pypi, ci, process]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-05T23:00:00Z }
@@ -111,6 +111,7 @@ As recorded in the note up to 0.7.1; the rows from 0.7.2 come from the git tags,
 | 0.7.2 | 2026-09-24 | tag `v0.7.2` at `eaf34cd` (PR #154); the conventional array fit, `ibnr.methods` and the `zero_cells` option (#149, #152, #153) |
 | 0.7.3 | 2026-10-05 | tag `v0.7.3` at `ebd8ebe` (PR #165); tlrn design choices (premium head, accident-year attention, mcl blend, retrained calibration), with `ibnr.methods` development options and `Refusal` |
 | 0.7.4 | 2026-10-13 | tag `v0.7.4` at `b24fce7` (PR #175); the optional JAX training backend for tlrn (`ibnr[jax]`); on PyPI as wheel and sdist, and `ibnr[jax]==0.7.4` installed on a clean Python 3.13 environment |
+| 0.7.5 | 2026-10-18 | tag `v0.7.5` at `2e5891b` (PR #180); `methods.one_year_cdr`, `methods.odp_bootstrap`, `methods.ml_development` and the two tlrn studies; Tests and Lint were green on the merge commit before the tag, and `ibnr==0.7.5` imports from PyPI |
 
 [^note]: Project status log, release entries from 2026-07-23 to 2026-09-23 (lines 82-98, 176-180, 262-308, 821-873, 1336-1345, 1411-1455, 1533-1541, 1562-1602)
 [^publishing]: Why the first release is 0.2.0
