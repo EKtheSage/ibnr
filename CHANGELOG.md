@@ -19,7 +19,13 @@ corrected decision 8 - and, from 0.7.2,
 From 0.7.2 the minor number is kept for milestones: additions and fixes ship as
 patch releases, and 0.8 comes when the roadmap's goals are done.
 
-## Unreleased
+## 0.7.5 - 2026-10-18
+
+A patch release over three new functions at the `ibnr.methods` front door
+(`one_year_cdr`, `odp_bootstrap`, `ml_development`), the first tlrn robustness
+study, and the second tlrn study. The three functions are additions. The sections
+below name each message or default they change; none of them moves a number the
+earlier functions returned.
 
 ### The tlrn robustness study (scripts and knowledge only)
 
