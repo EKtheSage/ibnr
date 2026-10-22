@@ -80,6 +80,12 @@ Embedding tables are 0-based in the notebook and 1-based in ibnr, so parameter c
 differ (the notebook's is 18,537). The two use different random streams, so the same
 seed does not give the same numbers.
 
+Correction, 2026-10-22: ibnr 0.7.6 has `compact_embeddings=True`, which builds the
+notebook's own 0-based tables and count, and `empty_query_bias=True`, which gives an
+attention query with nothing to read the output bias as the notebook does. The third
+study's preset sets both, so the parameter count is no longer a difference there. The
+random streams still are. The text above is left as it was written.
+
 # Reduced-scale numbers
 
 8 members, 600 epochs, same cohort. Backtest Pool_APE at valuations 6, 7 and 8: 0.0375,

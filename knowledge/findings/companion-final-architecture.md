@@ -31,7 +31,8 @@ alpha on one diagonal and chooses the epoch on the next, and picks its companies
 valuation date. So the statements below that there is no accident-year attention, that the
 network has 14,245 parameters and that each member fits its own alpha describe the earlier
 model and not the companion's current one. ibnr's version of the newer model has 18,601
-parameters; the third study tests it
+parameters (18,537, the companion's count, from ibnr 0.7.6's `compact_embeddings`, which the
+third study's preset sets); the third study tests it
 ([pre-registration](/decisions/tlrn-study3-preregistration.md)). The text below is left as it
 was written.
 

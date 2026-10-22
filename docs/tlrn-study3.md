@@ -59,8 +59,8 @@ the G4 and not a reasonable target). Then run the cells from the top, one at a t
    made with other settings stops the run before any training and is left alone.
 4. **Checks that fit nothing.** The notebook selects the companies again at each valuation date
    and compares the counts with the pre-registration (230, 226, 219 and 212 pairs on B3; 237,
-   236, 232 and 232 on C3), and builds the network once to count its parameters (18,601
-   expected). If anything differs, stop and send the printout to Ethan.
+   236, 232 and 232 on C3), and builds the network once to count its parameters (18,537
+   expected, the companion's own count). If anything differs, stop and send the printout to Ethan.
 5. **Smoke check.** Ten epochs, two members, one draw, in its own folder. If it fails, stop.
 6. **C3, draw 0.** One full main fit. It is the pipeline check and the first timing.
 7. **C3 draws 1 to 9, then B3 draws 0 to 9, then the network-off fits** on both cohorts, in that

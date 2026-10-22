@@ -17,10 +17,12 @@ an off-by-one in which lag a projection starts from, a factor substituted at the
 wrong step, a loss that takes its absolute value before summing instead of
 after, and the cross-line attention reading a line the company does not write.
 
-The parameter count is pinned at 14,309, the reference implementation's, which
-depends on all three embedding tables carrying one unused row. The count is the
+The parameter count is pinned at 14,309, the R implementation's, which depends on
+all three embedding tables carrying one unused row (indices from 1). The count is the
 only thing that can see that convention, since the unused row never changes an
-output.
+output. The companion's JAX code has no unused row in the line and lag tables, and
+``compact_embeddings=True`` gives its count (14,245 for this network); that count is
+pinned in ``test_tlrn_companion_network.py``.
 """
 
 from __future__ import annotations
@@ -84,7 +86,7 @@ def run(model: TLRNNetwork, t: dict, **kwargs) -> dict:
 
 
 def test_parameter_count_matches_the_reference():
-    """14,309 at ``d_model = 32`` with 13 features on 4 lines and 10 lags.
+    """14,309 at ``d_model = 32`` with 13 features on 4 lines and 10 lags (the default tables).
 
     Built from the per-module counts so a failure says WHICH module moved, not
     just that the total did. The three embedding tables each carry one unused

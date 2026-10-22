@@ -46,7 +46,21 @@ public surface of `ibnr.methods` and `ibnr.gallery` is untouched.
   fits the blend weight on the first validation diagonal alone and chooses the checkpoint on
   the second; it needs `member="mcl_blend"` and `val_diagonals=2` and is refused otherwise.
 * `TLRNConfig.companion_final_variant(**overrides)`: `accident_year_variant()` with
-  `refit=True` and `alpha_on="first_diagonal"`.
+  `refit=True`, `alpha_on="first_diagonal"`, `empty_query_bias=True` and
+  `compact_embeddings=True` (see below).
+* `TLRNConfig.empty_query_bias` (default `False`) and `TLRNConfig.compact_embeddings`
+  (default `False`), on both backends, so the preset's network is the companion's final
+  network. With `empty_query_bias=True` an attention query that can read no key at all
+  returns the attention's output bias (the companion's rule: zero weights, then the output
+  projection adds its bias) instead of zero, on the line, lag and accident-year attentions;
+  it is refused where no query can be empty (published mask and no `"ay"` axis). With
+  `compact_embeddings=True` the line and lag tables have one row per line and per lag, read
+  0-based, and the visible-lag table is read at `lk`: 64 parameters fewer, so the preset's
+  network has the companion's 18,537 (the accident-year variant keeps 18,601). Both are off
+  by default, a default fit is unchanged weight for weight, and `companion_final_variant()`
+  now sets both. The earlier explanation that the extra 64 were a fixed property of ibnr's
+  embeddings was wrong; they were the unreachable row 0 of two tables. The runner's
+  `companion_final_config()` and the notebook's parameter check (18,537) follow.
 * The refit stops at the epoch whose weights the first run stored (the last check that beat
   the best score by more than 1e-6), which `refit_epochs` records. That can precede the check
   with the lowest score, which `best_epoch` still reports unchanged, so `refit_epochs` and
@@ -54,8 +68,13 @@ public surface of `ibnr.methods` and `ibnr.gallery` is untouched.
 * A refit (or any protocol) whose scored cells include a training target is refused by name
   (`look-ahead`).
 * Private signatures that changed, for anyone who reached into them: `TLRN._blend_ay_line_ape`
-  takes `alpha_first=`, `jax_backend.train_protocols` takes `stops=`, `Spec` has `alpha_first`,
-  and the worker pool's jobs are `(protocol, member, stop)`.
+  takes `alpha_first=`, `jax_backend.train_protocols` takes `stops=`, `Spec` has `alpha_first`
+  (and `empty_bias` and `compact`), `network.attend` takes `empty_bias=`,
+  `AxialBlock` takes `empty_query_bias=`, and the worker pool's jobs are
+  `(protocol, member, stop)`. A fit or state dict made with the earlier
+  `companion_final_variant()` has line and lag embedding tables one row longer than the
+  preset now builds and will not load under it (no such fit exists; pass
+  `compact_embeddings=False, empty_query_bias=False` to rebuild the earlier network).
 
 ### The third tlrn study (scripts and knowledge only)
 

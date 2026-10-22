@@ -591,14 +591,25 @@ def test_the_companion_final_variant_is_the_variant_plus_the_two_protocol_change
     assert TLRNConfig.companion_final_variant(ensemble_size=3).alpha_on == "first_diagonal"
 
 
-def test_the_companion_final_variant_has_18601_parameters():
-    """The companion reports 18,537; ibnr's network is 64 parameters larger (its embedding
-    tables are indexed from 1, so they carry unused rows). Counted by building the network."""
+def test_the_companion_final_variant_has_the_companions_18537_parameters():
+    """The companion reports 18,537, and the preset builds exactly that (its embedding tables
+    have no unused rows). The accident-year variant, which is not the preset, keeps 18,601.
+    Counted by building the networks; the layer-by-layer table is in
+    ``test_tlrn_companion_network.py``."""
     cfg = TLRNConfig.companion_final_variant()
     model = TLRNNetwork(
         cfg, n_lines=4, n_lag=10, n_feat=13, n_origin=10, head_init=torch.zeros(4, 10)
     )
-    assert sum(p.numel() for p in model.parameters()) == 18_601
+    assert sum(p.numel() for p in model.parameters()) == 18_537
+    older = TLRNNetwork(
+        TLRNConfig.accident_year_variant(),
+        n_lines=4,
+        n_lag=10,
+        n_feat=13,
+        n_origin=10,
+        head_init=torch.zeros(4, 10),
+    )
+    assert sum(p.numel() for p in older.parameters()) == 18_601
     assert model.beta.shape == (4, 10)
     assert "blocks.0.attn_ay.in_proj_weight" in dict(model.named_parameters())
 

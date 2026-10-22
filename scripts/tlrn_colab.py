@@ -210,10 +210,12 @@ def companion_final_config(**overrides):
     batches of eight companies, a blend with the multivariate chain ladder, twenty members
     all averaged, each member retrained on every known diagonal to the epoch it chose
     (``refit``), alpha fitted on the first validation diagonal and the epoch chosen on the
-    second (``alpha_on``). The retrained calibration settings are kept for the entry's own
-    use; the third study's runner trains each valuation date itself and does not read them.
-    ``overrides`` replace any choice, which is how ``factors_only`` and the smoke budget are
-    set. The choices and the evidence are in
+    second (``alpha_on``), an attention with nothing to read returning its output bias
+    (``empty_query_bias``) and line and lag embedding tables of exactly the companion's size
+    (``compact_embeddings``, 18,537 parameters). The retrained calibration settings are kept
+    for the entry's own use; the third study's runner trains each valuation date itself and
+    does not read them. ``overrides`` replace any choice, which is how ``factors_only`` and
+    the smoke budget are set. The choices and the evidence are in
     ``knowledge/decisions/tlrn-study3-preregistration.md``.
     """
     from ibnr.gallery.nn.tlrn.config import TLRNConfig
@@ -255,6 +257,9 @@ def companion_final_config(**overrides):
         "patience": 600,
         "refit": True,
         "alpha_on": "first_diagonal",
+        # the two network details that make ibnr's network the companion's function and size
+        "empty_query_bias": True,
+        "compact_embeddings": True,
         "calibration": "retrain_per_valuation",
         "calibration_cutoffs": (6, 7, 8),
         "calibration_horizons": (2, 3, 4),

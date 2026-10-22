@@ -19,8 +19,9 @@ which is why torch stays the default.
 
 WHAT IS THE SAME AS THE TORCH PATH, ON PURPOSE. ibnr's torch code is the specification,
 so this module mirrors it piece by piece: the network (``network.py``: input projection,
-three 1-based embedding tables, the axial blocks with their masks and their guard, exact
-GELU, LayerNorm at 1e-5, dropout on the attention weights and on each residual branch),
+three embedding tables (1-based, or 0-based under compact_embeddings), the axial blocks
+with their masks and their guard, exact GELU, LayerNorm at 1e-5, dropout on the attention
+weights and on each residual branch),
 the two heads and the projection (``head.py``), the three-term loss on each batch's own
 denominators, gradient clipping on the global norm, AdamW with torch's update and its two
 learning rates, the warmup-cosine schedule, and the checkpoint rule (validate every
@@ -174,6 +175,8 @@ class Spec(NamedTuple):
     w_mse: float
     mse_scale: float
     alpha_first: bool = False  # alpha_on="first_diagonal": alpha from set 0, score on the last
+    empty_bias: bool = False  # empty_query_bias: a query with no readable key gets the out bias
+    compact: bool = False  # compact_embeddings: 0-based line and lag tables, no unused row
 
 
 def spec_of(cfg: Any, *, n_l: int, n_d: int, n_w: int) -> Spec:
@@ -201,6 +204,8 @@ def spec_of(cfg: Any, *, n_l: int, n_d: int, n_w: int) -> Spec:
         w_mse=float(cfg.w_mse),
         mse_scale=float(cfg.mse_scale),
         alpha_first=cfg.alpha_on == "first_diagonal",
+        empty_bias=bool(cfg.empty_query_bias),
+        compact=bool(cfg.compact_embeddings),
     )
 
 
@@ -286,7 +291,8 @@ def _attend(p, prefix, h, readable, *, guard, spec, train, key):
 
     ``readable`` (N, S) marks the keys a sequence may read, or is None for no mask. With
     ``guard`` a sequence with no readable key lets its first key through so the softmax is
-    finite, and its output is then multiplied by zero.
+    finite, and its output is then multiplied by zero (or, with ``spec.empty_bias``,
+    replaced by the output projection's bias, as the companion's is).
     """
     n, s, d = h.shape
     heads = spec.n_heads
@@ -308,7 +314,10 @@ def _attend(p, prefix, h, readable, *, guard, spec, train, key):
     out = jnp.einsum("nhst,nthd->nshd", weights, v, precision=PRECISION).reshape(n, s, d)
     out = _linear(out, p[f"{prefix}.out_proj.weight"], p[f"{prefix}.out_proj.bias"])
     if any_key is not None:
-        out = out * any_key[:, None, None].astype(out.dtype)
+        if spec.empty_bias:
+            out = jnp.where(any_key[:, None, None], out, p[f"{prefix}.out_proj.bias"])
+        else:
+            out = out * any_key[:, None, None].astype(out.dtype)
     return out
 
 
@@ -402,8 +411,10 @@ def forward(p, s, spec: Spec, *, train: bool = False, key=None, support=None) ->
         else:
             keys = [None] * (_KEYS_PER_BLOCK * spec.n_layers)
         h = _linear(s["feat"], p["inp.weight"], p["inp.bias"])
-        h = h + p["line_emb.weight"][s["line_ix"]] + p["lag_emb.weight"][s["lag_ix"]]
-        h = h + p["nobs_emb.weight"][s["lk"] + 1][:, None, :]
+        shift = 1 if spec.compact else 0
+        h = h + p["line_emb.weight"][s["line_ix"] - shift]
+        h = h + p["lag_emb.weight"][s["lag_ix"] - shift]
+        h = h + p["nobs_emb.weight"][s["lk"] + 1 - shift][:, None, :]
         for i in range(spec.n_layers):
             block_keys = keys[_KEYS_PER_BLOCK * i : _KEYS_PER_BLOCK * (i + 1)]
             h = _block(p, i, h, s["written"], s["visible"], spec=spec, train=train, keys=block_keys)

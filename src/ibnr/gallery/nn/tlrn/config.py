@@ -37,7 +37,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ibnr.gallery.nn._training import CUTOFF_SAMPLING
-from ibnr.gallery.nn.tlrn.components import check_combination
+from ibnr.gallery.nn.tlrn.components import attention_axes, check_combination
 
 #: what happens to a development step no training target ever supervised.
 #: ``observed_cl`` substitutes the chain ladder factors observable at the
@@ -113,6 +113,19 @@ class TLRNConfig:
     #: fitted again. The forecasts are then the refit networks'; the networks as they
     #: stood at the chosen epoch stay readable (``selected=True`` on the read-outs)
     refit: bool = False
+    #: what an attention returns for a query that can read no key at all (a hidden cell
+    #: with every cell of its group hidden too). ``False`` returns zero, which also drops
+    #: the attention's output bias. ``True`` returns that bias, which is what the
+    #: companion's code does (its weights are zero there and the output projection still
+    #: adds its bias). It only matters where such a query can occur, so it needs
+    #: ``mask="observed_cells"`` or the ``"ay"`` axis
+    empty_query_bias: bool = False
+    #: line and lag embedding tables with exactly one row per line and per lag, indexed
+    #: from zero, as the companion's are, instead of one extra unused row each (indexed
+    #: from one, as the R implementation's are). 64 fewer parameters and the same function;
+    #: the visible-lag table keeps its twelve rows and is read at ``lk`` rather than
+    #: ``lk + 1``, as the companion reads it
+    compact_embeddings: bool = False
 
     # loss: the accident-year/line absolute percentage error, a pooled bias
     # penalty, and a squared-error term on the scale the ratios live on
@@ -200,13 +213,21 @@ class TLRNConfig:
         :meth:`accident_year_variant` plus the two protocol changes of the companion's
         newest code: ``refit=True`` (each member is retrained on every known diagonal and
         stopped at the epoch it chose) and ``alpha_on="first_diagonal"`` (alpha from the
-        diagonal before the last known one, the checkpoint chosen on the last). Batches of
+        diagonal before the last known one, the checkpoint chosen on the last), plus the
+        two network details that make ibnr's network the companion's function and size:
+        ``empty_query_bias=True`` and ``compact_embeddings=True`` (18,537 parameters).
+        Batches of
         eight companies, 3000 epochs, twenty members all averaged, learning rates 0.003 for
         the network and 0.03 for the premium head's ``beta``, and the calibration retrained
         at valuation dates 6, 7 and 8 are the variant's own and were checked against the
         companion's training code. ``overrides`` replace any choice.
         """
-        choices = {"refit": True, "alpha_on": "first_diagonal"}
+        choices = {
+            "refit": True,
+            "alpha_on": "first_diagonal",
+            "empty_query_bias": True,
+            "compact_embeddings": True,
+        }
         return cls.accident_year_variant(**{**choices, **overrides})
 
     @property
@@ -265,6 +286,19 @@ class TLRNConfig:
                 )
         if not isinstance(self.refit, bool):
             raise ValueError(f"refit must be True or False, got {self.refit!r}")
+        for name in ("empty_query_bias", "compact_embeddings"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} must be True or False, got {getattr(self, name)!r}")
+        if self.empty_query_bias and not (
+            self.mask == "observed_cells" or "ay" in attention_axes(self)
+        ):
+            raise ValueError(
+                "empty_query_bias says what an attention returns for a query with no key to "
+                "read, and with mask='unwritten_lines' and no 'ay' axis no attention ever has "
+                "such a query (an example with no written line is refused). Set "
+                "mask='observed_cells' or add 'ay' to attention, or leave "
+                "empty_query_bias=False"
+            )
         if not self.lr_cap > 0:
             raise ValueError(f"lr_cap must be positive, got {self.lr_cap}")
         if self.n_heads < 1 or self.d_model % self.n_heads:

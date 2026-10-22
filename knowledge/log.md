@@ -1,5 +1,8 @@
 # Knowledge Update Log
 
+## 2026-10-22
+* **Update**: [The third tlrn study's pre-registration](/decisions/tlrn-study3-preregistration.md) gained a dated amendment before any fit: two opt-in network options (`empty_query_bias`, `compact_embeddings`) make ibnr's preset the companion's network in function and size (18,537 parameters, built and counted), the earlier account of the extra 64 parameters is corrected (unreachable embedding rows), and the remaining deviations are listed. [The companion's final architecture](/findings/companion-final-architecture.md) gained a pointer to the new count. No fit exists.
+
 ## 2026-10-21
 * **Update**: [The third tlrn study's pre-registration](/decisions/tlrn-study3-preregistration.md) gained a dated amendments section before any fit: the fallback is matched, the per-date seed offset is 20,000, the refit stops at the stored epoch, the evaluator docstring hash is recorded, and the evaluator's interpretation choices are written down.
 * **Update**: [The companion's final architecture](/findings/companion-final-architecture.md), [the companion study's repository](/references/companion-study-repository.md) and [reproducing the companion notebook](/findings/companion-notebook-reproduction.md) each gained a dated correction saying the factor-head model (commit `f74addd`) is superseded by the companion's 21 October model (commits `f50871d` and `9e118a7`), which returns to accident-year attention and the premium head and refits every network. The original text was left as written.

@@ -119,7 +119,8 @@ code is written (the checklist is under "Before any fit").
 * **Inferred, from ibnr's own building blocks.** ibnr's network for the same configuration will
   have about 18,601 parameters, 64 more than the companion's 18,537, for the reason the
   second study found (1-based line and lag embeddings, one extra row each). To be confirmed by
-  building the network, which needs no fit.
+  building the network, which needs no fit. (Amended 2026-10-22: the preset now builds
+  18,537, see the amendments below; 18,601 is the accident-year variant's count.)
 * **Inferred, from the second study's note.** Selecting again at cutoffs 6, 7 and 8 on cohort
   B adds 18, 14 and 7 pairs to the 212 of cutoff 10, and on cohort C adds 5, 4 and 0 to the
   232; the larger sets contain the smaller (that note, B7, measured it). So the expected pair
@@ -385,9 +386,10 @@ Each is disclosed in the evaluator's output and the results note.
 1. **Random streams.** ibnr's JAX streams differ from the companion's, so the same
    procedure gives different numbers; replication is judged on distributions (R1 to R3),
    not on equal numbers.
-2. **1-based embeddings.** The line and lag embeddings have one extra row each, 64
-   parameters more than the companion's count. Inferred, to be confirmed by building the
-   network.
+2. **1-based embeddings. Removed 2026-10-22.** The default line and lag embeddings have one
+   unused row each, 64 parameters more than the companion's count. The preset now sets
+   `compact_embeddings=True` and builds the companion's 18,537 (built and counted, see the
+   amendments below). Not a deviation of this study any more.
 3. **Draw design.** Ten ibnr draws against one reported fit of the companion's, and no use of
    its three seeds.
 4. **Selection reuse.** The refit trains on diagonals C-1 and C and stops at the epoch that
@@ -476,7 +478,7 @@ Checks that fit nothing and must pass before the first fit, listed here so they 
 chosen after the fact:
 
 1. Build the network for `companion_final_variant()` and record its parameter count (expected
-   about 18,601).
+   18,537 after the amendment of 2026-10-22; it was about 18,601 when this note was written).
 2. Run `select_pairs` on both cohorts at cutoffs 6, 7, 8 and 10 and record the pair and
    company counts against the expected ones (a selection run, not a fit).
 3. Confirm in the companion's source at f50871d that the training set of date `v` is the
@@ -571,6 +573,49 @@ an independent review of the library and runner diff, and none moves a registere
    never counted as the refit hurting.
 6. **A check against looking ahead.** The refit path now refuses by name a feature set whose
    scored cells include a training target, as the companion asserts in its feature step.
+
+# Amendment before any fit (2026-10-22)
+
+No fit of this study exists, so this change needs no rerun. It is a correction found by an
+independent comparison of ibnr's network with the companion's code at commit `f50871d`
+(`Code/01_functions.py`). The comparison found the 13 features and the structure identical,
+and two differences in the network, both now removable by an option that is off by default.
+
+1. **A query with nothing to read.** In the companion's attention a query whose keys are all
+   unreadable gets zero weights, and the output projection still adds its bias, so the output
+   there is the learned output bias. ibnr returned zero, which also dropped that bias. This
+   touches fully hidden groups, such as the line attention at a future lag where no line is
+   visible, an accident year with nothing revealed, and a column of accident years none of
+   which reveals the cell. New option `TLRNConfig.empty_query_bias` (default `False`, so every
+   earlier fit is unchanged): on, a query with no readable key returns the attention's output
+   bias exactly, on the line, lag and accident-year attentions, in torch and in JAX.
+2. **The extra 64 parameters were unreachable rows.** The earlier explanation (one extra row in
+   each of the line and lag tables because ibnr indexes them from 1) was right about the cause
+   and wrong to present it as a fixed property: row 0 of each table is never read and gets no
+   gradient. New option `TLRNConfig.compact_embeddings` (default `False`): on, the line table
+   has one row per line and the lag table one per lag, read 0-based, and the visible-lag table
+   (twelve rows in both codes) is read at `lk` as the companion reads it, where ibnr read it at
+   `lk + 1`. That is a relabeling of the same count, so the parameter count is the companion's.
+   The initial distributions are the companion's (N(0, 1) embeddings, Xavier-uniform attention
+   in-projections, torch-default linear layers, zero output biases), so only the random stream
+   differs.
+3. **The preset.** `TLRNConfig.companion_final_variant()` now sets both, and the runner's
+   `companion_final_config()` writes them out. The preset's network has **18,537 parameters**,
+   built and counted by a test (projection and embeddings 1,280; each of three attention blocks
+   4,288; feed-forward 4,256; final layer norm and output layer 97; `beta` 40). The notebook's
+   check cell and its pin test expect 18,537. The accident-year variant, which is not the
+   preset, keeps 18,601.
+4. **Verification.** A hand-written numpy copy of the companion's attention and block agrees
+   with ibnr's network (torch) on a batch with hidden groups, and the JAX forward and its
+   training trajectory agree with torch with the options on
+   (`tests/test_tlrn_companion_network.py`, `tests/test_tlrn_companion_jax.py`). A default fit
+   is unchanged weight for weight (the pinned 0.7.5 fits pass on both backends).
+5. **Deviations that remain.** The random streams (item 1 of the deviations list); the study
+   design (ten pooled fits of twenty members against the companion's one seed, item 3); and
+   float32 feature rounding here against the companion's float64 (about 2e-7 relative). The
+   earlier text that named 18,601 and the 1-based embeddings as a deviation is struck above.
+6. **No fit exists yet.** The registered rules, cohorts, draws, statistics and decision rules
+   are untouched, and so is the evaluator's docstring hash in the amendment of 2026-10-21.
 
 # Frozen before any fit
 

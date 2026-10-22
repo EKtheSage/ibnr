@@ -72,6 +72,8 @@ COMPANION = {
     "patience": 600,
     "refit": True,
     "alpha_on": "first_diagonal",
+    "empty_query_bias": True,
+    "compact_embeddings": True,
 }
 
 

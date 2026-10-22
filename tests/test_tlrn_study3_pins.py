@@ -142,7 +142,7 @@ def test_the_checks_cell_holds_the_pre_registered_counts():
                 found[node.targets[0].id] = ast.literal_eval(node.value)
     assert found["EXPECTED_PAIRS"] == ev.EXPECTED_PAIRS
     assert found["EXPECTED_COMPANIES_B"] == ev.EXPECTED_COMPANIES["B"]
-    assert found["EXPECTED_PARAMETERS"] == 18601
+    assert found["EXPECTED_PARAMETERS"] == 18537
 
 
 def test_the_network_the_checks_cell_builds_has_the_expected_parameter_count():
@@ -159,7 +159,7 @@ def test_the_network_the_checks_cell_builds_has_the_expected_parameter_count():
         n_origin=10,
         head_init=torch.zeros(4, 10),
     )
-    assert sum(p.numel() for p in net.parameters()) == 18601
+    assert sum(p.numel() for p in net.parameters()) == 18537
 
 
 def test_the_how_to_names_only_the_pinned_version():
