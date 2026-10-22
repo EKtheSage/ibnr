@@ -756,15 +756,29 @@ def test_the_metric_table_carries_the_new_columns_and_does_not_average_the_count
     assert rolling["rmse"] == pytest.approx(dates["rmse"].mean())
 
 
-#: sha256 values recorded from the evaluator BEFORE the metrics and the companion table were
-#: added, on the synthetic cohort of ``populate``: the verdict record, the differences table and
-#: the metrics table without the new columns. They must not move: the added metrics are
-#: descriptive and feed no decision.
-DECISIONS_BEFORE = {
-    "record": "0b9a3ec7f5beb11e4b70261f8bfc3c73f23135d60f41a63a9f6df410ed5fe9ed",
-    "differences": "6f51093adc6c68148a55e342132593ac32eb14a0aeb4f89ee32c2003dfbc6bb5",
-    "metrics_old_columns": "d961f187f7da3a628d91766898408599d7c7825da500bdcaf80a1710785451e5",
-}
+#: What the evaluator produced BEFORE the metrics and the companion table were added, on the
+#: synthetic cohort of ``populate``: the sha256 of the verdict record, and the differences table
+#: and the metrics table without the new columns as numbers (``tests/data``). They must not move:
+#: the added metrics are descriptive and feed no decision. The tables are compared as numbers
+#: with a tolerance, not as text, because the last digits of a float depend on the platform.
+RECORD_BEFORE = "0b9a3ec7f5beb11e4b70261f8bfc3c73f23135d60f41a63a9f6df410ed5fe9ed"
+TABLES_BEFORE = REPO / "tests" / "data" / "tlrn_study3_decisions_before.json"
+
+
+def same_table(frame, split):
+    assert list(frame.columns) == split["columns"]
+    assert len(frame) == len(split["data"])
+    for column, expected in zip(frame.columns, zip(*split["data"], strict=True), strict=True):
+        got = frame[column].tolist()
+        if all(isinstance(v, (int, float)) or v is None for v in expected):
+            np.testing.assert_allclose(
+                np.array(got, dtype=float),
+                np.array([np.nan if v is None else v for v in expected], dtype=float),
+                rtol=1e-6,
+                atol=1e-9,
+            )
+        else:
+            assert got == list(expected)
 
 
 def test_the_added_metrics_leave_every_decision_output_unchanged(
@@ -772,17 +786,13 @@ def test_the_added_metrics_leave_every_decision_output_unchanged(
 ):
     populate(tmp_path, cohort, sets)
     _, result = run_synthetic(monkeypatch, tmp_path, cohort, cache_dir=tmp_path / "cache")
-
-    def sha(text):
-        return hashlib.sha256(text.encode()).hexdigest()
-
     record = json.dumps(ev.verdict_record(result), default=str, sort_keys=True)
+    assert hashlib.sha256(record.encode()).hexdigest() == RECORD_BEFORE
+    before = json.loads(TABLES_BEFORE.read_text())
     metrics = result["metrics"]
     old = [c for c in metrics.columns if c not in ("rmse", "smape", "n_over")]
-    assert sha(record) == DECISIONS_BEFORE["record"]
-    differences = result["differences"].round(8).to_csv(index=False)
-    assert sha(differences) == DECISIONS_BEFORE["differences"]
-    assert sha(metrics[old].round(8).to_csv(index=False)) == DECISIONS_BEFORE["metrics_old_columns"]
+    same_table(result["differences"], before["differences"])
+    same_table(metrics[old], before["metrics_old_columns"])
 
 
 def test_the_companions_published_constants_are_the_papers_table_10():
