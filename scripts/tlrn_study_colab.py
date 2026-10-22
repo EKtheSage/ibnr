@@ -811,6 +811,8 @@ def fit_valuation(
     ``seed`` is the date's own seed (:func:`date_seed`). Returns the run, the contract and the
     entry that ran it, for :func:`date_tables`.
     """
+    if not config.refit:
+        raise ValueError("the third study's tables compare the refit with the run before it")
     import torch
 
     from ibnr.gallery.nn._scheme import splits
@@ -818,8 +820,6 @@ def fit_valuation(
     from ibnr.kernels.nn_contract import nn_company_data
     from ibnr.kernels.nn_features import tlrn_features
 
-    if not config.refit:
-        raise ValueError("the third study's tables compare the refit with the run before it")
     roles = study_roles()
     incurred, case = roles["incurred_field"], roles["case_field"]
     contract = nn_company_data(
