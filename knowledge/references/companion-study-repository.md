@@ -16,6 +16,12 @@ sources:
 
 A sibling checkout of the companion study's repository, next to this repository.[^repo]
 
+* **Update (2026-10-21).** `Code/tlrn_pipeline_final.ipynb` is no longer where the newest
+  model lives. The repository was reorganised into numbered code files (among them
+  `Code/01_functions.py`, `Code/02_data.py` and `Code/06_train.py`), and its newest model is the
+  one in commits `f50871d` (2026-10-21, read for the third study's audit) and `9e118a7` (the
+  code that produced the results quoted from the companion). Commit `f74addd` is the
+  factor-head model of the second study and is now the companion's earlier final model.
 * **Correction (2026-10-15).** `Code/tlrn_pipeline_best.ipynb` was the best notebook when
   this note was written (2026-10-05): the accident-year variant with the multivariate chain
   ladder blend and retrained calibration. It was deleted upstream on 2026-10-08 (commit

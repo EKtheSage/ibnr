@@ -25,7 +25,9 @@ sys.path.insert(0, str(REPO / "scripts"))
 
 import tlrn_study_colab as study  # noqa: E402
 
-PIN = study.PINNED_IBNR
+#: the first two studies were run with 0.7.4 and their how-to documents say so; the runner's
+#: ``PINNED_IBNR`` is the third study's, and ``tests/test_tlrn_study3_pins.py`` holds it
+PIN = study.get_study("factor_head").pinned_ibnr
 DOCS = ["docs/tlrn-study.md", "docs/tlrn-study2.md"]
 #: ``ibnr==X``, ``ibnr[jax]==X``, a wheel name ``ibnr-X-py3`` and a file stem ``-ibnrX.``
 VERSIONS = re.compile(
@@ -37,12 +39,18 @@ def versions_in(text: str) -> list[str]:
     return [next(g for g in m.groups() if g) for m in VERSIONS.finditer(text)]
 
 
-def test_the_pin_is_a_plain_release_number_and_not_ahead_of_the_package():
-    assert re.fullmatch(r"\d+\.\d+\.\d+", PIN)
+def test_the_pins_are_plain_release_numbers_and_not_ahead_of_the_package():
     import ibnr
 
     here = tuple(int(x) for x in ibnr.__version__.split(".")[:3])
-    assert tuple(int(x) for x in PIN.split(".")) <= here
+    for name in study.STUDIES:
+        pin = study.get_study(name).pinned_ibnr
+        assert re.fullmatch(r"\d+\.\d+\.\d+", pin), name
+        assert tuple(int(x) for x in pin.split(".")) <= here, name
+    assert study.get_study("accident_year").pinned_ibnr == PIN
+    assert study.get_study("companion_final").pinned_ibnr == study.PINNED_IBNR
+    # moving the current pin must not move the earlier studies' records
+    assert PIN == study.EARLIER_PINNED_IBNR != study.PINNED_IBNR
 
 
 @pytest.mark.parametrize("path", DOCS)
@@ -63,9 +71,10 @@ def test_the_first_studys_how_to_installs_from_pypi_and_checks_the_version_after
 
 
 def test_the_runner_docstrings_use_the_pinned_version_in_their_file_names():
+    pins = {study.get_study(name).pinned_ibnr for name in study.STUDIES}
     for name in ("tlrn_study_colab.py", "tlrn_colab.py"):
         text = (REPO / "scripts" / name).read_text(encoding="utf-8")
-        assert set(versions_in(text)) <= {PIN}, name
+        assert set(versions_in(text)) <= pins, name
 
 
 def kit_dirs():

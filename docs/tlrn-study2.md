@@ -16,9 +16,20 @@ of the original rules (the second condition becomes a dollar-pooled statistic, t
 tightened, and what a mixed result across cohorts means is written down) and adds a
 sensitivity analysis; it is listed under "The rule" below.
 
-**Nothing in this study has been run on a GPU yet, and no result exists.** The runner and
-the evaluator were checked on a laptop CPU with tiny budgets only (two members, ten epochs),
-so any number from those smoke runs must never be quoted.
+**Status (corrected 2026-10-21).** This study has been run: the 60 fits finished on a Colab
+GPU on 2026-10-15 and 16 (ibnr 0.7.4), and the results are in
+`analysis/results/tlrn_study2/` and in
+[the findings note](../knowledge/findings/tlrn-factor-head-study-results.md). The overall
+statement the rules fix is **worse on the fresh cohort** (C worse; A and B not
+distinguishable). The sentence that stood here before the run said no result existed, and
+that was true then. The rules below are the pre-registered text and are not changed.
+
+**Superseded model (2026-10-21).** The companion's repository has since moved to a newer
+model (commits `f50871d` and `9e118a7`): it returns to attention across accident years and to
+a premium loss-ratio head, and it refits every network on everything known up to the cutoff.
+The factor-head model this study tested is the companion's earlier final model (commit
+`f74addd`). So this study answers a question about a model the companion no longer
+presents as its final one; the newer model is tested by [the third study](tlrn-study3.md).
 
 ## What is run
 
@@ -125,6 +136,8 @@ run before any training, and a disconnect loses at most the fit that was running
 The earlier accident-year model took about 250 seconds a fit on a Blackwell GPU (Colab G4),
 460 on an A100 and 3,200 on a T4. This model has no accident-year attention, so those are
 estimates, not measurements: plan on about 4 hours for all 60 fits on a G4 or an A100.
+(Measured afterwards, on one Blackwell server GPU: a main fit took 177 to 209 seconds and the
+60 fits 1.65 GPU hours in all; see the findings note.)
 
 ## Scoring on the laptop
 

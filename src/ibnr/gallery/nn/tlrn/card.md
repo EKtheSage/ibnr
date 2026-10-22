@@ -101,6 +101,8 @@ accident-year variant at once.
 | `keep` | 2 of 10 | `None`: every trained member averaged |
 | `scoring` | `all_cells` | `reached_cells`: validation and retrained forecasts score only cells whose development steps the cutoff has seen (lag at most the cutoff) |
 | `calibration` | `rescore_final` | `retrain_per_valuation`: the whole method retrained at each calibration cutoff |
+| `alpha_on` | `all_validation`: alpha fitted on every validation diagonal | `first_diagonal`: alpha fitted on the first validation diagonal only, the checkpoint chosen on the second (needs `member="mcl_blend"` and `val_diagonals=2`) |
+| `refit` | `False` | `True`: each member trained again on every known diagonal, stopped at the epoch it chose |
 
 `premium_lr` starts each (line, lag) ratio at the pooled incremental loss ratio
 known when training starts (a plain mean over the visible cells, floored at 1e-4; a
@@ -113,7 +115,33 @@ its own first test.
 error, refitted at every validation check and kept with the checkpoint that
 validated best (it is a buffer in the state dict), and the multivariate chain
 ladder is refitted on the triangle known at each date. The selection table
-carries each member's alpha.
+carries each member's alpha. With `alpha_on="first_diagonal"` alpha is the
+minimiser on the first validation diagonal alone (that validation set stops at
+its own next diagonal), and the checkpoint is chosen on the blend's error over
+the second validation set alone, so the cells that choose the epoch are not the
+cells that chose alpha. It needs `member="mcl_blend"` and `val_diagonals=2` and
+is refused otherwise.
+
+`refit=True` is the companion's final protocol. After the first run has chosen
+each member's best epoch, the same member is trained again from the same seed,
+on training sets that reach the last known diagonal (the validation diagonals
+included), for exactly that many epochs on the full `max_epochs` schedule, with
+no validation. Alpha is copied over from the first run and not fitted again. The
+premium head's `beta` starts at the pooled incremental loss ratio known at the
+last diagonal, and the factor support is read off the wider sets. The forecasts
+are the refit networks'. The same members as they stood at their chosen epoch
+stay readable from the same run: `company_reserves(selected=True)`,
+`member_company_reserves(selected=True)`, `member_reserves_selected_` and
+`selected_factor_support_`, which is the paired comparison of "with and without
+the refit". `selection_` gains a `refit_epochs` column (the epoch whose weights the first run stored,
+the last check that beat the best score by more than 1e-6; it can precede `best_epoch`, the
+check with the lowest score), and
+`feature_stats_["refit_cutoffs"]` lists the training cutoffs of the refit. Under
+`calibration="retrain_per_valuation"` every retrained valuation date is refit the
+same way. `TLRNConfig.companion_final_variant()` is the accident-year variant
+with `refit=True` and `alpha_on="first_diagonal"`. Both options default off, and
+with them off the fit is identical, weight for weight, to the one before they
+existed.
 
 `retrain_per_valuation` costs a full fit per calibration cutoff, and in exchange
 the forecasts whose errors become the predictive distribution come from a method
@@ -167,7 +195,7 @@ every diagonal still held out at their own cutoff rather than one step only.
 `patience = 600` counts validation checks, so at `check_every = 5` it is 3000
 epochs - the whole budget, and it never fires. That is the protocol: every
 member runs the full schedule and the retained state is its best validation
-checkpoint, with no refit afterwards. `patience = 120` is the 600-epoch
+checkpoint, with no refit afterwards (unless `refit=True`, above). `patience = 120` is the 600-epoch
 early-stopping variant, which is a different run and has to be asked for.
 
 Ten members are trained under independent seeds and the two with the lowest

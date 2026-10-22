@@ -314,6 +314,21 @@ def test_draw_seeds_start_at_the_earlier_fit_and_no_two_streams_collide():
         assert streams[a].isdisjoint(streams[b]), (a, b)
 
 
+def test_study3_date_and_member_seeds_are_all_distinct_across_draws():
+    """Every (draw, date, member) stream of the third study is its own.
+
+    Date ``v`` member ``m`` is seeded ``draw_seed(k) + date_seed offset + 1000 m``. With the
+    old stride of 10,000 a date's member ``m + 10`` repeated the next date's member ``m``.
+    """
+    seeds = [
+        study.date_seed(study.draw_seed(k), v) + 1_000 * m
+        for k in range(10)
+        for v in (6, 7, 8, 10)
+        for m in range(20)
+    ]
+    assert len(seeds) == len(set(seeds)) == 10 * 4 * 20
+
+
 def cohort_stub(name="A", *, data_hash="d" * 16, board=("1", "2", "3")):
     actual = pd.DataFrame(
         {

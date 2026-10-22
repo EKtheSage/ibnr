@@ -24,6 +24,9 @@ outcomes, not a deep ensemble whose members are all averaged, and the entry's
 ``selection_`` table reports every member so the ones that were dropped stay
 visible.
 
+``refit`` and ``alpha_on`` are the two protocol changes of the companion study's newest
+code, both off by default: the default config is still the published protocol, bit for bit.
+
 The switches ``cross_line``, ``factors_only`` and ``cl_anchor`` exist so each
 design choice can be run with and without it. Every one of them is off-by-
 default in the sense that the default is what the study published.
@@ -41,6 +44,13 @@ from ibnr.gallery.nn.tlrn.components import check_combination
 #: example's own cutoff; ``legacy_init`` leaves the parameter at whatever it
 #: drifted to, which is the study's earlier behaviour and is kept switchable.
 TAIL_POLICY: tuple[str, ...] = ("observed_cl", "legacy_init")
+
+#: which validation cells fit the blend weight alpha. ``all_validation`` fits it on every
+#: validation diagonal and scores the blend on the same cells, which is the published
+#: protocol. ``first_diagonal`` fits it on the first validation diagonal only and scores the
+#: blend, which picks the checkpoint, on the second: the cells that choose the epoch are
+#: then not the cells that chose alpha.
+ALPHA_ON: tuple[str, ...] = ("all_validation", "first_diagonal")
 
 
 @dataclass
@@ -95,6 +105,14 @@ class TLRNConfig:
     scoring: str = "all_cells"
     #: the premium head's cap on ``beta + eps * net``, so a ratio is at most e**cap
     lr_cap: float = 5.0
+    #: which validation cells fit alpha under ``member="mcl_blend"``; see :data:`ALPHA_ON`
+    alpha_on: str = "all_validation"
+    #: after the best checkpoint of each member is chosen, train the same member again
+    #: from the same seed on every diagonal known at the cutoff (the validation diagonals
+    #: included) and keep the weights at exactly the epoch the first run chose. Alpha is not
+    #: fitted again. The forecasts are then the refit networks'; the networks as they
+    #: stood at the chosen epoch stay readable (``selected=True`` on the read-outs)
+    refit: bool = False
 
     # loss: the accident-year/line absolute percentage error, a pooled bias
     # penalty, and a squared-error term on the scale the ratios live on
@@ -174,6 +192,23 @@ class TLRNConfig:
         }
         return cls(**{**choices, **overrides})
 
+    @classmethod
+    def companion_final_variant(cls, **overrides) -> TLRNConfig:
+        """The companion study's final model: the accident-year variant, refit, and alpha
+        fitted on one diagonal.
+
+        :meth:`accident_year_variant` plus the two protocol changes of the companion's
+        newest code: ``refit=True`` (each member is retrained on every known diagonal and
+        stopped at the epoch it chose) and ``alpha_on="first_diagonal"`` (alpha from the
+        diagonal before the last known one, the checkpoint chosen on the last). Batches of
+        eight companies, 3000 epochs, twenty members all averaged, learning rates 0.003 for
+        the network and 0.03 for the premium head's ``beta``, and the calibration retrained
+        at valuation dates 6, 7 and 8 are the variant's own and were checked against the
+        companion's training code. ``overrides`` replace any choice.
+        """
+        choices = {"refit": True, "alpha_on": "first_diagonal"}
+        return cls.accident_year_variant(**{**choices, **overrides})
+
     @property
     def n_kept(self) -> int:
         """How many members are averaged: ``keep``, or all of them when it is ``None``."""
@@ -213,6 +248,23 @@ class TLRNConfig:
                 f"got {self.cutoff_sampling!r}"
             )
         check_combination(self)
+        if self.alpha_on not in ALPHA_ON:
+            raise ValueError(f"alpha_on must be one of {list(ALPHA_ON)}, got {self.alpha_on!r}")
+        if self.alpha_on == "first_diagonal":
+            if self.member != "mcl_blend":
+                raise ValueError(
+                    "alpha_on='first_diagonal' says where the blend weight alpha is fitted, and "
+                    f"member={self.member!r} has no alpha. Set member='mcl_blend' or "
+                    "alpha_on='all_validation'"
+                )
+            if self.val_diagonals != 2:
+                raise ValueError(
+                    "alpha_on='first_diagonal' fits alpha on the first validation diagonal and "
+                    "scores the blend on the second, so it needs exactly val_diagonals=2, got "
+                    f"{self.val_diagonals}"
+                )
+        if not isinstance(self.refit, bool):
+            raise ValueError(f"refit must be True or False, got {self.refit!r}")
         if not self.lr_cap > 0:
             raise ValueError(f"lr_cap must be positive, got {self.lr_cap}")
         if self.n_heads < 1 or self.d_model % self.n_heads:

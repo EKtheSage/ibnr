@@ -281,15 +281,27 @@ def paid_squares(cells: pd.DataFrame, pairs) -> tuple[dict, int, int, int]:
     return squares, n_w, n_d, ay0
 
 
-def truth_table(cohort, valuations=VALUATIONS) -> pd.DataFrame:
+def truth_table(cohort, valuations=VALUATIONS, pairs_by_valuation=None) -> pd.DataFrame:
     """Per (valuation, company): the cells scored and the actual paid over them.
 
     Built from the cohort's cells, which hold the later development, so the actual at the
     last known diagonal is the cohort's realised reserve; that equality is checked.
+
+    ``pairs_by_valuation`` is ``{v: pairs}`` when each valuation date has its own company set
+    (the third study, ``tlrn_study_colab.valuation_pairs``); the cells then come from all of
+    the cohort's cells, and the equality is checked when the last date's set is the cohort's.
+    Left out, every date uses ``cohort.pairs``, as before.
     """
-    squares, n_w, n_d, _ = paid_squares(cohort.cells, cohort.pairs)
+    if pairs_by_valuation is None:
+        squares, n_w, n_d, _ = paid_squares(cohort.cells, cohort.pairs)
+        squares_of = {v: squares for v in valuations}
+    else:
+        squares_of = {}
+        for v in valuations:
+            squares_of[v], n_w, n_d, _ = paid_squares(cohort.all_cells, pairs_by_valuation[v])
     rows = []
     for v in valuations:
+        squares = squares_of[v]
         mask = scored_mask(v, n_w, n_d)
         per_company: dict[str, list] = {}
         for (company, _), cum in squares.items():
@@ -304,6 +316,8 @@ def truth_table(cohort, valuations=VALUATIONS) -> pd.DataFrame:
             for c, (n, a) in sorted(per_company.items())
         ]
     out = pd.DataFrame(rows)
+    if pairs_by_valuation is not None and pairs_by_valuation.get(LAST) != cohort.pairs:
+        return out
     last = out[out["valuation"] == LAST].set_index("company_code")["actual"]
     want = cohort.actual["actual_reserve"].reindex(last.index)
     gap = float((last - want).abs().max())
@@ -361,7 +375,9 @@ def mcl_cell_grids(entry, n_w: int, n_d: int, ay0: int) -> dict[str, np.ndarray]
     return out
 
 
-def benchmark_cells(cohort, valuations=VALUATIONS, *, log=print) -> pd.DataFrame:
+def benchmark_cells(
+    cohort, valuations=VALUATIONS, *, log=print, pairs_by_valuation=None
+) -> pd.DataFrame:
     """``mack`` and ``mcl`` per (valuation, company) on exactly the scored cells.
 
     Fitted by ibnr's gallery entries as the first study fits them (``mack`` per
@@ -370,26 +386,38 @@ def benchmark_cells(cohort, valuations=VALUATIONS, *, log=print) -> pd.DataFrame
     A company either benchmark refuses, or that ``mack`` fits on only some of its lines, is
     NaN for it at that valuation. The frame also carries the evaluator's own ``actual`` and
     ``n_cells``.
+
+    With ``pairs_by_valuation`` (``{v: pairs}``, the third study's company set at each date)
+    each date fits and scores exactly its own set, from all of the cohort's cells: every
+    company of the set is scored, and a company either benchmark refuses is NaN for it.
     """
     from ibnr import gallery
 
-    squares, n_w, n_d, ay0 = paid_squares(cohort.cells, cohort.pairs)
-    tri = study.triangle_from_cells(cohort.cells, cohort.pairs)
+    per_date = pairs_by_valuation is not None
+    if per_date:
+        union = sorted({pair for v in valuations for pair in pairs_by_valuation[v]})
+        squares, n_w, n_d, ay0 = paid_squares(cohort.all_cells, union)
+        tri = study.triangle_from_cells(cohort.all_cells, union)
+    else:
+        squares, n_w, n_d, ay0 = paid_squares(cohort.cells, cohort.pairs)
+        tri = study.triangle_from_cells(cohort.cells, cohort.pairs)
     e = tri.expr
-    truth = truth_table(cohort, valuations)
-    lines_of: dict[str, list] = {}
-    for company, line in cohort.pairs:
-        lines_of.setdefault(company, []).append(line)
+    truth = truth_table(cohort, valuations, pairs_by_valuation)
     fit_kwargs = dict(loss_field=tlrn_colab.FIELD)
     t0 = time.perf_counter()
     refused = {b: 0 for b in BENCHMARKS}
     rows = []
-    board = set(cohort.board)
     for v in valuations:
+        pairs_v = pairs_by_valuation[v] if per_date else cohort.pairs
+        lines_of: dict[str, list] = {}
+        for company, line in pairs_v:
+            lines_of.setdefault(company, []).append(line)
+        scored = sorted(lines_of) if per_date else list(cohort.board)
+        board = set(scored)
         mask = scored_mask(v, n_w, n_d)
         as_of = valuation_date(ay0, v)
         mack = {}
-        for company, line in cohort.pairs:
+        for company, line in pairs_v:
             if company not in board:
                 continue
             sub = tri.filter((e.company_code == company) & (e.line_of_business == line))
@@ -401,15 +429,17 @@ def benchmark_cells(cohort, valuations=VALUATIONS, *, log=print) -> pd.DataFrame
                 mack[(company, line)] = float(inc.sum()) if np.isfinite(inc).all() else np.nan
             except Exception:
                 refused["mack"] += 1
-        for company in cohort.board:
+        for company in scored:
             pairs = [(company, ln) for ln in lines_of[company]]
             got = [mack.get(p, np.nan) for p in pairs]
             mack_total = float(sum(got)) if np.isfinite(got).all() else np.nan
             mcl_total = np.nan
             try:
-                entry = gallery.fit(
-                    "mcl", tri.filter(e.company_code == company), **fit_kwargs, as_of=as_of
-                )
+                # only the lines this date's set holds: with a set per date the triangle also
+                # carries lines that a later date no longer selects, and the entry would fit
+                # (and then be refused for) lines the date does not score
+                own = (e.company_code == company) & e.line_of_business.isin(lines_of[company])
+                entry = gallery.fit("mcl", tri.filter(own), **fit_kwargs, as_of=as_of)
                 grids = mcl_cell_grids(entry, n_w, n_d, ay0)
                 if set(grids) == set(lines_of[company]):
                     inc = [increments(g)[mask] for g in grids.values()]
@@ -564,7 +594,9 @@ def load_fits(folder: Path, cohort: str, row: str, *, smoke: bool) -> list[Fit]:
 PLUMBING_TOL = 1e-6
 
 
-def check_fits_against_cohort(cohort, row: str, fits: list[Fit], *, strict: bool = False) -> str:
+def check_fits_against_cohort(
+    cohort, row: str, fits: list[Fit], *, strict: bool = False, study_name: str = "factor_head"
+) -> str:
     """Refuse a fit made for another cohort; return a note when only the cell hash differs.
 
     The cohort hash (the pairs), the publish id, the study number and name and the
@@ -578,7 +610,7 @@ def check_fits_against_cohort(cohort, row: str, fits: list[Fit], *, strict: bool
     from collections import Counter
 
     where = f"cohort {cohort.name} {row}"
-    spec = study.get_study("factor_head")
+    spec = study.get_study(study_name)
     for fit in fits:
         s = fit.settings
         for key, want in (

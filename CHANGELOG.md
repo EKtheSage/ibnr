@@ -19,6 +19,55 @@ corrected decision 8 - and, from 0.7.2,
 From 0.7.2 the minor number is kept for milestones: additions and fixes ship as
 patch releases, and 0.8 comes when the roadmap's goals are done.
 
+## 0.7.6 - 2026-10-21
+
+A patch release that adds two protocol options to `tlrn`, a preset that bundles them with
+the accident-year variant, and the runner for the third tlrn study. **Nothing that already
+ran changes**: both options default to the earlier behaviour, and a fit with them off gives
+the same weights and forecasts as 0.7.5 (checked weight for weight on the torch and the jax
+backends, for the default, `member="mcl_blend"` and accident-year configurations). The
+public surface of `ibnr.methods` and `ibnr.gallery` is untouched.
+
+### `tlrn`: `refit`, `alpha_on` and `TLRNConfig.companion_final_variant()`
+
+* `TLRNConfig.refit` (default `False`). After the first run has chosen each member's best
+  epoch, the member is trained again from the same seed on training sets that reach the last
+  known diagonal, to exactly that epoch, with no validation and with alpha copied over. The
+  forecasts and `company_reserves()` are the refit networks'; the
+  same members before the refit stay readable from the same run through
+  `company_reserves(selected=True)`, `member_company_reserves(selected=True)`,
+  `member_reserves_selected_` and `selected_factor_support_` (each raises `ValueError` on a
+  fit made without a refit). `selection_` gains a `refit_epochs` column and
+  `feature_stats_["refit_cutoffs"]` is filled. A member with no finite validation score is
+  refused by name, because there is no epoch to stop at. It works on both backends and with
+  `processes > 1`, and under `calibration="retrain_per_valuation"` every retrained date is
+  refit.
+* `TLRNConfig.alpha_on` (default `"all_validation"`, the earlier behaviour). `"first_diagonal"`
+  fits the blend weight on the first validation diagonal alone and chooses the checkpoint on
+  the second; it needs `member="mcl_blend"` and `val_diagonals=2` and is refused otherwise.
+* `TLRNConfig.companion_final_variant(**overrides)`: `accident_year_variant()` with
+  `refit=True` and `alpha_on="first_diagonal"`.
+* The refit stops at the epoch whose weights the first run stored (the last check that beat
+  the best score by more than 1e-6), which `refit_epochs` records. That can precede the check
+  with the lowest score, which `best_epoch` still reports unchanged, so `refit_epochs` and
+  `best_epoch` may differ. A default fit is unchanged.
+* A refit (or any protocol) whose scored cells include a training target is refused by name
+  (`look-ahead`).
+* Private signatures that changed, for anyone who reached into them: `TLRN._blend_ay_line_ape`
+  takes `alpha_first=`, `jax_backend.train_protocols` takes `stops=`, `Spec` has `alpha_first`,
+  and the worker pool's jobs are `(protocol, member, stop)`.
+
+### The third tlrn study (scripts and knowledge only)
+
+`scripts/tlrn_colab.py --config companion_final` adds the rows `tlrn_cf_refit` (one run that
+gives both the refit and the without-refit forecasts) and `tlrn_cf_factors` (network off).
+`scripts/tlrn_study_colab.py --study companion_final` fits cohorts B and C draw by draw with
+each valuation date (6, 7, 8 and 10) on its own `select_pairs(cutoff=v)` company set, and
+saves the per-date tables with the without-refit columns. `scripts/tlrn_study2_eval.py`'s
+`truth_table` and `benchmark_cells` take an optional `pairs_by_valuation`; without it they do
+what they did. The third study's Colab notebook (`analysis/05_tlrn_study3_on_colab.ipynb`) pins 0.7.6 through a per-study pin
+(`Study.pinned_ibnr`); the first two studies keep 0.7.4 and their records and how-to documents are unchanged.
+
 ## 0.7.5 - 2026-10-18
 
 A patch release over three new functions at the `ibnr.methods` front door
@@ -404,6 +453,10 @@ identical except for that message in 71 of them. `fit_mack_grid`'s
 comparison covers its ultimates, factors and run-off standard errors.
 
 ### The second tlrn study, on the companion's final model (scripts, tests, notebook and knowledge only)
+
+Note added 2026-10-21: "final" here means the companion's model at commit `f74addd` (2026-10-08).
+The companion has since moved to a newer model (commits `f50871d` and `9e118a7`), which the
+third study (0.7.6) tests.
 
 `scripts/tlrn_study_colab.py --study factor_head` trains the companion study's newest model
 (13 features, a factor head, line and lag attention, blended with the multivariate chain
