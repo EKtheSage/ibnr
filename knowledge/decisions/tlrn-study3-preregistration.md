@@ -3,7 +3,7 @@ type: Decision
 title: The third tlrn study, on the companion's refit model
 description: "Pre-registration, written before any code or fit exists (2026-10-21), of ibnr's third tlrn study: the companion's newest model (premium loss-ratio head, attention across accident years, company batches, networks retrained on everything known up to the cutoff, alpha fitted on one diagonal and the epoch chosen on the next, companies picked separately at each valuation date). Two co-primary questions: does the refit help (paired, with and without refit from the same training run), and is the model effective against the chain ladder and the multivariate chain ladder. Also fixes the cohorts and the per-date selection rule, ten draws, the benchmarks, the statistics, every decision rule as a number, the known deviations from the companion, the budget and stopping rules, the questions for the companion's author and the choices still open."
 tags: [tlrn, evaluation, preregistration, colab, companion-study, decision]
-status: draft
+status: accepted
 generated: { by: claude-code/claude-sonnet-5-5, at: 2026-10-21T12:00:00Z }
 stale_after: 2027-04-21T00:00:00Z
 sources:
@@ -614,3 +614,5 @@ None of these is decided in this note; each has a stated default.
 
 [^request]: Ethan's instruction in the 2026-10-21 working session
 [^second-results]: The results of the second tlrn study
+
+**Accepted 2026-10-22.** Ethan accepted this note as written, taking the defaults for all ten open items (ten draws, cohorts B3 and C3, no `head=ldf` control, the blended forecast as the primary arm), and kept the library's own per-date seed spacing unchanged.
