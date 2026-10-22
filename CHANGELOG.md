@@ -87,6 +87,8 @@ saves the per-date tables with the without-refit columns. `scripts/tlrn_study2_e
 what they did. The third study's Colab notebook (`analysis/05_tlrn_study3_on_colab.ipynb`) pins 0.7.6 through a per-study pin
 (`Study.pinned_ibnr`); the first two studies keep 0.7.4 and their records and how-to documents are unchanged.
 
+Scripts only, no library change: the third study's notebook installs `ibnr[jax]==0.7.6` from PyPI and downloads the two runner scripts with a read-only GitHub token kept as the Colab secret `GITHUB_TOKEN` (no zip; the results are read from the Drive folder), and `scripts/tlrn_study2_eval.py`'s `point_metrics` gains `rmse`, `smape` and `n_over`, which the second and third studies' metric tables and the third study's report show, with a table of the companion's published figures beside ibnr's draws. No decision rule changed.
+
 ## 0.7.5 - 2026-10-18
 
 A patch release over three new functions at the `ibnr.methods` front door

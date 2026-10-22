@@ -1,6 +1,7 @@
 # Knowledge Update Log
 
 ## 2026-10-22
+* **Update**: [The third tlrn study's pre-registration](/decisions/tlrn-study3-preregistration.md) gained a second dated amendment before any fit: the notebook installs from PyPI and downloads the runner scripts with a read-only token (no zip), the evaluator adds RMSE, SMAPE and the over-estimated count, a descriptive table sets the companion's published figures beside ibnr's draws, and the median alpha discrepancy (0.45 against 0.476) is recorded. No decision rule and not the evaluator's docstring changed. No fit exists.
 * **Update**: [The third tlrn study's pre-registration](/decisions/tlrn-study3-preregistration.md) gained a dated amendment before any fit: two opt-in network options (`empty_query_bias`, `compact_embeddings`) make ibnr's preset the companion's network in function and size (18,537 parameters, built and counted), the earlier account of the extra 64 parameters is corrected (unreachable embedding rows), and the remaining deviations are listed. [The companion's final architecture](/findings/companion-final-architecture.md) gained a pointer to the new count. No fit exists.
 
 ## 2026-10-21

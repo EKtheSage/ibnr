@@ -184,6 +184,66 @@ POINT = 0.01
 #: the companion's relayed figures at valuation 10, in points (reported, not verified here)
 COMPANION_BLEND = 3.93
 COMPANION_NETWORK = 2.96
+#: The companion's published figures on B3 at valuation 10, in ONE place. Source: the paper's
+#: Table 10 and the companion's code at commit f50871d (``Code/07_estimates.py``). Units are
+#: the table's: ``pool_ape``, ``medape`` and ``pool_pe`` in percent, ``smape`` on its 0 to 200
+#: scale, ``mape`` a ratio, ``mae``, ``rmse`` and ``wrmse`` in USD thousands (the Schedule P
+#: mart's own units, so ibnr's amounts need no conversion), ``n_over`` a count of companies.
+COMPANION_PUBLISHED = {
+    "blend": {
+        "pool_ape": 3.93,
+        "mae": 10578,
+        "rmse": 31021,
+        "wrmse": 157581,
+        "medape": 12.54,
+        "mape": 0.62,
+        "smape": 23.89,
+        "pool_pe": 0.05,
+        "n_over": 53,
+    },
+    "network": {
+        "pool_ape": 2.96,
+        "mae": 7955,
+        "rmse": 20177,
+        "wrmse": 55985,
+        "medape": 12.28,
+        "mape": 0.36,
+        "smape": 22.18,
+        "pool_pe": 0.82,
+        "n_over": 52,
+    },
+    "cl_mcl": {
+        "pool_ape": 5.41,
+        "mae": 14562,
+        "rmse": 44278,
+        "wrmse": 242026,
+        "medape": 17.83,
+        "mape": 0.91,
+        "smape": 28.51,
+        "pool_pe": -0.47,
+        "n_over": 41,
+    },
+    "chain_ladder": {
+        "pool_ape": 5.48,
+        "mae": 14754,
+        "rmse": 56731,
+        "wrmse": 300308,
+        "medape": 13.42,
+        "mape": 1.14,
+        "smape": 26.29,
+        "pool_pe": 0.73,
+        "n_over": 48,
+    },
+    "blend_no_refit_pool_ape": 4.88,
+    "date_average_pool_ape_no_refit": 4.02,
+    "date_average_pool_ape_refit": 4.36,
+    "median_alpha": 0.476,
+    "companies_per_date": (90, 89, 87, 84),
+}
+#: percent quantities in the table, which ibnr holds as fractions
+COMPANION_PERCENT = ("pool_ape", "medape", "pool_pe")
+#: methods in the companion's table that ibnr did not run
+COMPANION_NOT_RUN = ("CL+SUR", "Cape Cod", "Cape Cod + SUR/MCL")
 #: R1 and R2 thresholds and the failure distance, in points
 R1_TOLERANCE = 0.5
 R2_DIFFERENCE = -0.5
@@ -513,7 +573,7 @@ def metric_table(series: dict, actual, mask, bench: dict) -> pd.DataFrame:
                     )["share_better_than_benchmark"]
             per.append({"method": method, "valuation": str(v), **row})
         rows += per
-        keys = [k for k in per[0] if k not in ("method", "valuation", "n", "n_log")]
+        keys = [k for k in per[0] if k not in ("method", "valuation", "n", "n_log", "n_over")]
         rows.append(
             {"method": method, "valuation": "rolling"}
             | {k: float(np.mean([r[k] for r in per])) for k in keys}
@@ -521,6 +581,115 @@ def metric_table(series: dict, actual, mask, bench: dict) -> pd.DataFrame:
         rows.append(
             {"method": method, "valuation": "pooled", "pool_ape": pooled_ape(pred, actual, mask)}
         )
+    return pd.DataFrame(rows)
+
+
+def _beside(quantity: str, companion: float, values, note: str = "") -> dict:
+    """One row of the companion table: his value and ibnr's draws' mean, min, max and rank."""
+    row = {"quantity": quantity, "companion": companion, "note": note}
+    if values is None:
+        return row | {
+            "ibnr_mean": np.nan,
+            "ibnr_min": np.nan,
+            "ibnr_max": np.nan,
+            "n_draws": 0,
+            "draws_below": np.nan,
+            "draws_above": np.nan,
+            "note": note or "not run in ibnr",
+        }
+    v = np.asarray(values, dtype=float)
+    return row | {
+        "ibnr_mean": float(v.mean()),
+        "ibnr_min": float(v.min()),
+        "ibnr_max": float(v.max()),
+        "n_draws": int(v.size),
+        "draws_below": int((v < companion).sum()),
+        "draws_above": int((v > companion).sum()),
+    }
+
+
+def companion_beside_ours(result: dict, main_fits: list) -> pd.DataFrame:
+    """The companion's published figures next to ibnr's draws (B3, valuation 10). DESCRIPTIVE.
+
+    This is not a decision rule and feeds none. The companion reports one fit; ibnr has ten
+    draws, each a complete fit, and the random streams cannot be aligned, so the table shows
+    where his number falls among ours. For each figure: his value, ibnr's mean, minimum and
+    maximum over the draws, and how many draws lie below and above his value. Percent
+    quantities are converted from ibnr's fractions; amounts are USD thousands on both sides.
+    """
+    mask, actual, draws = result["mask"], result["actual"], result["draws"]
+    i = LAST_I
+    inside = mask[i]
+    pub = COMPANION_PUBLISHED
+
+    def metrics(pred) -> dict:
+        m = ev2.point_metrics(pred[inside], actual[i][inside])
+        return {k: (100 * x if k in COMPANION_PERCENT else x) for k, x in m.items()}
+
+    def per_draw(arm, key):
+        return [metrics(d[i])[key] for d in draws[arm]] if arm in draws else None
+
+    sources = {
+        "blend": ("tlrn_cf_refit blended", lambda k: per_draw(REFIT, k)),
+        "network": ("raw network alone", lambda k: per_draw(RAW_NETWORK, k)),
+        "chain_ladder": (
+            "chain ladder (mack)",
+            lambda k: [metrics(result["series"]["mack"][i])[k]],
+        ),
+        "cl_mcl": ("CL+MCL", lambda k: None),
+    }
+    labels = {
+        "pool_ape": "Pool APE (%)",
+        "mae": "MAE",
+        "rmse": "RMSE",
+        "wrmse": "wRMSE",
+        "medape": "MedAPE (%)",
+        "mape": "MAPE (ratio)",
+        "smape": "SMAPE (0 to 200)",
+        "pool_pe": "Pool PE (%)",
+        "n_over": "over-estimated companies",
+    }
+    rows = []
+    for key, (name, getter) in sources.items():
+        note = "not run in ibnr (mack and mcl are scored separately)" if key == "cl_mcl" else ""
+        for metric, label in labels.items():
+            rows.append(_beside(f"{name}: {label}", pub[key][metric], getter(metric), note))
+    if NOREFIT in draws:
+        rows.append(
+            _beside(
+                "blended without refit: Pool APE (%)",
+                pub["blend_no_refit_pool_ape"],
+                per_draw(NOREFIT, "pool_ape"),
+            )
+        )
+    for arm, label, key in (
+        (NOREFIT, "date-average Pool APE without refit (%)", "date_average_pool_ape_no_refit"),
+        (REFIT, "date-average Pool APE with refit (%)", "date_average_pool_ape_refit"),
+    ):
+        if arm in draws:
+            vals = [100 * float(pool_ape_v(d, actual, mask).mean()) for d in draws[arm]]
+            rows.append(_beside(label, pub[key], vals))
+    members = [f.members for f in main_fits]
+    last = [m[m["valuation"].astype(int) == LAST] for m in members]
+    rows.append(
+        _beside(
+            f"median alpha at valuation {LAST} (per draw)",
+            pub["median_alpha"],
+            [float(m["alpha"].median()) for m in last],
+            "pre-registration text says about 0.45, the companion's Table 10 says 0.476",
+        )
+    )
+    rows.append(
+        _beside(
+            "median alpha over all four dates (per draw)",
+            pub["median_alpha"],
+            [float(m["alpha"].median()) for m in members],
+        )
+    )
+    for j, (v, theirs) in enumerate(zip(VALUATIONS, pub["companies_per_date"], strict=True)):
+        rows.append(_beside(f"companies at valuation {v}", theirs, [float(mask[j].sum())]))
+    for name in COMPANION_NOT_RUN:
+        rows.append(_beside(f"{name} (his table)", np.nan, None, "not run in ibnr"))
     return pd.DataFrame(rows)
 
 
@@ -1067,6 +1236,8 @@ def evaluate_cohort(cohort, fits_by_row: dict, bench: pd.DataFrame, sets: dict) 
             net = float(pool_ape_v(series[RAW_NETWORK], actual, mask)[LAST_I]) / POINT
             result["replication"] = replication_label(m, lo, hi, d["last"]["diff"] / POINT, net)
         result["alpha"] = ev2.alpha_spread(main_fits)
+        if cohort.name == "B":
+            result["companion"] = companion_beside_ours(result, main_fits)
     if main_fits and factor_fits:
         net_d = versus(REFIT, FACTORS, counts)
         net = decide_secondary(
@@ -1269,6 +1440,16 @@ def render(cohort, result: dict, extras: dict, banner: str) -> str:
     if "alpha" in result:
         lines += ["", "Spread of the blend weight alpha over members and draws:"]
         lines.append(result["alpha"].round(4).to_string(index=False))
+    if "companion" in result:
+        lines += [
+            "",
+            "THE COMPANION'S NUMBERS BESIDE OURS (descriptive, not a decision rule): B3, "
+            f"valuation {LAST}. His figures are one fit (paper Table 10); ours are the "
+            "per-draw values of ten complete fits. The random streams cannot be aligned, so "
+            "this shows where his number falls in our spread and nothing more. Percent "
+            "figures are in percent, amounts in USD thousands on both sides.",
+            result["companion"].round(4).to_string(index=False),
+        ]
     return "\n".join(lines)
 
 
@@ -1339,6 +1520,8 @@ def save_tables(out: Path, cohort, result: dict) -> None:
     company_table(result).to_csv(out / f"{name}_company_predictions.csv", index=False)
     if "alpha" in result:
         result["alpha"].to_csv(out / f"{name}_alpha_spread.csv", index=False)
+    if "companion" in result:
+        result["companion"].to_csv(out / f"{name}_companion_beside_ours.csv", index=False)
     if "p1" in result:
         p1 = result["p1"]
         pd.DataFrame(

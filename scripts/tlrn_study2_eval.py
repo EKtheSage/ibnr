@@ -903,12 +903,23 @@ def point_metrics(pred, actual, *, bench=None) -> dict:
     positive (``n_log`` of them); ``wrmse`` is the square root of the actual-weighted mean
     squared error. ``mape`` and ``wrmse`` are descriptive only. With ``bench`` the share of
     companies where the absolute error is smaller than the benchmark's is added.
+
+    Three descriptive metrics follow the companion's own definitions (commit ``f50871d``,
+    ``Code/07_estimates.py`` lines 20 to 36), so a table can sit beside the paper's. ``rmse`` is
+    the square root of the mean squared error (in the amounts' units, USD thousands for
+    Schedule P). ``smape`` is the mean over companies of ``200 |error| / (|predicted| +
+    |actual|)``, on a 0 to 200 scale (percent, like the paper's 23.89), skipping a company
+    where both are zero. ``n_over`` is the number of companies whose predicted reserve is above
+    the actual one (a count; the companion reports the share and the paper's table the count).
+    ``mape`` stays a ratio (0.62 in the paper) and ``pool_ape`` and ``pool_pe`` stay fractions.
     """
     p, a = np.asarray(pred, dtype=float), np.asarray(actual, dtype=float)
     err = p - a
     nonzero = a != 0
     ape = np.abs(err[nonzero]) / np.abs(a[nonzero])
     both = (a > 0) & (p > 0)
+    scale = np.abs(p) + np.abs(a)
+    smape_terms = 200.0 * np.abs(err[scale > 0]) / scale[scale > 0]
     out = {
         "n": int(a.size),
         "pool_ape": float(np.abs(err).sum() / a.sum()),
@@ -919,6 +930,9 @@ def point_metrics(pred, actual, *, bench=None) -> dict:
         "n_log": int(both.sum()),
         "mape": float(ape.mean()) if ape.size else float("nan"),
         "wrmse": float(np.sqrt((a * err**2).sum() / a.sum())),
+        "rmse": float(np.sqrt((err**2).mean())),
+        "smape": float(np.mean(smape_terms)) if smape_terms.size else float("nan"),
+        "n_over": int((err > 0).sum()),
     }
     if bench is not None:
         b = np.asarray(bench, dtype=float)
@@ -1046,7 +1060,7 @@ def metric_table(series: dict, actual: np.ndarray, bench: dict) -> pd.DataFrame:
                     )["share_better_than_benchmark"]
             per.append({"method": method, "valuation": str(v), **row})
         rows += per
-        keys = [k for k in per[0] if k not in ("method", "valuation", "n", "n_log")]
+        keys = [k for k in per[0] if k not in ("method", "valuation", "n", "n_log", "n_over")]
         mean = {k: float(np.mean([r[k] for r in per])) for k in keys}
         rows.append({"method": method, "valuation": "rolling", **mean})
     return pd.DataFrame(rows)

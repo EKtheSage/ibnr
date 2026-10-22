@@ -714,3 +714,146 @@ def test_mcl_at_a_date_fits_only_that_dates_lines():
     ref = ev2.benchmark_cells(plain, log=lambda *_: None)
     ref10 = ref[(ref["valuation"] == 10) & (ref["company_code"] == "0002")]
     assert at10[["mack", "mcl"]].to_numpy() == pytest.approx(ref10[["mack", "mcl"]].to_numpy())
+
+
+# -- the added metrics (RMSE, SMAPE, over-estimated count) and the companion's numbers -------------
+
+
+def test_rmse_smape_and_the_over_estimated_count_follow_the_companions_definitions():
+    # the companion's Code/07_estimates.py lines 20 to 36: err = pred - actual; RMSE = sqrt of
+    # the mean squared error; SMAPE = mean of 200 |err| / (|pred| + |actual|) on a 0 to 200
+    # scale; "over" = err > 0
+    pred = np.array([110.0, 5.0, 25.0, 10.0])
+    actual = np.array([100.0, 0.0, 50.0, 10.0])
+    got = ev2.point_metrics(pred, actual)
+    assert got["rmse"] == pytest.approx(np.sqrt((100 + 25 + 625 + 0) / 4))
+    terms = [200 * 10 / 210, 200 * 5 / 5, 200 * 25 / 75, 0.0]  # a zero actual still has a term
+    assert got["smape"] == pytest.approx(np.mean(terms))
+    assert got["n_over"] == 2
+    # equal predictions are not over-estimates, and a company with both amounts zero has no
+    # SMAPE term at all (the companion's NaN, skipped by his nanmean)
+    tie = ev2.point_metrics(np.array([0.0, 10.0, 12.0]), np.array([0.0, 10.0, 6.0]))
+    assert tie["n_over"] == 1
+    assert tie["smape"] == pytest.approx(np.mean([0.0, 200 * 6 / 18]))
+    assert ev2.point_metrics(np.array([0.0, 4.0]), np.array([0.0, 4.0]))["smape"] == 0.0
+
+
+def test_the_metric_table_carries_the_new_columns_and_does_not_average_the_count():
+    rng = np.random.default_rng(3)
+    actual = rng.uniform(50, 100, (V, 6))
+    pred = actual * rng.uniform(0.8, 1.2, (V, 6))
+    mask = np.ones((V, 6), dtype=bool)
+    table = ev.metric_table({"m": pred}, actual, mask, {"mack": actual, "mcl": actual})
+    per = table[table["method"] == "m"]
+    for column in ("rmse", "smape", "n_over"):
+        assert column in table.columns
+    first_row = per[per["valuation"] == "6"].iloc[0]
+    assert first_row["rmse"] == pytest.approx(np.sqrt(np.mean((pred[0] - actual[0]) ** 2)))
+    assert first_row["n_over"] == int((pred[0] > actual[0]).sum())
+    rolling = per[per["valuation"] == "rolling"].iloc[0]
+    assert np.isnan(rolling["n_over"])  # a count is not averaged over dates
+    dates = per[per["valuation"].isin(["6", "7", "8", "10"])]
+    assert rolling["rmse"] == pytest.approx(dates["rmse"].mean())
+
+
+#: sha256 values recorded from the evaluator BEFORE the metrics and the companion table were
+#: added, on the synthetic cohort of ``populate``: the verdict record, the differences table and
+#: the metrics table without the new columns. They must not move: the added metrics are
+#: descriptive and feed no decision.
+DECISIONS_BEFORE = {
+    "record": "0b9a3ec7f5beb11e4b70261f8bfc3c73f23135d60f41a63a9f6df410ed5fe9ed",
+    "differences": "6f51093adc6c68148a55e342132593ac32eb14a0aeb4f89ee32c2003dfbc6bb5",
+    "metrics_old_columns": "d961f187f7da3a628d91766898408599d7c7825da500bdcaf80a1710785451e5",
+}
+
+
+def test_the_added_metrics_leave_every_decision_output_unchanged(
+    tmp_path, monkeypatch, cohort, sets
+):
+    populate(tmp_path, cohort, sets)
+    _, result = run_synthetic(monkeypatch, tmp_path, cohort, cache_dir=tmp_path / "cache")
+
+    def sha(text):
+        return hashlib.sha256(text.encode()).hexdigest()
+
+    record = json.dumps(ev.verdict_record(result), default=str, sort_keys=True)
+    metrics = result["metrics"]
+    old = [c for c in metrics.columns if c not in ("rmse", "smape", "n_over")]
+    assert sha(record) == DECISIONS_BEFORE["record"]
+    differences = result["differences"].round(8).to_csv(index=False)
+    assert sha(differences) == DECISIONS_BEFORE["differences"]
+    assert sha(metrics[old].round(8).to_csv(index=False)) == DECISIONS_BEFORE["metrics_old_columns"]
+
+
+def test_the_companions_published_constants_are_the_papers_table_10():
+    pub = ev.COMPANION_PUBLISHED
+    assert pub["blend"] == {
+        "pool_ape": 3.93, "mae": 10578, "rmse": 31021, "wrmse": 157581, "medape": 12.54,
+        "mape": 0.62, "smape": 23.89, "pool_pe": 0.05, "n_over": 53,
+    }  # fmt: skip
+    assert pub["network"] == {
+        "pool_ape": 2.96, "mae": 7955, "rmse": 20177, "wrmse": 55985, "medape": 12.28,
+        "mape": 0.36, "smape": 22.18, "pool_pe": 0.82, "n_over": 52,
+    }  # fmt: skip
+    assert pub["cl_mcl"] == {
+        "pool_ape": 5.41, "mae": 14562, "rmse": 44278, "wrmse": 242026, "medape": 17.83,
+        "mape": 0.91, "smape": 28.51, "pool_pe": -0.47, "n_over": 41,
+    }  # fmt: skip
+    assert pub["chain_ladder"] == {
+        "pool_ape": 5.48, "mae": 14754, "rmse": 56731, "wrmse": 300308, "medape": 13.42,
+        "mape": 1.14, "smape": 26.29, "pool_pe": 0.73, "n_over": 48,
+    }  # fmt: skip
+    assert pub["blend_no_refit_pool_ape"] == 4.88
+    assert pub["date_average_pool_ape_no_refit"] == 4.02
+    assert pub["date_average_pool_ape_refit"] == 4.36
+    assert pub["median_alpha"] == 0.476
+    assert pub["companies_per_date"] == (90, 89, 87, 84)
+    # the replication rule's two constants are the same numbers
+    assert pub["blend"]["pool_ape"] == ev.COMPANION_BLEND
+    assert pub["network"]["pool_ape"] == ev.COMPANION_NETWORK
+    assert ev.COMPANION_NOT_RUN == ("CL+SUR", "Cape Cod", "Cape Cod + SUR/MCL")
+
+
+def test_the_companion_table_sits_beside_ours_and_is_written_and_reported(
+    tmp_path, monkeypatch, cohort, sets
+):
+    populate(tmp_path, cohort, sets)
+    cohort_, result = run_synthetic(monkeypatch, tmp_path, cohort, cache_dir=tmp_path / "cache")
+    table = result["companion"].set_index("quantity")
+    pub = ev.COMPANION_PUBLISHED
+    i, inside = ev.LAST_I, result["mask"][ev.LAST_I]
+    # the chain ladder row is mack's own number, in the companion's units (percent)
+    mack = ev2.point_metrics(result["series"]["mack"][i][inside], result["actual"][i][inside])
+    row = table.loc["chain ladder (mack): Pool APE (%)"]
+    assert row["companion"] == 5.48 and row["ibnr_mean"] == pytest.approx(100 * mack["pool_ape"])
+    assert row["ibnr_min"] == row["ibnr_max"] and row["n_draws"] == 1
+    assert table.loc["chain ladder (mack): RMSE", "ibnr_mean"] == pytest.approx(mack["rmse"])
+    mape = table.loc["chain ladder (mack): MAPE (ratio)", "ibnr_mean"]
+    assert mape == pytest.approx(mack["mape"])
+    # a blended row is over ten draws, ranked against his number
+    blend = table.loc["tlrn_cf_refit blended: Pool APE (%)"]
+    per = [
+        100 * ev2.point_metrics(d[i][inside], result["actual"][i][inside])["pool_ape"]
+        for d in result["draws"][ev.REFIT]
+    ]
+    assert blend["n_draws"] == 10 and blend["ibnr_min"] == pytest.approx(min(per))
+    assert blend["draws_below"] == sum(x < 3.93 for x in per)
+    assert blend["draws_above"] == sum(x > 3.93 for x in per)
+    assert blend["companion"] == pub["blend"]["pool_ape"]
+    # the median alpha: the synthetic members are 0.4 and 0.5 at every date
+    alpha = table.loc[f"median alpha at valuation {ev.LAST} (per draw)"]
+    assert alpha["ibnr_mean"] == pytest.approx(0.45) and alpha["companion"] == 0.476
+    assert "0.45" in alpha["note"] and "0.476" in alpha["note"]
+    # companies per date are ours, deterministic
+    assert table.loc["companies at valuation 10", "ibnr_mean"] == inside.sum()
+    # the methods ibnr did not run are listed, not dropped
+    for name in ("CL+SUR", "Cape Cod", "Cape Cod + SUR/MCL"):
+        assert table.loc[f"{name} (his table)", "note"] == "not run in ibnr"
+    assert table.loc["CL+MCL: Pool APE (%)", "note"].startswith("not run in ibnr")
+    # report and file
+    text = ev.render(cohort_, result, result["extras"], "")
+    assert "THE COMPANION'S NUMBERS BESIDE OURS (descriptive, not a decision rule)" in text
+    assert "cannot be aligned" in text and "not run in ibnr" in text
+    ev.save_tables(tmp_path / "out", cohort_, result)
+    saved = pd.read_csv(tmp_path / "out" / "B_companion_beside_ours.csv")
+    assert list(saved["quantity"]) == list(result["companion"]["quantity"])

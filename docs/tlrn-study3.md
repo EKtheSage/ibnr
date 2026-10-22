@@ -41,19 +41,58 @@ out of sample**: the companion chose this design with that cohort in view. C3 is
 accident years only, and weaker than the second study's C, because that study's results existed
 before this model's rules were written. C3 overlaps B3 in calendar time and in most companies.
 
+## What a cohort, a draw and a member are
+
+* **A cohort** is a set of (company, line) pairs from the Schedule P mart publish
+  `20260613_041006`. **B3** is accident years 1998 to 2007, valued at the end of 2007 (the
+  companion's own). **C3** is accident years 1988 to 1997, valued at the end of 1997.
+* **Which pairs.** A pair is in if it has a complete 10 by 10 square with positive premium on
+  every cell; if, on the cells known at the valuation date, paid is positive and cumulative
+  paid over premium is below 3; and if its company has at least two such lines.
+* **Four dates.** The valuation dates are 6, 7, 8 and 10 (calendar diagonals). The companies are
+  picked again at each date, from the cells known then, so each date trains and is scored on
+  its own set, and the sets are nested.
+* **A member** is one network trained from one seed. **A draw** is one complete fit: 20 members
+  at each of the four dates, averaged after each is blended with the multivariate chain
+  ladder. That is 80 networks per draw. There are 10 draws per cohort, so 800 networks per
+  cohort and 1,600 in all in the main row (the network-off row is extra).
+* **Seeds.** Draw `k` has the fit seed `11 + 100003 k`. Date `v` adds `20000 v` and member `m`
+  adds `1000 m`, so every network has its own stream.
+* **The final number** for a company is the mean of the 10 draws' forecasts. The error is
+  scored on that draw average, and the bootstrap resamples companies, not draws.
+
+What this design does and does not do. C3 overlaps B3: at date 10, 155 of C3's 232 pairs are
+also B3 pairs (measured in the second study), so C3 is out of sample in accident years only. The
+companion reports one fit with one seed, and ibnr's random streams cannot reproduce his, so the
+study asks whether the model he built is plausible against a spread of ibnr's own fits. It does
+not reproduce his numbers, and the section of the report that sets his published figures beside
+ours is descriptive. His own bootstrap is 90% on the date-averaged error.
+
 ## Running on Colab
 
 The notebook is `analysis/05_tlrn_study3_on_colab.ipynb`. Open it in Colab and set the runtime
 first: Runtime, Change runtime type, a GPU (a G4 or an A100; a T4 is about 13 times slower than
 the G4 and not a reasonable target). Then run the cells from the top, one at a time.
 
+0. **One-time setup.** The repository is private, so the notebook needs a GitHub token that
+   can only read, to download the two runner scripts. ibnr itself comes from PyPI and needs no
+   token. Create the token at <https://github.com/settings/personal-access-tokens/new>: expiry
+   30 days, "Only select repositories" and pick `ibnr`, Repository permissions, Contents,
+   Read-only. In Colab open the key icon (Secrets), add a secret named `GITHUB_TOKEN` with the
+   token and switch "Notebook access" on. Delete the token on GitHub when the study is done. The
+   notebook never prints the token, never writes it to Drive and stops with a short message,
+   before installing anything, if the secret is missing.
 1. **Settings.** Leave them alone, except `SOURCE` and `REF`. The Colab runtime installs ibnr
-   0.7.6. That release may not be on PyPI yet: with `SOURCE = "git"` the notebook installs the
-   branch `REF` (default `tlrn-study3`) from GitHub, and with `"pypi"` it installs
-   `ibnr[jax]==0.7.6`. Either way the next cell stops if the installed version is not 0.7.6.
+   0.7.6. With the default `SOURCE = "pypi"` it installs `ibnr[jax]==0.7.6` from PyPI (public,
+   no token). `SOURCE = "git"` is only for an unreleased branch: it installs the branch `REF`
+   (default `tlrn-study3`) from the private repository with the token. Either way the next
+   cell stops if the installed version is not 0.7.6.
 2. **Install and fetch the scripts.** The notebook installs ibnr in two steps (so pip cannot
-   compile anything), fetches `tlrn_colab.py` and `tlrn_study_colab.py` from the same ref and
-   checks that the runner pins the version the notebook expects.
+   compile anything), downloads `tlrn_colab.py` and `tlrn_study_colab.py` through the GitHub
+   contents API at the release tag `v0.7.6` (`SCRIPTS_REF`; the earlier releases are tagged
+   `v0.7.5` and so on; name a branch there only to test an unreleased change), saves each only
+   if it parses as Python, and checks that the runner pins the version the notebook expects. A
+   refused token (HTTP 401 or 403) and a missing ref (HTTP 404) are reported by name.
 3. **Mount Drive.** Fits are saved to `My Drive/ibnr_colab_cf/study3`. A disconnect loses at most
    the fit that was running; run the same cell again and saved fits are skipped. A saved fit
    made with other settings stops the run before any training and is left alone.
@@ -90,17 +129,21 @@ weight, chosen epoch and the epoch the refit ran to) and the fitted result `.pkl
 
 ## Getting the results back
 
-The last cell of the notebook writes `study3_results.zip` (records, tables, manifest and the
-timings; the `.pkl` files are left out) to `My Drive/ibnr_colab_cf/download`. Download it and unzip
-it to `C:\Temp\study3` on the laptop.
+Nothing is zipped or downloaded. Every fit is saved in the Drive folder
+`My Drive/ibnr_colab_cf/study3`, which is flat on purpose: the evaluator reads that folder and
+does not look into subfolders. Make the folder available on the laptop with Drive for desktop
+(it shows up as a drive such as `G:\My Drive`) or with `rclone`. The last cell of the notebook
+prints the number of finished fits, the GPU hours, any fit missing a table, and the exact
+command for the laptop, built from the notebook's own `DRIVE_FOLDER` and `LAPTOP_DRIVE_ROOT`
+settings.
 
 ## Scoring on the laptop
 
 The evaluator needs `uv sync` and the cas-schedule-p data, and neither jax nor torch:
 
 ```text
-uv run python scripts/tlrn_study3_eval.py --fits C:\Temp\study3 --out C:\Temp\study3_report
-uv run python scripts/tlrn_study3_eval.py --fits C:\Temp\study3 --cohort C --out C:\Temp\study3_report
+uv run python scripts/tlrn_study3_eval.py --fits "G:\My Drive\ibnr_colab_cf\study3" --out C:\Temp\study3_report
+uv run python scripts/tlrn_study3_eval.py --fits "G:\My Drive\ibnr_colab_cf\study3" --cohort C --out C:\Temp\study3_report
 ```
 
 For each valuation date the evaluator fits `mack` (per company-line pair) and `mcl` (per company)
@@ -116,7 +159,9 @@ date's set.
 It prints, for each cohort, Pool_APE per draw and for the draw average, the P1 and P2 verdicts
 with their conditions and 95% intervals, the same rules on a stratified bootstrap, the network
 and blend questions, the replication of the companion's reported figures (3.93% at valuation 10
-and the refit gain), the spread of the blend weight, the precision of every interval and the
+and the refit gain), the spread of the blend weight, RMSE, SMAPE and the number of
+over-estimated companies beside the other point metrics, a table of the companion's published
+Table 10 beside ibnr's ten draws (descriptive, not a decision rule), the precision of every interval and the
 overall statements across the two cohorts. It writes the tables and `verdicts.json` to `--out`.
 Add `--smoke` to score a smoke folder; its output is marked and must never be quoted.
 

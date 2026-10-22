@@ -617,6 +617,48 @@ and two differences in the network, both now removable by an option that is off 
 6. **No fit exists yet.** The registered rules, cohorts, draws, statistics and decision rules
    are untouched, and so is the evaluator's docstring hash in the amendment of 2026-10-21.
 
+# Amendment before any fit (2026-10-22), second
+
+No fit of this study exists. This amendment changes how the fits are run and what the evaluator
+prints. It changes no decision rule and no number the rules use.
+
+1. **The notebook's install and script flow.** The repository is private and ibnr 0.7.6 will be
+   on PyPI. The notebook (`analysis/05_tlrn_study3_on_colab.ipynb`) now installs
+   `ibnr[jax]==0.7.6` from PyPI with no token (`SOURCE = "pypi"`, the default), downloads the
+   two runner scripts (`scripts/tlrn_colab.py`, `scripts/tlrn_study_colab.py`) through the
+   GitHub contents API at the release tag `v0.7.6` with a fine-grained read-only token kept as
+   the Colab secret `GITHUB_TOKEN`, and saves a script only if it parses as Python. `SOURCE =
+   "git"` stays as a fallback for an unreleased branch. The token is never printed, never
+   written to Drive and masked in every error. The scripts are not packaged into the wheel.
+   Tested against a local fake of the API; not yet run against the real private repository or
+   on Colab.
+2. **No zip.** The packaging step is gone. The fits already sit, flat, in the Drive folder, and
+   the notebook's last cell prints the number of finished fits, the GPU hours and the evaluator
+   command for the Drive folder as the laptop sees it.
+3. **Three added descriptive metrics.** The metric tables and the report gain RMSE (square root
+   of the mean squared error), SMAPE (mean of `200 |error| / (|predicted| + |actual|)`, a 0 to
+   200 scale, a company with both zero skipped) and the number of companies whose predicted
+   reserve is above the actual one. They follow the companion's own definitions (commit
+   `f50871d`, `Code/07_estimates.py` lines 20 to 36) and are in the units of the mart, USD
+   thousands, as his table is. They feed no rule.
+4. **The companion's numbers beside ours.** For B3 at valuation 10 the report and a CSV set his
+   published Table 10 figures (blend, network alone, chain ladder, the date averages, the
+   median alpha, the companies per date) beside ibnr's ten draws: his value, ibnr's mean,
+   minimum and maximum, and how many draws lie below and above his value. The table is
+   descriptive, is not a decision rule, and says that the random streams cannot be aligned. The
+   methods ibnr did not run (CL+MCL as one blend, CL+SUR, Cape Cod, Cape Cod + SUR/MCL) are
+   printed as "not run in ibnr". His constants sit in one module-level dictionary in the
+   evaluator, with a test that holds them equal to the published numbers.
+5. **The median alpha.** The note's text above says the companion's median blend weight is about
+   0.45; his Table 10 says 0.476. The table in item 4 compares ibnr's median alpha (at
+   valuation 10, and over all four dates) with 0.476 and says so. The existing alpha spread is
+   unchanged.
+6. **Nothing else moved.** The decision rules, the thresholds, the cohorts, the draws and the
+   evaluator's module docstring are unchanged: the docstring's sha256 test passes, and on the
+   synthetic cohort the verdict record, the differences table and the old columns of the metrics
+   table hash the same before and after (`tests/test_tlrn_study3_eval.py`, the test named
+   `test_the_added_metrics_leave_every_decision_output_unchanged`).
+
 # Frozen before any fit
 
 When this note was written (2026-10-21) **no fit with the new options exists, on any
