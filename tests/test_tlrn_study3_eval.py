@@ -760,8 +760,9 @@ def test_the_metric_table_carries_the_new_columns_and_does_not_average_the_count
 #: synthetic cohort of ``populate``: the verdict record, the differences table and the metrics
 #: table without the new columns, as numbers (``tests/data``; the record file hashes to
 #: 0b9a3ec7f5be... under ``json.dumps(default=str, sort_keys=True)``, its value before the
-#: change). They must not move: the added metrics are descriptive and feed no decision. The tables are compared as numbers
-#: with a tolerance, not as text, because the last digits of a float depend on the platform.
+#: change). They must not move: the added metrics are descriptive and feed no decision. The
+#: tables are compared as numbers with a tolerance, not as text, because the last digits of a
+#: float depend on the platform.
 RECORD_BEFORE = REPO / "tests" / "data" / "tlrn_study3_record_before.json"
 TABLES_BEFORE = REPO / "tests" / "data" / "tlrn_study3_decisions_before.json"
 
