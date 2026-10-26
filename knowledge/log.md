@@ -1,12 +1,10 @@
 # Knowledge Update Log
 
-<<<<<<< HEAD
-## 2026-10-25
-* **Update**: [Cut a release](/playbooks/cut-a-release.md) gained the 0.7.6 row. Lesson: the first Tests run on the release commit had "pytest (all)" cancelled at its 30-minute job timeout with no failed test; one rerun of the failed job passed before the tag was pushed. That leg took about 19 minutes on 2026-10-19, so it is near the limit and may need a higher timeout (a decision for Ethan, not made).
-=======
 ## 2026-10-26
 * **Update**: Removed a third party's name, links to personal repositories and local machine paths from the current tree (README, `docs/three-repo-workflow.md`, the 2026-09-20 plans and spec, notebooks 01, 03, 03b, 03c, 04 and 05, the second tlrn study's evaluation outputs, the decision on the robustness study, two knowledge notes and `CLAUDE.md`). Wording and paths only: no number, method or test changed. Git history is unchanged.
->>>>>>> d444467 (chore: scrub personal names and local paths from the tree)
+
+## 2026-10-25
+* **Update**: [Cut a release](/playbooks/cut-a-release.md) gained the 0.7.6 row. Lesson: the first Tests run on the release commit had "pytest (all)" cancelled at its 30-minute job timeout with no failed test; one rerun of the failed job passed before the tag was pushed. That leg took about 19 minutes on 2026-10-19, so it is near the limit and may need a higher timeout (a decision for Ethan, not made).
 
 ## 2026-10-22
 * **Update**: [The third tlrn study's pre-registration](/decisions/tlrn-study3-preregistration.md) gained a second dated amendment before any fit: the notebook installs from PyPI and downloads the runner scripts with a read-only token (no zip), the evaluator adds RMSE, SMAPE and the over-estimated count, a descriptive table sets the companion's published figures beside ibnr's draws, and the median alpha discrepancy (0.45 against 0.476) is recorded. No decision rule and not the evaluator's docstring changed. No fit exists.
