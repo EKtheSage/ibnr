@@ -14,7 +14,7 @@
       "dominant_company": "1767",
       "dominant_share": 0.6629655211646549,
       "sensitivity_verdict": "not distinguishable",
-      "first_study_rows": "read from C:\\Users\\EthanKang\\Projects\\ibnr\\analysis\\results\\tlrn_study\\fits; tlrn_8_ay: 10 draws; tlrn_13_ay: 10 draws",
+      "first_study_rows": "read from <repo>\\analysis\\results\\tlrn_study\\fits; tlrn_8_ay: 10 draws; tlrn_13_ay: 10 draws",
       "conditions": {
         "i_last_below_both": false,
         "ii_pooled_below_both": false,
@@ -57,7 +57,7 @@
       "dominant_company": "1767",
       "dominant_share": 0.6726052618078442,
       "sensitivity_verdict": "not distinguishable",
-      "first_study_rows": "read from C:\\Users\\EthanKang\\Projects\\ibnr\\analysis\\results\\tlrn_study\\fits; tlrn_8_ay: 10 draws; tlrn_13_ay: 10 draws",
+      "first_study_rows": "read from <repo>\\analysis\\results\\tlrn_study\\fits; tlrn_8_ay: 10 draws; tlrn_13_ay: 10 draws",
       "conditions": {
         "i_last_below_both": false,
         "ii_pooled_below_both": false,

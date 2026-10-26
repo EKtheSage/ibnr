@@ -12,13 +12,13 @@
 
 ## Global Constraints
 
-- The R reference for every convention is `C:\Users\EthanKang\Projects\transformers_reserving\Code\01_functions.R::fit_mcl_betas` and `fit_mcl_ibnr` (read them; they are 60 lines). That code and its author are NOT named anywhere in this repository. In the card, docstrings, tests and CHANGELOG call it "the companion study's R implementation" or "the reference R implementation".
+- The R reference for every convention is the companion repository's `Code/01_functions.R::fit_mcl_betas` and `fit_mcl_ibnr` (read them; they are 60 lines). That code and its author are NOT named anywhere in this repository. In the card, docstrings, tests and CHANGELOG call it "the companion study's R implementation" or "the reference R implementation".
 - `kernels/` never imports `ibnr.gallery`. Torch is not involved.
 - Lint: `uv run ruff check . && uv run ruff format .` and `uv run python scripts/lint_md_snippets.py` pass.
 - Commit messages and the PR body: conventional prefix, subject plus body, NO attribution lines of any kind.
 - Prose rules: plain sentences; never "screen", "panel", "gate", "fingerprint", "membership", "ablation" (any form), "seed noise", "chip", "drain". `align_panel`-style API names may be backticked.
 - Refusal tests use `pytest.raises(..., match=...)`. Every new test file is mutation-checked; the PR body lists the mutations tried.
-- Branch `feat/mcl-entry`, worktree `C:\Users\EthanKang\Projects\ibnr-wt\mcl`, created from `origin/main` AFTER PR A (`feat/point-scores`) has merged, because the tie-out test reads `mack.point()` and the notebook will feed `mcl.point()` to `reserve_rows`. Run `git log --oneline -15 origin/main` first and confirm `point_scores` is on main.
+- Branch `feat/mcl-entry`, worktree `<worktrees>/mcl`, created from `origin/main` AFTER PR A (`feat/point-scores`) has merged, because the tie-out test reads `mack.point()` and the notebook will feed `mcl.point()` to `reserve_rows`. Run `git log --oneline -15 origin/main` first and confirm `point_scores` is on main.
 - Before committing the last task and before opening the PR: `git fetch origin && git log --oneline HEAD..origin/main`; rebase if non-empty; rerun tests.
 
 ---
@@ -254,7 +254,7 @@ def test_realized_ultimates_align_to_predict(backend_name):
 
 Vendoring, done once with a short script you run and then delete (do not commit the script):
 
-- Source A: `C:\Users\EthanKang\Projects\transformers_reserving\Outputs\marco_reconciliation\replay_company.csv`. Keep columns `GRCODE, IBNR_CL, IBNR_CL_MCL, IBNR_obs, point_ok`; rename `GRCODE` to `company_code` (as a string, zero-padded exactly as the mart spells it - check one code against `load_schedule_p` before trusting `str(int)`), `IBNR_CL` to `r_chain_ladder_reserve`, `IBNR_CL_MCL` to `r_mcl_reserve`, `IBNR_obs` to `actual_reserve`. 93 rows.
+- Source A: the companion repository's `Outputs/reconciliation/replay_company.csv`. Keep columns `GRCODE, IBNR_CL, IBNR_CL_MCL, IBNR_obs, point_ok`; rename `GRCODE` to `company_code` (as a string, zero-padded exactly as the mart spells it - check one code against `load_schedule_p` before trusting `str(int)`), `IBNR_CL` to `r_chain_ladder_reserve`, `IBNR_CL_MCL` to `r_mcl_reserve`, `IBNR_obs` to `actual_reserve`. 93 rows.
 - Source B: `...\selected_input.csv`, distinct `(GRCODE, lob)`; map `lob` through `{"comauto": "commercial_auto", "othliab": "other_liability", "ppauto": "private_passenger_auto", "wkcomp": "workers_compensation"}` to `line_of_business`. 243 rows.
 - Add `tests/data/README.md` (or extend it if it exists) with one paragraph: produced 2026-09-20 by replaying the companion study's R implementation on data loaded through `ibnr.data.schedule_p` at publish `20260613_041006`; accident years 1998 to 2007; valuation 2007-12-31; reserves are outstanding paid through 120 months in USD thousands; `point_ok` marks the 82 companies on which every R method returned a finite number.
 

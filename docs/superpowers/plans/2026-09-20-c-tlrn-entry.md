@@ -12,13 +12,13 @@
 
 ## Global Constraints
 
-- The R reference is `C:\Users\EthanKang\Projects\transformers_reserving\Code\05_transformers.R` (sections 1 to 7: `prepare_arrays`, `lag_stats`, `own_ratios`, `cl_factors`, `origin_cl_logf`, `build_examples`, `axial_block`, `tlrn`, the losses, `training_factor_support`, `learning_rate_multiplier`, `train_checkpoint_tlrn`, `checkpoint_validation`, `predict_cells`, `ibnr_from`, `make_prebuilt`, `fit_checkpoint_seed`) and `06_uncertainty.R` (the backtest and calibration). Read them in full before writing code; every definition below is a transcription of them. Neither the file, its repository nor its author is named anywhere in this repository: write "the companion study's R implementation" or "the reference implementation".
+- The R reference is the companion repository's `Code/05_transformers.R` (sections 1 to 7: `prepare_arrays`, `lag_stats`, `own_ratios`, `cl_factors`, `origin_cl_logf`, `build_examples`, `axial_block`, `tlrn`, the losses, `training_factor_support`, `learning_rate_multiplier`, `train_checkpoint_tlrn`, `checkpoint_validation`, `predict_cells`, `ibnr_from`, `make_prebuilt`, `fit_checkpoint_seed`) and `06_uncertainty.R` (the backtest and calibration). Read them in full before writing code; every definition below is a transcription of them. Neither the file, its repository nor its author is named anywhere in this repository: write "the companion study's R implementation" or "the reference implementation".
 - Torch is imported inside `fit`/`predict` (and inside `network.py`/`head.py`, which are imported from inside those methods only). `ibnr.gallery` must import without torch. `kernels/` never imports the gallery or torch.
 - Lint: `uv run ruff check . && uv run ruff format .` and `uv run python scripts/lint_md_snippets.py` pass.
 - Commit messages and PR body: conventional prefix, subject plus body, NO attribution lines.
 - Prose rules: plain sentences; never "screen", "panel", "gate", "fingerprint", "membership", "ablation" (any form), "seed noise", "chip", "drain". "seed" only in its random-number sense.
 - Refusal tests use `pytest.raises(..., match=...)`. Every new test file is mutation-checked; the PR body lists the mutations.
-- Branch `feat/tlrn-entry`, worktree `C:\Users\EthanKang\Projects\ibnr-wt\tlrn`, from `origin/main` after PR B merged. `uv sync --extra nn`. Confirm NN tests execute (`-rs`), not skip.
+- Branch `feat/tlrn-entry`, worktree `<worktrees>/tlrn`, from `origin/main` after PR B merged. `uv sync --extra nn`. Confirm NN tests execute (`-rs`), not skip.
 - Before the last commit and before opening the PR: `git fetch origin && git log --oneline HEAD..origin/main`; rebase if non-empty; rerun tests. PR M (`mcl`) edits `README.md`'s loss-field table and `tests/test_entry_contract.py` in parallel; expect a small rebase there.
 
 ## Index conventions used throughout

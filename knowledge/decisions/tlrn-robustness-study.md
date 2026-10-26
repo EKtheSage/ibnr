@@ -9,7 +9,7 @@ stale_after: 2027-04-12T00:00:00Z
 sources:
   - id: request
     resource: Ethan's instruction in the 2026-10-12 working session
-    title: "use ibnr library to run marco's model and truly test its effectiveness against benchmarks"
+    title: "use ibnr library to run the companion study's model and truly test its effectiveness against benchmarks"
   - id: gpu
     resource: /findings/tlrn-jax-tpu-run.md
     title: The accident-year fits on a Colab GPU, about 7.5 minutes each

@@ -19,7 +19,7 @@
 - Prose rules for docstrings, comments and CHANGELOG: plain sentences. Never use the words "screen", "panel", "gate", "fingerprint", "membership", "ablation" (or any form), "seed noise", "chip", "drain". "seed" only in its random-number sense.
 - A test for a refusal uses `pytest.raises(..., match=...)`.
 - Every claimed identity or refusal in a new test file is checked by breaking it once on purpose (a mutation check) and watching the test go red; the PR body lists the mutations tried.
-- Work on branch `feat/training-scheme-calibration` in worktree `C:\Users\EthanKang\Projects\ibnr-wt\training-scheme`, created from `origin/main`. Run `uv sync --extra nn` there (torch is multi-GB; that is expected). Before committing and again before opening the PR run `git log --oneline HEAD..origin/main`; if non-empty, rebase and rerun the tests.
+- Work on branch `feat/training-scheme-calibration` in worktree `<worktrees>/training-scheme`, created from `origin/main`. Run `uv sync --extra nn` there (torch is multi-GB; that is expected). Before committing and again before opening the PR run `git log --oneline HEAD..origin/main`; if non-empty, rebase and rerun the tests.
 - After editing `_training.py`, run the touched tests with torch installed and confirm they EXECUTED (`-rs` prints skip reasons; a module-level `importorskip` collapses a whole file into one skip).
 
 ---

@@ -31,7 +31,7 @@ ibnr](/decisions/reserving-app-moves-to-ibnr.md).
 
 # The app
 
-`C:\Users\EthanKang\Projects\Reserving\chainladder-mvp`. It has no git remote; local
+`<projects>\Reserving\chainladder-mvp`. It has no git remote; local
 branches are merged into main with merge commits, and its commits do carry the Claude
 Co-Authored-By trailer, unlike ibnr's. The backend is `azure-function/function_app.py`, a
 uv project since commit ec70715 (2026-09-23), whose pyproject pinned

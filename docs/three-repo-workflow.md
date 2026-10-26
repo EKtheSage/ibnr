@@ -1,14 +1,14 @@
 # Three-repo workflow: data → modeling → manuscript
 
 **Status: proposal (2026-07-06).** How the CAS Schedule P database, this
-package, and the `transformers_reserving` manuscript repo fit together for
+package, and the companion manuscript repository fit together for
 the dependency-modeling-with-transformers research project (CAS individual
 grant, Kang & De Virgilis).
 
 ## The three repos and their single responsibilities
 
 ```
-cas-schedule-p-data-model          ibnr                                   transformers_reserving
+cas-schedule-p-data-model          ibnr                                   companion-repo
 ─────────────────────────          ────                                   ──────────────────────
 Data Vault warehouse               models + evaluation + harnesses        Quarto manuscript
 raw Schedule P → gold mart         gallery: nn_transformer, sur,          experiments/ (thin runner,
@@ -27,7 +27,7 @@ _active_manifest.json              kernels: CRPS, PIT/KS, contracts       R/ggpl
 - **Modeling** (this repo, package `ibnr`): owns model implementations, the
   evaluation kernels (implemented once), and the backtest harnesses. It is
   paper-agnostic: nothing in here should know about the manuscript.
-- **Manuscript** (`transformers_reserving`): owns the research narrative,
+- **Manuscript** (the companion repository): owns the research narrative,
   figures, and paper-specific experiment configuration. It runs experiments
   *through* ibnr and typesets *from* the artifacts.
 
@@ -46,7 +46,7 @@ _active_manifest.json              kernels: CRPS, PIT/KS, contracts       R/ggpl
   release `manifest.json`, and reads locally thereafter).
 
 The harness scripts stamp `mart_publish_id` into every results CSV, so any
-figure in the paper traces to an exact data publish. Marco needs neither the
+figure in the paper traces to an exact data publish. The paper authors need neither the
 vault pipeline nor a warehouse clone: the ~5 MB release download is the entire
 data dependency, and it needs no account, no token and no tooling. (The
 `cas-schedule-p` PyPI package is the other zero-setup route - `pip install
@@ -63,10 +63,10 @@ manuscript repo to pin.
 
 ### Step 1: the manuscript repo grows an `experiments/` directory
 
-A small uv-managed Python project inside `transformers_reserving`:
+A small uv-managed Python project inside the companion repository:
 
 ```
-transformers_reserving/
+companion-repo/
   Code/            # existing R prototype (torch-for-R, ggplot adapters) - kept
   Manuscript/      # manuscript.qmd + references.bib (existing)
   experiments/     # NEW - thin Python runner
@@ -87,7 +87,7 @@ make every figure reproducible from two pins.
 
 ### Step 2: figures stay in R, fed by the artifact contract
 
-Marco's plotting investment (`plot_model_comparison.R`,
+The companion's plotting investment (`plot_model_comparison.R`,
 `model_plot_adapters.R`, `plotting_core.R`) survives untouched in spirit: the
 adapters re-point from the R prototype's outputs to the tidy CSVs in
 `results/`. The CSV layout is already tidy one-row-per-(model, line,
@@ -125,8 +125,8 @@ parallel implementation maintained by hand.
 |---|---|
 | Schedule P ingestion, Data Vault, mart publishes | `cas-schedule-p-data-model` |
 | model code, priors/architectures, eval metrics, harnesses, tests | `ibnr` |
-| which experiments the paper runs (configs, seeds, company screens) | `transformers_reserving/experiments` |
-| results artifacts (CSV), figures, prose | `transformers_reserving` |
+| which experiments the paper runs (configs, seeds, company screens) | the companion repository (`experiments/`) |
+| results artifacts (CSV), figures, prose | the companion repository |
 
 ## Concrete next actions
 
@@ -136,7 +136,7 @@ parallel implementation maintained by hand.
 3. ~~Data releases + `github://` consumption.~~ **Done**: data repo publishes
    gold promotes as releases (`pipeline/release.py`); ibnr consumes them via
    `load_schedule_p("github://EKtheSage/cas-schedule-p-data-model@<publish_id>")`.
-4. Scaffold `experiments/` + `results/` in `transformers_reserving`; port the
+4. Scaffold `experiments/` + `results/` in the companion repository; port the
    first experiment (the four-way paid-loss backtest) as `run_backtest.py`
    with a config file pinning the ibnr commit + mart publish_id; commit its CSV.
 5. Re-point one existing ggplot figure (model comparison) at the CSV as the

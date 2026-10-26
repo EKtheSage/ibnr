@@ -4,7 +4,7 @@ Date: 2026-09-20. Status: approved 2026-09-20 (Ethan). Target release: 0.7.0.
 
 ## 1. Context
 
-A reconciliation run on 2026-09-20 (`transformers_reserving/Code/marco_vs_ibnr.ipynb`,
+A reconciliation run on 2026-09-20 (the companion repository's `Code/reconciliation_vs_ibnr.ipynb`,
 ibnr 0.5.5) compared a colleague's Transformer Loss Reserving Network (TLRN, an R torch
 implementation) with ibnr's `nn_transformer` on the same Schedule P data. The data
 reconciled exactly and ibnr's Mack reproduced R's chain ladder to 4e-8. The model
@@ -343,7 +343,7 @@ every line (the 11 excluded ones failed the R Mack on a line with a zero or nega
 cell), so the tie-out set needs no relaxation. Companies the contract refuses are
 refused by name.
 
-**Tie-out.** `tests/data/marco_reconciliation_classical.csv` vendors the R replay's
+**Tie-out.** `tests/data/companion_reconciliation_classical.csv` vendors the R replay's
 company table (93 rows; `IBNR_CL`, `IBNR_CL_MCL`, `IBNR_obs`, `point_ok`), produced from
 ibnr-loaded data on 2026-09-20. A `mart` test asserts `mcl`'s point reserve equals
 `IBNR_CL_MCL` on the 82 `point_ok` companies to 1e-6 relative, and `mack`'s equals

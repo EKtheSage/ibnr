@@ -31,7 +31,7 @@ Loading the `.pyd` directly gives the real reason:
 Measured 2026-09-05: the `.pyd` path was 265 characters, over Windows' 260-character
 MAX_PATH, and `LongPathsEnabled` is 0 in the registry on this machine, so the import
 system cannot even read the file. The identical install at
-`C:\Users\EthanKang\AppData\Local\Temp\ibnr-fl` imports cleanly, and so does CI on
+`<home>\AppData\Local\Temp\ibnr-fl` imports cleanly, and so does CI on
 Linux.[^note]
 
 The scratchpad path alone is about 180 characters, so any compiled package with a deep
@@ -49,7 +49,7 @@ does not help; the wheel is fine.[^note]
 * If scipy "circular import" errors appear in a scratch venv, check the path length
   before suspecting the dependency set.
 * In Git Bash, prepend a venv's `Scripts` directory to PATH in POSIX form
-  (`/c/Users/...`), or a subprocess call to `ruff` inside a test fails with
+  (`/c/path/to/venv/...`), or a subprocess call to `ruff` inside a test fails with
   `FileNotFoundError` for no real reason.[^note]
 
 [^note]: Scratch venv path too long
