@@ -19,7 +19,7 @@ corrected decision 8 - and, from 0.7.2,
 From 0.7.2 the minor number is kept for milestones: additions and fixes ship as
 patch releases, and 0.8 comes when the roadmap's goals are done.
 
-## 0.7.6 - 2026-10-21
+## 0.7.6 - 2026-10-25
 
 A patch release that adds two protocol options to `tlrn`, a preset that bundles them with
 the accident-year variant, and the runner for the third tlrn study. **Nothing that already
