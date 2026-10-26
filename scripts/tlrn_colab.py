@@ -17,11 +17,18 @@ How the saved entries are used is in ``docs/tlrn-on-colab.md``: copy the folder 
 ``pickle.load`` each file in place of the ``gallery.fit("tlrn", ...)`` call, and run the
 rest of the notebook unchanged. An entry is loaded with the ibnr version that saved it.
 
+The third study's rows (``--config companion_final``) are ``tlrn_cf_refit``, whose single
+run gives both the refit forecasts (``company_reserves()``) and the without-refit ones
+(``company_reserves(selected=True)``, the same members stopped at the epoch they chose), and
+``tlrn_cf_factors``, the same configuration with the network switched off. Their per-date,
+per-draw study is ``scripts/tlrn_study_colab.py --study companion_final``.
+
 Usage, on the runtime::
 
     python scripts/tlrn_colab.py --out /content/drive/MyDrive/ibnr/tlrn_fits
     python scripts/tlrn_colab.py --out ... --config accident_year --members 20
     python scripts/tlrn_colab.py --out ... --config factor_head    # the second study's rows
+    python scripts/tlrn_colab.py --out ... --config companion_final  # the third study's rows
     python scripts/tlrn_colab.py --out ... --smoke      # a few epochs, to check the setup
 
 The TPU speed is unmeasured: this script was checked on a CPU only (in ``--smoke`` form).
@@ -194,10 +201,87 @@ def factor_head_config(**overrides):
     return TLRNConfig(**{**choices, **overrides})
 
 
+def companion_final_config(**overrides):
+    """The companion's final model (third study), as one ``TLRNConfig``.
+
+    ``TLRNConfig.companion_final_variant()`` with every choice that defines the model written
+    out, so a change of default in a later ibnr cannot change the model unnoticed: the
+    premium loss ratio head, attention across lines, lags and accident years in one block,
+    batches of eight companies, a blend with the multivariate chain ladder, twenty members
+    all averaged, each member retrained on every known diagonal to the epoch it chose
+    (``refit``), alpha fitted on the first validation diagonal and the epoch chosen on the
+    second (``alpha_on``), an attention with nothing to read returning its output bias
+    (``empty_query_bias``) and line and lag embedding tables of exactly the companion's size
+    (``compact_embeddings``, 18,537 parameters). The retrained calibration settings are kept
+    for the entry's own use; the third study's runner trains each valuation date itself and
+    does not read them. ``overrides`` replace any choice, which is how ``factors_only`` and
+    the smoke budget are set. The choices and the evidence are in
+    ``knowledge/decisions/tlrn-study3-preregistration.md``.
+    """
+    from ibnr.gallery.nn.tlrn.config import TLRNConfig
+
+    choices = {
+        "head": "premium_lr",
+        "eps": 0.5,
+        "lr_cap": 5.0,
+        "attention": ("line", "lag", "ay"),
+        "mask": "observed_cells",
+        "cross_line": True,
+        "n_layers": 1,
+        "d_model": 32,
+        "n_heads": 2,
+        "dropout": 0.3,
+        "factors_only": False,
+        "cl_anchor": False,
+        "tail_policy": "observed_cl",
+        "member": "mcl_blend",
+        "ensemble_size": 20,
+        "keep": None,
+        "batch_unit": "company",
+        "batch_size": 8,
+        "cutoff_sampling": "per_epoch",
+        "min_cutoff": 2,
+        "val_diagonals": 2,
+        "scoring": "reached_cells",
+        "w_pe": 0.5,
+        "w_mse": 0.1,
+        "mse_scale": 0.005,
+        "lr": 3e-3,
+        "lr_phi": 3e-2,
+        "weight_decay": 0.0,
+        "warmup": 20,
+        "grad_clip": 1.0,
+        "max_epochs": 3000,
+        "min_epochs": 500,
+        "check_every": 5,
+        "patience": 600,
+        "refit": True,
+        "alpha_on": "first_diagonal",
+        # the two network details that make ibnr's network the companion's function and size
+        "empty_query_bias": True,
+        "compact_embeddings": True,
+        "calibration": "retrain_per_valuation",
+        "calibration_cutoffs": (6, 7, 8),
+        "calibration_horizons": (2, 3, 4),
+    }
+    return TLRNConfig.companion_final_variant(**{**choices, **overrides})
+
+
 def configs(name: str, members: int, smoke: bool):
     """``(row, fit keyword arguments, TLRNConfig)`` for each fit of the cell."""
     from ibnr.gallery.nn.tlrn.config import TLRNConfig
 
+    if name == "companion_final":
+        # the third study's two fits: the main model (one run gives both the refit and the
+        # no-refit forecasts), and the same model with the network switched off
+        budget = {"ensemble_size": members}
+        if smoke:
+            budget |= {"max_epochs": 10, "min_epochs": 0, "check_every": 5, "patience": 100}
+        roles = {"incurred_field": INCURRED_FIELD, "case_field": CASE_FIELD}
+        return [
+            ("tlrn_cf_refit", roles, companion_final_config(**budget)),
+            ("tlrn_cf_factors", roles, companion_final_config(factors_only=True, **budget)),
+        ]
     if name == "factor_head":
         # the second study's two rows: the full model, and the same model with the network
         # switched off (the head's pooled factors blended with the multivariate chain ladder)
@@ -336,7 +420,9 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--out", type=Path, required=True, help="folder for the fitted entries")
     parser.add_argument(
-        "--config", choices=("published", "accident_year", "factor_head"), default="published"
+        "--config",
+        choices=("published", "accident_year", "factor_head", "companion_final"),
+        default="published",
     )
     parser.add_argument("--members", type=int, default=None, help="40 published, 20 variant")
     parser.add_argument("--smoke", action="store_true", help="ten epochs, to check the setup")
@@ -399,6 +485,10 @@ def main(argv=None) -> int:
             "python": sys.version.split()[0],
             "platform": platform.platform(),
         }
+        if config.refit:
+            # the without-refit row is the same run read before the refit, so it costs nothing
+            run["reserve_total_refit"] = float(entry.company_reserves().sum())
+            run["reserve_total_without_refit"] = float(entry.company_reserves(selected=True).sum())
         write_record(record, settings, run)
         records[row] = {"settings": settings, "run": run}
         print(f"{row}: fitted in {seconds:.0f}s, saved to {pkl}", flush=True)

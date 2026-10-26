@@ -61,6 +61,18 @@ not keep (only the final fit's). The runner takes them by wrapping the entry's o
 ``_finish_protocol`` while ``fit`` runs (:func:`capture_protocols`), so no library code changes;
 :func:`valuation_tables` checks them against the entry before anything is saved.
 
+**The third study** (``--study companion_final``) runs the companion's final model (premium loss
+ratio head, attention across accident years, company batches, a refit on everything known, alpha
+fitted on one diagonal) on cohorts B and C. Its rows are ``tlrn_cf_refit`` (one run that gives the
+refit forecasts and, from the same members before the refit, the no-refit ones) and
+``tlrn_cf_factors`` (the network switched off). Each valuation date 6, 7, 8 and 10 is a separate
+protocol on its OWN company set, ``select_pairs(cutoff=v)`` (:func:`valuation_pairs`), so a fit is
+not one ``gallery.fit`` call but :func:`fit_valuations`; date ``v`` uses seed ``seed + 20000 v``
+and member ``m`` of it ``seed + 20000 v + 1000 m``. It saves ``_valuations.csv`` (as the second
+study's, plus ``predicted_selected`` and ``predicted_net_selected``, the forecasts of the networks
+as they stood at their chosen epoch) and ``_members.csv``. Its records say ``"study": 3``. Rules:
+``knowledge/decisions/tlrn-study3-preregistration.md``.
+
 Nothing here has been run on a GPU: the real results do not exist yet.
 """
 
@@ -83,9 +95,13 @@ import numpy as np
 import pandas as pd
 import tlrn_colab
 
-#: the ibnr release both studies are run with on Colab. The install cells of the Colab kits and
-#: the how-to documents pin exactly this version, and a test holds them equal to it
-PINNED_IBNR = "0.7.4"
+#: the ibnr release the CURRENT study (the third) is run with on Colab. The install cells of its
+#: Colab kit and its how-to pin exactly this version, and a test holds them equal to it. The
+#: earlier studies were run with, and their how-to documents still say, 0.7.4: each ``Study``
+#: carries its own pin (``Study.pinned_ibnr``), so moving this one never rewrites their history
+PINNED_IBNR = "0.7.6"
+#: the release the first two studies were run with
+EARLIER_PINNED_IBNR = "0.7.4"
 #: bump when the study's definition changes, so old fits are never reused under a new one
 STUDY_VERSION = 1
 COHORTS = ("A", "B")
@@ -95,6 +111,13 @@ ROWS = ("tlrn_8_ay", "tlrn_13_ay")
 FACTOR_HEAD_VERSION = 2
 FACTOR_HEAD_COHORTS = ("A", "B", "C")
 FACTOR_HEAD_ROWS = ("tlrn_13_fh", "tlrn_13_fh_factors")
+#: the third study (the companion's final model, refit, per-date company sets)
+COMPANION_FINAL_VERSION = 3
+COMPANION_FINAL_COHORTS = ("B", "C")
+COMPANION_FINAL_ROWS = ("tlrn_cf_refit", "tlrn_cf_factors")
+COMPANION_FINAL_TABLES = ("valuations", "members")
+#: the valuation dates the third study trains and scores; the last is the last known diagonal
+VALUATIONS = (6, 7, 8, 10)
 #: every cohort a runner can load (the first study uses A and B only)
 ALL_COHORTS = ("A", "B", "C")
 DEFAULT_DRAWS = 10
@@ -102,9 +125,14 @@ DEFAULT_MEMBERS = 20
 #: smoke runs keep the ensemble this small unless --members says otherwise
 SMOKE_MEMBERS = 2
 #: draw k trains with seed SEED_FIT + SEED_STRIDE * k. Members are seeded seed + 1000 m
-#: and the retrained valuation dates seed + 10000 v, all below 100,000 apart, so no two
-#: draws share a stream.
+#: and the retrained valuation dates seed + DATE_SEED_STRIDE v (study 3), all below 100,000
+#: apart, so no two draws share a stream.
 SEED_STRIDE = 100_003
+#: the third study's valuation date ``v`` seeds its protocol ``seed + DATE_SEED_STRIDE * v``
+#: and its member ``m`` ``+ 1000 m``. With 20 members a date spans 19,000, so the stride of
+#: 20,000 keeps dates 6, 7, 8 and 10 on disjoint streams (a stride of 10,000 let member
+#: ``m + 10`` of date ``v`` repeat member ``m`` of date ``v + 1``).
+DATE_SEED_STRIDE = 20_000
 
 #: the four cached CAS Schedule P files and the line each one is
 CAS_FILES = {
@@ -413,6 +441,11 @@ class Cohort:
     triangle: object = field(default=None, repr=False)
     #: the valuation date the fits train on: the last known diagonal of this cohort
     as_of: dt.date = tlrn_colab.AS_OF
+    #: every cell the source carries for this cohort's accident years (not only the selected
+    #: pairs'), so a company set can be selected again at an earlier valuation date
+    all_cells: pd.DataFrame | None = field(default=None, repr=False)
+    #: ``{valuation: pairs}`` of the third study, filled by :func:`valuation_pairs`
+    by_valuation: dict | None = field(default=None, repr=False)
 
     @property
     def description(self) -> str:
@@ -458,6 +491,7 @@ def select_cohort(name: str, cells: pd.DataFrame, *, source: str) -> Cohort:
         source=source,
         cells=chosen.reset_index(drop=True),
         as_of=AS_OF[name],
+        all_cells=cells,
     )
 
 
@@ -515,6 +549,10 @@ class Study:
     config: str
     #: the extra per-fit tables (``_<name>.csv``) the evaluator reads
     tables: tuple = ()
+    #: each valuation date is its own protocol on its own company set (:func:`fit_valuations`)
+    per_valuation: bool = False
+    #: the ibnr release this study's Colab kit installs and its fits are named with
+    pinned_ibnr: str = EARLIER_PINNED_IBNR
 
 
 FACTOR_HEAD_TABLES = ("valuations", "backtest", "members")
@@ -527,6 +565,16 @@ STUDIES = {
         FACTOR_HEAD_ROWS,
         "factor_head",
         FACTOR_HEAD_TABLES,
+    ),
+    "companion_final": Study(
+        "companion_final",
+        COMPANION_FINAL_VERSION,
+        COMPANION_FINAL_COHORTS,
+        COMPANION_FINAL_ROWS,
+        "companion_final",
+        COMPANION_FINAL_TABLES,
+        per_valuation=True,
+        pinned_ibnr=PINNED_IBNR,
     ),
 }
 
@@ -574,6 +622,12 @@ def fit_settings(
     }
     if spec.name != "accident_year":
         settings["study_name"] = spec.name
+    if spec.per_valuation:
+        # who is in each date's company set decides what the fit is, as the cohort hash does
+        settings["valuations"] = list(VALUATIONS)
+        settings["valuation_hashes"] = {
+            str(v): pairs_hash(p) for v, p in valuation_pairs(cohort).items()
+        }
     # through JSON, so a tuple in the config compares equal to the list read back
     return json.loads(json.dumps(settings))
 
@@ -648,8 +702,11 @@ def reserves_frame(entry) -> pd.DataFrame:
     """One row per company: anchor, premium, lines, the ensemble reserve and each member's.
 
     Rows follow ``entry.cohorts()``. The ensemble reserve is the mean of the member
-    columns when every member is kept, which is the accident-year variant.
+    columns when every member is kept, which is the accident-year variant. The third
+    study's :class:`ValuationFits` carries the frame of its last known diagonal itself.
     """
+    if isinstance(entry, ValuationFits):
+        return entry.reserves
     codes = [cohort["company_code"] for cohort in entry.cohorts()]
     members = np.atleast_2d(np.asarray(entry.member_company_reserves(), dtype=float))
     frame = pd.DataFrame(
@@ -664,6 +721,291 @@ def reserves_frame(entry) -> pd.DataFrame:
     for m in range(members.shape[0]):
         frame[f"member_{m:02d}"] = members[m]
     return frame
+
+
+# -- the third study: one protocol per valuation date, each on its own companies ----------
+
+
+def valuation_pairs(cohort, valuations=VALUATIONS) -> dict:
+    """``{v: pairs}``: the company-line pairs selected again at each valuation date.
+
+    ``select_pairs(cells, cutoff=v)`` on all the cohort's cells, which is the companion's
+    ``select_cohort(cutoff=v)``. The last valuation date is the cohort's own cutoff, so its
+    set must be the cohort's pairs; the sets are nested (an earlier date selects every pair a
+    later one does). Both are checked, and the result is kept on the cohort.
+    """
+    if cohort.by_valuation is not None and tuple(cohort.by_valuation) == tuple(valuations):
+        return cohort.by_valuation
+    if cohort.all_cells is None:
+        raise ValueError(
+            f"cohort {cohort.name} carries no cells to select again at an earlier date"
+        )
+    sets = {v: select_pairs(cohort.all_cells, cutoff=v)[0] for v in valuations}
+    last = max(valuations)
+    if last == CUTOFF[cohort.name] and sets[last] != cohort.pairs:
+        raise AssertionError(
+            f"cohort {cohort.name}: the pairs selected at valuation {last} are not the cohort's"
+        )
+    ordered = sorted(valuations)
+    for early, late in zip(ordered, ordered[1:], strict=False):
+        lost = set(sets[late]) - set(sets[early])
+        if lost:
+            raise AssertionError(
+                f"cohort {cohort.name}: {len(lost)} pair(s) selected at valuation {late} are "
+                f"not selected at the earlier valuation {early}, so the sets are not nested"
+            )
+    cohort.by_valuation = sets
+    return sets
+
+
+@dataclass
+class ValuationFits:
+    """What a third-study fit keeps: the tables of every date and the last date's reserves.
+
+    A plain container (no torch objects, no closures), so it pickles. ``reserves`` is the
+    frame :func:`reserves_frame` returns for the last known diagonal: the refit ensemble's
+    reserve and each member's. ``reserves_selected`` is the same ensemble before the refit.
+    """
+
+    valuations: pd.DataFrame
+    members: pd.DataFrame
+    reserves: pd.DataFrame
+    reserves_selected: pd.DataFrame
+    pairs: dict
+    seeds: dict
+    config: object = field(repr=False, default=None)
+
+    @property
+    def tables(self) -> dict[str, pd.DataFrame]:
+        return {"valuations": self.valuations, "members": self.members}
+
+
+def date_seed(seed: int, v: int) -> int:
+    """The seed of valuation ``v``'s protocol inside a fit with seed ``seed``."""
+    return seed + DATE_SEED_STRIDE * v
+
+
+def study_roles() -> dict:
+    """The third study always reads the incurred and case channels (the 13 features)."""
+    return {"incurred_field": tlrn_colab.INCURRED_FIELD, "case_field": tlrn_colab.CASE_FIELD}
+
+
+def fit_valuation(
+    triangle,
+    v: int,
+    config,
+    seed: int,
+    *,
+    as_of,
+    backend: str = "jax",
+    show_progress: bool = False,
+) -> dict:
+    """Train, refit and score ONE valuation date ``v`` on the companies of ``triangle``.
+
+    The protocol is the entry's own (``TLRN._run_protocols`` with one spec) on the full
+    10-lag contract of ``triangle`` at ``as_of``, with the network trained on the data known at
+    ``v`` and the forecasts of the cells after ``v`` scored. Slicing the triangle at ``v`` is
+    not used: it would cut the lags the network is built for. At the last known diagonal the
+    spec is the entry's final protocol (forecast every later diagonal); at an earlier date it
+    is a calibration protocol (forecast up to the last known diagonal, lags up to ``v``).
+    ``seed`` is the date's own seed (:func:`date_seed`). Returns the run, the contract and the
+    entry that ran it, for :func:`date_tables`.
+    """
+    if not config.refit:
+        raise ValueError("the third study's tables compare the refit with the run before it")
+    import torch
+
+    from ibnr.gallery.nn._scheme import splits
+    from ibnr.gallery.nn.tlrn.model import TLRN, _load_jax_backend
+    from ibnr.kernels.nn_contract import nn_company_data
+    from ibnr.kernels.nn_features import tlrn_features
+
+    roles = study_roles()
+    incurred, case = roles["incurred_field"], roles["case_field"]
+    contract = nn_company_data(
+        triangle.as_of(as_of),
+        loss_field=tlrn_colab.FIELD,
+        feature_fields=(incurred, case),
+        level_fields=(case,),
+        premium_field="earned_premium",
+    )
+    n_c, n_l, _, n_w, n_d = contract["x"].shape
+    last_diagonal = n_w + n_d - 1
+    obs_any = contract["obs_mask"].any(axis=1)
+    _, _, train_end = splits(obs_any, contract["cal_idx"], config.val_diagonals)
+    last_known = train_end + config.val_diagonals
+    if not 1 <= v <= last_known:
+        raise ValueError(f"valuation {v} is outside 1 to the last known diagonal {last_known}")
+
+    def features(cutoff, target_lo, target_hi, max_lag=None, with_mcl=None):
+        return tlrn_features(
+            contract,
+            cutoff=cutoff,
+            target_lo=target_lo,
+            target_hi=target_hi,
+            incurred_field=incurred,
+            case_field=case,
+            with_mcl=config.member == "mcl_blend" if with_mcl is None else with_mcl,
+            max_lag=max_lag,
+        )
+
+    if v == last_known:
+        spec = {"c_max": v, "target_hi": last_diagonal}
+    else:
+        reached = config.scoring == "reached_cells"
+        spec = {"c_max": v, "target_hi": last_known, "final_max_lag": v if reached else None}
+    spec |= {"seed": seed, "show_progress": show_progress}
+    entry = TLRN()
+    (run,) = entry._run_protocols(
+        contract,
+        config,
+        [spec],
+        features=features,
+        dev=torch.device("cpu"),
+        processes=1,
+        torch=torch,
+        jax_backend=_load_jax_backend() if backend == "jax" else None,
+    )
+    return {"run": run, "contract": contract, "entry": entry, "last_known": last_known, "v": v}
+
+
+def date_tables(fitted: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """``(valuations rows, members rows)`` of one date, from :func:`fit_valuation`'s result.
+
+    Per company: the cells scored, the mean over the members of the refit blend
+    (``predicted``), of the same members before the refit (``predicted_selected``), of the raw
+    refit network (``predicted_net``) and of the raw network before the refit
+    (``predicted_net_selected``), each added over the cells scored; and the actual over them
+    where every scored diagonal is already observed.
+    """
+    import torch
+
+    from ibnr.gallery.nn.tlrn.model import TLRN
+    from ibnr.kernels.nn_contract import cohort_identities
+
+    run, contract, v = fitted["run"], fitted["contract"], fitted["v"]
+    codes = [c["company_code"] for c in cohort_identities(contract, key="companies")]
+    n_c = len(codes)
+    final, tensors = run["final_set"], run["final_tensors"]
+    after, before = run, run["selected"]
+
+    def mean_of(arm, blend: bool) -> np.ndarray:
+        with torch.no_grad():
+            stack = [
+                arm["forward"](m, tensors, blend=blend)["pred"].cpu().numpy() for m in arm["kept"]
+            ]
+        return TLRN._company_totals(np.mean(stack, axis=0), final, n_c)
+
+    n_cells = np.zeros(n_c)
+    np.add.at(n_cells, final["example_company"], final["target_mask"].sum(axis=1))
+    known = int(final["target_hi"]) <= fitted["last_known"]
+    actual = TLRN._company_totals(final["target"], final, n_c) if known else np.full(n_c, np.nan)
+    valuations = pd.DataFrame(
+        {
+            "valuation": v,
+            "company_code": codes,
+            "n_cells": n_cells.astype(int),
+            "predicted": mean_of(after, True),
+            "predicted_selected": mean_of(before, True),
+            "predicted_net": mean_of(after, False),
+            "predicted_net_selected": mean_of(before, False),
+            "actual": actual,
+        }
+    )
+    members = run["selection"].copy()
+    members.insert(0, "valuation", v)
+    return valuations, members
+
+
+def date_reserves(fitted: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The reserves frame of a fit at the last known diagonal: refit, and before the refit."""
+    from ibnr.gallery.nn.tlrn.model import TLRN
+    from ibnr.kernels.nn_contract import cohort_identities
+
+    run, contract, entry = fitted["run"], fitted["contract"], fitted["entry"]
+    final, tensors = run["final_set"], run["final_tensors"]
+    codes = [c["company_code"] for c in cohort_identities(contract, key="companies")]
+    mask = contract["line_mask"]
+    base = pd.DataFrame(
+        {
+            "company_code": codes,
+            "anchor": np.where(mask[:, :, None], contract["latest_cum"], 0.0).sum(axis=(1, 2)),
+            "premium": [
+                float(np.nansum(np.where(mask[c][:, None], contract["premium"][c], np.nan)))
+                for c in range(len(codes))
+            ],
+            "n_lines": mask.sum(axis=1).astype(int),
+        }
+    )
+
+    def frame(arm) -> pd.DataFrame:
+        def reserves(models) -> np.ndarray:
+            point = entry._ensemble_pred(models, tensors, arm["forward"])
+            _, per, _ = TLRN._assemble_point(
+                point, final, contract, models, tensors, arm["forward"]
+            )
+            return np.nansum(per, axis=(1, 2))
+
+        out = base.copy()
+        out["reserve"] = reserves(arm["kept"])
+        for m, model in enumerate(arm["models"]):
+            out[f"member_{m:02d}"] = reserves([model])
+        return out
+
+    return frame(run), frame(run["selected"])
+
+
+def fit_valuations(
+    cohort,
+    config,
+    seed: int,
+    *,
+    valuations=VALUATIONS,
+    backend: str = "jax",
+    show_progress: bool = False,
+    log=print,
+) -> ValuationFits:
+    """The third study's fit: every valuation date trained on its own company set.
+
+    For each date ``v`` the companies are those of ``select_pairs(cutoff=v)`` (the pairs of
+    :func:`valuation_pairs`), a triangle is built from them, and :func:`fit_valuation` trains,
+    refits and scores the date. Date ``v`` has seed ``seed + 20000 v``, its members
+    ``+ 1000 m``. The last known diagonal's reserves become ``reserves``.
+    """
+    sets = valuation_pairs(cohort, valuations)
+    last = max(valuations)
+    tables, members, reserves, selected, seeds = [], [], None, None, {}
+    for v in valuations:
+        started = time.perf_counter()
+        triangle = triangle_from_cells(cohort.all_cells, sets[v])
+        fitted = fit_valuation(
+            triangle,
+            v,
+            config,
+            date_seed(seed, v),
+            as_of=cohort.as_of,
+            backend=backend,
+            show_progress=show_progress and v == last,
+        )
+        table, member_rows = date_tables(fitted)
+        tables.append(table)
+        members.append(member_rows)
+        seeds[v] = date_seed(seed, v)
+        if v == last:
+            reserves, selected = date_reserves(fitted)
+        log(
+            f"    valuation {v}: {len(sets[v])} pairs, {len(table)} companies, "
+            f"{time.perf_counter() - started:.0f}s"
+        )
+    return ValuationFits(
+        valuations=pd.concat(tables, ignore_index=True),
+        members=pd.concat(members, ignore_index=True),
+        reserves=reserves,
+        reserves_selected=selected,
+        pairs=sets,
+        seeds=seeds,
+        config=config,
+    )
 
 
 # -- what the second study saves besides the reserves ------------------------------------
@@ -975,7 +1317,8 @@ def main(argv=None) -> int:
         "--study",
         choices=sorted(STUDIES),
         default="accident_year",
-        help="accident_year: the first study; factor_head: the second (cohorts A, B and C)",
+        help="accident_year: the first study; factor_head: the second (cohorts A, B and C); "
+        "companion_final: the third (cohorts B and C)",
     )
     parser.add_argument(
         "--cohort",
@@ -1047,20 +1390,27 @@ def main(argv=None) -> int:
 
     def fit_fn(cohort, row, roles, config, seed):
         started = time.perf_counter()
-        # the second study keeps every valuation date's members while the fit runs
-        collecting = capture_protocols() if spec.tables else nullcontext([])
-        with collecting as runs:
-            entry = gallery.fit(
-                "tlrn",
-                cohort.triangle,
-                loss_field=tlrn_colab.FIELD,
-                as_of=cohort.as_of,
-                seed=seed,
-                config=config,
-                backend="jax",
-                show_progress=not args.quiet,
-                **roles,
+        runs = []
+        if spec.per_valuation:
+            # the third study: a protocol per valuation date, each on its own companies
+            entry = fit_valuations(
+                cohort, config, seed, backend="jax", show_progress=not args.quiet
             )
+        else:
+            # the second study keeps every valuation date's members while the fit runs
+            collecting = capture_protocols() if spec.tables else nullcontext([])
+            with collecting as runs:
+                entry = gallery.fit(
+                    "tlrn",
+                    cohort.triangle,
+                    loss_field=tlrn_colab.FIELD,
+                    as_of=cohort.as_of,
+                    seed=seed,
+                    config=config,
+                    backend="jax",
+                    show_progress=not args.quiet,
+                    **roles,
+                )
         run = {
             "ibnr": ibnr.__version__,
             "jax": jax.__version__,
@@ -1073,6 +1423,9 @@ def main(argv=None) -> int:
             "python": sys.version.split()[0],
             "platform": platform.platform(),
         }
+        if spec.per_valuation:
+            run["pairs_by_valuation"] = {str(v): len(p) for v, p in entry.pairs.items()}
+            return entry, run, entry.tables
         if spec.tables:
             return entry, run, valuation_tables(entry, runs)
         return entry, run

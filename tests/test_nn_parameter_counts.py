@@ -99,6 +99,27 @@ def _tlrn(n_feat: int = 13, n_lines: int = 4, n_lag: int = 10):
     return TLRNNetwork(TLRNConfig(), n_lines=n_lines, n_lag=n_lag, n_feat=n_feat)
 
 
+def _tlrn_preset():
+    """The companion-final preset's network: compact embeddings, 4 lines, 10 lags, 13 features.
+
+    The premium head needs a starting loss ratio and the accident-year attention a company
+    size; neither changes a count.
+    """
+    import torch
+
+    from ibnr.gallery.nn.tlrn.config import TLRNConfig
+    from ibnr.gallery.nn.tlrn.network import TLRNNetwork
+
+    return TLRNNetwork(
+        TLRNConfig.companion_final_variant(),
+        n_lines=4,
+        n_lag=10,
+        n_feat=13,
+        n_origin=10,
+        head_init=torch.zeros(4, 10),
+    )
+
+
 def _resnet(n_w: int, n_d: int, **overrides):
     from ibnr.gallery.nn.resnet.config import ResNetConfig
     from ibnr.gallery.nn.resnet.network import TriangleResNet
@@ -138,6 +159,11 @@ DISCLOSED: dict[str, tuple[Claim, ...]] = {
         Claim(
             "the tlrn network at d_model 32 with 13 features on 4 lines and 10 lags",
             lambda: _tlrn(),
+        ),
+        Claim(
+            "the companion-final preset's network (compact embeddings, premium head, "
+            "accident-year attention) on 4 lines and 10 lags",
+            lambda: _tlrn_preset(),
         ),
     ),
 }

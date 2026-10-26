@@ -23,6 +23,19 @@ sources:
 
 # Result
 
+**Correction (2026-10-21): superseded by the companion's 21 October model.** Everything below
+describes the model at commit `f74addd` (2026-10-08). The companion's repository has since moved
+on (commits `f50871d` and `9e118a7`) to a model that returns to attention across accident years
+and to a premium loss-ratio head, refits each network on everything known up to the cutoff, fits
+alpha on one diagonal and chooses the epoch on the next, and picks its companies again at each
+valuation date. So the statements below that there is no accident-year attention, that the
+network has 14,245 parameters and that each member fits its own alpha describe the earlier
+model and not the companion's current one. ibnr's version of the newer model has 18,601
+parameters (18,537, the companion's count, from ibnr 0.7.6's `compact_embeddings`, which the
+third study's preset sets); the third study tests it
+([pre-registration](/decisions/tlrn-study3-preregistration.md)). The text below is left as it
+was written.
+
 The companion study's newest model is not the accident-year variant that ibnr's
 0.7.3 work reproduced. Its repository moved on 2026-10-08, the same day as its last run, to
 a model with a different head and no accident-year attention. The notebook that earlier

@@ -31,7 +31,9 @@ to move. The lag attention needs no mask there: it only ever sees one line's own
 lags. ``mask="observed_cells"`` masks every key the forecast date has not
 revealed, on all three axes, so a token can only read cells that exist at the
 cutoff. A token with nothing left to read gets nothing: its attention output is
-zero, not the NaN a softmax over no keys would give.
+zero, not the NaN a softmax over no keys would give. With
+``empty_query_bias`` it gets the attention's output bias instead, as the
+companion's does (zero weights, then the output projection adds its bias).
 
 An example with NO written line is refused rather than answered, whenever the
 line attention is on. Every key would be masked, the attention weights would be a
@@ -46,9 +48,14 @@ loss ratio of that (line, lag) and a cell is that ratio times premium. See
 ``head.py`` for why.
 
 Two embedding tables and a third for position: the line, the lag, and how many
-lags of this accident year are already observed. All three are indexed 1-based
-with row 0 unused, matching the reference implementation, which is where the
-parameter count of 14,309 at ``d_model = 32`` comes from.
+lags of this accident year are already observed. By default all three are
+indexed 1-based with an unused row (the R implementation's is the last one, not
+row 0, so the counts match and the layouts do not), which is where a parameter
+count of 14,309 at ``d_model = 32`` (``ldf`` head, 13 features, 4 lines, 10
+lags) comes from. The companion's JAX code indexes the line and lag
+tables from 0 and has no unused row there, so its count for that network is 64
+smaller, 14,245; ``compact_embeddings=True`` builds that one, and the visible-lag
+table (twelve rows in both) is then read at ``lk`` as the companion reads it.
 """
 
 from __future__ import annotations
@@ -76,6 +83,7 @@ def attend(
     need_weights: bool,
     *,
     guard: bool,
+    empty_bias: bool = False,
 ) -> tuple[Tensor, Tensor | None]:
     """One attention over ``h`` (N, S, d) reading only the keys ``readable`` (N, S) marks.
 
@@ -84,6 +92,10 @@ def attend(
     through so the softmax is finite, and the output is then multiplied by zero
     for that sequence. Without ``guard`` the call is the plain masked attention,
     which is what keeps the published model's arithmetic exactly as it was.
+
+    With ``empty_bias`` (and ``guard``) that sequence gets the attention's output
+    bias instead of zero, and zero attention weights: the companion's rule, where
+    the weights are zeroed and the output projection still adds its bias.
     """
     if readable is None:
         return attn(h, h, h, need_weights=need_weights)
@@ -94,6 +106,11 @@ def attend(
     pad = pad.clone()
     pad[:, 0] &= any_key  # a sequence with no key lets its first one through
     out, weights = attn(h, h, h, key_padding_mask=pad, need_weights=need_weights)
+    if empty_bias:
+        out = torch.where(any_key.view(-1, 1, 1), out, attn.out_proj.bias.to(out.dtype))
+        if weights is not None:
+            weights = weights * any_key.view(-1, 1, 1).to(weights.dtype)
+        return out, weights
     return out * any_key.view(-1, 1, 1).to(out.dtype), weights
 
 
@@ -121,8 +138,10 @@ class AxialBlock(nn.Module):
         axes: tuple[str, ...] | None = None,
         n_origin: int | None = None,
         mask: str = "unwritten_lines",
+        empty_query_bias: bool = False,
     ) -> None:
         super().__init__()
+        self.empty_query_bias = empty_query_bias
         self.axes = (
             tuple(axes) if axes is not None else (("line", "lag") if cross_line else ("lag",))
         )
@@ -191,7 +210,14 @@ class AxialBlock(nn.Module):
                 readable = vis.permute(0, 2, 1).reshape(batch * n_j, n_l)
             else:
                 readable = written.unsqueeze(1).expand(batch, n_j, n_l).reshape(batch * n_j, n_l)
-            a, attn_line = attend(self.attn_line, h, readable, need_weights, guard=observed)
+            a, attn_line = attend(
+                self.attn_line,
+                h,
+                readable,
+                need_weights,
+                guard=observed,
+                empty_bias=self.empty_query_bias,
+            )
             a = a.reshape(batch, n_j, n_l, d).permute(0, 2, 1, 3).reshape(batch, n_l * n_j, d)
             x = x + self.drop(a)
 
@@ -200,7 +226,14 @@ class AxialBlock(nn.Module):
         # line is a real position
         h = self.ln2(x).reshape(batch * n_l, n_j, d)
         readable = vis.reshape(batch * n_l, n_j) if observed else None
-        a, attn_lag = attend(self.attn_lag, h, readable, need_weights, guard=observed)
+        a, attn_lag = attend(
+            self.attn_lag,
+            h,
+            readable,
+            need_weights,
+            guard=observed,
+            empty_bias=self.empty_query_bias,
+        )
         x = x + self.drop(a.reshape(batch, n_l * n_j, d))
 
         if "ay" in self.axes:
@@ -221,7 +254,14 @@ class AxialBlock(nn.Module):
             else:
                 token_ok = written.unsqueeze(2).expand(batch, n_l, n_j).reshape(batch, n_tok)
             readable = token_ok.reshape(n_c, n_w, n_tok).permute(0, 2, 1).reshape(n_c * n_tok, n_w)
-            a, attn_ay = attend(self.attn_ay, h, readable, need_weights, guard=True)
+            a, attn_ay = attend(
+                self.attn_ay,
+                h,
+                readable,
+                need_weights,
+                guard=True,
+                empty_bias=self.empty_query_bias,
+            )
             a = a.reshape(n_c, n_tok, n_w, d).permute(0, 2, 1, 3).reshape(batch, n_tok, d)
             x = x + self.drop(a)
 
@@ -262,10 +302,14 @@ class TLRNNetwork(nn.Module):
         self.n_origin = n_origin
         d = cfg.d_model
         self.inp = nn.Linear(n_feat, d)
-        # row 0 of each table is unused: the indices are 1-based, as the
-        # reference implementation's are, and the count depends on it
-        self.line_emb = nn.Embedding(n_lines + 1, d)
-        self.lag_emb = nn.Embedding(n_lag + 1, d)
+        # row 0 of each table is unused: the indices are 1-based, as the R
+        # implementation's are, and the count depends on it. compact_embeddings drops
+        # that row (the companion's tables are 0-based) and reads the visible-lag
+        # table at lk, not lk + 1: still twelve rows, rows 1 to n_lag in use
+        self.compact = bool(cfg.compact_embeddings)
+        extra = 0 if self.compact else 1
+        self.line_emb = nn.Embedding(n_lines + extra, d)
+        self.lag_emb = nn.Embedding(n_lag + extra, d)
         self.nobs_emb = nn.Embedding(n_lag + 2, d)
         axes = attention_axes(cfg)
         self.blocks = nn.ModuleList(
@@ -280,6 +324,7 @@ class TLRNNetwork(nn.Module):
                     axes=axes,
                     n_origin=n_origin,
                     mask=cfg.mask,
+                    empty_query_bias=cfg.empty_query_bias,
                 )
                 for _ in range(cfg.n_layers)
             ]
@@ -365,10 +410,11 @@ class TLRNNetwork(nn.Module):
         attn_lag: list = []
         attn_ay: list = []
         if use_residual:
-            h = self.inp(feat) + self.line_emb(line_ix) + self.lag_emb(lag_ix)
+            shift = 1 if self.compact else 0
+            h = self.inp(feat) + self.line_emb(line_ix - shift) + self.lag_emb(lag_ix - shift)
             # one more position: how many lags of this accident year are already
             # observed, which is the same for every token of the example
-            h = h + self.nobs_emb(lk + 1).unsqueeze(-2)
+            h = h + self.nobs_emb(lk + 1 - shift).unsqueeze(-2)
             for block in self.blocks:
                 h, w_line, w_lag, w_ay = block(
                     h, written, need_weights=need_weights, visible=visible

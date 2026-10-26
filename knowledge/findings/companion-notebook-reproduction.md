@@ -20,6 +20,18 @@ sources:
 
 # Correction (2026-10-15)
 
+# Correction (2026-10-21)
+
+The companion's 21 October model (commits `f50871d` and `9e118a7`) returns to attention across
+accident years and to a premium loss-ratio head, so ibnr's accident-year variant described
+below is closer to the companion's current model than the factor-head model was, though it is
+not the same: the newer model also refits every network on everything known up to the cutoff,
+fits alpha on one diagonal and picks the epoch on the next. ibnr 0.7.6 has those options
+(`refit`, `alpha_on`, `TLRNConfig.companion_final_variant()`), and the third study tests them
+([pre-registration](/decisions/tlrn-study3-preregistration.md)). The 2026-10-15 correction
+below, which says the final model has no accident-year attention, is true of commit `f74addd`
+only.
+
 This note describes the companion notebook as it stood on 2026-10-05, when
 `Code/tlrn_pipeline_best.ipynb` was the best one. That file was deleted upstream on
 2026-10-08 (commit `bf4e52c`), and the companion study's final model is now a different,
@@ -67,6 +79,12 @@ finding too (48.8% of its bootstrap resamples favour TLRN).
 Embedding tables are 0-based in the notebook and 1-based in ibnr, so parameter counts
 differ (the notebook's is 18,537). The two use different random streams, so the same
 seed does not give the same numbers.
+
+Correction, 2026-10-22: ibnr 0.7.6 has `compact_embeddings=True`, which builds the
+notebook's own 0-based tables and count, and `empty_query_bias=True`, which gives an
+attention query with nothing to read the output bias as the notebook does. The third
+study's preset sets both, so the parameter count is no longer a difference there. The
+random streams still are. The text above is left as it was written.
 
 # Reduced-scale numbers
 

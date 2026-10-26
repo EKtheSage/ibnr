@@ -39,6 +39,7 @@ from __future__ import annotations
 import datetime as dt
 import math
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 
 import numpy as np
@@ -87,6 +88,27 @@ def _refuse_overlap(train_masks, val_masks) -> None:
             "target. Validation picks which member to keep, so a shared cell makes that "
             "choice on data every member saw. The training window must end at the first "
             "validation diagonal"
+        )
+
+
+def _refuse_look_ahead(train_masks, scored_mask) -> None:
+    """No cell the fit is scored on may also be a training target.
+
+    The refit trains on every diagonal known at the valuation date, so the cells it is
+    scored on (the diagonals after that date) must lie strictly beyond every training
+    target. The companion asserts the same in its feature step. The check reads the masks,
+    not the arithmetic that built them.
+    """
+    if not len(train_masks) or scored_mask is None:
+        return
+    trained = np.sum(train_masks, axis=0) > 0
+    scored = np.asarray(scored_mask) > 0
+    shared = int((trained & scored).sum())
+    if shared:
+        raise ValueError(
+            f"look-ahead: {shared} cell(s) are both a training target and a cell the "
+            "forecast is scored on. The training window must end at the valuation date and "
+            "the scored cells must come after it"
         )
 
 
@@ -180,7 +202,14 @@ def _training_parts(
 
     def val_loss(model) -> float:
         if cfg.member == "mcl_blend":
-            return TLRN._blend_ay_line_ape(model, val_tensors, forward, n_l, n_d)
+            return TLRN._blend_ay_line_ape(
+                model,
+                val_tensors,
+                forward,
+                n_l,
+                n_d,
+                alpha_first=cfg.alpha_on == "first_diagonal",
+            )
         return TLRN._ay_line_ape(model, val_tensors, forward, n_l, n_d)
 
     def param_groups(m):
@@ -191,6 +220,56 @@ def _training_parts(
         ]
 
     return make_model, forward, train_loss, val_loss, param_groups
+
+
+def _stored_epochs(history: list[list[dict]], *, single_precision: bool) -> list[float]:
+    """The 1-based epoch whose weights each member holds after training.
+
+    ``train_ensemble`` (and the jax program) store weights at a check whose score beats
+    the best so far by more than 1e-6, in the arithmetic of the backend: a double on the
+    torch path, a float32 under jax. The last such check is the stored one. It is not
+    always the check with the lowest score, which can come later by less than the
+    threshold, so the selection table's ``best_epoch`` (the lowest score) is not the
+    epoch to retrain to. A member with no finite check gets NaN.
+    """
+    cast = np.float32 if single_precision else float
+    out: list[float] = []
+    for records in history:
+        best = math.inf
+        stored = math.nan
+        for r in records:
+            if not math.isfinite(r["val"]):
+                continue
+            if cast(r["val"]) < cast(best) - cast(1e-6):
+                best, stored = r["val"], r["epoch"] + 1
+        out.append(stored)
+    return out
+
+
+def _epoch_probe(stop: int, check_every: int, max_epochs: int):
+    """A validation function that makes the weights at epoch ``stop`` the ones kept.
+
+    The refit trains a member again and keeps its weights at exactly the epoch the first
+    run chose. ``train_ensemble`` keeps the weights of its best validation check, so the
+    refit hands it a score that is lowest at the check after ``stop`` epochs and decreasing
+    up to it, and a patience of one ends the run at the next check. The loop validates
+    after every ``check_every`` epochs and after the last one, so the n-th call is the
+    check at epoch ``min(n * check_every, max_epochs)``. Nothing here is measured on the
+    data: the score is only a label for the epoch.
+    """
+    if stop < 1 or stop > max_epochs or (stop % check_every and stop != max_epochs):
+        raise ValueError(
+            f"the refit stops at epoch {stop}, which is not one of the epochs a validation "
+            f"check runs after (every {check_every}, and {max_epochs})"
+        )
+    calls = [0]
+
+    def score(_model) -> float:
+        calls[0] += 1
+        epoch = min(calls[0] * check_every, max_epochs)
+        return float(abs(stop - epoch))
+
+    return score
 
 
 #: what a worker process built once from its payload, reused for every member it trains
@@ -247,8 +326,11 @@ def _worker_protocol(index: int):
     return _WORKER["parts"][index], _WORKER["payload"][index]
 
 
-def _train_member(job: tuple[int, int]) -> tuple[int, int, dict, list[dict], int]:
+def _train_member(job: tuple[int, int, int | None]) -> tuple[int, int, dict, list[dict], int]:
     """Train member ``job[1]`` of protocol ``job[0]``, exactly as the whole ensemble would.
+
+    ``job[2]`` is None for an ordinary member. A number is the epoch a refit stops at: the
+    member then trains with no validation and the weights at that epoch come back.
 
     Returns the torch thread count it trained on as well, so the caller can check the
     worker used the count it was sent: on a small problem the weights come out the same
@@ -256,9 +338,12 @@ def _train_member(job: tuple[int, int]) -> tuple[int, int, dict, list[dict], int
     """
     import torch
 
-    index, member = job
+    index, member, stop = job
     (make_model, _, train_loss, val_loss, param_groups), payload = _worker_protocol(index)
     cfg = payload["cfg"]
+    if stop is not None:
+        val_loss = _epoch_probe(stop, cfg.check_every, cfg.max_epochs)
+        cfg = replace(cfg, patience=1, min_epochs=0)
     models, history = train_ensemble(
         payload["n_units"],
         config=cfg,
@@ -332,6 +417,9 @@ class TLRN(GalleryEntry):
         self.point_cumulative_: np.ndarray | None = None  # (n_c, L, n_w, n_d)
         # every TRAINED member's reserves, in selection_ row order
         self.member_reserves_: np.ndarray | None = None  # (n_members, n_c, L, n_w)
+        # the same, from the networks at their chosen epoch; only under refit=True
+        self.member_reserves_selected_: np.ndarray | None = None
+        self.selected_factor_support_: np.ndarray | None = None
         self.calibration_: Any = None
         self.company_size_: np.ndarray | None = None  # (n_c,) premium
         self.backtest_: pd.DataFrame | None = None
@@ -434,7 +522,9 @@ class TLRN(GalleryEntry):
         _, _, train_end = splits(obs_any, contract["cal_idx"], cfg.val_diagonals)
         c_max = train_end + cfg.val_diagonals
 
-        def features(cutoff: int, target_lo: int, target_hi: int, max_lag=None) -> dict:
+        def features(
+            cutoff: int, target_lo: int, target_hi: int, max_lag=None, with_mcl=None
+        ) -> dict:
             return tlrn_features(
                 contract,
                 cutoff=cutoff,
@@ -442,7 +532,7 @@ class TLRN(GalleryEntry):
                 target_hi=target_hi,
                 incurred_field=incurred_field,
                 case_field=case_field,
-                with_mcl=cfg.member == "mcl_blend",
+                with_mcl=cfg.member == "mcl_blend" if with_mcl is None else with_mcl,
                 max_lag=max_lag,
             )
 
@@ -501,6 +591,25 @@ class TLRN(GalleryEntry):
         final_tensors = run["final_tensors"]
         support_np, train_sets = run["support_np"], run["train_sets"]
 
+        # under refit the arm above is the refit networks'; the networks as they stood at
+        # their chosen epoch are the paired comparison, from the same training run
+        member_reserves_selected = None
+        if cfg.refit:
+            selected_forward = run["selected"]["forward"]
+            member_reserves_selected = np.stack(
+                [
+                    self._assemble_point(
+                        self._ensemble_pred([m], final_tensors, selected_forward),
+                        final_set,
+                        contract,
+                        [m],
+                        final_tensors,
+                        selected_forward,
+                    )[1]
+                    for m in run["selected"]["models"]
+                ]
+            )
+
         point = self._ensemble_pred(kept, final_tensors, forward)
         ultimates, reserves, cumulative = self._assemble_point(
             point, final_set, contract, kept, final_tensors, forward
@@ -551,6 +660,7 @@ class TLRN(GalleryEntry):
             "train_cutoffs": tuple(train_sets),
             "validation_cutoffs": tuple(range(c_max - cfg.val_diagonals, c_max)),
             "final_cutoff": c_max,
+            "refit_cutoffs": tuple(run["refit_cutoffs"]) if cfg.refit else (),
             "n_dropped": {k: s["n_dropped"] for k, s in train_sets.items()},
             "fallback_logf": final_set["fallback_logf"],
         }
@@ -558,6 +668,8 @@ class TLRN(GalleryEntry):
         self.point_reserves_ = reserves
         self.point_cumulative_ = cumulative
         self.member_reserves_ = member_reserves
+        self.member_reserves_selected_ = member_reserves_selected
+        self.selected_factor_support_ = run["selected"]["support_np"] if cfg.refit else None
         self.calibration_ = calibration
         self.company_size_ = size
         self.backtest_ = residuals
@@ -608,10 +720,126 @@ class TLRN(GalleryEntry):
             ]
         else:
             trained = self._train_in_processes(preps, processes, torch)
-        return [
+        runs = [
             self._finish_protocol(prep, cfg, models, history)
             for prep, (models, history) in zip(preps, trained, strict=True)
         ]
+        if cfg.refit:
+            self._refit(
+                runs,
+                specs,
+                cfg,
+                contract=contract,
+                features=features,
+                dev=dev,
+                processes=processes,
+                torch=torch,
+                jax_backend=jax_backend,
+            )
+        return runs
+
+    def _refit(
+        self, runs, specs, cfg, *, contract, features, dev, processes, torch, jax_backend=None
+    ) -> None:
+        """Retrain every trained member of every run on all it knows, in place.
+
+        For each protocol: a second protocol whose training sets reach the last known
+        diagonal (the validation diagonals included) is prepared, and each member is
+        trained again from the same seed, to the epoch the first run chose and no further,
+        with no validation. The blend weight alpha is copied over unchanged. The run then
+        carries the refit networks as its models, the factor support those sets give, and
+        the first run's models under ``selected``. The selection table and history are the
+        first run's, since that is where the epoch was chosen.
+        """
+        stops = []
+        for i, run in enumerate(runs):
+            epochs = run["selection"]["best_epoch"]
+            if epochs.isna().any():
+                lost = [int(m) for m in run["selection"].index[epochs.isna()]]
+                raise ValueError(
+                    f"refit=True retrains each member to the epoch its validation chose, and "
+                    f"member(s) {lost} of protocol {i} never produced a finite validation "
+                    "score, so there is no epoch to stop at"
+                )
+            # the weights a member holds are those of its LAST check that improved by more
+            # than the training loop's threshold, which can precede the check with the
+            # lowest score; the refit stops where the weights were stored
+            stops.append(
+                [
+                    int(e)
+                    for e in _stored_epochs(
+                        run["history"], single_precision=jax_backend is not None
+                    )
+                ]
+            )
+        preps = [
+            self._prepare_protocol(
+                contract,
+                cfg,
+                features=features,
+                dev=dev,
+                processes=processes,
+                torch=torch,
+                refit_of=run,
+                **spec,
+            )
+            for run, spec in zip(runs, specs, strict=True)
+        ]
+        if jax_backend is not None:
+            trained = jax_backend.train_protocols(
+                preps, cfg, torch, stops=np.array(stops, dtype=np.int32)
+            )
+        elif processes == 1:
+            trained = [
+                self._refit_in_process(prep, cfg, stop, dev)
+                for prep, stop in zip(preps, stops, strict=True)
+            ]
+        else:
+            trained = self._train_in_processes(preps, processes, torch, stops=stops)
+        for i, (run, prep, (models, _)) in enumerate(zip(runs, preps, trained, strict=True)):
+            if cfg.member == "mcl_blend":
+                for chosen, again in zip(run["models"], models, strict=True):
+                    again.alpha.fill_(float(chosen.alpha))
+            run["selected"] = {
+                "models": run["models"],
+                "kept": run["kept"],
+                "forward": run["forward"],
+                "support_np": run["support_np"],
+            }
+            run["models"] = models
+            run["kept"] = [models[m] for m in run["kept_ix"]]
+            run["forward"] = prep["forward"]
+            run["support_np"] = prep["support_np"]
+            run["refit_cutoffs"] = tuple(prep["train_sets"])
+            # the epoch the refit ran to, which is the epoch the first run chose
+            run["selection"]["refit_epochs"] = stops[i]
+
+    @staticmethod
+    def _refit_in_process(prep: dict, cfg, stops: list[int], dev) -> tuple[list, list]:
+        """Train each member of a refit protocol to its own stop epoch, one after another."""
+        quiet = replace(cfg, patience=1, min_epochs=0)
+        models, histories = [], []
+        for member, stop in enumerate(stops):
+            trained, history = train_ensemble(
+                prep["n_units"],
+                config=quiet,
+                seed=prep["seed"],
+                make_model=prep["make_model"],
+                train_loss=prep["train_loss"],
+                val_loss=_epoch_probe(stop, cfg.check_every, cfg.max_epochs),
+                min_cutoff=cfg.min_cutoff,
+                val_cutoff=prep["train_end"],
+                device=dev,
+                schedule=warmup_cosine(cfg.max_epochs, cfg.warmup),
+                param_groups=prep["param_groups"],
+                min_epochs=0,
+                check_every=cfg.check_every,
+                cutoff_sampling=cfg.cutoff_sampling,
+                members=[member],
+            )
+            models.append(trained[0])
+            histories.append(history[0])
+        return models, histories
 
     def _prepare_protocol(
         self,
@@ -627,6 +855,7 @@ class TLRN(GalleryEntry):
         dev,
         processes,
         torch,
+        refit_of=None,
     ) -> dict:
         """Build everything the protocol at diagonal ``c_max`` trains and is scored on.
 
@@ -636,11 +865,17 @@ class TLRN(GalleryEntry):
         at the latest observed diagonal; ``calibration="retrain_per_valuation"``
         runs it again at each earlier valuation date, reading nothing past that date
         into any input, so its forecasts of the later diagonals are out of sample.
+
+        ``refit_of`` is a finished run of this same protocol, and asks for its refit
+        instead: the training sets reach the last known diagonal ``c_max`` (the validation
+        diagonals included), so there are no validation sets, the premium head starts at
+        the pooled loss ratios known at ``c_max``, the factor support is read off these
+        wider sets, and the final feature set is the run's own.
         """
         from ibnr.gallery.nn.tlrn import head as tlrn_head
 
         n_c, n_l, _, n_w, n_d = contract["x"].shape
-        train_end = c_max - cfg.val_diagonals
+        train_end = c_max if refit_of is not None else c_max - cfg.val_diagonals
         if train_end - 1 < cfg.min_cutoff:
             raise ValueError(
                 f"the latest observed diagonal is {c_max} and {cfg.val_diagonals} of them "
@@ -650,23 +885,45 @@ class TLRN(GalleryEntry):
             )
         # one training set per cutoff; each is the same triangle presented as a
         # complete "forecast the next diagonals" task from a different date
-        train_sets = {k: features(k, k + 1, train_end) for k in range(cfg.min_cutoff, train_end)}
+        # (the refit trains no blend, so its sets carry no chain ladder forecast)
+        no_mcl = {} if refit_of is None else {"with_mcl": False}
+        train_sets = {
+            k: features(k, k + 1, train_end, **no_mcl) for k in range(cfg.min_cutoff, train_end)
+        }
         # the validation sets score every diagonal still held out at their own
-        # cutoff, so the selection is not made on one-step forecasts alone
+        # cutoff, so the selection is not made on one-step forecasts alone. With alpha
+        # fitted on the first diagonal only, the first set stops at its own next diagonal
+        # and so does not reach the one that chooses the checkpoint
         reached = cfg.scoring == "reached_cells"
-        val_sets = [
-            features(k, k + 1, c_max, max_lag=k if reached else None)
-            for k in range(train_end, c_max)
-        ]
+        first_only = cfg.alpha_on == "first_diagonal"
+        val_sets = (
+            []
+            if refit_of is not None
+            else [
+                features(k, k + 1, k + 1 if first_only else c_max, max_lag=k if reached else None)
+                for k in range(train_end, c_max)
+            ]
+        )
         _refuse_overlap(
             [s["target_mask"] for s in train_sets.values()],
             [s["target_mask"] for s in val_sets],
         )
-        final_set = features(c_max, c_max + 1, target_hi, max_lag=final_max_lag)
+        if refit_of is None:
+            final_set = features(c_max, c_max + 1, target_hi, max_lag=final_max_lag)
+            final_tensors = None
+        else:
+            final_set, final_tensors = refit_of["final_set"], refit_of["final_tensors"]
+        _refuse_look_ahead(
+            [s["target_mask"] for s in train_sets.values()], final_set.get("target_mask")
+        )
         n_feat = final_set["n_feat"]
         n_ex = final_set["n_ex"]
-        every_set = [*train_sets.values(), *val_sets, final_set]
+        every_set = [*train_sets.values(), *val_sets]
+        if final_tensors is None:
+            every_set.append(final_set)
         tensor_of = {id(s): self._to_tensors(s, torch, dev) for s in every_set}
+        if final_tensors is not None:
+            tensor_of[id(final_set)] = final_tensors
 
         support = None
         if cfg.tail_policy == "observed_cl":
@@ -758,7 +1015,9 @@ class TLRN(GalleryEntry):
         return {
             "models": models,
             "kept": [models[m] for m in kept_ix],
+            "kept_ix": kept_ix,
             "kept_history": [history[m] for m in kept_ix],
+            "history": history,
             "selection": selection,
             "final_set": prep["final_set"],
             "final_tensors": prep["final_tensors"],
@@ -893,13 +1152,22 @@ class TLRN(GalleryEntry):
 
     # -- read-outs -------------------------------------------------------------------
 
-    def company_reserves(self) -> np.ndarray:
-        """``(n_c,)`` the point reserve of each company, over its written lines."""
+    def company_reserves(self, *, selected: bool = False) -> np.ndarray:
+        """``(n_c,)`` the point reserve of each company, over its written lines.
+
+        ``selected=True`` is the same ensemble with each member's network as it stood at
+        its chosen epoch, before the refit. It exists only for a fit made with
+        ``refit=True`` (without a refit the networks are the selected ones, and the
+        question has one answer already), and comes from the same training run.
+        """
         if self.point_reserves_ is None:
             raise RuntimeError("call fit() first")
+        if selected:
+            kept = self.selection_.index[self.selection_["kept"]].tolist()
+            return self.member_company_reserves(selected=True)[kept].mean(axis=0)
         return np.nansum(self.point_reserves_, axis=(1, 2))
 
-    def member_company_reserves(self) -> np.ndarray:
+    def member_company_reserves(self, *, selected: bool = False) -> np.ndarray:
         """``(n_members, n_c)`` each TRAINED member's point reserve per company.
 
         Rows follow ``selection_``, so the members the selection dropped are here
@@ -908,9 +1176,20 @@ class TLRN(GalleryEntry):
         rows - and any other group of members, the best two of some other ten or all
         of them, is the mean of its rows, scored without refitting. Averaging every
         member is also available as a fit: ``keep = ensemble_size``.
+
+        ``selected=True`` reads the networks as they stood at their chosen epoch instead of
+        the refit ones; see :meth:`company_reserves`.
         """
         if self.member_reserves_ is None:
             raise RuntimeError("call fit() first")
+        if selected:
+            if getattr(self, "member_reserves_selected_", None) is None:
+                raise ValueError(
+                    "selected=True compares the refit networks with the same members before "
+                    "the refit, and this fit has no refit: its networks already are the "
+                    "selected ones. Fit with config.refit=True"
+                )
+            return np.nansum(self.member_reserves_selected_, axis=(2, 3))
         return np.nansum(self.member_reserves_, axis=(2, 3))
 
     def company_anchors(self) -> np.ndarray:
@@ -961,14 +1240,17 @@ class TLRN(GalleryEntry):
         return out
 
     @staticmethod
-    def _train_in_processes(preps: list[dict], processes: int, torch) -> list[tuple[list, list]]:
+    def _train_in_processes(
+        preps: list[dict], processes: int, torch, stops: list[list[int]] | None = None
+    ) -> list[tuple[list, list]]:
         """Train every member of every protocol in one pool of ``spawn`` workers.
 
         Each worker builds a protocol's training parts the first time one of its members
         arrives and then trains whole members; only a (protocol, member) pair goes out
         and only its weights and history come back. The models are rebuilt here from
         those weights, in eval mode, as ``train_ensemble`` returns them. Returns
-        ``(models, history)`` per protocol, each in member order.
+        ``(models, history)`` per protocol, each in member order. ``stops`` are the refit's
+        stop epochs, one list per protocol with one epoch per member.
         """
         import multiprocessing
         import os
@@ -979,7 +1261,7 @@ class TLRN(GalleryEntry):
 
         threads = torch.get_num_threads()
         jobs = [
-            (i, member)
+            (i, member, None if stops is None else stops[i][member])
             for i, prep in enumerate(preps)
             for member in range(prep["payload"]["cfg"].ensemble_size)
         ]
@@ -1015,7 +1297,7 @@ class TLRN(GalleryEntry):
                 "not the ones processes=1 would train"
             )
         out: list[tuple[list, list]] = [([], []) for _ in preps]
-        for index, _, state, records, _ in trained:
+        for index, _member, state, records, _ in trained:
             model = preps[index]["make_model"]()
             model.load_state_dict(state)
             model.eval()
@@ -1045,7 +1327,9 @@ class TLRN(GalleryEntry):
         return numerator / max(denominator, 1e-8)
 
     @staticmethod
-    def _blend_ay_line_ape(model, tsets: list[dict], forward, n_l: int, n_d: int) -> float:
+    def _blend_ay_line_ape(
+        model, tsets: list[dict], forward, n_l: int, n_d: int, *, alpha_first: bool = False
+    ) -> float:
         """The validation score of the blend, after fitting its weight.
 
         The network's weight alpha is the exact minimiser of the same
@@ -1053,6 +1337,10 @@ class TLRN(GalleryEntry):
         validation sets together (``blend.blend_weight``), and is written into the
         model before the score is taken: the weight is part of what validates, and
         the checkpoint that validates best keeps its own.
+
+        With ``alpha_first`` alpha is fitted on the first validation set alone and the
+        score is taken on the second alone, so the cells that choose the checkpoint are
+        not the cells that chose alpha.
         """
         import torch
 
@@ -1069,11 +1357,15 @@ class TLRN(GalleryEntry):
                 errors.append(by_group(mcl - tset["target"]))
                 gaps.append(by_group(net - mcl))
                 actuals.append(by_group(tset["target"]))
-            error, gap = np.concatenate(errors), np.concatenate(gaps)
-            alpha = blend_weight(error, gap)
+            if alpha_first:
+                alpha = blend_weight(errors[0], gaps[0])
+                error, gap, actual = errors[-1], gaps[-1], actuals[-1]
+            else:
+                error, gap = np.concatenate(errors), np.concatenate(gaps)
+                alpha, actual = blend_weight(error, gap), np.concatenate(actuals)
             model.alpha.fill_(alpha)
         score = np.abs(error + alpha * gap).sum()
-        return float(score / max(np.abs(np.concatenate(actuals)).sum(), 1e-8))
+        return float(score / max(np.abs(actual).sum(), 1e-8))
 
     @staticmethod
     def _company_totals(pred: np.ndarray, features: dict, n_c: int) -> np.ndarray:

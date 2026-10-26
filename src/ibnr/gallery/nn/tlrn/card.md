@@ -76,8 +76,10 @@ output would be NaN.
 
 At `d_model = 32`, two heads, one layer, 13 features, 4 lines and 10 lags the
 network has **14,309 parameters**; the paid-only form has 160 fewer. All three
-embedding tables carry one unused row, because the indices are 1-based as the
-reference implementation's are.
+embedding tables carry one unused row, because the indices are 1-based as the R
+implementation's are. The companion's JAX code indexes the line and lag tables from 0
+and has no unused row there, so its count for the same network is 14,245;
+`compact_embeddings=True` builds that one (see "Matching the companion's network").
 
 `cross_line = False` skips the line attention while still building it, so the
 comparison between the two arms is a comparison of the attention rather than of
@@ -101,6 +103,10 @@ accident-year variant at once.
 | `keep` | 2 of 10 | `None`: every trained member averaged |
 | `scoring` | `all_cells` | `reached_cells`: validation and retrained forecasts score only cells whose development steps the cutoff has seen (lag at most the cutoff) |
 | `calibration` | `rescore_final` | `retrain_per_valuation`: the whole method retrained at each calibration cutoff |
+| `alpha_on` | `all_validation`: alpha fitted on every validation diagonal | `first_diagonal`: alpha fitted on the first validation diagonal only, the checkpoint chosen on the second (needs `member="mcl_blend"` and `val_diagonals=2`) |
+| `refit` | `False` | `True`: each member trained again on every known diagonal, stopped at the epoch it chose |
+| `empty_query_bias` | `False`: a query with no key to read gets zero | `True`: it gets the attention's output bias, as in the companion's code (needs `mask="observed_cells"` or the `"ay"` axis) |
+| `compact_embeddings` | `False`: line and lag tables carry an unused row 0 (1-based) | `True`: exactly one row per line and per lag, read 0-based, as in the companion's code |
 
 `premium_lr` starts each (line, lag) ratio at the pooled incremental loss ratio
 known when training starts (a plain mean over the visible cells, floored at 1e-4; a
@@ -113,7 +119,71 @@ its own first test.
 error, refitted at every validation check and kept with the checkpoint that
 validated best (it is a buffer in the state dict), and the multivariate chain
 ladder is refitted on the triangle known at each date. The selection table
-carries each member's alpha.
+carries each member's alpha. With `alpha_on="first_diagonal"` alpha is the
+minimiser on the first validation diagonal alone (that validation set stops at
+its own next diagonal), and the checkpoint is chosen on the blend's error over
+the second validation set alone, so the cells that choose the epoch are not the
+cells that chose alpha. It needs `member="mcl_blend"` and `val_diagonals=2` and
+is refused otherwise.
+
+`refit=True` is the companion's final protocol. After the first run has chosen
+each member's best epoch, the same member is trained again from the same seed,
+on training sets that reach the last known diagonal (the validation diagonals
+included), for exactly that many epochs on the full `max_epochs` schedule, with
+no validation. Alpha is copied over from the first run and not fitted again. The
+premium head's `beta` starts at the pooled incremental loss ratio known at the
+last diagonal, and the factor support is read off the wider sets. The forecasts
+are the refit networks'. The same members as they stood at their chosen epoch
+stay readable from the same run: `company_reserves(selected=True)`,
+`member_company_reserves(selected=True)`, `member_reserves_selected_` and
+`selected_factor_support_`, which is the paired comparison of "with and without
+the refit". `selection_` gains a `refit_epochs` column (the epoch whose weights the first run stored,
+the last check that beat the best score by more than 1e-6; it can precede `best_epoch`, the
+check with the lowest score), and
+`feature_stats_["refit_cutoffs"]` lists the training cutoffs of the refit. Under
+`calibration="retrain_per_valuation"` every retrained valuation date is refit the
+same way. `TLRNConfig.companion_final_variant()` is the accident-year variant
+with `refit=True`, `alpha_on="first_diagonal"`, `empty_query_bias=True` and
+`compact_embeddings=True`. All four options default off, and with them off the fit
+is identical, weight for weight, to the one before they existed.
+
+### Matching the companion's network
+
+`empty_query_bias` and `compact_embeddings` exist so that the preset's network is the
+companion's final network in function and in size.
+
+* `empty_query_bias`. In the companion's attention a query whose keys are all
+  unreadable gets zero attention weights, and the output projection still adds its
+  bias, so the output there is the learned output bias (and dropout then acts on it
+  like on any output). ibnr's default returns zero, which also drops that bias. With
+  the option on, ibnr returns the bias exactly, on the line, lag and accident-year
+  attentions alike, and reports zero attention weights for such a query. It matters
+  where a query can have nothing to read: a hidden cell whose whole group is hidden
+  (line attention at a future lag with no visible line, an accident year with no
+  revealed lag, a column of accident years none of which reveals the cell). Under the
+  published mask without the accident-year axis no query is ever empty, so the config
+  refuses the option there rather than accept a flag that does nothing.
+* `compact_embeddings`. The line table has one row per line and the lag table one row
+  per lag, read at `index - 1`; the visible-lag table keeps its twelve rows and is read
+  at `lk` (rows 1 to 10 in use), where the default reads it at `lk + 1`. The preset's
+  network then has **18,537 parameters**, built and counted by
+  `tests/test_tlrn_companion_network.py`: projection and embeddings 1,280; each of the
+  three attention blocks, with its layer norm, 4,288; feed-forward with its layer norm
+  4,256; final layer norm and output layer 97; the premium head's `beta` 40. The
+  default tables hold 64 more weights (18,601 in all for the accident-year variant). The
+  earlier explanation of those 64 as an unavoidable property of ibnr's design was
+  incomplete: the rows are unreachable and the option removes them. Embeddings start
+  at N(0, 1), attention in-projections at Xavier-uniform and the other linear layers at
+  torch's default, which are the companion's initial distributions, so what remains
+  different is the random stream.
+
+What still differs from the companion, so that "the same network" is not read as "the
+same numbers": the random streams (torch or JAX generators of different shapes, so the
+same seed gives different initial weights and different batches), float32 features
+here against the companion's float64 rounding (about 2e-7 relative), and the study
+design around the network (ibnr's third study pools ten fits of twenty members where
+the companion reports one seed). The preset checks pin the network's function with a
+numpy copy of the companion's attention and block.
 
 `retrain_per_valuation` costs a full fit per calibration cutoff, and in exchange
 the forecasts whose errors become the predictive distribution come from a method
@@ -167,7 +237,7 @@ every diagonal still held out at their own cutoff rather than one step only.
 `patience = 600` counts validation checks, so at `check_every = 5` it is 3000
 epochs - the whole budget, and it never fires. That is the protocol: every
 member runs the full schedule and the retained state is its best validation
-checkpoint, with no refit afterwards. `patience = 120` is the 600-epoch
+checkpoint, with no refit afterwards (unless `refit=True`, above). `patience = 120` is the 600-epoch
 early-stopping variant, which is a different run and has to be asked for.
 
 Ten members are trained under independent seeds and the two with the lowest

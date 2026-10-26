@@ -19,8 +19,9 @@ which is why torch stays the default.
 
 WHAT IS THE SAME AS THE TORCH PATH, ON PURPOSE. ibnr's torch code is the specification,
 so this module mirrors it piece by piece: the network (``network.py``: input projection,
-three 1-based embedding tables, the axial blocks with their masks and their guard, exact
-GELU, LayerNorm at 1e-5, dropout on the attention weights and on each residual branch),
+three embedding tables (1-based, or 0-based under compact_embeddings), the axial blocks
+with their masks and their guard, exact GELU, LayerNorm at 1e-5, dropout on the attention
+weights and on each residual branch),
 the two heads and the projection (``head.py``), the three-term loss on each batch's own
 denominators, gradient clipping on the global norm, AdamW with torch's update and its two
 learning rates, the warmup-cosine schedule, and the checkpoint rule (validate every
@@ -173,6 +174,9 @@ class Spec(NamedTuple):
     w_pe: float
     w_mse: float
     mse_scale: float
+    alpha_first: bool = False  # alpha_on="first_diagonal": alpha from set 0, score on the last
+    empty_bias: bool = False  # empty_query_bias: a query with no readable key gets the out bias
+    compact: bool = False  # compact_embeddings: 0-based line and lag tables, no unused row
 
 
 def spec_of(cfg: Any, *, n_l: int, n_d: int, n_w: int) -> Spec:
@@ -199,6 +203,9 @@ def spec_of(cfg: Any, *, n_l: int, n_d: int, n_w: int) -> Spec:
         w_pe=float(cfg.w_pe),
         w_mse=float(cfg.w_mse),
         mse_scale=float(cfg.mse_scale),
+        alpha_first=cfg.alpha_on == "first_diagonal",
+        empty_bias=bool(cfg.empty_query_bias),
+        compact=bool(cfg.compact_embeddings),
     )
 
 
@@ -284,7 +291,8 @@ def _attend(p, prefix, h, readable, *, guard, spec, train, key):
 
     ``readable`` (N, S) marks the keys a sequence may read, or is None for no mask. With
     ``guard`` a sequence with no readable key lets its first key through so the softmax is
-    finite, and its output is then multiplied by zero.
+    finite, and its output is then multiplied by zero (or, with ``spec.empty_bias``,
+    replaced by the output projection's bias, as the companion's is).
     """
     n, s, d = h.shape
     heads = spec.n_heads
@@ -306,7 +314,10 @@ def _attend(p, prefix, h, readable, *, guard, spec, train, key):
     out = jnp.einsum("nhst,nthd->nshd", weights, v, precision=PRECISION).reshape(n, s, d)
     out = _linear(out, p[f"{prefix}.out_proj.weight"], p[f"{prefix}.out_proj.bias"])
     if any_key is not None:
-        out = out * any_key[:, None, None].astype(out.dtype)
+        if spec.empty_bias:
+            out = jnp.where(any_key[:, None, None], out, p[f"{prefix}.out_proj.bias"])
+        else:
+            out = out * any_key[:, None, None].astype(out.dtype)
     return out
 
 
@@ -400,8 +411,10 @@ def forward(p, s, spec: Spec, *, train: bool = False, key=None, support=None) ->
         else:
             keys = [None] * (_KEYS_PER_BLOCK * spec.n_layers)
         h = _linear(s["feat"], p["inp.weight"], p["inp.bias"])
-        h = h + p["line_emb.weight"][s["line_ix"]] + p["lag_emb.weight"][s["lag_ix"]]
-        h = h + p["nobs_emb.weight"][s["lk"] + 1][:, None, :]
+        shift = 1 if spec.compact else 0
+        h = h + p["line_emb.weight"][s["line_ix"] - shift]
+        h = h + p["lag_emb.weight"][s["lag_ix"] - shift]
+        h = h + p["nobs_emb.weight"][s["lk"] + 1 - shift][:, None, :]
         for i in range(spec.n_layers):
             block_keys = keys[_KEYS_PER_BLOCK * i : _KEYS_PER_BLOCK * (i + 1)]
             h = _block(p, i, h, s["written"], s["visible"], spec=spec, train=train, keys=block_keys)
@@ -547,6 +560,12 @@ def _validate(p, val, n_sets, spec, support):
     error = jnp.concatenate([g[0] for g in groups])
     if not spec.blend:
         return jnp.abs(error).sum() / denominator, jnp.float32(1.0)
+    if spec.alpha_first:
+        # alpha from the first set alone, the score on the last alone
+        alpha = blend_weight(groups[0][0], groups[0][1])
+        last_error, last_gap, last_actual = groups[-1]
+        last_denominator = jnp.maximum(jnp.abs(last_actual).sum(), 1e-8)
+        return jnp.abs(last_error + alpha * last_gap).sum() / last_denominator, alpha
     gap = jnp.concatenate([g[1] for g in groups])
     alpha = blend_weight(error, gap)
     return jnp.abs(error + alpha * gap).sum() / denominator, alpha
@@ -590,12 +609,15 @@ def adamw_update(params, m, v, t, grads, *, base_lr, mult, weight_decay, decays)
 # -- the training program -----------------------------------------------------------------
 
 
-def _program(spec, cfg, names, *, n_val, rows_per_unit, segment_epochs):
+def _program(spec, cfg, names, *, n_val, rows_per_unit, segment_epochs, refit=False):
     """The jitted call that trains every member through some whole segments.
 
     A segment is ``segment_epochs`` epochs followed by one validation check, which is the
     torch loop's rhythm: a check every ``check_every`` epochs and one on the last epoch, so
     a budget that ``check_every`` does not divide ends in one shorter segment.
+
+    With ``refit`` there is no validation: a member keeps the parameters it has at the end
+    of the segment that finishes its own ``state["stop"]`` epoch, and then stops.
     """
     heads = set(head_names(spec))
     base_lr = {n: float(cfg.lr_phi if n in heads else cfg.lr) for n in names}
@@ -645,7 +667,7 @@ def _program(spec, cfg, names, *, n_val, rows_per_unit, segment_epochs):
 
     def member_segment(state, data, units, real, k, member_key, mult, epochs):
         """One member through one segment: ``segment_epochs`` epochs, then a check."""
-        train, val, support = data["train"], data["val"], data.get("support")
+        train, val, support = data["train"], data.get("val"), data.get("support")
         running = ~state["done"]
 
         def one_epoch(carry, inputs):
@@ -667,11 +689,19 @@ def _program(spec, cfg, names, *, n_val, rows_per_unit, segment_epochs):
             (state["params"], state["m"], state["v"], state["t"]),
             (units, real, k, mult, epochs),
         )
-        score, alpha = _validate(params, val, n_val, spec, support)
-        better = running & (score < state["best_val"] - IMPROVEMENT)
-        patience = jnp.where(better, cfg.patience, state["patience"] - running.astype(jnp.int32))
         last_epoch = epochs[-1] + 1  # 1-based count of epochs run once this segment ends
-        stop = running & ~better & (patience <= 0) & (last_epoch >= cfg.min_epochs)
+        if refit:
+            score, alpha = jnp.float32(0.0), state["alpha"]
+            better = running & (last_epoch == state["stop"])
+            patience = state["patience"]
+            stop = running & (last_epoch >= state["stop"])
+        else:
+            score, alpha = _validate(params, val, n_val, spec, support)
+            better = running & (score < state["best_val"] - IMPROVEMENT)
+            patience = jnp.where(
+                better, cfg.patience, state["patience"] - running.astype(jnp.int32)
+            )
+            stop = running & ~better & (patience <= 0) & (last_epoch >= cfg.min_epochs)
 
         def keep_running(new, old):
             return jnp.where(running, new, old)
@@ -689,6 +719,8 @@ def _program(spec, cfg, names, *, n_val, rows_per_unit, segment_epochs):
             "patience": patience,
             "done": state["done"] | stop,
         }
+        if refit:
+            new_state["stop"] = state["stop"]
         return new_state, (losses, score, running)
 
     members = jax.vmap(
@@ -746,12 +778,21 @@ def _member_seed(seed: int | None, member: int) -> int | None:
     return None if seed is None else seed + 1000 * member
 
 
-def train_protocols(preps: list[dict], cfg, torch, *, epochs_per_call: int = EPOCHS_PER_CALL):
+def train_protocols(
+    preps: list[dict], cfg, torch, *, stops=None, epochs_per_call: int = EPOCHS_PER_CALL
+):
     """Train every member of every prepared protocol in one program.
 
     ``preps`` are ``TLRN._prepare_protocol`` results. Returns ``(models, history)`` per
     protocol, each in member order, exactly the shape ``train_ensemble(keep=None)`` gives:
     the models are torch modules in eval mode carrying their best-validation weights.
+
+    ``stops`` asks for the refit instead: an integer array (protocols, members) of the epoch
+    each member stops at. The preps then carry no validation sets, no validation runs, and
+    each model carries its weights at exactly its stop epoch. The schedule is still the one
+    of ``cfg.max_epochs``, so a member that stops at epoch 1800 is on the learning rate it
+    was on at epoch 1800 of the first run. The program runs as many epochs as the longest
+    stop, and a member that has reached its own discards the rest.
     """
     if cfg.cutoff_sampling != "per_epoch":
         raise ValueError(
@@ -759,6 +800,22 @@ def train_protocols(preps: list[dict], cfg, torch, *, epochs_per_call: int = EPO
             "feature set: set cutoff_sampling='per_epoch'"
         )
     _check_uniform(preps)
+    refit = stops is not None
+    if refit:
+        stops = np.asarray(stops, dtype=np.int32)
+        if stops.shape != (len(preps), int(cfg.ensemble_size)):
+            raise ValueError(
+                f"stops must be (protocols, members) = {(len(preps), int(cfg.ensemble_size))}, "
+                f"got {stops.shape}"
+            )
+        loose = (stops < 1) | (stops > cfg.max_epochs)
+        loose |= (stops % cfg.check_every != 0) & (stops != cfg.max_epochs)
+        if loose.any():
+            bad = sorted(set(stops[loose].tolist()))
+            raise ValueError(
+                f"a refit stop must be an epoch a validation check runs after (every "
+                f"{cfg.check_every}, and {cfg.max_epochs}), got {bad}"
+            )
     first = next(iter(preps[0]["train_sets"].values()))
     n_ex, n_tok = first["target"].shape
     n_l = first["c_lk"].shape[1]
@@ -784,12 +841,13 @@ def train_protocols(preps: list[dict], cfg, torch, *, epochs_per_call: int = EPO
             (*ROW_KEYS, *SET_KEYS),
             pad_to=n_k,
         ),
-        "val": _stack_sets(
+    }
+    if not refit:
+        data["val"] = _stack_sets(
             [prep["val_sets"] for prep in preps],
             (*ROW_KEYS, *SET_KEYS, *(("mcl_pred",) if spec.blend else ())),
-        ),
-    }
-    for part in ("train", "val"):
+        )
+    for part in list(data):
         data[part]["line_ix"] = jnp.asarray(np.tile(first["line_ix"], (n_p, 1)), dtype=jnp.int32)
         data[part]["lag_ix"] = jnp.asarray(np.tile(first["lag_ix"], (n_p, 1)), dtype=jnp.int32)
     if spec.support:
@@ -832,6 +890,8 @@ def train_protocols(preps: list[dict], cfg, torch, *, epochs_per_call: int = EPO
         "patience": jnp.full((n_p, n_m), cfg.patience, jnp.int32),
         "done": jnp.zeros((n_p, n_m), bool),
     }
+    if refit:
+        state["stop"] = jnp.asarray(stops, dtype=jnp.int32)
     member_keys = jax.vmap(jax.vmap(jax.random.wrap_key_data))(jnp.asarray(keys))
 
     n_units = preps[0]["n_units"]
@@ -840,9 +900,10 @@ def train_protocols(preps: list[dict], cfg, torch, *, epochs_per_call: int = EPO
     rows_per_unit = n_w if cfg.batch_unit == "company" else 1
     schedule = warmup_cosine(cfg.max_epochs, cfg.warmup)
     every = int(cfg.check_every)
-    lengths = [every] * (cfg.max_epochs // every)
-    if cfg.max_epochs % every:
-        lengths.append(cfg.max_epochs % every)
+    total = int(stops.max()) if refit else int(cfg.max_epochs)
+    lengths = [every] * (total // every)
+    if total % every:
+        lengths.append(total % every)
 
     # draws one epoch for one member from its own generator, in train_ensemble's order
     def draw(p: int, m: int) -> tuple[np.ndarray, np.ndarray, int]:
@@ -894,6 +955,7 @@ def train_protocols(preps: list[dict], cfg, torch, *, epochs_per_call: int = EPO
                 n_val=n_val,
                 rows_per_unit=rows_per_unit,
                 segment_epochs=length,
+                refit=refit,
             )
         state, (seg_losses, seg_scores, seg_ran) = programs[length](
             state,
@@ -918,7 +980,7 @@ def train_protocols(preps: list[dict], cfg, torch, *, epochs_per_call: int = EPO
             live = seg_ran[-1]
             median = float(np.median(seg_scores[-1][live])) if live.any() else math.nan
             print(
-                f"jax: epoch {done_epochs}/{cfg.max_epochs}, "
+                f"jax: epoch {done_epochs}/{total}, "
                 f"{time.perf_counter() - started:.0f}s, members still training "
                 f"{int(live.sum())}/{live.size}, median validation {median:.4f}",
                 flush=True,
