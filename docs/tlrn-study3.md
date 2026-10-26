@@ -74,14 +74,15 @@ The notebook is `analysis/05_tlrn_study3_on_colab.ipynb`. Open it in Colab and s
 first: Runtime, Change runtime type, a GPU (a G4 or an A100; a T4 is about 13 times slower than
 the G4 and not a reasonable target). Then run the cells from the top, one at a time.
 
-0. **One-time setup.** The repository is private, so the notebook needs a GitHub token that
-   can only read, to download the two runner scripts. ibnr itself comes from PyPI and needs no
-   token. Create the token at <https://github.com/settings/personal-access-tokens/new>: expiry
+0. **One-time setup, only while the repository is private.** While it is public the notebook
+   downloads the two runner scripts without a token and you can skip this step. If the
+   repository is private again, the notebook stops with a message that says so, and needs a
+   GitHub token that can only read. ibnr itself comes from PyPI and needs no token. A token in
+   the Colab secret is used when it exists. Create the token at <https://github.com/settings/personal-access-tokens/new>: expiry
    30 days, "Only select repositories" and pick `ibnr`, Repository permissions, Contents,
    Read-only. In Colab open the key icon (Secrets), add a secret named `GITHUB_TOKEN` with the
    token and switch "Notebook access" on. Delete the token on GitHub when the study is done. The
-   notebook never prints the token, never writes it to Drive and stops with a short message,
-   before installing anything, if the secret is missing.
+   notebook never prints the token and never writes it to Drive.
 1. **Settings.** Leave them alone, except `SOURCE` and `REF`. The Colab runtime installs ibnr
    0.7.6. With the default `SOURCE = "pypi"` it installs `ibnr[jax]==0.7.6` from PyPI (public,
    no token). `SOURCE = "git"` is only for an unreleased branch: it installs the branch `REF`
@@ -90,9 +91,12 @@ the G4 and not a reasonable target). Then run the cells from the top, one at a t
 2. **Install and fetch the scripts.** The notebook installs ibnr in two steps (so pip cannot
    compile anything), downloads `tlrn_colab.py` and `tlrn_study_colab.py` through the GitHub
    contents API at the release tag `v0.7.6` (`SCRIPTS_REF`; the earlier releases are tagged
-   `v0.7.5` and so on; name a branch there only to test an unreleased change), saves each only
-   if it parses as Python, and checks that the runner pins the version the notebook expects. A
-   refused token (HTTP 401 or 403) and a missing ref (HTTP 404) are reported by name.
+   `v0.7.5` and so on; to test an unreleased change set `SCRIPTS_BRANCH` to a branch name),
+   saves each only if it parses as Python, and checks that the runner pins the version the
+   notebook expects. A refused token (HTTP 401 or 403) is retried once without it; with no
+   token, a 401, 403 or 404 says the repository may be private. On Python 3.13 (what Colab
+   runs now) the install adds `--ignore-requires-python` and prints why, because ibnr declares
+   Python below 3.13 for extras this notebook does not use.
 3. **Mount Drive.** Fits are saved to `My Drive/ibnr_colab_cf/study3`. A disconnect loses at most
    the fit that was running; run the same cell again and saved fits are skipped. A saved fit
    made with other settings stops the run before any training and is left alone.
