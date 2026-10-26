@@ -670,7 +670,7 @@ integration proposal):
 |---|---|
 | `cas-schedule-p-data-model` | data: Data Vault warehouse → versioned gold mart publishes |
 | `ibnr` (this repo) | modeling: gallery entries, eval kernels, backtest harnesses |
-| [`transformers_reserving`](https://github.com/marcopark90/transformers_reserving) | research manuscript (CAS grant, Quarto): consumes experiment artifacts produced here |
+| the companion study repository | research manuscript (CAS grant, Quarto): consumes experiment artifacts produced here |
 
 ## Documentation
 

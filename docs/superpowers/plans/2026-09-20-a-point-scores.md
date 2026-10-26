@@ -19,7 +19,7 @@
 - Prose rules for docstrings, comments, CHANGELOG and cards: plain sentences. Never use the words "screen", "panel", "gate", "fingerprint", "membership", "ablation" (or any form of it), "seed noise", "chip", "drain". Existing API names such as `align_panel` may be written in backticks when naming the API.
 - A test for a refusal must use `pytest.raises(..., match=...)`, never a bare `pytest.raises(ValueError)`.
 - Every claimed refusal or identity in a new test file is checked by breaking it once on purpose (a mutation check) and watching the test go red; the PR body lists the mutations tried.
-- Work on branch `feat/point-scores` in worktree `C:\Users\EthanKang\Projects\ibnr-wt\point-scores`, created from `origin/main`. Before committing and again before opening the PR run `git log --oneline HEAD..origin/main`; if non-empty, `git rebase origin/main` and rerun the tests.
+- Work on branch `feat/point-scores` in worktree `<worktrees>/point-scores`, created from `origin/main`. Before committing and again before opening the PR run `git log --oneline HEAD..origin/main`; if non-empty, `git rebase origin/main` and rerun the tests.
 - Dependencies are unchanged. `uv sync` in the worktree is enough for this PR.
 
 ---

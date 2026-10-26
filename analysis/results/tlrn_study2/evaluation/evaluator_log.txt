@@ -9,7 +9,7 @@ scored companies: 82 of the cohort's board 82; cells scored at valuation 10: 954
 dominant company 1767 holds 66.3% of the actual valuation-10 reserve
 data hash, tlrn_13_fh: cohort A tlrn_13_fh: data hash differs (fits recorded 819b8101576f90be, evaluator built 13dd7df7e326044a); anchors, premiums, lines and companies of every fit equal the cohort's within tolerance, so the fits are scored
 data hash, tlrn_13_fh_factors: cohort A tlrn_13_fh_factors: data hash differs (fits recorded 819b8101576f90be, evaluator built 13dd7df7e326044a); anchors, premiums, lines and companies of every fit equal the cohort's within tolerance, so the fits are scored
-first study accident-year rows: read from C:\Users\EthanKang\Projects\ibnr\analysis\results\tlrn_study\fits; tlrn_8_ay: 10 draws; tlrn_13_ay: 10 draws
+first study accident-year rows: read from <repo>\analysis\results\tlrn_study\fits; tlrn_8_ay: 10 draws; tlrn_13_ay: 10 draws
 notebook 04 Pool_APE at valuation 10: 
    mack ours 0.0577322; notebook_04 0.0577322; relative 6.66134e-15
    mcl ours 0.0566061; notebook_04 0.0566061; relative 2.34035e-13
@@ -234,7 +234,7 @@ scored companies: 84 of the cohort's board 84; cells scored at valuation 10: 954
 dominant company 1767 holds 67.3% of the actual valuation-10 reserve
 data hash, tlrn_13_fh: cohort B tlrn_13_fh: data hash differs (fits recorded bce499efbb6bde4e, evaluator built 2d9ecc777b088fcd); anchors, premiums, lines and companies of every fit equal the cohort's within tolerance, so the fits are scored
 data hash, tlrn_13_fh_factors: cohort B tlrn_13_fh_factors: data hash differs (fits recorded bce499efbb6bde4e, evaluator built 2d9ecc777b088fcd); anchors, premiums, lines and companies of every fit equal the cohort's within tolerance, so the fits are scored
-first study accident-year rows: read from C:\Users\EthanKang\Projects\ibnr\analysis\results\tlrn_study\fits; tlrn_8_ay: 10 draws; tlrn_13_ay: 10 draws
+first study accident-year rows: read from <repo>\analysis\results\tlrn_study\fits; tlrn_8_ay: 10 draws; tlrn_13_ay: 10 draws
 first study benchmarks at valuation 10: 
    mack max_relative_difference 2.63746e-15
    mcl max_relative_difference 1.61203e-15
