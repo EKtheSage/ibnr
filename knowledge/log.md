@@ -1,6 +1,7 @@
 # Knowledge Update Log
 
 ## 2026-10-26
+* **Add**: [Colab runs Python 3.13 and ibnr caps Python below 3.13](/gotchas/colab-python-313-and-the-ibnr-cap.md): the study 3 notebook fetches its scripts without a token while the repository is public and installs with `--ignore-requires-python` on Python 3.13 and later (measured: installs, imports, 18,537 parameters); a GitHub billing lock fails every job in two seconds, public repository or not.
 * **Update**: Removed a third party's name, links to personal repositories and local machine paths from the current tree (README, `docs/three-repo-workflow.md`, the 2026-09-20 plans and spec, notebooks 01, 03, 03b, 03c, 04 and 05, the second tlrn study's evaluation outputs, the decision on the robustness study, two knowledge notes and `CLAUDE.md`). Wording and paths only: no number, method or test changed. Git history is unchanged.
 
 ## 2026-10-25

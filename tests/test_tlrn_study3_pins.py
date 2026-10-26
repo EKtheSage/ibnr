@@ -107,6 +107,9 @@ def test_the_install_cell_follows_the_existing_flags_and_checks_the_version_afte
     ):
         assert needle in install, needle
     assert install.index("--no-deps") < install.index("--only-binary=:all:")
+    # the flag is added only on Python 3.13 and later, with a printed reason
+    assert '["--ignore-requires-python"] if sys.version_info >= (3, 13) else []' in install
+    assert install.count("*IGNORE") == 2 and "runs with --ignore-requires-python" in install
     check = "assert ibnr.__version__ == EXPECTED_VERSION"
     assert check in install and install.index("import ibnr") < install.index(check)
     assert install.index("pip_install(") < install.index(check)
@@ -148,7 +151,7 @@ def test_the_scripts_come_from_the_release_tag_and_are_checked_against_the_pin()
     assert 'SCRIPT_NAMES = ("tlrn_colab.py", "tlrn_study_colab.py")' in fetch
     assert 'REPO_SLUG = "EKtheSage/ibnr"' in fetch
     assert "/contents/scripts/{name}?ref={ref}" in fetch
-    assert '"Authorization": f"Bearer {token}"' in fetch
+    assert 'headers["Authorization"] = f"Bearer {token}"' in fetch
     assert '"Accept": "application/vnd.github.raw"' in fetch
     order = [c["id"] for c in cells()]
     assert order.index("setup") < order.index("settings") < order.index("fetch")
@@ -403,8 +406,8 @@ GOOD = "import sys\n\n\ndef main():\n    return 0\n"
 class FakeGitHub:
     """A local HTTP server that answers like the contents API for a few paths."""
 
-    def __init__(self, files):
-        self.files, self.seen = files, []
+    def __init__(self, files, public=False):
+        self.files, self.seen, self.public = files, [], public
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -415,7 +418,7 @@ class FakeGitHub:
                 auth = self.headers.get("Authorization", "")
                 if auth == "Bearer forbidden":
                     return self.reply(403, b"forbidden")
-                if auth != f"Bearer {TOKEN}":
+                if auth != f"Bearer {TOKEN}" and not (owner.public and not auth):
                     return self.reply(401, b"bad credentials")
                 if query != "ref=v0.7.6" or name not in owner.files:
                     return self.reply(404, b"not found")
@@ -562,32 +565,85 @@ def test_a_colab_secret_wins_and_a_failing_secret_falls_back(monkeypatch, fetch)
     assert fetch["get_token"]() == "from-environment"
 
 
-def test_a_missing_secret_stops_with_a_short_message_before_any_install(
-    tmp_path, monkeypatch, fetch
-):
+def test_a_missing_secret_is_no_error_while_the_repository_is_public(tmp_path, monkeypatch, fetch):
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-    with pytest.raises(SystemExit) as caught:
-        fetch["require_setup"]("pypi", tmp_path)
-    message = str(caught.value)
-    assert message.startswith("GITHUB_TOKEN is not set") and "Notebook access" in message
-    assert len(message.splitlines()) == 1
-    with pytest.raises(SystemExit, match="GITHUB_TOKEN is not set"):
-        fetch["require_setup"]("git", tmp_path)
-    # local copies of both scripts are enough for the release install, but not for "git"
-    for name in fetch["SCRIPT_NAMES"]:
-        (tmp_path / name).write_text(GOOD)
-    assert fetch["require_setup"]("pypi", tmp_path) is None
-    with pytest.raises(SystemExit, match="GITHUB_TOKEN is not set"):
-        fetch["require_setup"]("git", tmp_path)
+    for source_name in ("pypi", "git"):
+        assert fetch["require_setup"](source_name, tmp_path) is None
     monkeypatch.setenv("GITHUB_TOKEN", TOKEN)
     assert fetch["require_setup"]("git", tmp_path) == TOKEN
     # the token cell calls it first, and prints neither the token nor its length
     token_cell = source("token")
     assert token_cell.startswith("_TOKEN = require_setup(SOURCE)")
     assert "print(_TOKEN" not in token_cell and "len(" not in token_cell
-    # without a token and without local copies, ensure_scripts stops with the same message
-    with pytest.raises(SystemExit, match="GITHUB_TOKEN is not set"):
-        fetch["ensure_scripts"]("v0.7.6", None, tmp_path / "empty")
+
+
+def test_without_a_token_a_public_repository_is_fetched_anonymously(
+    tmp_path, fetch, capsys, monkeypatch
+):
+    files = {"tlrn_colab.py": GOOD.encode(), "tlrn_study_colab.py": GOOD.encode()}
+    public = FakeGitHub(files, public=True)
+    try:
+        monkeypatch.setattr(sys, "path", list(sys.path))
+        target = fetch["fetch_script"]("tlrn_colab.py", "v0.7.6", None, tmp_path, api=public.url)
+        assert target.read_text() == GOOD
+        assert "Authorization" not in public.seen[0][1]
+        real = fetch["fetch_script"]
+        monkeypatch.setitem(
+            fetch, "fetch_script", lambda *a, **k: real(*a, **{**k, "api": public.url})
+        )
+        fetch["ensure_scripts"]("v0.7.6", None, tmp_path)
+        assert "(no token)" in capsys.readouterr().out
+    finally:
+        public.close()
+
+
+def test_a_token_is_sent_when_present_and_a_refused_one_falls_back_to_anonymous(
+    tmp_path, fetch, capsys
+):
+    public = FakeGitHub({"tlrn_colab.py": GOOD.encode()}, public=True)
+    try:
+        fetch["fetch_script"]("tlrn_colab.py", "v0.7.6", TOKEN, tmp_path, api=public.url)
+        assert public.seen[0][1]["Authorization"] == f"Bearer {TOKEN}"
+        bad = "expired-token-value"
+        fetch["fetch_script"]("tlrn_colab.py", "v0.7.6", bad, tmp_path, api=public.url)
+        assert public.seen[-1][1].get("Authorization") is None  # the second try had no header
+        out = capsys.readouterr()
+        assert "refused the token (HTTP 401); trying without it" in out.out
+        assert bad not in out.out + out.err and TOKEN not in out.out + out.err
+    finally:
+        public.close()
+
+
+@pytest.mark.parametrize("code", [401, 403, 404])
+def test_no_token_and_a_private_repository_raises_the_named_message(tmp_path, fetch, code):
+    # GitHub answers 404 (and sometimes 401 or 403) for a private repository with no credentials
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(code)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        with pytest.raises(SystemExit) as caught:
+            fetch["fetch_script"](
+                "tlrn_colab.py",
+                "v0.7.6",
+                None,
+                tmp_path,
+                api=f"http://127.0.0.1:{server.server_port}",
+            )
+    finally:
+        server.shutdown()
+        server.server_close()
+    message = str(caught.value)
+    assert f"HTTP {code}" in message and "may be private again" in message
+    assert "GITHUB_TOKEN" in message and "Notebook access" in message
+    assert not list(tmp_path.iterdir())
 
 
 def test_pip_install_is_quiet_and_hides_the_token_when_pip_fails(monkeypatch, fetch, capsys):
