@@ -1,0 +1,483 @@
+=== cohort B: 84 companies, 212 pairs, 84 scored; selection [668, 414, 297, 212]; hash de51bae56cca563c; data 2d9ecc777b088fcd; from cas-schedule-p publish 20260613_041006
+status of any verdict on this cohort: confirmatory of a fixed specification, not out-of-sample; valuation 10 is 2007-12-31
+scored companies per valuation [6, 7, 8, 10]: [90, 89, 87, 84] (union 90); cells scored at valuation 10: 9540
+dominant company 1767 holds 67.3% of the actual valuation-10 reserve
+selection against the pre-registration: 
+ valuation  pairs  pairs_expected  companies  companies_expected
+         6    230             230         90                  90
+         7    226             226         89                  89
+         8    219             219         87                  87
+        10    212             212         84                  84
+data hash, tlrn_cf_refit: cohort B tlrn_cf_refit: data hash differs (fits recorded bce499efbb6bde4e, evaluator built 2d9ecc777b088fcd); anchors, premiums, lines and companies of every fit equal the cohort's within tolerance, so the fits are scored
+data hash, tlrn_cf_factors: cohort B tlrn_cf_factors: data hash differs (fits recorded bce499efbb6bde4e, evaluator built 2d9ecc777b088fcd); anchors, premiums, lines and companies of every fit equal the cohort's within tolerance, so the fits are scored
+mack against an independent chain ladder, largest relative difference by valuation: 6 2.22045e-16; 7 2.22045e-16; 8 2.22045e-16; 10 2.22045e-16
+second study's valuation-10 benchmarks: 
+   mack ours 0.0548098; second_study 0.0548098; relative 8.88178e-16
+   mcl ours 0.0540981; second_study 0.0540981; relative 1.11022e-15
+benchmark Pool_APE by valuation [6, 7, 8, 10]:
+   mack: 6.102%  4.498%  3.503%  5.481%  | rolling 4.896%
+   mcl: 6.217%  4.460%  3.619%  5.410%  | rolling 4.926%
+
+--- tlrn_cf_refit: 10 draws
+   Pool_APE per draw at valuation 6: min 3.791%  median 4.681%  max 5.258%  sd 0.483%
+   Pool_APE per draw at valuation 7: min 2.912%  median 3.454%  max 5.219%  sd 0.810%
+   Pool_APE per draw at valuation 8: min 2.716%  median 2.997%  max 3.883%  sd 0.347%
+   Pool_APE per draw at valuation 10: min 3.727%  median 4.032%  max 4.258%  sd 0.182%
+   Pool_APE per draw at valuation rolling: min 3.555%  median 3.710%  max 4.523%  sd 0.337%
+
+--- tlrn_cf_norefit: 10 draws
+   Pool_APE per draw at valuation 6: min 3.685%  median 3.844%  max 4.236%  sd 0.182%
+   Pool_APE per draw at valuation 7: min 2.423%  median 2.890%  max 3.996%  sd 0.513%
+   Pool_APE per draw at valuation 8: min 4.274%  median 4.644%  max 5.044%  sd 0.263%
+   Pool_APE per draw at valuation 10: min 4.510%  median 4.678%  max 5.016%  sd 0.162%
+   Pool_APE per draw at valuation rolling: min 3.898%  median 4.013%  max 4.303%  sd 0.148%
+
+--- raw_network: 10 draws
+   Pool_APE per draw at valuation 6: min 2.989%  median 3.852%  max 4.959%  sd 0.640%
+   Pool_APE per draw at valuation 7: min 2.654%  median 4.181%  max 5.973%  sd 1.057%
+   Pool_APE per draw at valuation 8: min 2.507%  median 3.575%  max 6.200%  sd 1.169%
+   Pool_APE per draw at valuation 10: min 2.926%  median 3.252%  max 3.688%  sd 0.294%
+   Pool_APE per draw at valuation rolling: min 2.866%  median 3.712%  max 4.965%  sd 0.644%
+
+--- raw_network_norefit: 10 draws
+   Pool_APE per draw at valuation 6: min 7.336%  median 8.383%  max 9.597%  sd 0.677%
+   Pool_APE per draw at valuation 7: min 6.095%  median 8.636%  max 11.686%  sd 1.651%
+   Pool_APE per draw at valuation 8: min 8.179%  median 10.055%  max 13.106%  sd 1.798%
+   Pool_APE per draw at valuation 10: min 4.500%  median 4.805%  max 5.642%  sd 0.364%
+   Pool_APE per draw at valuation rolling: min 7.378%  median 8.151%  max 8.577%  sd 0.473%
+
+--- tlrn_cf_factors: 10 draws
+   Pool_APE per draw at valuation 6: min 5.039%  median 5.332%  max 5.687%  sd 0.203%
+   Pool_APE per draw at valuation 7: min 5.141%  median 5.415%  max 6.072%  sd 0.256%
+   Pool_APE per draw at valuation 8: min 3.576%  median 3.619%  max 3.619%  sd 0.016%
+   Pool_APE per draw at valuation 10: min 5.532%  median 5.652%  max 5.739%  sd 0.066%
+   Pool_APE per draw at valuation rolling: min 4.923%  median 5.002%  max 5.101%  sd 0.056%
+
+Pool_APE of the draw average, and the other reported metrics:
+             method valuation    n  pool_ape  pool_pe  medape         mae  log_ratio  n_log    mape        wrmse         rmse    smape  n_over  share_better_than_mcl  share_better_than_mack
+               mack         6 90.0   0.06102  0.02306 0.16491 12565.55466    0.29386   90.0 0.65419 544772.73238  71213.60653 26.48250    33.0                0.31111                     NaN
+               mack         7 89.0   0.04498  0.01926 0.13706  8981.78885    0.24319   89.0 0.34111 302967.89469  40300.80476 22.74040    45.0                0.38202                     NaN
+               mack         8 87.0   0.03503  0.01742 0.10759  6151.27586    0.19556   87.0 0.19953  41576.56323  16156.03179 18.72159    43.0                0.49425                     NaN
+               mack        10 84.0   0.05481  0.00730 0.13417 14753.78105    0.28893   83.0 1.14061 300307.77804  56731.23139 26.29360    48.0                0.53571                     NaN
+               mack   rolling  NaN   0.04896  0.01676 0.13593 10613.10011    0.25538    NaN 0.58386 297406.24209  46100.41862 23.55952     NaN                0.43078                     NaN
+               mack    pooled  NaN   0.04993      NaN     NaN         NaN        NaN    NaN     NaN          NaN          NaN      NaN     NaN                    NaN                     NaN
+                mcl         6 90.0   0.06217  0.02320 0.16647 12801.49452    0.29285   90.0 0.76543 545218.52663  71523.51727 26.17125    35.0                    NaN                 0.36667
+                mcl         7 89.0   0.04460  0.02070 0.13706  8904.51215    0.25001   89.0 0.33928 302982.86286  40051.14181 23.50381    48.0                    NaN                 0.26966
+                mcl         8 87.0   0.03619  0.01658 0.11513  6355.52865    0.23197   87.0 0.23985  41524.43523  15684.54634 21.92090    47.0                    NaN                 0.43678
+                mcl        10 84.0   0.05410 -0.00468 0.17827 14562.20394    0.27767   82.0 0.90950 242025.54032  44278.11877 28.51241    41.0                    NaN                 0.46429
+                mcl   rolling  NaN   0.04926  0.01395 0.14923 10655.93482    0.26312    NaN 0.56352 282937.84126  42884.33105 25.02709     NaN                    NaN                 0.38435
+                mcl    pooled  NaN   0.05015      NaN     NaN         NaN        NaN    NaN     NaN          NaN          NaN      NaN     NaN                    NaN                     NaN
+      tlrn_cf_refit         6 90.0   0.04635  0.01012 0.11549  9544.22240    0.22931   90.0 0.56362 333696.01539  45092.38654 20.52170    36.0                0.75556                 0.75556
+      tlrn_cf_refit         7 89.0   0.03717  0.01847 0.10753  7420.73061    0.20004   89.0 0.26048 241838.62416  32181.78057 19.11857    50.0                0.64045                 0.60674
+      tlrn_cf_refit         8 87.0   0.03073  0.01331 0.09359  5396.47307    0.17215   87.0 0.19007  51301.13270  13275.06128 16.91184    53.0                0.60920                 0.50575
+      tlrn_cf_refit        10 84.0   0.04022 -0.00079 0.12361 10827.62704    0.22227   82.0 0.62030 173545.79722  32568.70644 23.93121    54.0                0.65476                 0.61905
+      tlrn_cf_refit   rolling  NaN   0.03862  0.01028 0.11005  8297.26328    0.20594    NaN 0.40862 200095.39237  30779.48371 20.12083     NaN                0.66499                 0.62177
+      tlrn_cf_refit    pooled  NaN   0.03907      NaN     NaN         NaN        NaN    NaN     NaN          NaN          NaN      NaN     NaN                    NaN                     NaN
+    tlrn_cf_norefit         6 90.0   0.03895 -0.02106 0.11369  8021.36646    0.23423   90.0 0.54529  94770.28509  25275.17771 21.04507    34.0                0.67778                 0.68889
+    tlrn_cf_norefit         7 89.0   0.02980 -0.01618 0.11340  5950.20541    0.20386   89.0 0.26143  96654.29698  15933.76440 19.46743    46.0                0.65169                 0.65169
+    tlrn_cf_norefit         8 87.0   0.04618 -0.01720 0.08981  8108.94491    0.17067   87.0 0.18543 313343.07086  41626.87681 16.76564    50.0                0.60920                 0.50575
+    tlrn_cf_norefit        10 84.0   0.04705 -0.00135 0.13690 12664.42047    0.23061   82.0 0.62335 228424.26803  40790.87911 24.72624    53.0                0.61905                 0.60714
+    tlrn_cf_norefit   rolling  NaN   0.04049 -0.01395 0.11345  8686.23432    0.20984    NaN 0.40387 183297.98024  30906.67451 20.50109     NaN                0.63943                 0.61337
+    tlrn_cf_norefit    pooled  NaN   0.04072      NaN     NaN         NaN        NaN    NaN     NaN          NaN          NaN      NaN     NaN                    NaN                     NaN
+        raw_network         6 90.0   0.03081 -0.00948 0.10947  6345.16456    0.20060   90.0 0.37804  48058.78857  18284.74190 18.37746    41.0                0.66667                 0.66667
+        raw_network         7 89.0   0.02995  0.00536 0.12459  5979.94120    0.18995   89.0 0.22059  60662.30452  16248.69418 18.55435    55.0                0.50562                 0.49438
+        raw_network         8 87.0   0.03763 -0.00362 0.09994  6608.52771    0.17056   87.0 0.18510 199859.45672  27749.85004 16.72797    59.0                0.52874                 0.50575
+        raw_network        10 84.0   0.03190  0.00355 0.12419  8585.87513    0.21249   83.0 0.35851  96642.64688  22655.37092 21.99247    52.0                0.54762                 0.54762
+        raw_network   rolling  NaN   0.03257 -0.00105 0.11455  6879.87715    0.19340    NaN 0.28556 101305.79917  21234.66426 18.91306     NaN                0.56216                 0.55360
+        raw_network    pooled  NaN   0.03234      NaN     NaN         NaN        NaN    NaN     NaN          NaN          NaN      NaN     NaN                    NaN                     NaN
+raw_network_norefit         6 90.0   0.08323 -0.07139 0.15176 17138.90967    0.24867   90.0 0.37977 481592.88750  71523.09652 23.23610    35.0                0.56667                 0.54444
+raw_network_norefit         7 89.0   0.08576 -0.07289 0.13433 17122.70214    0.20314   89.0 0.22817 708662.78983  94596.49726 19.79272    48.0                0.49438                 0.50562
+raw_network_norefit         8 87.0   0.10266 -0.07867 0.11535 18028.02994    0.18043   87.0 0.18782 862089.84979 113304.81945 17.68336    44.0                0.48276                 0.43678
+raw_network_norefit        10 84.0   0.04916  0.00345 0.14418 13232.84830    0.22926   83.0 0.37104 200929.14549  39377.80782 23.73316    55.0                0.52381                 0.48810
+raw_network_norefit   rolling  NaN   0.08020 -0.05488 0.13640 16380.62251    0.21537    NaN 0.29170 563318.66815  79700.55526 21.11133     NaN                0.51690                 0.49373
+raw_network_norefit    pooled  NaN   0.07745      NaN     NaN         NaN        NaN    NaN     NaN          NaN          NaN      NaN     NaN                    NaN                     NaN
+    tlrn_cf_factors         6 90.0   0.05357  0.00801 0.11398 11032.30465    0.23341   90.0 0.58360 364404.37819  49951.54552 20.83820    45.0                0.64444                 0.64444
+    tlrn_cf_factors         7 89.0   0.05423  0.02297 0.17623 10827.17243    0.24829   89.0 0.33387 395853.71755  52251.40144 23.67196    58.0                0.46067                 0.42697
+    tlrn_cf_factors         8 87.0   0.03612  0.01647 0.11485  6342.21069    0.23107   87.0 0.23962  41518.67370  15616.15996 21.87739    47.0                0.57471                 0.49425
+    tlrn_cf_factors        10 84.0   0.05638 -0.01077 0.16608 15175.63031    0.26442   82.0 0.85151 297843.25398  48296.39522 27.45105    48.0                0.61905                 0.50000
+    tlrn_cf_factors   rolling  NaN   0.05007  0.00917 0.14278 10844.32952    0.24430    NaN 0.50215 274905.00586  41528.87554 23.45965     NaN                0.57472                 0.51642
+    tlrn_cf_factors    pooled  NaN   0.05099      NaN     NaN         NaN        NaN    NaN     NaN          NaN          NaN      NaN     NaN                    NaN                     NaN
+
+Difference in Pool_APE (row minus benchmark; negative favours the row):
+         method benchmark    statistic     diff      low     high  share_favour
+  tlrn_cf_refit      mack         last -0.01459 -0.05555  0.01970        0.9116
+  tlrn_cf_refit      mack       pooled -0.01087 -0.02457 -0.00288        0.9875
+  tlrn_cf_refit      mack      rolling -0.01034 -0.02314 -0.00502        0.9959
+  tlrn_cf_refit      mack  valuation 6 -0.01467 -0.02229  0.00864           NaN
+  tlrn_cf_refit      mack  valuation 7 -0.00782 -0.03056  0.00152           NaN
+  tlrn_cf_refit      mack  valuation 8 -0.00430 -0.03493  0.00178           NaN
+  tlrn_cf_refit      mack valuation 10 -0.01459 -0.05555  0.01970           NaN
+  tlrn_cf_refit       mcl         last -0.01387 -0.05718 -0.00654        0.9995
+  tlrn_cf_refit       mcl       pooled -0.01108 -0.03133 -0.00777        0.9997
+  tlrn_cf_refit       mcl      rolling -0.01065 -0.02968 -0.00749        0.9996
+  tlrn_cf_refit       mcl  valuation 6 -0.01582 -0.02167  0.00816           NaN
+  tlrn_cf_refit       mcl  valuation 7 -0.00743 -0.02480  0.00052           NaN
+  tlrn_cf_refit       mcl  valuation 8 -0.00546 -0.03998  0.00078           NaN
+  tlrn_cf_refit       mcl valuation 10 -0.01387 -0.05718 -0.00654           NaN
+tlrn_cf_norefit      mack         last -0.00776 -0.04669  0.03455        0.7840
+tlrn_cf_norefit      mack       pooled -0.00922 -0.01880  0.01122        0.9053
+tlrn_cf_norefit      mack      rolling -0.00847 -0.01813  0.00651        0.9290
+tlrn_cf_norefit      mack  valuation 6 -0.02207 -0.04205  0.05077           NaN
+tlrn_cf_norefit      mack  valuation 7 -0.01518 -0.02193  0.00517           NaN
+tlrn_cf_norefit      mack  valuation 8  0.01115 -0.05482  0.02882           NaN
+tlrn_cf_norefit      mack valuation 10 -0.00776 -0.04669  0.03455           NaN
+tlrn_cf_norefit       mcl         last -0.00705 -0.04962  0.00235        0.9440
+tlrn_cf_norefit       mcl       pooled -0.00944 -0.02539  0.00168        0.9628
+tlrn_cf_norefit       mcl      rolling -0.00877 -0.02448 -0.00027        0.9769
+tlrn_cf_norefit       mcl  valuation 6 -0.02321 -0.04168  0.04930           NaN
+tlrn_cf_norefit       mcl  valuation 7 -0.01480 -0.02106  0.00478           NaN
+tlrn_cf_norefit       mcl  valuation 8  0.00998 -0.05699  0.02785           NaN
+tlrn_cf_norefit       mcl valuation 10 -0.00705 -0.04962  0.00235           NaN
+    raw_network      mack         last -0.02291 -0.07810  0.02085        0.9321
+    raw_network      mack       pooled -0.01759 -0.03648  0.01449        0.9272
+    raw_network      mack      rolling -0.01639 -0.03445  0.01219        0.9313
+    raw_network      mack  valuation 6 -0.03021 -0.04613  0.04368           NaN
+    raw_network      mack  valuation 7 -0.01503 -0.02706  0.03194           NaN
+    raw_network      mack  valuation 8  0.00260 -0.06174  0.01813           NaN
+    raw_network      mack valuation 10 -0.02291 -0.07810  0.02085           NaN
+    raw_network       mcl         last -0.02220 -0.08076 -0.00796        0.9918
+    raw_network       mcl       pooled -0.01781 -0.03927  0.00389        0.9628
+    raw_network       mcl      rolling -0.01669 -0.03747  0.00423        0.9606
+    raw_network       mcl  valuation 6 -0.03135 -0.04597  0.04530           NaN
+    raw_network       mcl  valuation 7 -0.01465 -0.02630  0.03540           NaN
+    raw_network       mcl  valuation 8  0.00144 -0.06822  0.01764           NaN
+    raw_network       mcl valuation 10 -0.02220 -0.08076 -0.00796           NaN
+tlrn_cf_factors      mack         last  0.00157 -0.03577  0.06368        0.4119
+tlrn_cf_factors      mack       pooled  0.00106 -0.00810  0.03291        0.4121
+tlrn_cf_factors      mack      rolling  0.00111 -0.00633  0.02895        0.3928
+tlrn_cf_factors      mack  valuation 6 -0.00745 -0.01873  0.03529           NaN
+tlrn_cf_factors      mack  valuation 7  0.00924 -0.00406  0.02754           NaN
+tlrn_cf_factors      mack  valuation 8  0.00109 -0.00515  0.01595           NaN
+tlrn_cf_factors      mack valuation 10  0.00157 -0.03577  0.06368           NaN
+tlrn_cf_factors       mcl         last  0.00228 -0.01368  0.01208        0.3179
+tlrn_cf_factors       mcl       pooled  0.00084 -0.00618  0.01848        0.4080
+tlrn_cf_factors       mcl      rolling  0.00081 -0.00552  0.01827        0.4067
+tlrn_cf_factors       mcl  valuation 6 -0.00859 -0.01811  0.03541           NaN
+tlrn_cf_factors       mcl  valuation 7  0.00963 -0.00354  0.03106           NaN
+tlrn_cf_factors       mcl  valuation 8 -0.00008 -0.00047  0.00002           NaN
+tlrn_cf_factors       mcl valuation 10  0.00228 -0.01368  0.01208           NaN
+
+Pool_APE within quartiles of the actual reserve:
+method                    mack      mcl  raw_network  raw_network_norefit  tlrn_cf_factors  tlrn_cf_norefit  tlrn_cf_refit
+valuation quartile n                                                                                                      
+6         1        23  0.62643  0.65215      0.35998              0.36010          0.50325          0.45796        0.48082
+          2        22  0.19726  0.19282      0.12861              0.18076          0.12743          0.14535        0.14532
+          3        23  0.18431  0.18255      0.14852              0.19008          0.16881          0.16427        0.15231
+          4        22  0.05437  0.05562      0.02527              0.07815          0.04811          0.03288        0.04094
+7         1        23  0.51467  0.63537      0.32006              0.32770          0.54454          0.43705        0.43709
+          2        22  0.18818  0.18187      0.17970              0.16957          0.19303          0.15789        0.16611
+          3        22  0.15163  0.16722      0.13266              0.11640          0.18344          0.12650        0.13513
+          4        22  0.03868  0.03753      0.02412              0.08323          0.04715          0.02415        0.03148
+8         1        22  0.23386  0.33132      0.26466              0.26052          0.33090          0.26309        0.26343
+          2        22  0.13576  0.18207      0.12167              0.13410          0.18175          0.13731        0.13933
+          3        22  0.15100  0.17458      0.16098              0.15952          0.17436          0.14298        0.15261
+          4        21  0.02931  0.02893      0.03179              0.09993          0.02886          0.04120        0.02463
+10        1        21  2.43080  1.97595      0.64495              0.60885          1.82737          1.30635        1.32411
+          2        21  0.25229  0.24946      0.17804              0.17013          0.23908          0.19259        0.19086
+          3        21  0.20234  0.27421      0.12862              0.14769          0.24550          0.16202        0.16311
+          4        21  0.04370  0.04104      0.02580              0.04337          0.04481          0.03935        0.03215
+
+Precision: the width of each 95% interval and the gain it could just detect, about half the width, in Pool_APE (0.03 is three points):
+statistic benchmark  width  detectable_gain
+     last      mack 0.0752           0.0376
+   pooled      mack 0.0217           0.0108
+  rolling      mack 0.0181           0.0091
+     last       mcl 0.0506           0.0253
+   pooled       mcl 0.0236           0.0118
+  rolling       mcl 0.0222           0.0111
+
+P1, does the refit help? Refit minus no refit, same training run (negative favours the refit):
+statistic     diff      low     high
+     last -0.00682 -0.01826 -0.00333
+   pooled -0.00165 -0.01596  0.00176
+  rolling -0.00188 -0.01433  0.00114
+   valuation 10 without the dominant company: -0.01189 [-0.02025, -0.00037]
+   draws favouring the refit at valuation 10: 10 of 10
+P1 for cohort B (confirmatory of a fixed specification, not out-of-sample): NOT DISTINGUISHABLE
+   valuation 10 [-1.8264%, -0.3328%], pooled [-1.5955%, +0.1763%], 10 of 10 draws favour the refit (need 8), valuation 10 without the dominant company -1.1894%; conditions a_last_below yes, b_pooled_below no, c_draws_favour yes, d_excluding_at_or_below yes
+   the same rule on the stratified intervals gives: NOT DISTINGUISHABLE
+
+P2 for cohort B (confirmatory of a fixed specification, not out-of-sample): NOT DISTINGUISHABLE
+   vs mack: valuation 10 [-5.5547%, +1.9699%], pooled [-2.4565%, -0.2875%], valuation 10 without the dominant company -2.6568% [-6.1997%, +3.0212%]; vs mcl: valuation 10 [-5.7182%, -0.6545%], pooled [-3.1326%, -0.7768%], valuation 10 without the dominant company -3.1546% [-7.2137%, -1.0451%]; median-draw valuation-10 Pool_APE 4.0316% against mack 5.4810% and mcl 5.4098%; conditions i_last_below_both no, ii_pooled_below_both yes, iii_median_draw_below_both yes, iv_excluding_dominant_not_worse yes
+   the same rule on the stratified intervals gives: NOT DISTINGUISHABLE
+   (secondary row) the raw refit network by the same rule: NOT DISTINGUISHABLE
+NETWORK QUESTION for cohort B: NETWORK ADDS VALUE
+   valuation 10 [-5.4467%, -1.1012%]; pooled [-4.0110%, -0.7600%]; valuation 10 without the dominant company [-6.6455%, -1.2580%]; conditions a_last_below yes, b_pooled_below yes, c_excluding_not_above yes
+BLEND QUESTION for cohort B: NOT DISTINGUISHABLE
+   valuation 10 [-0.5763%, +2.6852%]; pooled [-1.7927%, +1.2741%]; valuation 10 without the dominant company [-1.1013%, +3.3239%]; conditions a_last_below no, b_pooled_below no, c_excluding_not_above yes
+
+REPLICATION of the companion's reported figures (B3, valuation 10, points): REPLICATES
+   m 4.022 range [3.727, 4.258] against 3.93; D10 -0.682; R1 True, R2 True, R3 True (the raw network against 2.96)
+
+Spread of the blend weight alpha over members and draws:
+ valuation  alpha_min  alpha_q25  alpha_median  alpha_q75  alpha_max  alpha_std  alpha_count
+         6     0.1787     0.3902        0.4739     0.5590     0.7672     0.1219          200
+         7     0.2206     0.3401        0.4183     0.5417     1.0000     0.1430          200
+         8     0.1662     0.2937        0.4375     0.5562     0.8595     0.1650          200
+        10     0.2818     0.4199        0.4643     0.5132     0.7229     0.0759          200
+
+THE COMPANION'S NUMBERS BESIDE OURS (descriptive, not a decision rule): B3, valuation 10. His figures are one fit (paper Table 10); ours are the per-draw values of ten complete fits. The random streams cannot be aligned, so this shows where his number falls in our spread and nothing more. Percent figures are in percent, amounts in USD thousands on both sides.
+                                       quantity  companion                                                                       note   ibnr_mean    ibnr_min    ibnr_max  n_draws  draws_below  draws_above
+            tlrn_cf_refit blended: Pool APE (%)      3.930                                                                                 4.0240      3.7268      4.2578       10          2.0          8.0
+                     tlrn_cf_refit blended: MAE  10578.000                                                                             10831.8051  10031.8715  11461.2865       10          2.0          8.0
+                    tlrn_cf_refit blended: RMSE  31021.000                                                                             32837.7989  28603.6893  36150.8121       10          4.0          6.0
+                   tlrn_cf_refit blended: wRMSE 157581.000                                                                            174384.8733 123407.8987 214301.9337       10          4.0          6.0
+              tlrn_cf_refit blended: MedAPE (%)     12.540                                                                                12.3189     11.3978     12.8368       10          6.0          4.0
+            tlrn_cf_refit blended: MAPE (ratio)      0.620                                                                                 0.6204      0.6000      0.6319       10          4.0          6.0
+        tlrn_cf_refit blended: SMAPE (0 to 200)     23.890                                                                                23.9440     23.7484     24.1063       10          2.0          8.0
+             tlrn_cf_refit blended: Pool PE (%)      0.050                                                                                -0.0791     -0.5233      0.3337       10          6.0          4.0
+tlrn_cf_refit blended: over-estimated companies     53.000                                                                                53.1000     52.0000     54.0000       10          1.0          2.0
+                raw network alone: Pool APE (%)      2.960                                                                                 3.2883      2.9255      3.6879       10          2.0          8.0
+                         raw network alone: MAE   7955.000                                                                              8851.5525   7874.9624   9927.0992       10          2.0          8.0
+                        raw network alone: RMSE  20177.000                                                                             24874.7655  19546.5474  31468.5841       10          1.0          9.0
+                       raw network alone: wRMSE  55985.000                                                                            114970.9237  56188.0432 203053.8753       10          0.0         10.0
+                  raw network alone: MedAPE (%)     12.280                                                                                12.2578     11.5396     12.7846       10          5.0          5.0
+                raw network alone: MAPE (ratio)      0.360                                                                                 0.3588      0.3527      0.3660       10          6.0          4.0
+            raw network alone: SMAPE (0 to 200)     22.180                                                                                22.0233     21.9358     22.2497       10          9.0          1.0
+                 raw network alone: Pool PE (%)      0.820                                                                                 0.3547     -0.6789      1.2781       10          8.0          2.0
+    raw network alone: over-estimated companies     52.000                                                                                52.1000     50.0000     54.0000       10          4.0          5.0
+              chain ladder (mack): Pool APE (%)      5.480                                                                                 5.4810      5.4810      5.4810        1          0.0          1.0
+                       chain ladder (mack): MAE  14754.000                                                                             14753.7810  14753.7810  14753.7810        1          1.0          0.0
+                      chain ladder (mack): RMSE  56731.000                                                                             56731.2314  56731.2314  56731.2314        1          0.0          1.0
+                     chain ladder (mack): wRMSE 300308.000                                                                            300307.7780 300307.7780 300307.7780        1          1.0          0.0
+                chain ladder (mack): MedAPE (%)     13.420                                                                                13.4167     13.4167     13.4167        1          1.0          0.0
+              chain ladder (mack): MAPE (ratio)      1.140                                                                                 1.1406      1.1406      1.1406        1          0.0          1.0
+          chain ladder (mack): SMAPE (0 to 200)     26.290                                                                                26.2936     26.2936     26.2936        1          0.0          1.0
+               chain ladder (mack): Pool PE (%)      0.730                                                                                 0.7301      0.7301      0.7301        1          0.0          1.0
+  chain ladder (mack): over-estimated companies     48.000                                                                                48.0000     48.0000     48.0000        1          0.0          0.0
+                           CL+MCL: Pool APE (%)      5.410                       not run in ibnr (mack and mcl are scored separately)         NaN         NaN         NaN        0          NaN          NaN
+                                    CL+MCL: MAE  14562.000                       not run in ibnr (mack and mcl are scored separately)         NaN         NaN         NaN        0          NaN          NaN
+                                   CL+MCL: RMSE  44278.000                       not run in ibnr (mack and mcl are scored separately)         NaN         NaN         NaN        0          NaN          NaN
+                                  CL+MCL: wRMSE 242026.000                       not run in ibnr (mack and mcl are scored separately)         NaN         NaN         NaN        0          NaN          NaN
+                             CL+MCL: MedAPE (%)     17.830                       not run in ibnr (mack and mcl are scored separately)         NaN         NaN         NaN        0          NaN          NaN
+                           CL+MCL: MAPE (ratio)      0.910                       not run in ibnr (mack and mcl are scored separately)         NaN         NaN         NaN        0          NaN          NaN
+                       CL+MCL: SMAPE (0 to 200)     28.510                       not run in ibnr (mack and mcl are scored separately)         NaN         NaN         NaN        0          NaN          NaN
+                            CL+MCL: Pool PE (%)     -0.470                       not run in ibnr (mack and mcl are scored separately)         NaN         NaN         NaN        0          NaN          NaN
+               CL+MCL: over-estimated companies     41.000                       not run in ibnr (mack and mcl are scored separately)         NaN         NaN         NaN        0          NaN          NaN
+            blended without refit: Pool APE (%)      4.880                                                                                 4.7082      4.5102      5.0161       10          8.0          2.0
+        date-average Pool APE without refit (%)      4.020                                                                                 4.0651      3.8983      4.3026       10          6.0          4.0
+           date-average Pool APE with refit (%)      4.360                                                                                 3.8679      3.5549      4.5231       10          9.0          1.0
+        median alpha at valuation 10 (per draw)      0.476 pre-registration text says about 0.45, the companion's Table 10 says 0.476      0.4641      0.4412      0.4937       10          7.0          3.0
+    median alpha over all four dates (per draw)      0.476                                                                                 0.4552      0.4296      0.4748       10         10.0          0.0
+                       companies at valuation 6     90.000                                                                                90.0000     90.0000     90.0000        1          0.0          0.0
+                       companies at valuation 7     89.000                                                                                89.0000     89.0000     89.0000        1          0.0          0.0
+                       companies at valuation 8     87.000                                                                                87.0000     87.0000     87.0000        1          0.0          0.0
+                      companies at valuation 10     84.000                                                                                84.0000     84.0000     84.0000        1          0.0          0.0
+                             CL+SUR (his table)        NaN                                                            not run in ibnr         NaN         NaN         NaN        0          NaN          NaN
+                           Cape Cod (his table)        NaN                                                            not run in ibnr         NaN         NaN         NaN        0          NaN          NaN
+                 Cape Cod + SUR/MCL (his table)        NaN                                                            not run in ibnr         NaN         NaN         NaN        0          NaN          NaN
+
+=== cohort C: 83 companies, 232 pairs, 83 scored; selection [675, 405, 322, 232]; hash 4a613cc4cb5f0f94; data 92f5d7a74f37a0c2; from cas-schedule-p publish 20260613_041006
+status of any verdict on this cohort: out-of-sample in accident years only (weaker than the second study's C, whose results were known before this model's rules were written; companies and calendar years overlap B3); valuation 10 is 1997-12-31
+scored companies per valuation [6, 7, 8, 10]: [84, 84, 83, 83] (union 84); cells scored at valuation 10: 10440
+dominant company 1767 holds 66.7% of the actual valuation-10 reserve
+selection against the pre-registration: 
+ valuation  pairs  pairs_expected  companies companies_expected
+         6    237             237         84               None
+         7    236             236         84               None
+         8    232             232         83               None
+        10    232             232         83               None
+data hash, tlrn_cf_refit: cohort C tlrn_cf_refit: data hash differs (fits recorded e52d50e002d50e16, evaluator built 92f5d7a74f37a0c2); anchors, premiums, lines and companies of every fit equal the cohort's within tolerance, so the fits are scored
+data hash, tlrn_cf_factors: cohort C tlrn_cf_factors: data hash differs (fits recorded e52d50e002d50e16, evaluator built 92f5d7a74f37a0c2); anchors, premiums, lines and companies of every fit equal the cohort's within tolerance, so the fits are scored
+mack against an independent chain ladder, largest relative difference by valuation: 6 2.22045e-16; 7 2.22045e-16; 8 2.22045e-16; 10 2.22045e-16
+second study's valuation-10 benchmarks: 
+   mack ours 0.11947; second_study 0.11947; relative 6.66134e-16
+   mcl ours 0.0496933; second_study 0.0496933; relative 1.11022e-16
+benchmark Pool_APE by valuation [6, 7, 8, 10]:
+   mack: 13.781%  16.701%  16.923%  11.947%  | rolling 14.838%
+   mcl: 13.843%  16.815%  17.044%  4.969%  | rolling 13.168%
+
+--- tlrn_cf_refit: 10 draws
+   Pool_APE per draw at valuation 6: min 11.749%  median 12.693%  max 14.099%  sd 0.834%
+   Pool_APE per draw at valuation 7: min 12.547%  median 13.177%  max 13.682%  sd 0.373%
+   Pool_APE per draw at valuation 8: min 10.462%  median 11.095%  max 12.581%  sd 0.639%
+   Pool_APE per draw at valuation 10: min 4.249%  median 5.392%  max 6.198%  sd 0.622%
+   Pool_APE per draw at valuation rolling: min 10.169%  median 10.669%  max 10.886%  sd 0.265%
+
+--- tlrn_cf_norefit: 10 draws
+   Pool_APE per draw at valuation 6: min 10.822%  median 11.085%  max 11.578%  sd 0.280%
+   Pool_APE per draw at valuation 7: min 11.583%  median 12.006%  max 12.504%  sd 0.295%
+   Pool_APE per draw at valuation 8: min 10.358%  median 10.627%  max 10.858%  sd 0.171%
+   Pool_APE per draw at valuation 10: min 3.717%  median 3.958%  max 5.530%  sd 0.543%
+   Pool_APE per draw at valuation rolling: min 9.231%  median 9.467%  max 10.033%  sd 0.243%
+
+--- raw_network: 10 draws
+   Pool_APE per draw at valuation 6: min 9.136%  median 11.306%  max 14.653%  sd 2.065%
+   Pool_APE per draw at valuation 7: min 6.550%  median 7.807%  max 10.091%  sd 1.025%
+   Pool_APE per draw at valuation 8: min 3.810%  median 5.413%  max 8.792%  sd 1.433%
+   Pool_APE per draw at valuation 10: min 4.094%  median 5.349%  max 6.852%  sd 0.935%
+   Pool_APE per draw at valuation rolling: min 6.907%  median 7.698%  max 8.022%  sd 0.399%
+
+--- raw_network_norefit: 10 draws
+   Pool_APE per draw at valuation 6: min 7.232%  median 8.142%  max 9.334%  sd 0.677%
+   Pool_APE per draw at valuation 7: min 4.647%  median 5.267%  max 6.662%  sd 0.694%
+   Pool_APE per draw at valuation 8: min 3.450%  median 3.860%  max 5.309%  sd 0.596%
+   Pool_APE per draw at valuation 10: min 3.396%  median 3.771%  max 5.917%  sd 0.754%
+   Pool_APE per draw at valuation rolling: min 4.753%  median 5.463%  max 6.207%  sd 0.426%
+
+--- tlrn_cf_factors: 10 draws
+   Pool_APE per draw at valuation 6: min 11.719%  median 12.023%  max 12.396%  sd 0.232%
+   Pool_APE per draw at valuation 7: min 12.071%  median 12.427%  max 13.039%  sd 0.269%
+   Pool_APE per draw at valuation 8: min 11.821%  median 12.321%  max 12.561%  sd 0.247%
+   Pool_APE per draw at valuation 10: min 4.888%  median 5.835%  max 6.300%  sd 0.414%
+   Pool_APE per draw at valuation rolling: min 10.350%  median 10.662%  max 10.829%  sd 0.178%
+
+Pool_APE of the draw average, and the other reported metrics:
+             method valuation    n  pool_ape  pool_pe  medape         mae  log_ratio  n_log    mape        wrmse         rmse    smape  n_over  share_better_than_mcl  share_better_than_mack
+               mack         6 84.0   0.13781  0.11756 0.12369 25366.50620    0.19223   83.0 0.25935 1.094009e+06 152470.75442 20.62214    47.0                0.21429                     NaN
+               mack         7 84.0   0.16701  0.15085 0.11847 30751.53042    0.17709   83.0 0.17807 1.431894e+06 196866.63546 19.55453    48.0                0.26190                     NaN
+               mack         8 83.0   0.16923  0.15798 0.13901 27411.99726    0.16263   82.0 0.16925 1.260691e+06 173250.02643 18.32950    49.0                0.38554                     NaN
+               mack        10 83.0   0.11947  0.11329 0.15402 28048.20227    0.19984   82.0 0.25035 1.251416e+06 170484.15109 21.66483    59.0                0.59036                     NaN
+               mack   rolling  NaN   0.14838  0.13492 0.13380 27894.55904    0.18295    NaN 0.21426 1.259503e+06 173267.89185 20.04275     NaN                0.36302                     NaN
+               mack    pooled  NaN   0.14590      NaN     NaN         NaN        NaN    NaN     NaN          NaN          NaN      NaN     NaN                    NaN                     NaN
+                mcl         6 84.0   0.13843  0.11701 0.12390 25480.35309    0.18868   83.0 0.23263 1.094010e+06 152473.08886 20.51275    47.0                    NaN                 0.22619
+                mcl         7 84.0   0.16815  0.15056 0.11874 30960.93942    0.18129   83.0 0.18977 1.431895e+06 196881.75373 19.94804    48.0                    NaN                 0.23810
+                mcl         8 83.0   0.17044  0.15433 0.13102 27608.01022    0.15637   81.0 0.18429 1.261443e+06 173967.93072 19.92320    49.0                    NaN                 0.46988
+                mcl        10 83.0   0.04969  0.03792 0.16878 11666.57142    0.22786   82.0 0.32398 3.333561e+05  46483.96746 23.88044    59.0                    NaN                 0.39759
+                mcl   rolling  NaN   0.13168  0.11495 0.13561 23928.96854    0.18855    NaN 0.23267 1.030176e+06 142451.68519 21.06610     NaN                    NaN                 0.33294
+                mcl    pooled  NaN   0.12529      NaN     NaN         NaN        NaN    NaN     NaN          NaN          NaN      NaN     NaN                    NaN                     NaN
+      tlrn_cf_refit         6 84.0   0.12791  0.11220 0.09698 23543.72421    0.15331   83.0 0.17807 1.014500e+06 141525.08784 17.27183    55.0                0.65476                 0.61905
+      tlrn_cf_refit         7 84.0   0.13159  0.11802 0.07897 24228.73975    0.14453   83.0 0.15100 1.089674e+06 151160.58085 16.46222    50.0                0.70238                 0.71429
+      tlrn_cf_refit         8 83.0   0.11153  0.10245 0.08940 18064.88271    0.14207   82.0 0.14391 8.183641e+05 113015.67371 16.12959    46.0                0.67470                 0.71084
+      tlrn_cf_refit        10 83.0   0.05216  0.02715 0.14691 12246.35237    0.17693   82.0 0.24072 3.495570e+05  49680.73992 19.27449    61.0                0.57831                 0.60241
+      tlrn_cf_refit   rolling  NaN   0.10580  0.08995 0.10307 19520.92476    0.15421    NaN 0.17842 8.180238e+05 113845.52058 17.28453     NaN                0.65254                 0.66165
+      tlrn_cf_refit    pooled  NaN   0.10224      NaN     NaN         NaN        NaN    NaN     NaN          NaN          NaN      NaN     NaN                    NaN                     NaN
+    tlrn_cf_norefit         6 84.0   0.11151  0.08939 0.10188 20526.53965    0.15732   83.0 0.18057 8.356485e+05 116332.21344 17.66799    54.0                0.60714                 0.60714
+    tlrn_cf_norefit         7 84.0   0.12018  0.10243 0.08236 22127.66051    0.14559   83.0 0.15015 9.444648e+05 132710.53785 16.54219    51.0                0.69048                 0.69048
+    tlrn_cf_norefit         8 83.0   0.10611  0.09096 0.08571 17187.42865    0.14492   82.0 0.14227 6.923820e+05  99105.82506 16.25938    47.0                0.67470                 0.65060
+    tlrn_cf_norefit        10 83.0   0.04151  0.01900 0.14013  9745.80242    0.17316   82.0 0.24047 2.415365e+05  34920.10135 18.85616    59.0                0.63855                 0.60241
+    tlrn_cf_norefit   rolling  NaN   0.09483  0.07544 0.10252 17396.85781    0.15525    NaN 0.17836 6.785080e+05  95767.16943 17.33143     NaN                0.65272                 0.63766
+    tlrn_cf_norefit    pooled  NaN   0.09111      NaN     NaN         NaN        NaN    NaN     NaN          NaN          NaN      NaN     NaN                    NaN                     NaN
+        raw_network         6 84.0   0.11550  0.10199 0.09552 21260.06953    0.14119   83.0 0.15135 8.759485e+05 122818.30653 16.22757    57.0                0.57143                 0.55952
+        raw_network         7 84.0   0.07848  0.06731 0.08760 14450.62171    0.13539   83.0 0.13906 5.584384e+05  80934.89216 15.61804    48.0                0.59524                 0.63095
+        raw_network         8 83.0   0.05566  0.04508 0.08701  9015.64908    0.12074   82.0 0.12788 3.271294e+05  46224.23368 14.22010    48.0                0.61446                 0.60241
+        raw_network        10 83.0   0.05349  0.01936 0.13563 12556.79876    0.17654   82.0 0.22966 3.180328e+05  47697.84740 19.32548    59.0                0.55422                 0.59036
+        raw_network   rolling  NaN   0.07578  0.05843 0.10144 14320.78477    0.14346    NaN 0.16199 5.198873e+05  74418.81994 16.34780     NaN                0.58384                 0.59581
+        raw_network    pooled  NaN   0.07501      NaN     NaN         NaN        NaN    NaN     NaN          NaN          NaN      NaN     NaN                    NaN                     NaN
+raw_network_norefit         6 84.0   0.08150  0.05195 0.12116 15002.68162    0.17645   83.0 0.18411 4.842496e+05  68694.18167 19.63118    50.0                0.53571                 0.50000
+raw_network_norefit         7 84.0   0.05390  0.02699 0.10781  9924.75556    0.15643   83.0 0.15521 1.959037e+05  40388.66158 17.62928    41.0                0.53571                 0.54762
+raw_network_norefit         8 83.0   0.03470  0.01607 0.09311  5621.00368    0.13008   82.0 0.13366 7.367622e+04  26193.58354 15.12463    42.0                0.61446                 0.65060
+raw_network_norefit        10 83.0   0.04037  0.00549 0.13014  9476.74695    0.17756   82.0 0.23506 1.376956e+05  25742.53658 19.35707    59.0                0.59036                 0.57831
+raw_network_norefit   rolling  NaN   0.05262  0.02512 0.11306 10006.29695    0.16013    NaN 0.17701 2.228813e+05  40254.74084 17.93554     NaN                0.56906                 0.56913
+raw_network_norefit    pooled  NaN   0.05241      NaN     NaN         NaN        NaN    NaN     NaN          NaN          NaN      NaN     NaN                    NaN                     NaN
+    tlrn_cf_factors         6 84.0   0.12037  0.09881 0.12059 22157.41329    0.17622   83.0 0.21258 9.200055e+05 127582.31682 19.41614    55.0                0.58333                 0.57143
+    tlrn_cf_factors         7 84.0   0.12441  0.10484 0.11449 22906.88795    0.16917   83.0 0.18588 9.739261e+05 134769.74419 18.78337    54.0                0.53571                 0.53571
+    tlrn_cf_factors         8 83.0   0.12239  0.10622 0.10852 19824.38431    0.17132   82.0 0.18825 8.227342e+05 114826.79000 18.88187    50.0                0.53012                 0.54217
+    tlrn_cf_factors        10 83.0   0.05765  0.01882 0.22438 13533.92841    0.24947   82.0 0.39394 2.287557e+05  41574.96237 25.77099    56.0                0.49398                 0.45783
+    tlrn_cf_factors   rolling  NaN   0.10620  0.08217 0.14199 19605.65349    0.19155    NaN 0.24516 7.363553e+05 104688.45334 20.71309     NaN                0.53579                 0.52679
+    tlrn_cf_factors    pooled  NaN   0.10263      NaN     NaN         NaN        NaN    NaN     NaN          NaN          NaN      NaN     NaN                    NaN                     NaN
+
+Difference in Pool_APE (row minus benchmark; negative favours the row):
+         method benchmark    statistic     diff      low     high  share_favour
+  tlrn_cf_refit      mack         last -0.06731 -0.08066 -0.00124        0.9774
+  tlrn_cf_refit      mack       pooled -0.04366 -0.04902 -0.01033        0.9965
+  tlrn_cf_refit      mack      rolling -0.04259 -0.04819 -0.01179        0.9977
+  tlrn_cf_refit      mack  valuation 6 -0.00990 -0.02316  0.00500           NaN
+  tlrn_cf_refit      mack  valuation 7 -0.03543 -0.04116 -0.00955           NaN
+  tlrn_cf_refit      mack  valuation 8 -0.05771 -0.07998 -0.02753           NaN
+  tlrn_cf_refit      mack valuation 10 -0.06731 -0.08066 -0.00124           NaN
+  tlrn_cf_refit       mcl         last  0.00247 -0.03121  0.02785        0.4119
+  tlrn_cf_refit       mcl       pooled -0.02305 -0.02938 -0.01257        0.9993
+  tlrn_cf_refit       mcl      rolling -0.02588 -0.03286 -0.01405        0.9994
+  tlrn_cf_refit       mcl  valuation 6 -0.01052 -0.02357  0.00072           NaN
+  tlrn_cf_refit       mcl  valuation 7 -0.03656 -0.04303 -0.01443           NaN
+  tlrn_cf_refit       mcl  valuation 8 -0.05892 -0.08755 -0.02503           NaN
+  tlrn_cf_refit       mcl valuation 10  0.00247 -0.03121  0.02785           NaN
+tlrn_cf_norefit      mack         last -0.07796 -0.09195 -0.00294        0.9796
+tlrn_cf_norefit      mack       pooled -0.05479 -0.06328 -0.00234        0.9818
+tlrn_cf_norefit      mack      rolling -0.05355 -0.06192 -0.00245        0.9824
+tlrn_cf_norefit      mack  valuation 6 -0.02629 -0.04777  0.02350           NaN
+tlrn_cf_norefit      mack  valuation 7 -0.04684 -0.05424 -0.00167           NaN
+tlrn_cf_norefit      mack  valuation 8 -0.06312 -0.07118 -0.01556           NaN
+tlrn_cf_norefit      mack valuation 10 -0.07796 -0.09195 -0.00294           NaN
+tlrn_cf_norefit       mcl         last -0.00818 -0.04026  0.01291        0.8707
+tlrn_cf_norefit       mcl       pooled -0.03418 -0.03908 -0.00641        0.9917
+tlrn_cf_norefit       mcl      rolling -0.03685 -0.04203 -0.00614        0.9915
+tlrn_cf_norefit       mcl  valuation 6 -0.02691 -0.04876  0.01989           NaN
+tlrn_cf_norefit       mcl  valuation 7 -0.04797 -0.05508 -0.00612           NaN
+tlrn_cf_norefit       mcl  valuation 8 -0.06433 -0.07214 -0.01533           NaN
+tlrn_cf_norefit       mcl valuation 10 -0.00818 -0.04026  0.01291           NaN
+    raw_network      mack         last -0.06598 -0.08276  0.00386        0.9651
+    raw_network      mack       pooled -0.07089 -0.08124 -0.00912        0.9914
+    raw_network      mack      rolling -0.07260 -0.08398 -0.01022        0.9935
+    raw_network      mack  valuation 6 -0.02231 -0.04019  0.02328           NaN
+    raw_network      mack  valuation 7 -0.08853 -0.10271 -0.01639           NaN
+    raw_network      mack  valuation 8 -0.11357 -0.15454 -0.02314           NaN
+    raw_network      mack valuation 10 -0.06598 -0.08276  0.00386           NaN
+    raw_network       mcl         last  0.00379 -0.03354  0.04610        0.3949
+    raw_network       mcl       pooled -0.05028 -0.05765 -0.00945        0.9930
+    raw_network       mcl      rolling -0.05590 -0.06579 -0.01085        0.9945
+    raw_network       mcl  valuation 6 -0.02293 -0.04123  0.01923           NaN
+    raw_network       mcl  valuation 7 -0.08967 -0.10424 -0.02074           NaN
+    raw_network       mcl  valuation 8 -0.11478 -0.16250 -0.02178           NaN
+    raw_network       mcl valuation 10  0.00379 -0.03354  0.04610           NaN
+tlrn_cf_factors      mack         last -0.06182 -0.09058  0.09717        0.7878
+tlrn_cf_factors      mack       pooled -0.04327 -0.05871  0.04589        0.8493
+tlrn_cf_factors      mack      rolling -0.04218 -0.05711  0.04069        0.8588
+tlrn_cf_factors      mack  valuation 6 -0.01743 -0.03799  0.02873           NaN
+tlrn_cf_factors      mack  valuation 7 -0.04260 -0.06084  0.02974           NaN
+tlrn_cf_factors      mack  valuation 8 -0.04684 -0.05928  0.01925           NaN
+tlrn_cf_factors      mack valuation 10 -0.06182 -0.09058  0.09717           NaN
+tlrn_cf_factors       mcl         last  0.00795 -0.01126  0.09024        0.2717
+tlrn_cf_factors       mcl       pooled -0.02265 -0.03495  0.04158        0.8142
+tlrn_cf_factors       mcl      rolling -0.02547 -0.03842  0.03653        0.8389
+tlrn_cf_factors       mcl  valuation 6 -0.01805 -0.03851  0.02453           NaN
+tlrn_cf_factors       mcl  valuation 7 -0.04374 -0.06290  0.02567           NaN
+tlrn_cf_factors       mcl  valuation 8 -0.04805 -0.06339  0.01888           NaN
+tlrn_cf_factors       mcl valuation 10  0.00795 -0.01126  0.09024           NaN
+
+Pool_APE within quartiles of the actual reserve:
+method                    mack      mcl  raw_network  raw_network_norefit  tlrn_cf_factors  tlrn_cf_norefit  tlrn_cf_refit
+valuation quartile n                                                                                                      
+6         1        21  0.27388  0.25792      0.18524              0.23817          0.20601          0.18908        0.19219
+          2        21  0.17134  0.17887      0.11063              0.15363          0.14952          0.11754        0.12012
+          3        21  0.19502  0.16729      0.13253              0.16677          0.18130          0.15639        0.14470
+          4        21  0.13517  0.13668      0.11479              0.07747          0.11782          0.10976        0.12726
+7         1        21  0.19363  0.18223      0.14330              0.15548          0.16975          0.11439        0.11990
+          2        21  0.14659  0.13980      0.13818              0.15127          0.14764          0.13716        0.13497
+          3        21  0.15720  0.17416      0.11030              0.12772          0.15107          0.13324        0.13654
+          4        21  0.16749  0.16825      0.07655              0.05006          0.12314          0.11957        0.13142
+8         1        21  0.19288  0.22205      0.11062              0.12091          0.22663          0.14057        0.14438
+          2        21  0.14041  0.13298      0.13810              0.13976          0.12956          0.13007        0.12911
+          3        21  0.14658  0.11802      0.09450              0.10333          0.12628          0.09229        0.09650
+          4        20  0.17024  0.17242      0.05323              0.03095          0.12185          0.10615        0.11169
+10        1        21  0.30565  0.37574      0.28870              0.28248          0.42599          0.29246        0.29123
+          2        21  0.17657  0.19973      0.17787              0.16904          0.20618          0.16108        0.17234
+          3        21  0.16185  0.20366      0.13769              0.15241          0.23384          0.13331        0.13776
+          4        20  0.11690  0.04202      0.04864              0.03455          0.04915          0.03643        0.04731
+
+Precision: the width of each 95% interval and the gain it could just detect, about half the width, in Pool_APE (0.03 is three points):
+statistic benchmark  width  detectable_gain
+     last      mack 0.0794           0.0397
+   pooled      mack 0.0387           0.0193
+  rolling      mack 0.0364           0.0182
+     last       mcl 0.0591           0.0295
+   pooled       mcl 0.0168           0.0084
+  rolling       mcl 0.0188           0.0094
+
+P1, does the refit help? Refit minus no refit, same training run (negative favours the refit):
+statistic    diff      low    high
+     last 0.01065  0.00076 0.01954
+   pooled 0.01112 -0.00983 0.01470
+  rolling 0.01097 -0.01143 0.01477
+   valuation 10 without the dominant company: +0.01179 [-0.00224, +0.02170]
+   draws favouring the refit at valuation 10: 2 of 10
+P1 for cohort C (out-of-sample in accident years only (weaker than the second study's C, whose results were known before this model's rules were written; companies and calendar years overlap B3)): HURTS
+   valuation 10 [+0.0762%, +1.9537%], pooled [-0.9829%, +1.4697%], 2 of 10 draws favour the refit (need 8), valuation 10 without the dominant company +1.1789%; conditions a_last_below no, b_pooled_below no, c_draws_favour no, d_excluding_at_or_below no
+   the same rule on the stratified intervals gives: HURTS
+
+P2 for cohort C (out-of-sample in accident years only (weaker than the second study's C, whose results were known before this model's rules were written; companies and calendar years overlap B3)): NOT DISTINGUISHABLE
+   vs mack: valuation 10 [-8.0657%, -0.1238%], pooled [-4.9023%, -1.0330%], valuation 10 without the dominant company -3.2017% [-6.2967%, +0.8116%]; vs mcl: valuation 10 [-3.1209%, +2.7846%], pooled [-2.9380%, -1.2571%], valuation 10 without the dominant company +0.4716% [-3.9350%, +3.4461%]; median-draw valuation-10 Pool_APE 5.3920% against mack 11.9470% and mcl 4.9693%; conditions i_last_below_both no, ii_pooled_below_both yes, iii_median_draw_below_both no, iv_excluding_dominant_not_worse no
+   the same rule on the stratified intervals gives: NOT DISTINGUISHABLE
+   (secondary row) the raw refit network by the same rule: NOT DISTINGUISHABLE
+NETWORK QUESTION for cohort C: NOT DISTINGUISHABLE
+   valuation 10 [-10.1038%, +1.3343%]; pooled [-5.8268%, +1.0256%]; valuation 10 without the dominant company [-11.8083%, +1.6027%]; conditions a_last_below no, b_pooled_below no, c_excluding_not_above yes
+BLEND QUESTION for cohort C: NOT DISTINGUISHABLE
+   valuation 10 [-1.9939%, +0.5064%]; pooled [-0.5431%, +3.2855%]; valuation 10 without the dominant company [-2.2258%, +0.9016%]; conditions a_last_below no, b_pooled_below no, c_excluding_not_above yes
+
+Spread of the blend weight alpha over members and draws:
+ valuation  alpha_min  alpha_q25  alpha_median  alpha_q75  alpha_max  alpha_std  alpha_count
+         6     0.1411     0.3657        0.4509     0.5303     0.8156     0.1269          200
+         7     0.1780     0.3329        0.4130     0.4799     0.7252     0.1052          200
+         8     0.1836     0.3902        0.5000     0.5968     1.0000     0.1551          200
+        10     0.4438     0.6032        0.7045     0.7911     1.0000     0.1380          200

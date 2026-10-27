@@ -699,6 +699,10 @@ None of these is decided in this note; each has a stated default.
     note is a draft until Ethan accepts it, and the fits should not start before it is
     committed.
 
+## Run (2026-10-26)
+
+The study was run on 2026-10-26 on a Colab GPU (40 fits, draws 0 to 9 of both rows on cohorts B3 and C3, ibnr 0.7.6). The results are in [the findings note](/findings/tlrn-study3-results.md). The rules above were not changed, and the two stopping rules were not triggered (the first C3 fit took about 8 minutes, the 40 fits 2.94 GPU hours).
+
 [^request]: Ethan's instruction in the 2026-10-21 working session
 [^second-results]: The results of the second tlrn study
 

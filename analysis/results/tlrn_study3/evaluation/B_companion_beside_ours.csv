@@ -1,0 +1,49 @@
+quantity,companion,note,ibnr_mean,ibnr_min,ibnr_max,n_draws,draws_below,draws_above
+tlrn_cf_refit blended: Pool APE (%),3.93,,4.0239793488684095,3.7268067009992563,4.257829587636953,10,2.0,8.0
+tlrn_cf_refit blended: MAE,10578.0,,10831.805096703252,10031.871517845526,11461.286510138118,10,2.0,8.0
+tlrn_cf_refit blended: RMSE,31021.0,,32837.798863005075,28603.68925580422,36150.81211313037,10,4.0,6.0
+tlrn_cf_refit blended: wRMSE,157581.0,,174384.8733156379,123407.89873213721,214301.93368230283,10,4.0,6.0
+tlrn_cf_refit blended: MedAPE (%),12.54,,12.318882682686148,11.397754821209407,12.836761559023916,10,6.0,4.0
+tlrn_cf_refit blended: MAPE (ratio),0.62,,0.6204402489711568,0.5999695382998984,0.6318641176019342,10,4.0,6.0
+tlrn_cf_refit blended: SMAPE (0 to 200),23.89,,23.94400471424758,23.748413311247827,24.10628927877119,10,2.0,8.0
+tlrn_cf_refit blended: Pool PE (%),0.05,,-0.07914174426141687,-0.5232802736059994,0.3336614790692251,10,6.0,4.0
+tlrn_cf_refit blended: over-estimated companies,53.0,,53.1,52.0,54.0,10,1.0,2.0
+raw network alone: Pool APE (%),2.96,,3.2883221524207493,2.9255221658434962,3.6878841255539188,10,2.0,8.0
+raw network alone: MAE,7955.0,,8851.552545916922,7874.9623591913205,9927.099173224975,10,2.0,8.0
+raw network alone: RMSE,20177.0,,24874.765549300886,19546.547361137316,31468.58412918047,10,1.0,9.0
+raw network alone: wRMSE,55985.0,,114970.92367003683,56188.04319728234,203053.87529284557,10,0.0,10.0
+raw network alone: MedAPE (%),12.28,,12.257804210335147,11.539564312181728,12.784575892290295,10,5.0,5.0
+raw network alone: MAPE (ratio),0.36,,0.3588296733196174,0.3527322457568184,0.3660122053139282,10,6.0,4.0
+raw network alone: SMAPE (0 to 200),22.18,,22.023292427088073,21.935832984606794,22.249698041222967,10,9.0,1.0
+raw network alone: Pool PE (%),0.82,,0.3547065477374036,-0.6789392038488052,1.2781280272796438,10,8.0,2.0
+raw network alone: over-estimated companies,52.0,,52.1,50.0,54.0,10,4.0,5.0
+chain ladder (mack): Pool APE (%),5.48,,5.480980290509983,5.480980290509983,5.480980290509983,1,0.0,1.0
+chain ladder (mack): MAE,14754.0,,14753.78104571321,14753.78104571321,14753.78104571321,1,1.0,0.0
+chain ladder (mack): RMSE,56731.0,,56731.23139288952,56731.23139288952,56731.23139288952,1,0.0,1.0
+chain ladder (mack): wRMSE,300308.0,,300307.7780447226,300307.7780447226,300307.7780447226,1,1.0,0.0
+chain ladder (mack): MedAPE (%),13.42,,13.416660854716305,13.416660854716305,13.416660854716305,1,1.0,0.0
+chain ladder (mack): MAPE (ratio),1.14,,1.1406095680865243,1.1406095680865243,1.1406095680865243,1,0.0,1.0
+chain ladder (mack): SMAPE (0 to 200),26.29,,26.29360342343486,26.29360342343486,26.29360342343486,1,0.0,1.0
+chain ladder (mack): Pool PE (%),0.73,,0.7301451756545145,0.7301451756545145,0.7301451756545145,1,0.0,1.0
+chain ladder (mack): over-estimated companies,48.0,,48.0,48.0,48.0,1,0.0,0.0
+CL+MCL: Pool APE (%),5.41,not run in ibnr (mack and mcl are scored separately),,,,0,,
+CL+MCL: MAE,14562.0,not run in ibnr (mack and mcl are scored separately),,,,0,,
+CL+MCL: RMSE,44278.0,not run in ibnr (mack and mcl are scored separately),,,,0,,
+CL+MCL: wRMSE,242026.0,not run in ibnr (mack and mcl are scored separately),,,,0,,
+CL+MCL: MedAPE (%),17.83,not run in ibnr (mack and mcl are scored separately),,,,0,,
+CL+MCL: MAPE (ratio),0.91,not run in ibnr (mack and mcl are scored separately),,,,0,,
+CL+MCL: SMAPE (0 to 200),28.51,not run in ibnr (mack and mcl are scored separately),,,,0,,
+CL+MCL: Pool PE (%),-0.47,not run in ibnr (mack and mcl are scored separately),,,,0,,
+CL+MCL: over-estimated companies,41.0,not run in ibnr (mack and mcl are scored separately),,,,0,,
+blended without refit: Pool APE (%),4.88,,4.708181470260754,4.510192941533691,5.016052978287197,10,8.0,2.0
+date-average Pool APE without refit (%),4.02,,4.065120807055196,3.898291116368963,4.302585534824006,10,6.0,4.0
+date-average Pool APE with refit (%),4.36,,3.867908252907084,3.554923178532622,4.523052357839055,10,9.0,1.0
+median alpha at valuation 10 (per draw),0.476,"pre-registration text says about 0.45, the companion's Table 10 says 0.476",0.4641081511974335,0.4412442743778229,0.49366793036460876,10,7.0,3.0
+median alpha over all four dates (per draw),0.476,,0.4552082285284996,0.4296353012323379,0.4747922122478485,10,10.0,0.0
+companies at valuation 6,90.0,,90.0,90.0,90.0,1,0.0,0.0
+companies at valuation 7,89.0,,89.0,89.0,89.0,1,0.0,0.0
+companies at valuation 8,87.0,,87.0,87.0,87.0,1,0.0,0.0
+companies at valuation 10,84.0,,84.0,84.0,84.0,1,0.0,0.0
+CL+SUR (his table),,not run in ibnr,,,,0,,
+Cape Cod (his table),,not run in ibnr,,,,0,,
+Cape Cod + SUR/MCL (his table),,not run in ibnr,,,,0,,
