@@ -703,3 +703,7 @@ None of these is decided in this note; each has a stated default.
 [^second-results]: The results of the second tlrn study
 
 **Accepted 2026-10-22.** Ethan accepted this note as written, taking the defaults for all ten open items (ten draws, cohorts B3 and C3, no `head=ldf` control, the blended forecast as the primary arm), and kept the library's own per-date seed spacing unchanged.
+
+## Run (2026-10-26)
+
+The study was run on 2026-10-26 on a Colab GPU (40 fits, draws 0 to 9 of both rows on cohorts B3 and C3, ibnr 0.7.6). The results are in [the findings note](/findings/tlrn-study3-results.md). The rules above were not changed, and the two stopping rules were not triggered (the first C3 fit took about 8 minutes, the 40 fits 2.94 GPU hours).

@@ -20,9 +20,11 @@ evaluator's module docstring repeats them. Read them before the results, and do 
 rule after seeing a result. A rule that turns out to be wrong is changed by a dated amendment at
 the end of the note, written before the fit it would affect.
 
-**Nothing in this study has been run on a GPU yet, and no result exists.** The runner and the
-evaluator were checked on a laptop CPU with tiny budgets only (two members, ten epochs), so any
-number from those smoke runs must never be quoted.
+**The study was run on 2026-10-26 on a Colab GPU, and its results are in
+[the finding](../knowledge/findings/tlrn-study3-results.md).** The saved evaluator output is in
+`analysis/results/tlrn_study3/`. To repeat the study or to check one table, follow
+[the reproduction guide](tlrn-study3-reproduce.md). Smoke runs (two members, ten epochs) were
+used to check the runner and the evaluator only, and their numbers must never be quoted.
 
 ## What is run
 
@@ -61,8 +63,75 @@ before this model's rules were written. C3 overlaps B3 in calendar time and in m
 * **The final number** for a company is the mean of the 10 draws' forecasts. The error is
   scored on that draw average, and the bootstrap resamples companies, not draws.
 
-What this design does and does not do. C3 overlaps B3: at date 10, 155 of C3's 232 pairs are
-also B3 pairs (measured in the second study), so C3 is out of sample in accident years only. The
+How the pieces nest (seeds in brackets, counts for one row):
+
+```text
+study (companion_final, ibnr 0.7.6)
+ +-- cohort  B3 (AY 1998-2007)        or      C3 (AY 1988-1997)
+      +-- row  tlrn_cf_refit  (the model)   or   tlrn_cf_factors  (network off)
+           +-- draw k = 0..9   [fit seed 11 + 100003 k]            10 draws
+                +-- valuation date v = 6, 7, 8, 10                  4 dates
+                |     [seed + 20000 v]   its own company set S_v
+                |     (nested: S_10 inside S_8 inside S_7 inside S_6)
+                     +-- member m = 0..19  [seed + 20000 v + 1000 m]  20 networks
+                           trained to its best epoch, then refit
+                           to that epoch on everything known at v
+```
+
+One draw is therefore 80 networks per row, a cohort's main row is 800, and the two cohorts
+together 1,600. The company reserve of a draw is the mean of its 20 members' blended forecasts;
+the reported number is the mean of the 10 draws.
+
+## The cohorts in detail
+
+Both cohorts are read from the Schedule P mart of cas-schedule-p publish `20260613_041006`
+(table `mart_reserving_model_training`), four lines only: `commercial_auto`,
+`other_liability`, `private_passenger_auto` and `workers_compensation`. Each (company, line)
+pair has a 10 by 10 square of cumulative paid loss (accident year by development year), a net
+earned premium per accident year and, in the cell tables, incurred loss, bulk loss and case
+reserve. Calendar index `c` of a cell is `accident year - first accident year + development
+age`, so the diagonal `c` is the end of calendar year `first accident year + c - 1`.
+
+| | B3 | C3 |
+|---|---|---|
+| accident years | 1998 to 2007 | 1988 to 1997 |
+| mart rows read | 62,010 | 67,500 |
+| valuation dates 6, 7, 8, 10 (year end) | 2003, 2004, 2005, 2007 | 1993, 1994, 1995, 1997 |
+| last known diagonal (date 10) | 2007-12-31 | 1997-12-31 |
+| pairs at dates 6, 7, 8, 10 | 230, 226, 219, 212 | 237, 236, 232, 232 |
+| companies at dates 6, 7, 8, 10 | 90, 89, 87, 84 | 84, 84, 83, 83 |
+| pairs at date 10 by line (commercial auto, other liability, private passenger auto, workers' compensation) | 74, 62, 59, 17 | 70, 64, 58, 40 |
+| cells scored per pair at dates 6, 7, 8, 10 | 14, 15, 13, 45 | 14, 15, 13, 45 |
+| cells scored at date 10 | 9,540 (212 pairs x 45) | 10,440 (232 x 45) |
+| selection funnel at date 10 (groups, complete squares, usable paid and premium, two lines) | 668, 414, 297, 212 | 675, 405, 322, 232 |
+| company 1767's share of the actual date-10 reserve | 67.3% | 66.7% |
+| status of any verdict | confirmatory of a fixed specification, not out of sample | out of sample in accident years only |
+
+**How pairs are chosen** (`select_pairs` in `scripts/tlrn_study_colab.py`, the companion's rule
+with the cutoff as a parameter). At valuation date `v` a (company, line) pair is in if (1) it
+has a complete 10 by 10 square, every cell with a finite positive net earned premium, the cells
+after `v` included; (2) on the cells with calendar index at most `v`, cumulative paid loss and
+premium are finite and positive and the paid loss ratio is below 3 on every cell; and (3) its
+company has at least two such lines. The rule is applied again at each date to the cells known
+then, so a company can enter at an early date and is then in every later set. The scoring unit
+is the company.
+
+**Overlap.** At date 10, 155 of C3's 232 pairs are also B3 pairs (recomputed for this note with
+`select_pairs`: B3 has 212 pairs, C3 232, and 60 companies appear in both). Company 1767, which
+holds about two thirds of the reserve, is in both. The accident years do not overlap, but a
+B3 network at date 10 is trained on cells of calendar years 1998 to 2007, and C3's companies
+mostly report in those years too, so the two cohorts are far from independent samples of
+companies.
+
+**Why B3 is not out of sample, and C3 only partly.** B3 is the companion's own cohort: the
+model's architecture, hyperparameters and the 3,000-epoch budget were chosen by the companion
+with this cohort and its date-10 score in view, so a good B3 score confirms that a fixed
+specification behaves as reported and says nothing about unseen data. C3 uses different
+accident years and so is new in that respect only: it shares most of its companies with B3,
+the model was not tuned on it, but the second study's results on the same cohort were known
+before this model's rules were written, so it is weaker than a fresh cohort would be.
+
+What this design does and does not do. The
 companion reports one fit with one seed, and ibnr's random streams cannot reproduce his, so the
 study asks whether the model he built is plausible against a spread of ibnr's own fits. It does
 not reproduce his numbers, and the section of the report that sets his published figures beside
@@ -120,10 +189,12 @@ longer than 25 minutes, or if the saved fits add up to 8 GPU hours before the st
 The helper cells raise `SystemExit` with a message that begins `STOP` in both cases. A member
 with a non-finite loss stops its fit; rerun that fit once, and if it happens again report it.
 
-**How long.** The pre-registered planning figure, never measured, is 400 to 500 seconds per main
-fit and 3 to 6 GPU hours for everything on a Blackwell-class card (Colab G4); an A100 is about
-twice as slow. Every fit's record holds the seconds it took, and the notebook prints them after
-each piece. **Send those numbers back with the results.**
+**How long.** The pre-registered planning figure was 400 to 500 seconds per main fit and 3 to 6
+GPU hours for everything on a Blackwell-class card (Colab G4); an A100 is about twice as slow.
+Measured on 2026-10-26 on an NVIDIA RTX PRO 6000 Blackwell Server Edition (Colab's G4): a main
+fit took 501 to 535 seconds on B3 (median 521) and 461 to 480 on C3 (median 478), a
+network-off fit 31 to 33 seconds, and all 40 fits 2.94 GPU hours. Every fit's record holds
+the seconds it took, and the notebook prints them after each piece.
 
 Each fit saves, under a shared stem such as `C_tlrn_cf_refit_d03-ibnr0.7.6`: the settings record
 `.json` (written last, marks the fit finished), `_reserves.csv`, `_valuations.csv` (one row per
@@ -143,7 +214,9 @@ settings.
 
 ## Scoring on the laptop
 
-The evaluator needs `uv sync` and the cas-schedule-p data, and neither jax nor torch:
+The evaluator needs `uv sync` and the cas-schedule-p data, and neither jax nor torch. The
+[reproduction guide](tlrn-study3-reproduce.md) has the steps in order, the numbers to expect and
+how to check the benchmarks.
 
 ```text
 uv run python scripts/tlrn_study3_eval.py --fits "G:\My Drive\ibnr_colab_cf\study3" --out C:\Temp\study3_report

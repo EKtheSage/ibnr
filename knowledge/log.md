@@ -1,5 +1,9 @@
 # Knowledge Update Log
 
+## 2026-10-27
+* **Creation**: Recorded [the results of the third tlrn study](/findings/tlrn-study3-results.md): the companion's 21 October model, ten draws on two cohorts. On B3 it replicates his published figures (4.02% against 3.93% blended, 3.19% against 2.96% raw network) and is not distinguishable from the chain ladder and the multivariate chain ladder; on the fresh cohort C3 the refit hurts (+1.07 points, 2 of 10 draws favour it). The Colab data hash differs from the laptop's and the cause is unexplained. The evaluator output is kept in `analysis/results/tlrn_study3/`, and `docs/tlrn-study3.md` gained a description of the cohorts and `docs/tlrn-study3-reproduce.md` a reproduction guide.
+* **Update**: [The third tlrn study's pre-registration](/decisions/tlrn-study3-preregistration.md) was run on 2026-10-26 (rules untouched); the results are in the finding above.
+
 ## 2026-10-26
 * **Add**: [Colab runs Python 3.13 and ibnr caps Python below 3.13](/gotchas/colab-python-313-and-the-ibnr-cap.md): the study 3 notebook fetches its scripts without a token while the repository is public and installs with `--ignore-requires-python` on Python 3.13 and later (measured: installs, imports, 18,537 parameters); a GitHub billing lock fails every job in two seconds, public repository or not.
 * **Update**: Removed a third party's name, links to personal repositories and local machine paths from the current tree (README, `docs/three-repo-workflow.md`, the 2026-09-20 plans and spec, notebooks 01, 03, 03b, 03c, 04 and 05, the second tlrn study's evaluation outputs, the decision on the robustness study, two knowledge notes and `CLAUDE.md`). Wording and paths only: no number, method or test changed. Git history is unchanged.
