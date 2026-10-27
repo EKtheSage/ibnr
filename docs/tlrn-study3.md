@@ -131,8 +131,7 @@ accident years and so is new in that respect only: it shares most of its compani
 the model was not tuned on it, but the second study's results on the same cohort were known
 before this model's rules were written, so it is weaker than a fresh cohort would be.
 
-What this design does and does not do. C3 overlaps B3: at date 10, 155 of C3's 232 pairs are
-also B3 pairs (measured in the second study), so C3 is out of sample in accident years only. The
+What this design does and does not do. The
 companion reports one fit with one seed, and ibnr's random streams cannot reproduce his, so the
 study asks whether the model he built is plausible against a spread of ibnr's own fits. It does
 not reproduce his numbers, and the section of the report that sets his published figures beside

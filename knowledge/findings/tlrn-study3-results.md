@@ -102,7 +102,7 @@ Differences are in points of Pool_APE, row minus comparison (negative favours th
 | P1, refit minus no refit, date 10 | -0.68, [-1.83, -0.33] | +1.07, [+0.08, +1.95] |
 | P1, pooled over the four dates | -0.17, [-1.60, +0.18] | +1.11, [-0.98, +1.47] |
 | P1, draws favouring the refit (8 needed) | 10 of 10 | 2 of 10 |
-| P1, date 10 without company 1767 | -1.19 | +1.18, [-0.22, +2.17] |
+| P1, date 10 without company 1767 | -1.19, [-2.03, -0.04] | +1.18, [-0.22, +2.17] |
 | P1 verdict | not distinguishable (fails the pooled condition) | **hurts** |
 | P2, refit minus `mack`, date 10 | -1.46, [-5.55, +1.97] | -6.73, [-8.07, -0.12] |
 | P2, refit minus `mcl`, date 10 | -1.39, [-5.72, -0.65] | +0.25, [-3.12, +2.78] |
