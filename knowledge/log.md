@@ -1,5 +1,8 @@
 # Knowledge Update Log
 
+## 2026-11-03
+* **Creation**: Recorded [the draft pre-registration of the fourth tlrn study](/decisions/tlrn-study4-preregistration.md), before any code or fit exists: the companion's revised model (commit b30ef02, the per-count embedding removed, 18,153 parameters), the third study's P1 and P2 rules carried unchanged, a descriptive comparison with the third study's fits (P0), replication targets on both cohorts read from the companion's new output files, three single-draw ablation rows with no verdict, how a miss of the level target will be read, the pre-fit checks, the run plan and the stopping rules. The pre-fit comparison of the companion's cohorts with ibnr's, pair by pair, is done and passed. Status draft until Ethan accepts it.
+
 ## 2026-10-27
 * **Creation**: Recorded [the results of the third tlrn study](/findings/tlrn-study3-results.md): the companion's 21 October model, ten draws on two cohorts. On B3 it replicates his published figures (4.02% against 3.93% blended, 3.19% against 2.96% raw network) and is not distinguishable from the chain ladder and the multivariate chain ladder; on the fresh cohort C3 the refit hurts (+1.07 points, 2 of 10 draws favour it). The Colab data hash differs from the laptop's and the cause is unexplained. The evaluator output is kept in `analysis/results/tlrn_study3/`, and `docs/tlrn-study3.md` gained a description of the cohorts and `docs/tlrn-study3-reproduce.md` a reproduction guide.
 * **Update**: [The third tlrn study's pre-registration](/decisions/tlrn-study3-preregistration.md) was run on 2026-10-26 (rules untouched); the results are in the finding above.
