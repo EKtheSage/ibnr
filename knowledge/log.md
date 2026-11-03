@@ -1,6 +1,7 @@
 # Knowledge Update Log
 
 ## 2026-11-03
+* **Update**: [The fourth tlrn study's pre-registration](/decisions/tlrn-study4-preregistration.md) is accepted by Ethan as written (status stable). No code or fit exists yet.
 * **Creation**: Recorded [the draft pre-registration of the fourth tlrn study](/decisions/tlrn-study4-preregistration.md), before any code or fit exists: the companion's revised model (commit b30ef02, the per-count embedding removed, 18,153 parameters), the third study's P1 and P2 rules carried unchanged, a descriptive comparison with the third study's fits (P0), replication targets on both cohorts read from the companion's new output files, three single-draw ablation rows with no verdict, how a miss of the level target will be read, the pre-fit checks, the run plan and the stopping rules. The pre-fit comparison of the companion's cohorts with ibnr's, pair by pair, is done and passed. Status draft until Ethan accepts it.
 
 ## 2026-10-27

@@ -1,9 +1,9 @@
 ---
 type: Decision
 title: The fourth tlrn study, on the companion's revised model
-description: "Draft pre-registration, written before any code or fit exists (2026-11-03), of ibnr's fourth tlrn study: the companion's revised model (commit b30ef02), which differs from the third study's model by one change, the removal of the per-count 'lags observed' embedding. Two co-primary questions carried unchanged from the third study (does the refit help; is the model effective against the chain ladder and the multivariate chain ladder), a new descriptive comparison with the third study's fits (P0), replication targets read from the companion's new output on both cohorts, three single-draw ablation rows that carry no verdict, the pre-fit checks, the run plan, the budget and stopping rules, and the choices still open."
+description: "Pre-registration, written before any code or fit exists (2026-11-03), of ibnr's fourth tlrn study: the companion's revised model (commit b30ef02), which differs from the third study's model by one change, the removal of the per-count 'lags observed' embedding. Two co-primary questions carried unchanged from the third study (does the refit help; is the model effective against the chain ladder and the multivariate chain ladder), a new descriptive comparison with the third study's fits (P0), replication targets read from the companion's new output on both cohorts, three single-draw ablation rows that carry no verdict, the pre-fit checks, the run plan, the budget and stopping rules, and the choices still open."
 tags: [tlrn, evaluation, preregistration, colab, companion-study, decision]
-status: draft
+status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-03T12:00:00Z }
 stale_after: 2027-05-03T00:00:00Z
 sources:
@@ -657,3 +657,5 @@ None of these is decided in this note; each has a stated default.
 [^third-results]: The results of the third tlrn study
 [^exhibits]: The companion's new output at commit b30ef02
 [^diff]: The diff between the companion's commits f50871d and b30ef02, read by a delegated worker
+
+**Accepted 2026-11-03.** Ethan accepted this note as written.
