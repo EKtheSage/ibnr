@@ -147,6 +147,14 @@ with `refit=True`, `alpha_on="first_diagonal"`, `empty_query_bias=True` and
 `compact_embeddings=True`. All four options default off, and with them off the fit
 is identical, weight for weight, to the one before they existed.
 
+`maturity_embedding` (default `True`) adds the per-count ("lags observed") embedding to every
+token. With `False` the table is not a parameter and is not read, but its starting draws are
+still consumed, so every other parameter starts where it does with `True` for the same seed.
+`TLRNConfig.companion_revised_variant()` is `companion_final_variant()` with
+`maturity_embedding=False` and nothing else different.
+`fit(paid_only=True)` keeps all 13 inputs but sets the five incurred and case reserve channels
+(`FEATURE_NAMES[8:]`) to zero; it needs `incurred_field` and `case_field`.
+
 ### Matching the companion's network
 
 `empty_query_bias` and `compact_embeddings` exist so that the preset's network is the

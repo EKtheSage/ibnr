@@ -23,12 +23,19 @@ run gives both the refit forecasts (``company_reserves()``) and the without-refi
 ``tlrn_cf_factors``, the same configuration with the network switched off. Their per-date,
 per-draw study is ``scripts/tlrn_study_colab.py --study companion_final``.
 
+The fourth study's rows (``--config companion_revised``) are the companion's revised model
+(the third study's without the per-count embedding), its network-off row, three single-draw
+variant rows (no cross-line attention, no accident-year attention, paid inputs only) and the
+rerun control ``tlrn_cf_rerun`` (the third study's model, fitted again). Their per-date,
+per-draw study is ``scripts/tlrn_study_colab.py --study companion_revised``.
+
 Usage, on the runtime::
 
     python scripts/tlrn_colab.py --out /content/drive/MyDrive/ibnr/tlrn_fits
     python scripts/tlrn_colab.py --out ... --config accident_year --members 20
     python scripts/tlrn_colab.py --out ... --config factor_head    # the second study's rows
     python scripts/tlrn_colab.py --out ... --config companion_final  # the third study's rows
+    python scripts/tlrn_colab.py --out ... --config companion_revised  # the fourth study's rows
     python scripts/tlrn_colab.py --out ... --smoke      # a few epochs, to check the setup
 
 The TPU speed is unmeasured: this script was checked on a CPU only (in ``--smoke`` form).
@@ -267,6 +274,21 @@ def companion_final_config(**overrides):
     return TLRNConfig.companion_final_variant(**{**choices, **overrides})
 
 
+def companion_revised_config(**overrides):
+    """The companion's revised model (fourth study), as one ``TLRNConfig``.
+
+    :func:`companion_final_config` with one change, written out: ``maturity_embedding=False``,
+    so the per-count ("lags observed") embedding is neither a parameter nor read (18,153
+    parameters against 18,537). The count still reaches the network as a feature channel.
+    Every other choice is the third study's value, written out again there so a change of
+    default in a later ibnr cannot change the model unnoticed. ``overrides`` replace any
+    choice, which is how the network-off row, the two attention variants and the smoke budget
+    are set. The choices and the evidence are in
+    ``knowledge/decisions/tlrn-study4-preregistration.md``.
+    """
+    return companion_final_config(**{"maturity_embedding": False, **overrides})
+
+
 def configs(name: str, members: int, smoke: bool):
     """``(row, fit keyword arguments, TLRNConfig)`` for each fit of the cell."""
     from ibnr.gallery.nn.tlrn.config import TLRNConfig
@@ -281,6 +303,26 @@ def configs(name: str, members: int, smoke: bool):
         return [
             ("tlrn_cf_refit", roles, companion_final_config(**budget)),
             ("tlrn_cf_factors", roles, companion_final_config(factors_only=True, **budget)),
+        ]
+    if name == "companion_revised":
+        # the fourth study's six rows, in the pre-registered order. The paid-only row has the
+        # main row's configuration: what makes it paid only is the ``paid_only`` role, which the
+        # study runner reads (it is not a TLRNConfig field)
+        budget = {"ensemble_size": members}
+        if smoke:
+            budget |= {"max_epochs": 10, "min_epochs": 0, "check_every": 5, "patience": 100}
+        roles = {"incurred_field": INCURRED_FIELD, "case_field": CASE_FIELD}
+        return [
+            ("tlrn_cr_refit", roles, companion_revised_config(**budget)),
+            ("tlrn_cr_factors", roles, companion_revised_config(factors_only=True, **budget)),
+            (
+                "tlrn_cr_noline",
+                roles,
+                companion_revised_config(attention=("lag", "ay"), cross_line=False, **budget),
+            ),
+            ("tlrn_cr_noay", roles, companion_revised_config(attention=("line", "lag"), **budget)),
+            ("tlrn_cr_paid", {**roles, "paid_only": True}, companion_revised_config(**budget)),
+            ("tlrn_cf_rerun", roles, companion_final_config(**budget)),
         ]
     if name == "factor_head":
         # the second study's two rows: the full model, and the same model with the network
@@ -421,7 +463,13 @@ def main(argv=None) -> int:
     parser.add_argument("--out", type=Path, required=True, help="folder for the fitted entries")
     parser.add_argument(
         "--config",
-        choices=("published", "accident_year", "factor_head", "companion_final"),
+        choices=(
+            "published",
+            "accident_year",
+            "factor_head",
+            "companion_final",
+            "companion_revised",
+        ),
         default="published",
     )
     parser.add_argument("--members", type=int, default=None, help="40 published, 20 variant")

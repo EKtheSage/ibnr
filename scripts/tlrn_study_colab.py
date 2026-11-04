@@ -54,7 +54,8 @@ reads (valuation dates 6, 7, 8 and 10 are the model's own: 10 is the last known 
   company columns: ``unit``, ``cutoff``, ``horizon``, ``predicted``, ``actual``, ``size``,
   ``residual_scale``, ``standardised_error``, ``company_code``;
 * ``_members.csv``: one row per (valuation, member): ``best_epoch``, ``epochs_run``, the two
-  validation errors and the blend weight ``alpha``.
+  validation errors, the blend weight ``alpha`` and, from the third study's table on,
+  ``non_finite_loss_epochs`` (epochs of the first run whose training loss was not finite).
 
 The valuation tables need each retrained valuation date's members, which the fitted entry does
 not keep (only the final fit's). The runner takes them by wrapping the entry's own
@@ -73,6 +74,26 @@ study's, plus ``predicted_selected`` and ``predicted_net_selected``, the forecas
 as they stood at their chosen epoch) and ``_members.csv``. Its records say ``"study": 3``. Rules:
 ``knowledge/decisions/tlrn-study3-preregistration.md``.
 
+**The fourth study** (``--study companion_revised``) runs the companion's revised model (the third
+study's without the per-count embedding, ``maturity_embedding=False``) on cohorts B and C in the
+same per-date way, with the third study's seeds, so draw ``k`` is paired with the third study's
+draw ``k``. Its six rows, in the pre-registered order, are ``tlrn_cr_refit`` (the main row),
+``tlrn_cr_factors`` (the network off), the three single-draw variant rows ``tlrn_cr_noline``,
+``tlrn_cr_noay`` and ``tlrn_cr_paid`` (cohort B, draw 0 only) and the rerun control
+``tlrn_cf_rerun`` (the third study's model fitted again, cohort B, draw 0 only). A single-draw
+row asked for with more than one draw, or on cohort C, is refused by name. Its records say
+``"study": 4`` and carry ``paid_only`` per row; its run records add the versions of pandas,
+numpy and duckdb (the third study's data hashes differed between Colab and the laptop for a
+reason nobody could check). The pre-registered stops are in the runner: after the main row's
+draw 0 on cohort C takes over 25 minutes, or when the saved fits add up to 8 GPU hours, the
+run stops and asks (:func:`check_budget`, :func:`check_first_fit`); a fit with a non-finite
+forecast or a member with a non-finite training loss is rerun once with the same seed and, if it
+recurs, reported as failed and left out;
+a single-draw row that fails is reported as failed and delays nothing. The network-off row
+may be taken from the third study's fits (``--reuse-factors-from``), which the pre-registration
+allows only if a small identity check passes (see its amendment). Rules:
+``knowledge/decisions/tlrn-study4-preregistration.md``.
+
 Nothing here has been run on a GPU: the real results do not exist yet.
 """
 
@@ -82,9 +103,11 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 import pickle
 import platform
+import re
 import sys
 import time
 from contextlib import contextmanager, nullcontext
@@ -100,6 +123,11 @@ import tlrn_colab
 #: earlier studies were run with, and their how-to documents still say, 0.7.4: each ``Study``
 #: carries its own pin (``Study.pinned_ibnr``), so moving this one never rewrites their history
 PINNED_IBNR = "0.7.6"
+#: the release the FOURTH study is run with on Colab (its notebook installs exactly this and
+#: fetches the runner scripts at the tag ``v0.7.7``). The third study keeps ``PINNED_IBNR``:
+#: its notebook, how-to and tests are history. The package in this checkout is not bumped
+#: (the release is a separate step), so no test holds this equal to ``ibnr.__version__``
+COMPANION_REVISED_PINNED_IBNR = "0.7.7"
 #: the release the first two studies were run with
 EARLIER_PINNED_IBNR = "0.7.4"
 #: bump when the study's definition changes, so old fits are never reused under a new one
@@ -116,6 +144,38 @@ COMPANION_FINAL_VERSION = 3
 COMPANION_FINAL_COHORTS = ("B", "C")
 COMPANION_FINAL_ROWS = ("tlrn_cf_refit", "tlrn_cf_factors")
 COMPANION_FINAL_TABLES = ("valuations", "members")
+#: the fourth study (the companion's revised model: no per-count embedding)
+COMPANION_REVISED_VERSION = 4
+COMPANION_REVISED_COHORTS = ("B", "C")
+COMPANION_REVISED_ROWS = (
+    "tlrn_cr_refit",
+    "tlrn_cr_factors",
+    "tlrn_cr_noline",
+    "tlrn_cr_noay",
+    "tlrn_cr_paid",
+    "tlrn_cf_rerun",
+)
+COMPANION_REVISED_TABLES = COMPANION_FINAL_TABLES
+#: the main row and the network-off row of the fourth study
+REVISED_MAIN_ROW = "tlrn_cr_refit"
+REVISED_FACTORS_ROW = "tlrn_cr_factors"
+#: the pre-registered order of the cohorts: C4's draw 0 is the pipeline check, so C comes first
+COMPANION_REVISED_FIT_ORDER = ("C", "B")
+#: rows that are fitted once, on cohort B, at draw 0 (descriptive, no verdict rule uses them)
+SINGLE_DRAW_ROWS = ("tlrn_cr_noline", "tlrn_cr_noay", "tlrn_cr_paid", "tlrn_cf_rerun")
+SINGLE_DRAW_COHORTS = ("B",)
+#: the stops that are pre-registered for the fourth study
+STOP_FIRST_FIT_SECONDS = 25 * 60
+BUDGET_HOURS = 8.0
+#: the members table's count of a member's epochs whose training loss was not finite
+NON_FINITE_LOSS = "non_finite_loss_epochs"
+#: the parameters per network the pre-registration expects, by whether the per-count table is in
+EXPECTED_PARAMETERS = {"revised": 18_153, "final": 18_537}
+#: pairs per valuation date the pre-registration expects, by cohort
+EXPECTED_PAIRS_BY_DATE = {
+    "B": {6: 230, 7: 226, 8: 219, 10: 212},
+    "C": {6: 237, 7: 236, 8: 232, 10: 232},
+}
 #: the valuation dates the third study trains and scores; the last is the last known diagonal
 VALUATIONS = (6, 7, 8, 10)
 #: every cohort a runner can load (the first study uses A and B only)
@@ -553,6 +613,12 @@ class Study:
     per_valuation: bool = False
     #: the ibnr release this study's Colab kit installs and its fits are named with
     pinned_ibnr: str = EARLIER_PINNED_IBNR
+    #: rows fitted once (draw 0) and only on ``single_draw_cohorts``; empty for the earlier studies
+    single_draw_rows: tuple = ()
+    single_draw_cohorts: tuple = ()
+    #: the pre-registered stops (the first-fit time and the GPU-hour budget) and the retry of a
+    #: non-finite fit are the runner's job for this study
+    stop_rules: bool = False
 
 
 FACTOR_HEAD_TABLES = ("valuations", "backtest", "members")
@@ -575,6 +641,19 @@ STUDIES = {
         COMPANION_FINAL_TABLES,
         per_valuation=True,
         pinned_ibnr=PINNED_IBNR,
+    ),
+    "companion_revised": Study(
+        "companion_revised",
+        COMPANION_REVISED_VERSION,
+        COMPANION_REVISED_COHORTS,
+        COMPANION_REVISED_ROWS,
+        "companion_revised",
+        COMPANION_REVISED_TABLES,
+        per_valuation=True,
+        pinned_ibnr=COMPANION_REVISED_PINNED_IBNR,
+        single_draw_rows=SINGLE_DRAW_ROWS,
+        single_draw_cohorts=SINGLE_DRAW_COHORTS,
+        stop_rules=True,
     ),
 }
 
@@ -604,6 +683,15 @@ def fit_settings(
     saved fits are still reused; the second study's carry ``study`` 2 and its name besides.
     """
     spec = get_study(study)
+    config_fields = asdict(config)
+    if (
+        spec.version != COMPANION_REVISED_VERSION
+        and config_fields.get("maturity_embedding") is True
+    ):
+        # The field is newer than the first three studies. With the table in (its only value
+        # then) a record of theirs must read exactly as it did before the field existed, so a
+        # fit saved by an earlier ibnr is still recognised as made with these settings.
+        del config_fields["maturity_embedding"]
     settings = {
         "study": spec.version,
         "cohort": cohort.name,
@@ -611,7 +699,7 @@ def fit_settings(
         "draw": draw,
         "seed": draw_seed(draw),
         "smoke": smoke,
-        "config": asdict(config),
+        "config": config_fields,
         "roles": roles,
         "backend": "jax",
         "as_of": getattr(cohort, "as_of", tlrn_colab.AS_OF).isoformat(),
@@ -622,6 +710,9 @@ def fit_settings(
     }
     if spec.name != "accident_year":
         settings["study_name"] = spec.name
+    if spec.version == COMPANION_REVISED_VERSION:
+        # the fitted entry does not record it, so the settings and the run record do
+        settings["paid_only"] = bool(roles.get("paid_only", False))
     if spec.per_valuation:
         # who is in each date's company set decides what the fit is, as the cohort hash does
         settings["valuations"] = list(VALUATIONS)
@@ -661,7 +752,13 @@ def settings_differences(mine: dict, theirs: dict) -> list[str]:
 
 
 def saved_fit(
-    pkl: Path, record: Path, reserves: Path, settings: dict, tables: dict | None = None
+    pkl: Path,
+    record: Path,
+    reserves: Path,
+    settings: dict,
+    tables: dict | None = None,
+    *,
+    tolerate: tuple = (),
 ) -> dict | None:
     """The record of a finished fit made with exactly ``settings``, or None if there is none.
 
@@ -669,7 +766,7 @@ def saved_fit(
     fit made with OTHER settings is refused, not reused and not overwritten; so is a
     record whose reserves file (or any of the study's extra ``tables``) is gone, and files
     left with no record (an interruption between the writes), because nothing then says
-    what they were fitted with.
+    what they were fitted with. Settings named in ``tolerate`` may differ.
     """
     tables = tables or {}
     if not record.exists():
@@ -682,7 +779,11 @@ def saved_fit(
             )
         return None
     saved = json.loads(record.read_text(encoding="utf-8"))
-    differ = settings_differences(settings, saved.get("settings", {}))
+    differ = [
+        name
+        for name in settings_differences(settings, saved.get("settings", {}))
+        if name not in tolerate
+    ]
     if differ:
         raise SystemExit(
             f"{record.name} was fitted with different settings from this run's (they differ "
@@ -774,6 +875,8 @@ class ValuationFits:
     pairs: dict
     seeds: dict
     config: object = field(repr=False, default=None)
+    #: the fourth study's paid-only row (the fitted object itself does not record it)
+    paid_only: bool = False
 
     @property
     def tables(self) -> dict[str, pd.DataFrame]:
@@ -799,8 +902,14 @@ def fit_valuation(
     as_of,
     backend: str = "jax",
     show_progress: bool = False,
+    paid_only: bool = False,
 ) -> dict:
     """Train, refit and score ONE valuation date ``v`` on the companies of ``triangle``.
+
+    ``paid_only`` is the fourth study's paid-only row: the five incurred and case reserve input
+    channels are set to zero in every feature set while all 13 inputs stay (the same option
+    ``TLRN.fit(paid_only=True)`` has; this function builds its own features, so the option has
+    to be passed on here and is not inherited).
 
     The protocol is the entry's own (``TLRN._run_protocols`` with one spec) on the full
     10-lag contract of ``triangle`` at ``as_of``, with the network trained on the data known at
@@ -813,6 +922,8 @@ def fit_valuation(
     """
     if not config.refit:
         raise ValueError("the third study's tables compare the refit with the run before it")
+    if not isinstance(paid_only, bool):
+        raise ValueError(f"paid_only must be True or False, got {paid_only!r}")
     import torch
 
     from ibnr.gallery.nn._scheme import splits
@@ -847,6 +958,7 @@ def fit_valuation(
             case_field=case,
             with_mcl=config.member == "mcl_blend" if with_mcl is None else with_mcl,
             max_lag=max_lag,
+            paid_only=paid_only,
         )
 
     if v == last_known:
@@ -914,6 +1026,12 @@ def date_tables(fitted: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
     )
     members = run["selection"].copy()
     members.insert(0, "valuation", v)
+    # the weights kept are from a check before any bad step, so nothing in the forecasts shows
+    # a member whose loss went non-finite later; the refit's own loss needs no count, because
+    # the refit keeps its last weights and a non-finite step would reach its forecasts
+    members[NON_FINITE_LOSS] = [
+        sum(not math.isfinite(r["train"]) for r in records) for records in run["history"]
+    ]
     return valuations, members
 
 
@@ -964,6 +1082,7 @@ def fit_valuations(
     backend: str = "jax",
     show_progress: bool = False,
     log=print,
+    paid_only: bool = False,
 ) -> ValuationFits:
     """The third study's fit: every valuation date trained on its own company set.
 
@@ -986,6 +1105,7 @@ def fit_valuations(
             as_of=cohort.as_of,
             backend=backend,
             show_progress=show_progress and v == last,
+            paid_only=paid_only,
         )
         table, member_rows = date_tables(fitted)
         tables.append(table)
@@ -1005,6 +1125,7 @@ def fit_valuations(
         pairs=sets,
         seeds=seeds,
         config=config,
+        paid_only=paid_only,
     )
 
 
@@ -1202,6 +1323,35 @@ def write_manifest(out: Path, *, smoke: bool, study: str = "accident_year") -> P
     return path
 
 
+def row_applies(spec: Study, row: str, cohort_name: str, draw: int) -> bool:
+    """Whether ``row`` is fitted on this cohort at this draw: single-draw rows only at draw 0."""
+    if row in spec.single_draw_rows:
+        return draw == 0 and cohort_name in spec.single_draw_cohorts
+    return True
+
+
+def check_row_request(spec: Study, rows, cohort_names, draws: int) -> None:
+    """Refuse, by name, a single-draw row asked for with several draws or on another cohort.
+
+    Raises ``ValueError``. The runner's default (no ``--rows``) is every row of the study and
+    plans each single-draw row where it applies; only an explicit request is refused.
+    """
+    for row in rows:
+        if row not in spec.single_draw_rows:
+            continue
+        if draws > 1:
+            raise ValueError(
+                f"{row} is fitted once, at draw 0 (the pre-registration's single-draw rows carry "
+                f"no verdict and are not repeated), so --draws {draws} is refused; use --draws 1"
+            )
+        outside = [n for n in cohort_names if n not in spec.single_draw_cohorts]
+        if outside:
+            raise ValueError(
+                f"{row} is fitted on cohort {', '.join(spec.single_draw_cohorts)} only, so cohort "
+                f"{', '.join(outside)} is refused"
+            )
+
+
 def plan_study(
     out: Path,
     cohorts: dict,
@@ -1212,20 +1362,31 @@ def plan_study(
     smoke: bool,
     version: str,
     study: str = "accident_year",
+    reuse_dir: Path | None = None,
 ):
     """What to fit and what is already done, checked before any training.
 
     Returns ``(todo, done)``. Both are lists of dicts in draw-major order (all rows and
     cohorts of draw 0, then of draw 1, ...), so a run stopped at any point holds an
-    even set of fits. A saved fit with other settings raises ``SystemExit`` here.
+    even set of fits. The fourth study's ``todo`` is in its pre-registered order instead
+    (:func:`registered_order`). A saved fit with other settings raises ``SystemExit`` here. Rows
+    that apply only at draw 0 on some cohorts (the fourth study's) are left out elsewhere. With
+    ``reuse_dir``, an item of the fourth study's network-off row has ``reuse`` set: it is taken
+    from the third study's fits in that folder instead of being trained. For a study with
+    ``stop_rules`` a saved fit may differ in ``data_hash``, which is the text of a table and so
+    moves with the pandas and numpy of the session; the pre-registration says that alone does
+    not stop the study, and the item carries the saved value as ``saved_data_hash``.
     """
     spec = get_study(study)
+    tolerate = ("data_hash",) if spec.stop_rules else ()
     configs = {row: (roles, cfg) for row, roles, cfg in row_configs(members, smoke, study)}
     rows = list(dict.fromkeys(rows))  # a repeated row would train the same fit twice
     todo, done = [], []
     for draw in range(draws):
         for name, cohort in cohorts.items():
             for row in rows:
+                if not row_applies(spec, row, name, draw):
+                    continue
                 roles, cfg = configs[row]
                 settings = fit_settings(
                     cohort, row, roles, cfg, draw=draw, smoke=smoke, study=study
@@ -1234,7 +1395,7 @@ def plan_study(
                     out, name, row, draw, smoke=smoke, version=version
                 )
                 tables = table_paths(record, spec.tables)
-                saved = saved_fit(pkl, record, reserves, settings, tables)
+                saved = saved_fit(pkl, record, reserves, settings, tables, tolerate=tolerate)
                 item = {
                     "cohort": name,
                     "row": row,
@@ -1246,9 +1407,258 @@ def plan_study(
                     "record": record,
                     "reserves": reserves,
                     "tables": tables,
+                    "reuse": reuse_dir is not None and row == REVISED_FACTORS_ROW and not smoke,
+                    "saved_data_hash": (saved or {}).get("settings", {}).get("data_hash"),
                 }
                 (done if saved is not None else todo).append(item)
+    if spec.stop_rules:
+        todo.sort(key=lambda item: registered_order(spec, item))
     return todo, done
+
+
+def registered_order(spec: Study, item: dict) -> tuple:
+    """Where a fit of the fourth study comes in the pre-registered order.
+
+    The main row on C4 (its draw 0 is the pipeline check, and the 25-minute stop reads it), the
+    main row on B4, the network-off row, then the single-draw rows.
+    """
+    return (
+        spec.rows.index(item["row"]),
+        COMPANION_REVISED_FIT_ORDER.index(item["cohort"]),
+        item["draw"],
+    )
+
+
+# -- the fourth study: the stops, the retry, and the reuse of the third study's factors fits ----
+
+
+def failed_seconds(out: Path, *, smoke: bool = False) -> float:
+    """Seconds spent on the fits reported as failed, read from their ``FAILED_*.txt`` files."""
+    total = 0.0
+    for path in out.glob("FAILED_*.txt"):
+        if ("_smoke" in path.name) == smoke:
+            found = re.search(r"^seconds: ([0-9.]+)$", path.read_text("utf-8"), re.MULTILINE)
+            total += float(found.group(1)) if found else 0.0
+    return total
+
+
+def fit_seconds_used(out: Path, *, study: str) -> float:
+    """Seconds the study's full fits took, not counting fits taken from another study.
+
+    The budget is GPU time, so an attempt that gave no usable fit counts too: the first attempt
+    of a fit that was rerun (``failed_attempt_seconds``) and every attempt of a reported failure.
+    """
+    records = collect_records(out, smoke=False, study=study)
+    saved = sum(
+        float(r.get("run", {}).get("fit_seconds", 0.0))
+        + float(r.get("run", {}).get("failed_attempt_seconds", 0.0))
+        for r in records.values()
+        if not r.get("run", {}).get("reused_from")
+    )
+    return saved + failed_seconds(out)
+
+
+def check_budget(used_seconds: float, limit_hours: float = BUDGET_HOURS) -> float:
+    """Stop (pre-registered) when the fits already add up to the budget; hours used.
+
+    ``limit_hours`` is larger than the registered 8 only when Ethan has answered this stop.
+    """
+    used = used_seconds / 3600.0
+    if used >= limit_hours:
+        raise SystemExit(
+            f"STOP: the saved fits add up to {used:.2f} GPU hours, at or over the pre-registered "
+            f"{limit_hours:g} hours. Ask Ethan before running more. If he agrees to more, pass "
+            "the new total with --answered-budget-hours (BUDGET_ANSWER_HOURS in the notebook)."
+        )
+    return used
+
+
+def check_first_fit(
+    seconds: float, limit: float = STOP_FIRST_FIT_SECONDS, *, answer: str | None = None
+) -> float:
+    """Stop (pre-registered) when draw 0 of the main row on cohort C took over 25 minutes.
+
+    ``answer`` is Ethan's answer to this stop; with it the run goes on.
+    """
+    if seconds > limit and not answer:
+        raise SystemExit(
+            f"STOP: draw 0 on C4 took {seconds / 60:.1f} minutes, over the pre-registered "
+            f"{limit / 60:.0f}. Ask Ethan before running more. If he says go on, pass his answer "
+            "with --answered-first-fit (FIRST_FIT_ANSWER in the notebook)."
+        )
+    return seconds
+
+
+def is_first_fit(item: dict) -> bool:
+    """The fit the 25-minute rule is about: the main row, cohort C, draw 0."""
+    return (item["cohort"], item["row"], item["draw"]) == ("C", REVISED_MAIN_ROW, 0)
+
+
+def non_finite(frame: pd.DataFrame, tables: dict) -> list[str]:
+    """Names of the saved quantities that hold a missing or infinite value where one is a defect.
+
+    The forecast columns of the valuations table, the reserve column, and the members table's
+    stored epochs and blend weight, and any member with a non-finite training loss, whose kept
+    weights can be finite. (``actual`` is empty at the last valuation by design.)
+    """
+    bad = []
+    checks = [("reserves.reserve", frame["reserve"])]
+    valuations = tables.get("valuations")
+    if valuations is not None:
+        for col in ("predicted", "predicted_selected", "predicted_net", "predicted_net_selected"):
+            if col in valuations:
+                checks.append((f"valuations.{col}", valuations[col]))
+    members = tables.get("members")
+    if members is not None:
+        for col in ("alpha", "best_epoch", "refit_epochs"):
+            if col in members:
+                checks.append((f"members.{col}", members[col]))
+    for name, values in checks:
+        if not np.isfinite(np.asarray(values, dtype=float)).all():
+            bad.append(name)
+    if members is not None and members.get(NON_FINITE_LOSS, pd.Series(dtype=int)).any():
+        bad.append(f"members.{NON_FINITE_LOSS}")
+    return bad
+
+
+def failure_path(out: Path, item: dict) -> Path:
+    """Where a failed fit is reported: a text file that no reader of records can mistake for one."""
+    return item["record"].with_name(f"FAILED_{item['record'].stem}.txt")
+
+
+def fit_or_report(item: dict, fit_fn, cohort, spec: Study, *, log=print):
+    """Run ``fit_fn`` for one item; ``(entry, run, tables)`` or ``None`` for a reported failure.
+
+    A fit whose forecasts or stored epochs are not finite, with a member whose training loss was
+    not finite, or with a member that never had a finite check (the entry's
+    ``NoFiniteValidation``, raised before the refit) is rerun ONCE with the same seed; if that
+    recurs, it is reported as failed and left out (its cohort's verdict is then provisional,
+    which the evaluator prints). A single-draw row that raises is reported as failed too and
+    delays nothing. Any other exception from a row that carries a verdict is a defect and
+    propagates. The seconds of the attempts that gave no usable fit go into the failure file, or
+    into the run record as ``failed_attempt_seconds``, because they are GPU time like any other.
+    """
+    from ibnr.gallery.nn.tlrn.model import NoFiniteValidation
+
+    seed = item["settings"]["seed"]
+    single = item["row"] in spec.single_draw_rows
+    reason = ""
+    lost = 0.0
+    for attempt in (1, 2):
+        started = time.perf_counter()
+        try:
+            entry, run, *rest = fit_fn(cohort, item["row"], item["roles"], item["config"], seed)
+        except NoFiniteValidation as error:
+            lost += time.perf_counter() - started
+            reason = f"non-finite training: {error}"
+        except Exception as error:
+            if not single:
+                raise
+            lost += time.perf_counter() - started
+            reason = f"{type(error).__name__}: {error}"
+            log(f"    {item['row']} failed ({reason}); reported, nothing waits for it")
+            break
+        else:
+            tables = rest[0] if rest else {}
+            bad = non_finite(reserves_frame(entry), tables)
+            if not bad:
+                if lost:
+                    run = {**run, "failed_attempt_seconds": round(lost, 1)}
+                return entry, run, tables
+            lost += float(run.get("fit_seconds", time.perf_counter() - started))
+            reason = f"non-finite {', '.join(bad)}"
+        if attempt == 1:
+            log(f"    {reason}; rerunning once with the same seed {seed}")
+        else:
+            log(f"    {reason} again; reported as failed and left out")
+    failure_path(item["record"].parent, item).write_text(
+        f"{item['cohort']} {item['row']} draw {item['draw']} (seed {seed}) failed: {reason}\n"
+        f"seconds: {lost:.1f}\n",
+        encoding="utf-8",
+    )
+    return None
+
+
+def reuse_factors_fit(item: dict, reuse_dir: Path) -> tuple:
+    """The fourth study's network-off row taken from the third study's fit of the same draw.
+
+    Allowed only after the pre-registered identity check passed (the amendment in the
+    pre-registration says so). The third study's ``tlrn_cf_factors`` record for this cohort and
+    draw must be that study's (study 3, its name, the seed its draw implies, not a smoke fit),
+    for this cohort's pairs, the same publish, the same valuation date and the same company
+    set at every valuation date, and its configuration must be this row's except for the one
+    field the identity check covers, ``maturity_embedding``. The data hash may differ (the
+    third study's fits ran on another machine); both are kept in the run record. The tables are
+    copied unchanged. Returns ``(reserves frame, run, tables)`` where ``run`` carries
+    ``reused_from``, the source fit's own environment and seconds, and no new seconds.
+    """
+    source_study = get_study("companion_final")
+    matches = sorted(
+        Path(reuse_dir).glob(f"{item['cohort']}_tlrn_cf_factors_d{item['draw']:02d}-ibnr*.json")
+    )
+    matches = [p for p in matches if "_smoke" not in p.name]
+    if len(matches) != 1:
+        raise SystemExit(
+            f"cohort {item['cohort']} draw {item['draw']}: expected one finished third-study "
+            f"tlrn_cf_factors fit in {reuse_dir}, found {len(matches)}"
+        )
+    path = matches[0]
+    record = json.loads(path.read_text(encoding="utf-8"))
+    theirs, mine = record.get("settings", {}), item["settings"]
+    expected = {
+        "study": source_study.version,
+        "study_name": source_study.name,
+        "row": "tlrn_cf_factors",
+        "cohort": item["cohort"],
+        "draw": item["draw"],
+        "seed": draw_seed(item["draw"]),
+        "smoke": False,
+    }
+    for key, want in expected.items():
+        if theirs.get(key) != want:
+            raise SystemExit(f"{path.name}: {key} is {theirs.get(key)!r}, expected {want!r}")
+    same = ("cohort_hash", "publish_id", "as_of", "loss_field", "valuations", "valuation_hashes")
+    differ = [k for k in same if theirs.get(k) != mine.get(k)]
+    if differ:
+        raise SystemExit(
+            f"{path.name} was fitted on a different cohort than this run's ({', '.join(differ)} "
+            "differ), so it cannot stand in for this study's network-off row"
+        )
+    mine_cfg = {k: v for k, v in mine["config"].items() if k != "maturity_embedding"}
+    their_cfg = {k: v for k, v in theirs["config"].items() if k != "maturity_embedding"}
+    config_differ = [
+        k for k in sorted(mine_cfg.keys() | their_cfg.keys()) if mine_cfg.get(k) != their_cfg.get(k)
+    ]
+    if config_differ or theirs.get("roles") != {
+        k: v for k, v in mine["roles"].items() if k != "paid_only"
+    }:
+        raise SystemExit(
+            f"{path.name} was fitted with other settings than this row's "
+            f"({', '.join(config_differ) or 'roles'} differ), so it is not reused"
+        )
+    stem = path.stem
+    reserves = pd.read_csv(path.with_name(f"{stem}_reserves.csv"), dtype={"company_code": str})
+    tables = {
+        name: pd.read_csv(path.with_name(f"{stem}_{name}.csv"), dtype={"company_code": str})
+        for name in COMPANION_REVISED_TABLES
+    }
+    # the source fit's own environment stays under ``reused_from``; the record names no other
+    run = {
+        "fit_seconds": 0.0,
+        "reused_from": {
+            "study": "companion_final",
+            "row": "tlrn_cf_factors",
+            "record": path.name,
+            "ibnr": stem.rsplit("-ibnr", 1)[-1],
+            "fit_seconds": record.get("run", {}).get("fit_seconds"),
+            "data_hash": theirs.get("data_hash"),
+            "run": record.get("run", {}),
+        },
+        "paid_only": False,
+    }
+    if theirs.get("data_hash") != mine.get("data_hash"):
+        run["reused_from"]["data_hash_differs"] = True
+    return reserves, run, tables
 
 
 def run_study(
@@ -1264,38 +1674,114 @@ def run_study(
     save_entries: bool = True,
     log=print,
     study: str = "accident_year",
+    reuse_dir: Path | None = None,
+    first_fit_answer: str | None = None,
+    budget_hours: float = BUDGET_HOURS,
 ) -> dict:
     """Fit what is missing, saving each fit the moment it finishes.
 
     ``fit_fn(cohort, row, roles, config, seed)`` returns ``(entry, run)`` where ``run``
     is a dict of what the fit ran on; for a study with extra tables it returns
     ``(entry, run, tables)`` with a frame for each table the study names. The record is
-    written last. Returns ``{"fitted": n, "skipped": n}``.
+    written last. Returns ``{"fitted": n, "skipped": n, "failed": n, "reused": n}``.
+
+    For a study with ``stop_rules`` (the fourth) and outside a smoke run: the saved seconds are
+    checked against the 8 GPU hours before every fit, the main row's draw 0 on cohort C is
+    checked against 25 minutes the moment it is saved (and again at the start of every later
+    run in the folder, whichever cohorts that run asks for),
+    a fit with a non-finite forecast is rerun once and then reported (:func:`fit_or_report`),
+    and with ``reuse_dir`` the network-off row is taken from the third study's fits
+    (:func:`reuse_factors_fit`). A fit with a ``FAILED_*.txt`` file has had its one rerun, so a
+    later pass counts it as failed and does not fit it; deleting that file asks for a new try.
+    Both stops ask Ethan, so both can take his answer: ``first_fit_answer`` (his words) lets the
+    run go past the 25 minutes and ``budget_hours`` is the larger total he agreed to. Each is
+    written into the record of every fit saved under it, as ``run["stop_answers"]``.
     """
     spec = get_study(study)
     todo, done = plan_study(
-        out, cohorts, rows, draws, members=members, smoke=smoke, version=version, study=study
+        out,
+        cohorts,
+        rows,
+        draws,
+        members=members,
+        smoke=smoke,
+        version=version,
+        study=study,
+        reuse_dir=reuse_dir,
     )
     for item in done:
         log(f"cohort {item['cohort']} {item['row']} draw {item['draw']}: already saved, skipped")
+        if item["saved_data_hash"] != item["settings"]["data_hash"]:
+            log(
+                f"    its data hash is {item['saved_data_hash']}, this session's is "
+                f"{item['settings']['data_hash']}; the evaluator reports the difference"
+            )
+    earlier_failures = 0
+    if spec.stop_rules:
+        to_fit = []
+        for item in todo:
+            path = failure_path(out, item)
+            if path.exists():
+                earlier_failures += 1
+                log(
+                    f"cohort {item['cohort']} {item['row']} draw {item['draw']}: reported as "
+                    f"failed already, not fitted again (delete {path.name} to try again)"
+                )
+            else:
+                to_fit.append(item)
+        todo = to_fit
     log(f"{len(todo)} fit(s) to run, {len(done)} already saved")
+    stops = spec.stop_rules and not smoke
+    answers = {}
+    if stops and first_fit_answer:
+        answers["first_fit"] = first_fit_answer
+    if stops and budget_hours != BUDGET_HOURS:
+        answers["budget_hours"] = budget_hours
+    if stops:
+        # from the folder, not from this run's plan: a run of cohort B alone is still stopped
+        for record in collect_records(out, smoke=False, study=study).values():
+            if is_first_fit(record["settings"]):
+                seconds = float(record.get("run", {}).get("fit_seconds", 0.0))
+                check_first_fit(seconds, answer=first_fit_answer)
+    counts = {"failed": 0, "reused": 0}
     for number, item in enumerate(todo, 1):
         cohort = cohorts[item["cohort"]]
         seed = item["settings"]["seed"]
-        log(
-            f"[{number}/{len(todo)}] cohort {item['cohort']} {item['row']} draw {item['draw']} "
-            f"(seed {seed}): {item['config'].ensemble_size} members, "
-            f"{item['config'].max_epochs} epochs",
-        )
-        entry, run, *rest = fit_fn(cohort, item["row"], item["roles"], item["config"], seed)
-        tables = rest[0] if rest else {}
+        if item["reuse"]:
+            log(
+                f"[{number}/{len(todo)}] cohort {item['cohort']} {item['row']} draw "
+                f"{item['draw']}: taken from the third study's fit in {reuse_dir}"
+            )
+            frame, run, tables = reuse_factors_fit(item, reuse_dir)
+            entry = None
+            counts["reused"] += 1
+        else:
+            if stops:
+                used = check_budget(fit_seconds_used(out, study=study), budget_hours)
+                log(f"    GPU hours already used: {used:.2f} of {budget_hours:g}")
+            log(
+                f"[{number}/{len(todo)}] cohort {item['cohort']} {item['row']} draw "
+                f"{item['draw']} (seed {seed}): {item['config'].ensemble_size} members, "
+                f"{item['config'].max_epochs} epochs",
+            )
+            if spec.stop_rules:
+                got = fit_or_report(item, fit_fn, cohort, spec, log=log)
+                if got is None:
+                    counts["failed"] += 1
+                    continue
+                entry, run, tables = got
+            else:
+                entry, run, *rest = fit_fn(cohort, item["row"], item["roles"], item["config"], seed)
+                tables = rest[0] if rest else {}
+            frame = reserves_frame(entry)
         if set(tables) != set(spec.tables):
             raise ValueError(
                 f"the {spec.name} study saves the tables {list(spec.tables)} with each fit but "
                 f"fit_fn returned {sorted(tables)}"
             )
-        frame = reserves_frame(entry)
-        if save_entries:
+        if answers:
+            run = {**run, "stop_answers": answers}
+        if save_entries and entry is not None:
             save_entry(entry, item["pkl"])
         save_reserves(frame, item["reserves"])
         for name, table in tables.items():
@@ -1307,7 +1793,84 @@ def run_study(
         actual = cohort.actual.loc[board.index, "actual_reserve"]
         pool = float(np.abs(board["reserve"] - actual).sum() / actual.sum())
         log(f"    this draw's Pool_APE on the {len(board)} scored companies: {pool:.4f}")
-    return {"fitted": len(todo), "skipped": len(done)}
+        if stops and is_first_fit(item):
+            check_first_fit(float(run.get("fit_seconds", 0.0)), answer=first_fit_answer)
+    summary = {"fitted": len(todo) - counts["failed"] - counts["reused"], "skipped": len(done)}
+    counts["failed"] += earlier_failures
+    # the earlier studies' summary keeps exactly its two keys
+    return {**summary, **counts} if spec.stop_rules else summary
+
+
+def library_versions() -> dict:
+    """The versions of the libraries whose differences could change a data hash or a number.
+
+    The third study's data hashes differed between Colab and the laptop and the record held no
+    version of pandas, numpy or duckdb to say why; the fourth study's records name them.
+    """
+    import duckdb
+
+    return {"pandas": pd.__version__, "numpy": np.__version__, "duckdb": duckdb.__version__}
+
+
+def prefit_checks(cohorts: dict, *, log=print) -> dict:
+    """The pre-registered checks that fit nothing and can be made on the runtime itself.
+
+    * the pairs selected at each valuation date equal the pre-registration's counts, for every
+      cohort asked for;
+    * the revised network has 18,153 parameters and no per-count table, the third study's
+      18,537 with it, and the same seed gives both the same starting value for every
+      parameter they share (the table's draws are still consumed);
+    * the five channels the paid-only row zeroes are the incurred and case reserve ones.
+
+    Raises ``SystemExit`` naming what differs; returns what was measured.
+    """
+    import torch
+
+    from ibnr.gallery.nn.tlrn.network import TLRNNetwork
+    from ibnr.kernels.nn_features import FEATURE_NAMES, N_FEATURES_PAID_ONLY
+
+    found: dict = {"pairs": {}}
+    for name, cohort in cohorts.items():
+        sets = valuation_pairs(cohort)
+        got = {v: len(sets[v]) for v in VALUATIONS}
+        found["pairs"][name] = got
+        log(f"prefit check: cohort {name} pairs by valuation date {got}")
+        if got != EXPECTED_PAIRS_BY_DATE[name]:
+            raise SystemExit(
+                f"cohort {name}: pairs by valuation date {got} differ from the pre-registration's "
+                f"{EXPECTED_PAIRS_BY_DATE[name]}"
+            )
+
+    def build(config):
+        torch.manual_seed(11)
+        return TLRNNetwork(
+            config, n_lines=4, n_lag=10, n_feat=13, n_origin=10, head_init=torch.zeros(4, 10)
+        )
+
+    revised = build(tlrn_colab.companion_revised_config())
+    final = build(tlrn_colab.companion_final_config())
+    counts = {
+        "revised": sum(p.numel() for p in revised.parameters()),
+        "final": sum(p.numel() for p in final.parameters()),
+    }
+    found["parameters"] = counts
+    log(f"prefit check: parameters per network {counts}")
+    if counts != EXPECTED_PARAMETERS:
+        raise SystemExit(f"parameters per network {counts}, expected {EXPECTED_PARAMETERS}")
+    if "nobs_emb.weight" in revised.state_dict() or "nobs_emb.weight" not in final.state_dict():
+        raise SystemExit("the per-count table is in the revised network or missing from the final")
+    final_state = final.state_dict()
+    unequal = [k for k, v in revised.state_dict().items() if not torch.equal(v, final_state[k])]
+    if unequal:
+        raise SystemExit(f"shared parameters start at other values for one seed: {unequal[:3]}")
+    zeroed = FEATURE_NAMES[N_FEATURES_PAID_ONLY:]
+    found["paid_only_channels"] = list(zeroed)
+    log(f"prefit check: the paid-only row zeroes {list(zeroed)}")
+    if len(zeroed) != 5 or not all(("incurred" in n or "case" in n) for n in zeroed):
+        raise SystemExit(
+            f"the paid-only channels are not the five incurred and case ones: {zeroed}"
+        )
+    return found
 
 
 def main(argv=None) -> int:
@@ -1318,7 +1881,8 @@ def main(argv=None) -> int:
         choices=sorted(STUDIES),
         default="accident_year",
         help="accident_year: the first study; factor_head: the second (cohorts A, B and C); "
-        "companion_final: the third (cohorts B and C)",
+        "companion_final: the third (cohorts B and C); companion_revised: the fourth "
+        "(cohorts B and C)",
     )
     parser.add_argument(
         "--cohort",
@@ -1338,6 +1902,29 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--threads", type=int, default=0, help="torch threads (0: leave as is)")
     parser.add_argument("--quiet", action="store_true", help="no progress line every 100 epochs")
+    parser.add_argument(
+        "--reuse-factors-from",
+        type=Path,
+        default=None,
+        help="the fourth study only: take the network-off row from the third study's fits in "
+        "this folder instead of training it (allowed by the identity check in the "
+        "pre-registration's amendment); ignored by --smoke, which trains every row",
+    )
+    parser.add_argument(
+        "--answered-first-fit",
+        default=None,
+        metavar="ANSWER",
+        help="the fourth study only: Ethan's answer to the 25-minute stop, in his words; the run "
+        "goes past that stop and the answer is written into every fit record saved after it",
+    )
+    parser.add_argument(
+        "--answered-budget-hours",
+        type=float,
+        default=None,
+        metavar="HOURS",
+        help="the fourth study only: the total GPU hours Ethan agreed to after the budget stop; "
+        "the run stops there instead, and the number goes into every fit record saved after it",
+    )
     args = parser.parse_args(argv)
 
     spec = get_study(args.study)
@@ -1348,6 +1935,15 @@ def main(argv=None) -> int:
         parser.error(f"--rows must be a comma list from {list(spec.rows)}, got {args.rows!r}")
     if args.draws < 1:
         parser.error("--draws must be at least 1")
+    if args.reuse_factors_from is not None and spec.version != COMPANION_REVISED_VERSION:
+        parser.error("--reuse-factors-from is for --study companion_revised")
+    answered = args.answered_first_fit is not None or args.answered_budget_hours is not None
+    if answered and not spec.stop_rules:
+        parser.error("--answered-first-fit and --answered-budget-hours are for a study with stops")
+    if args.answered_first_fit is not None and not args.answered_first_fit.strip():
+        parser.error("--answered-first-fit needs Ethan's answer as its text")
+    if args.answered_budget_hours is not None and args.answered_budget_hours <= BUDGET_HOURS:
+        parser.error(f"--answered-budget-hours must be above the registered {BUDGET_HOURS:g}")
     members = args.members or (SMOKE_MEMBERS if args.smoke else DEFAULT_MEMBERS)
     choice = args.cohort or "all"
     names = {"both": ["A", "B"], "all": list(spec.cohorts)}.get(choice, [choice])
@@ -1359,6 +1955,11 @@ def main(argv=None) -> int:
         )
     if args.cas_dir is not None and "B" not in names:
         parser.error("--cas-dir is for cohort B; add --cohort B or --cohort both")
+    if args.rows:
+        try:
+            check_row_request(spec, rows, names, args.draws)
+        except ValueError as error:
+            parser.error(str(error))
 
     import jax
     import torch
@@ -1385,6 +1986,8 @@ def main(argv=None) -> int:
         )
         print(cohorts[name].description, flush=True)
     print(f"cohorts built in {time.perf_counter() - t0:.0f}s")
+    if spec.stop_rules:
+        prefit_checks(cohorts)
 
     device = jax.devices()[0]
 
@@ -1394,7 +1997,12 @@ def main(argv=None) -> int:
         if spec.per_valuation:
             # the third study: a protocol per valuation date, each on its own companies
             entry = fit_valuations(
-                cohort, config, seed, backend="jax", show_progress=not args.quiet
+                cohort,
+                config,
+                seed,
+                backend="jax",
+                show_progress=not args.quiet,
+                paid_only=bool(roles.get("paid_only", False)),
             )
         else:
             # the second study keeps every valuation date's members while the fit runs
@@ -1422,6 +2030,8 @@ def main(argv=None) -> int:
             "cohort_source": cohort.source,
             "python": sys.version.split()[0],
             "platform": platform.platform(),
+            **library_versions(),
+            "paid_only": bool(roles.get("paid_only", False)),
         }
         if spec.per_valuation:
             run["pairs_by_valuation"] = {str(v): len(p) for v, p in entry.pairs.items()}
@@ -1441,9 +2051,17 @@ def main(argv=None) -> int:
         fit_fn=fit_fn,
         save_entries=not args.no_entries,
         study=args.study,
+        reuse_dir=None if args.smoke else args.reuse_factors_from,
+        first_fit_answer=args.answered_first_fit,
+        budget_hours=args.answered_budget_hours or BUDGET_HOURS,
     )
     write_manifest(args.out, smoke=args.smoke, study=args.study)
-    print(f"done: {summary['fitted']} fitted, {summary['skipped']} already saved", flush=True)
+    extra = ""
+    if spec.stop_rules:
+        extra = f", {summary['reused']} taken from the third study, {summary['failed']} failed"
+    print(
+        f"done: {summary['fitted']} fitted, {summary['skipped']} already saved{extra}", flush=True
+    )
     return 0
 
 

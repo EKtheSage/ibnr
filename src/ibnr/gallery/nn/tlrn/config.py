@@ -126,6 +126,13 @@ class TLRNConfig:
     #: the visible-lag table keeps its twelve rows and is read at ``lk`` rather than
     #: ``lk + 1``, as the companion reads it
     compact_embeddings: bool = False
+    #: add the per-count ("lags observed") embedding to every token, one more learned vector
+    #: per number of development lags already seen. ``False`` is the companion's revised
+    #: model: the table is not a parameter and is not read, while its starting draws are
+    #: still consumed from the seed's random stream, so every other parameter starts at the
+    #: same values as under ``True``. The count still reaches the network as feature channel
+    #: ``fraction of lags observed``
+    maturity_embedding: bool = True
 
     # loss: the accident-year/line absolute percentage error, a pooled bias
     # penalty, and a squared-error term on the scale the ratios live on
@@ -230,6 +237,13 @@ class TLRNConfig:
         }
         return cls.accident_year_variant(**{**choices, **overrides})
 
+    @classmethod
+    def companion_revised_variant(cls, **overrides) -> TLRNConfig:
+        """The companion's revised model: :meth:`companion_final_variant` without the
+        per-count embedding (``maturity_embedding=False``, 18,153 parameters), nothing else
+        different. ``overrides`` replace any choice."""
+        return cls.companion_final_variant(**{"maturity_embedding": False, **overrides})
+
     @property
     def n_kept(self) -> int:
         """How many members are averaged: ``keep``, or all of them when it is ``None``."""
@@ -286,7 +300,7 @@ class TLRNConfig:
                 )
         if not isinstance(self.refit, bool):
             raise ValueError(f"refit must be True or False, got {self.refit!r}")
-        for name in ("empty_query_bias", "compact_embeddings"):
+        for name in ("empty_query_bias", "compact_embeddings", "maturity_embedding"):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"{name} must be True or False, got {getattr(self, name)!r}")
         if self.empty_query_bias and not (

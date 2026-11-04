@@ -19,6 +19,27 @@ corrected decision 8 - and, from 0.7.2,
 From 0.7.2 the minor number is kept for milestones: additions and fixes ship as
 patch releases, and 0.8 comes when the roadmap's goals are done.
 
+## Unreleased
+
+### `tlrn`: `maturity_embedding`, `companion_revised_variant()` and `paid_only`
+
+* `TLRNConfig.maturity_embedding` (default `True`, a non-boolean is refused by name). With
+  `False` the per-count ("lags observed") embedding table is not a parameter and is not added
+  in the forward pass, on the torch and the jax backends alike. The table's starting draws are
+  still taken from the seed's random stream at the same point, so every other parameter
+  starts at the same value as with `True`. Feature channel 6 (`fraction of lags observed`)
+  stays. Default fits are unchanged.
+* `TLRNConfig.companion_revised_variant(**overrides)`: `companion_final_variant()` with only
+  `maturity_embedding=False` (18,153 parameters against 18,537).
+* `TLRN.fit(paid_only=True)` and `tlrn_features(paid_only=True)`: keep all 13 inputs but set
+  the five incurred and case reserve channels (`FEATURE_NAMES[8:]`) to zero, the companion's
+  paid-only ablation. It needs `incurred_field` and `case_field`; leaving them out still gives
+  the 8-input network, unchanged.
+* A `TLRNNetwork` pickled by ibnr 0.7.6 or earlier still runs, with its per-count table.
+* `refit=True` with a member that never had a finite validation score now raises
+  `NoFiniteValidation`, a `ValueError` subclass in `ibnr.gallery.nn.tlrn.model`, with the
+  same message as before.
+
 ## 0.7.6 - 2026-10-25
 
 A patch release that adds two protocol options to `tlrn`, a preset that bundles them with
