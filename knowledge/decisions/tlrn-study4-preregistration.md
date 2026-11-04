@@ -659,3 +659,58 @@ None of these is decided in this note; each has a stated default.
 [^diff]: The diff between the companion's commits f50871d and b30ef02, read by a delegated worker
 
 **Accepted 2026-11-03.** Ethan accepted this note as written.
+
+# Amendment before any fit (2026-11-03): the identity check, the evaluator's hash and the code
+
+Written after the code exists and before any real fit. The original text above is unchanged.
+No decision rule, threshold, target or width above was changed.
+
+**1. The factors-row identity check, run.** The note said the third study's `tlrn_cf_factors`
+fits may stand in for `tlrn_cr_factors` if the two configurations give the same answer. The check
+was run with the new code: cohorts B (84 companies) and C (83 companies) from the pinned mart,
+valuation 10, 2 members, 10 epochs, the seed that `date_seed(11, 10)` gives, `factors_only=True`,
+through `fit_valuation`, for `companion_final_config()` and for the same configuration with
+`maturity_embedding=False`, on torch (CPU) and on jax (CPU). The valuations table (all four
+forecast columns) and the members table were bit-identical (`np.array_equal`, maximum absolute
+difference 0.0) in all four cases. With the network off the per-count table is not part of the
+model, so the two configurations are the same model; this is what the check shows. **Decision:**
+the third study's `tlrn_cf_factors` fits are reused for `tlrn_cr_factors` (open item 5 above,
+default taken). The runner takes them with `--reuse-factors-from` and writes a record with this
+study's own settings, `fit_seconds` 0.0 and the source record, version, environment and seconds
+under `run["reused_from"]`; it refuses a source fit whose study, row, cohort, draw, seed,
+publish, valuation dates or per-date pair hashes differ, or whose configuration differs in
+anything but `maturity_embedding`. What the check does not show: it was a ten-epoch, two-member
+CPU run, and the third study's fits ran on a GPU, whose floating-point sums can differ in the
+last bits; the two are the same model, not the same bits on that hardware.
+
+**2. The evaluator's docstring.** `scripts/tlrn_study4_eval.py` repeats this note's rules in its
+module docstring. The sha256 of that docstring (UTF-8, as `ast.get_docstring(..., clean=False)`
+returns it) is
+`7357336acaf0f854b35d3b547c47f360b9c2964ec4ee6c7b7607603449fba029`, pinned in
+`tests/test_tlrn_study4_eval.py`. It carries one wording change from this note: the rows without
+a verdict are called "variant rows" (the note uses the banned word family).
+
+**3. Choices the code made where the note left a detail open.**
+
+* *The version pin.* Only this study pins ibnr 0.7.7 (`COMPANION_REVISED_PINNED_IBNR`). The
+  module constant `PINNED_IBNR` stays 0.7.6 for the third study, whose notebook, how-to and
+  pin tests are history. The notebook stops if the installed version is not 0.7.7.
+* *The stops.* The runner applies both stops itself (8 GPU hours before every fit, counting
+  trained fits only; 25 minutes for draw 0 of the main row on C, checked the moment it is saved
+  and again on a rerun). A fit with a non-finite forecast or stored epoch is rerun once with the
+  same seed and then reported in a `FAILED_<fit>.txt` file; a failed single-draw row delays
+  nothing; a failed main-row or factors fit makes its cohort's verdict provisional. A smoke run
+  has no stops.
+* *Single-draw rows* are planned once, at draw 0 on B. An explicit request for one with more
+  than one draw, or on C, is refused by name.
+* *Reading rule (5).* "Small compared with the third study's draw spread" is made exact as: the
+  absolute valuation-10 difference of the draw averages is no larger than the width of the range
+  of the third study's ten refit-blend valuation-10 Pool_APE values. The third study's published
+  spreads (0.53 and 1.95 points) are printed beside it.
+* *The companion's figures for the variant rows* exist only as means over the four dates (the
+  note's table), so the table prints those beside ours and no valuation-10 figure of his.
+* *The data hash.* The evaluator prints the recorded and the built hash for every row and does
+  not stop on a difference unless `--strict-data-hash` is given; each record names the versions
+  of pandas, numpy and duckdb, which the third study's records did not.
+* *Environment on a reused fit.* The evaluator prints the source fit's own environment and
+  marks the row as taken from the third study.
