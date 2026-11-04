@@ -737,7 +737,8 @@ company out.)
 evaluator's own files are results as well as the results note. When the reading applies, the
 evaluator prints the report and writes no report, verdicts or tables to `--out` (a benchmark cache
 may be there), and exits with code 3. After Ethan has answered, `--stop-answered "<his answer>"`
-writes them, and `verdicts.json` carries the answer. A smoke run has no stops, as above.
+writes them, and `verdicts.json` carries the answer. Given when no reading asked for an answer,
+that argument is refused, since nothing would record it. A smoke run has no stops, as above.
 
 **4. "Rerun once" holds across passes.** A `FAILED_<fit>.txt` file says that fit has had its one
 rerun, so a later pass counts it as failed and does not fit it again. Before this the notebook's

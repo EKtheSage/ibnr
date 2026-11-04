@@ -1658,6 +1658,11 @@ def main(argv=None) -> int:
         for name, value in verdicts.items()
         if not args.smoke and (value.get("replication") or {}).get("stop_and_ask")
     ]
+    if args.stop_answered and not must_ask:
+        raise SystemExit(
+            "--stop-answered was given but no reading asked for an answer, so nothing would "
+            "record it; run again without it"
+        )
     held = bool(must_ask) and not args.stop_answered
     if args.out is not None and not held:
         for cohort, result in finished:

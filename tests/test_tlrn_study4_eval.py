@@ -803,6 +803,16 @@ def test_a_result_that_needs_no_answer_records_none(tmp_path, monkeypatch, cohor
     assert "stop_answered" not in json.loads((out / "verdicts.json").read_text())
 
 
+def test_an_answer_with_no_stop_to_answer_is_refused(tmp_path, monkeypatch, cohort, sets):
+    populate(tmp_path / "fits", cohort, sets)
+    evaluate_for_main(monkeypatch, cohort)
+    out = tmp_path / "out"
+    argv = ["--fits", str(tmp_path / "fits"), "--cohort", "B", "--out", str(out)]
+    with pytest.raises(SystemExit, match="no reading asked for an answer"):
+        ev.main([*argv, "--stop-answered", "go on"])
+    assert not (out / "report.txt").exists()
+
+
 def test_a_draw_average_in_the_unread_band_takes_the_label_rule_and_does_not_stop():
     for m in (2.4, 2.86):
         got = reading(m)
