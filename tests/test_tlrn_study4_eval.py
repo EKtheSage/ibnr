@@ -21,6 +21,7 @@ import hashlib
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -818,3 +819,34 @@ def test_a_draw_average_in_the_unread_band_takes_the_label_rule_and_does_not_sto
         got = reading(m)
         assert got["stop"] is False
         assert any("without falling in a band" in line for line in got["lines"])
+
+
+# -- what the third round of review found -----------------------------------------------------
+
+
+def test_the_selection_table_carries_the_expected_company_counts_on_both_cohorts(sets):
+    for name in ("B", "C"):
+        table, _ = ev.selection_report(SimpleNamespace(name=name), sets)
+        got = dict(zip(table["valuation"], table["companies_expected"], strict=True))
+        assert got == ev.EXPECTED_COMPANIES[name]
+
+
+def test_p0s_spread_is_over_all_the_third_studys_draws_not_only_the_common_ones(
+    tmp_path, monkeypatch, cohort, sets
+):
+    mine, third = tmp_path / "mine", tmp_path / "third"
+    populate(mine, cohort, sets, draws=[0, 1])
+    for draw in range(10):
+        errors = {
+            "predicted": 0.10 + 0.01 * draw,
+            "predicted_selected": 0.2,
+            "predicted_net": 0.13,
+            "predicted_net_selected": 0.23,
+        }
+        write_third(third, cohort, ev3.MAIN_ROW, draw, errors, sets=sets)
+    _, result = run_synthetic(
+        monkeypatch, mine, cohort, cache_dir=tmp_path / "cache", third_study_fits=third
+    )
+    assert result["p0"][ev.REFIT]["draws"] == [0, 1]
+    assert result["p0_third_spread"] == pytest.approx(9.0, abs=1e-6)  # 10% to 19%, not 10% to 11%
+    assert result["p0_third_spread_draws"] == 10

@@ -371,7 +371,6 @@ presence_mask = ev3.presence_mask
 wide = ev3.wide
 draw_arrays = ev3.draw_arrays
 date_companies = ev3.date_companies
-selection_report = ev3.selection_report
 scored_companies = ev3.scored_companies
 independent_mack = ev3.independent_mack
 check_members = ev3.check_members
@@ -586,6 +585,13 @@ def p0_arm(
         "smaller_in_fourth": int((err_new < err_old).sum()),
         "companies": int(inside.sum()),
     }
+
+
+def selection_report(cohort, sets: dict) -> tuple[pd.DataFrame, list[str]]:
+    """The third study's table, with this study's expected company counts on both cohorts."""
+    table, problems = ev3.selection_report(cohort, sets)
+    expected = EXPECTED_COMPANIES.get(cohort.name, {})
+    return table.assign(companies_expected=table["valuation"].map(expected)), problems
 
 
 def third_study_draws(fits3: list, fits4: list, companies, mask) -> tuple[dict, dict, list[int]]:
@@ -1091,8 +1097,11 @@ def evaluate_cohort(
                         arm: p0_arm(new[arm], old[arm], actual, mask, counts, idx_ex, keep10, ids)
                         for arm in P0_ARMS
                     }
-                    third_per = np.array([pool_ape_v(x, actual, mask)[LAST_I] for x in old[REFIT]])
+                    # all of the third study's draws, not only those the fourth study has yet
+                    third_all = draw_arrays(fits3, companies, ARM_COLUMN[REFIT], mask)
+                    third_per = np.array([pool_ape_v(x, actual, mask)[LAST_I] for x in third_all])
                     result["p0_third_spread"] = float(third_per.max() - third_per.min()) / POINT
+                    result["p0_third_spread_draws"] = len(fits3)
                     p0_note = ""
         result["p0_note"] = p0_note
 
@@ -1221,7 +1230,8 @@ def _p0_lines(result: dict) -> list[str]:
     spread = result.get("p0_third_spread")
     if spread is not None:
         lines.append(
-            f"   the third study's own draw-to-draw spread of the refit blend at valuation 10: "
+            f"   the third study's own draw-to-draw spread of the refit blend at valuation 10, "
+            f"over its {result['p0_third_spread_draws']} draws: "
             f"{spread:.2f} points (a difference smaller than this is not interpretable)"
         )
     if result["cohort"] == "B":

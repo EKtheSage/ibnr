@@ -779,3 +779,65 @@ run until they are deleted: this refusal is deliberate and stays, and the notebo
 **Looked at and left.** Saved fits under another ibnr version would be planned again, but the
 notebook stops on any version but 0.7.7 before any fit and the evaluator refuses one draw under two
 versions by name, so no such run can reach a result.
+
+# Third amendment before any fit (2026-11-03): what a further two reviews of the code found
+
+Written after two more independent reviews and before any real fit. The text above is unchanged.
+No decision rule, threshold, target or width above was changed, and the evaluator's docstring and
+its sha256 are unchanged. Items 1 to 3 bring the code to what the note already says; items 4 and
+5 settle what the note left to the runner; item 6 concerns the library, not the study.
+
+**1. "A member with a non-finite loss stops its fit".** The runner looked only at what a fit saved,
+and that misses the two ways this happens. A member whose loss goes non-finite after a check has
+stored its weights keeps those finite weights, so its forecasts are finite and nothing showed it. A
+member with no finite check at all made the entry raise before the refit, and on a row with a
+verdict that exception ended the run, with no rerun. Now the members table has a column
+`non_finite_loss_epochs`, the epochs of each member's first run whose training loss was not finite,
+and a fit with any is rerun once with the same seed like any other non-finite fit; the entry raises
+a named `NoFiniteValidation`, a `ValueError`, and the runner treats it the same way. The refit's
+own loss needs no count, because the refit keeps its last weights, so a bad step there reaches the
+forecasts, which were already checked. **What "stops" means here:** a jax fit is compiled, so the
+member is not stopped at the bad step; the fit runs on and is judged when it ends. A rerun therefore
+costs up to one fit's time, and that time counts toward the budget.
+
+**2. P0's spread.** The spread that the first amendment's reading rule (5) uses is the range of the
+third study's ten refit-blend values. The evaluator took it over the draws the two studies share,
+which is narrower while the fourth study has fewer draws. It now takes every third-study draw it is
+given, and prints how many.
+
+**3. The selection table.** The evaluator's table read the third study's expected company counts,
+which name only cohort B, so the column was empty on C4 (the line that compares the counts was
+right). It now carries the counts above on both cohorts.
+
+**4. The data hash on a resume.** "The data hash, and the versions to record" says a data hash that
+differs does not stop the study, but the runner refused a saved fit on any difference in its
+settings, the data hash included. The hash is taken from the text of a table, so a change of pandas
+or numpy between Colab sessions would have refused every saved fit. For this study a saved fit that
+differs in `data_hash` alone is now kept, and the run prints both values; each record keeps its own
+hash and the evaluator still reports it and still compares the anchors, premiums, lines, companies
+and per-date pair hashes. Any other difference is refused as before, and the earlier studies are
+unchanged.
+
+**5. The 25-minute stop on a later run.** The stop was read again only by a run that planned cohort
+C, so a run of B4 alone went on past an unanswered stop. Every run of this study now reads draw 0 of
+the main row on C from the folder, whatever it was asked to fit.
+
+**6. Networks saved by an earlier ibnr.** A network pickled by ibnr 0.7.6 or earlier has no
+`maturity` attribute, and the new forward pass read one. Such a network always has the table, so
+the class now says `maturity = True` by default. Checked on a real pickle made under the 0.7.6
+source: it loads on this branch and gives the same forecast to the last bit.
+
+**Looked at and left.**
+
+* *The budget stop at exactly 8 hours.* The check runs before a fit, so at exactly 8 hours the next
+  fit is the one that would pass 8; stopping there is what the note asks.
+* *The release.* The notebook cannot run until 0.7.7 and its tag exist, and the note says so. The
+  tag has to be cut after these commits, because the runner scripts Colab fetches are the tag's.
+* *A single-draw row that raises.* It is reported as failed with no rerun, as the first amendment
+  says, whatever the cause; the rerun in item 4 of the second amendment is for non-finite fits. So
+  a failure file on such a row can follow one attempt, and whether a file written after a passing
+  GPU error is deleted stays under that item: it is for Ethan. A disconnect in the middle of a
+  rerun loses the count of the first attempt as well as its seconds; item 5 of the second amendment
+  already accepts the seconds, and the count matters only if a fit is non-finite and the session
+  drops during its rerun.
+

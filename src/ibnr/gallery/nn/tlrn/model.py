@@ -384,6 +384,10 @@ def _load_jax_backend():
     return jax_backend
 
 
+class NoFiniteValidation(ValueError):
+    """A member never gave a finite validation score, so the refit has no epoch to stop at."""
+
+
 @register
 class TLRN(GalleryEntry):
     """The transformer loss reserving network (see card.md).
@@ -771,7 +775,7 @@ class TLRN(GalleryEntry):
             epochs = run["selection"]["best_epoch"]
             if epochs.isna().any():
                 lost = [int(m) for m in run["selection"].index[epochs.isna()]]
-                raise ValueError(
+                raise NoFiniteValidation(
                     f"refit=True retrains each member to the epoch its validation chose, and "
                     f"member(s) {lost} of protocol {i} never produced a finite validation "
                     "score, so there is no epoch to stop at"

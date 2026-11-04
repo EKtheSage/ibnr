@@ -35,6 +35,10 @@ patch releases, and 0.8 comes when the roadmap's goals are done.
   the five incurred and case reserve channels (`FEATURE_NAMES[8:]`) to zero, the companion's
   paid-only ablation. It needs `incurred_field` and `case_field`; leaving them out still gives
   the 8-input network, unchanged.
+* A `TLRNNetwork` pickled by ibnr 0.7.6 or earlier still runs, with its per-count table.
+* `refit=True` with a member that never had a finite validation score now raises
+  `NoFiniteValidation`, a `ValueError` subclass in `ibnr.gallery.nn.tlrn.model`, with the
+  same message as before.
 
 ## 0.7.6 - 2026-10-25
 

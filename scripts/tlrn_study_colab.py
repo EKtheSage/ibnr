@@ -54,7 +54,8 @@ reads (valuation dates 6, 7, 8 and 10 are the model's own: 10 is the last known 
   company columns: ``unit``, ``cutoff``, ``horizon``, ``predicted``, ``actual``, ``size``,
   ``residual_scale``, ``standardised_error``, ``company_code``;
 * ``_members.csv``: one row per (valuation, member): ``best_epoch``, ``epochs_run``, the two
-  validation errors and the blend weight ``alpha``.
+  validation errors, the blend weight ``alpha`` and, from the third study's table on,
+  ``non_finite_loss_epochs`` (epochs of the first run whose training loss was not finite).
 
 The valuation tables need each retrained valuation date's members, which the fitted entry does
 not keep (only the final fit's). The runner takes them by wrapping the entry's own
@@ -86,7 +87,8 @@ numpy and duckdb (the third study's data hashes differed between Colab and the l
 reason nobody could check). The pre-registered stops are in the runner: after the main row's
 draw 0 on cohort C takes over 25 minutes, or when the saved fits add up to 8 GPU hours, the
 run stops and asks (:func:`check_budget`, :func:`check_first_fit`); a fit with a non-finite
-forecast is rerun once with the same seed and, if it recurs, reported as failed and left out;
+forecast or a member with a non-finite training loss is rerun once with the same seed and, if it
+recurs, reported as failed and left out;
 a single-draw row that fails is reported as failed and delays nothing. The network-off row
 may be taken from the third study's fits (``--reuse-factors-from``), which the pre-registration
 allows only if a small identity check passes (see its amendment). Rules:
@@ -101,6 +103,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 import pickle
 import platform
@@ -164,6 +167,8 @@ SINGLE_DRAW_COHORTS = ("B",)
 #: the stops that are pre-registered for the fourth study
 STOP_FIRST_FIT_SECONDS = 25 * 60
 BUDGET_HOURS = 8.0
+#: the members table's count of a member's epochs whose training loss was not finite
+NON_FINITE_LOSS = "non_finite_loss_epochs"
 #: the parameters per network the pre-registration expects, by whether the per-count table is in
 EXPECTED_PARAMETERS = {"revised": 18_153, "final": 18_537}
 #: pairs per valuation date the pre-registration expects, by cohort
@@ -747,7 +752,13 @@ def settings_differences(mine: dict, theirs: dict) -> list[str]:
 
 
 def saved_fit(
-    pkl: Path, record: Path, reserves: Path, settings: dict, tables: dict | None = None
+    pkl: Path,
+    record: Path,
+    reserves: Path,
+    settings: dict,
+    tables: dict | None = None,
+    *,
+    tolerate: tuple = (),
 ) -> dict | None:
     """The record of a finished fit made with exactly ``settings``, or None if there is none.
 
@@ -755,7 +766,7 @@ def saved_fit(
     fit made with OTHER settings is refused, not reused and not overwritten; so is a
     record whose reserves file (or any of the study's extra ``tables``) is gone, and files
     left with no record (an interruption between the writes), because nothing then says
-    what they were fitted with.
+    what they were fitted with. Settings named in ``tolerate`` may differ.
     """
     tables = tables or {}
     if not record.exists():
@@ -768,7 +779,11 @@ def saved_fit(
             )
         return None
     saved = json.loads(record.read_text(encoding="utf-8"))
-    differ = settings_differences(settings, saved.get("settings", {}))
+    differ = [
+        name
+        for name in settings_differences(settings, saved.get("settings", {}))
+        if name not in tolerate
+    ]
     if differ:
         raise SystemExit(
             f"{record.name} was fitted with different settings from this run's (they differ "
@@ -1011,6 +1026,12 @@ def date_tables(fitted: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
     )
     members = run["selection"].copy()
     members.insert(0, "valuation", v)
+    # the weights kept are from a check before any bad step, so nothing in the forecasts shows
+    # a member whose loss went non-finite later; the refit's own loss needs no count, because
+    # the refit keeps its last weights and a non-finite step would reach its forecasts
+    members[NON_FINITE_LOSS] = [
+        sum(not math.isfinite(r["train"]) for r in records) for records in run["history"]
+    ]
     return valuations, members
 
 
@@ -1351,9 +1372,13 @@ def plan_study(
     (:func:`registered_order`). A saved fit with other settings raises ``SystemExit`` here. Rows
     that apply only at draw 0 on some cohorts (the fourth study's) are left out elsewhere. With
     ``reuse_dir``, an item of the fourth study's network-off row has ``reuse`` set: it is taken
-    from the third study's fits in that folder instead of being trained.
+    from the third study's fits in that folder instead of being trained. For a study with
+    ``stop_rules`` a saved fit may differ in ``data_hash``, which is the text of a table and so
+    moves with the pandas and numpy of the session; the pre-registration says that alone does
+    not stop the study, and the item carries the saved value as ``saved_data_hash``.
     """
     spec = get_study(study)
+    tolerate = ("data_hash",) if spec.stop_rules else ()
     configs = {row: (roles, cfg) for row, roles, cfg in row_configs(members, smoke, study)}
     rows = list(dict.fromkeys(rows))  # a repeated row would train the same fit twice
     todo, done = [], []
@@ -1370,7 +1395,7 @@ def plan_study(
                     out, name, row, draw, smoke=smoke, version=version
                 )
                 tables = table_paths(record, spec.tables)
-                saved = saved_fit(pkl, record, reserves, settings, tables)
+                saved = saved_fit(pkl, record, reserves, settings, tables, tolerate=tolerate)
                 item = {
                     "cohort": name,
                     "row": row,
@@ -1383,6 +1408,7 @@ def plan_study(
                     "reserves": reserves,
                     "tables": tables,
                     "reuse": reuse_dir is not None and row == REVISED_FACTORS_ROW and not smoke,
+                    "saved_data_hash": (saved or {}).get("settings", {}).get("data_hash"),
                 }
                 (done if saved is not None else todo).append(item)
     if spec.stop_rules:
@@ -1472,7 +1498,8 @@ def non_finite(frame: pd.DataFrame, tables: dict) -> list[str]:
     """Names of the saved quantities that hold a missing or infinite value where one is a defect.
 
     The forecast columns of the valuations table, the reserve column, and the members table's
-    stored epochs and blend weight. (``actual`` is empty at the last valuation by design.)
+    stored epochs and blend weight, and any member with a non-finite training loss, whose kept
+    weights can be finite. (``actual`` is empty at the last valuation by design.)
     """
     bad = []
     checks = [("reserves.reserve", frame["reserve"])]
@@ -1489,6 +1516,8 @@ def non_finite(frame: pd.DataFrame, tables: dict) -> list[str]:
     for name, values in checks:
         if not np.isfinite(np.asarray(values, dtype=float)).all():
             bad.append(name)
+    if members is not None and members.get(NON_FINITE_LOSS, pd.Series(dtype=int)).any():
+        bad.append(f"members.{NON_FINITE_LOSS}")
     return bad
 
 
@@ -1500,13 +1529,17 @@ def failure_path(out: Path, item: dict) -> Path:
 def fit_or_report(item: dict, fit_fn, cohort, spec: Study, *, log=print):
     """Run ``fit_fn`` for one item; ``(entry, run, tables)`` or ``None`` for a reported failure.
 
-    A fit whose forecasts or stored epochs are not finite is rerun ONCE with the same seed; if
-    that recurs, it is reported as failed and left out (its cohort's verdict is then provisional,
+    A fit whose forecasts or stored epochs are not finite, with a member whose training loss was
+    not finite, or with a member that never had a finite check (the entry's
+    ``NoFiniteValidation``, raised before the refit) is rerun ONCE with the same seed; if that
+    recurs, it is reported as failed and left out (its cohort's verdict is then provisional,
     which the evaluator prints). A single-draw row that raises is reported as failed too and
     delays nothing. Any other exception from a row that carries a verdict is a defect and
     propagates. The seconds of the attempts that gave no usable fit go into the failure file, or
     into the run record as ``failed_attempt_seconds``, because they are GPU time like any other.
     """
+    from ibnr.gallery.nn.tlrn.model import NoFiniteValidation
+
     seed = item["settings"]["seed"]
     single = item["row"] in spec.single_draw_rows
     reason = ""
@@ -1515,6 +1548,9 @@ def fit_or_report(item: dict, fit_fn, cohort, spec: Study, *, log=print):
         started = time.perf_counter()
         try:
             entry, run, *rest = fit_fn(cohort, item["row"], item["roles"], item["config"], seed)
+        except NoFiniteValidation as error:
+            lost += time.perf_counter() - started
+            reason = f"non-finite training: {error}"
         except Exception as error:
             if not single:
                 raise
@@ -1522,14 +1558,15 @@ def fit_or_report(item: dict, fit_fn, cohort, spec: Study, *, log=print):
             reason = f"{type(error).__name__}: {error}"
             log(f"    {item['row']} failed ({reason}); reported, nothing waits for it")
             break
-        tables = rest[0] if rest else {}
-        bad = non_finite(reserves_frame(entry), tables)
-        if not bad:
-            if lost:
-                run = {**run, "failed_attempt_seconds": round(lost, 1)}
-            return entry, run, tables
-        lost += float(run.get("fit_seconds", time.perf_counter() - started))
-        reason = f"non-finite {', '.join(bad)}"
+        else:
+            tables = rest[0] if rest else {}
+            bad = non_finite(reserves_frame(entry), tables)
+            if not bad:
+                if lost:
+                    run = {**run, "failed_attempt_seconds": round(lost, 1)}
+                return entry, run, tables
+            lost += float(run.get("fit_seconds", time.perf_counter() - started))
+            reason = f"non-finite {', '.join(bad)}"
         if attempt == 1:
             log(f"    {reason}; rerunning once with the same seed {seed}")
         else:
@@ -1650,7 +1687,8 @@ def run_study(
 
     For a study with ``stop_rules`` (the fourth) and outside a smoke run: the saved seconds are
     checked against the 8 GPU hours before every fit, the main row's draw 0 on cohort C is
-    checked against 25 minutes the moment it is saved (and again at the start of a later run),
+    checked against 25 minutes the moment it is saved (and again at the start of every later
+    run in the folder, whichever cohorts that run asks for),
     a fit with a non-finite forecast is rerun once and then reported (:func:`fit_or_report`),
     and with ``reuse_dir`` the network-off row is taken from the third study's fits
     (:func:`reuse_factors_fit`). A fit with a ``FAILED_*.txt`` file has had its one rerun, so a
@@ -1673,6 +1711,11 @@ def run_study(
     )
     for item in done:
         log(f"cohort {item['cohort']} {item['row']} draw {item['draw']}: already saved, skipped")
+        if item["saved_data_hash"] != item["settings"]["data_hash"]:
+            log(
+                f"    its data hash is {item['saved_data_hash']}, this session's is "
+                f"{item['settings']['data_hash']}; the evaluator reports the difference"
+            )
     earlier_failures = 0
     if spec.stop_rules:
         to_fit = []
@@ -1695,10 +1738,11 @@ def run_study(
     if stops and budget_hours != BUDGET_HOURS:
         answers["budget_hours"] = budget_hours
     if stops:
-        for item in done:
-            if is_first_fit(item):
-                seconds = json.loads(item["record"].read_text("utf-8")).get("run", {})
-                check_first_fit(float(seconds.get("fit_seconds", 0.0)), answer=first_fit_answer)
+        # from the folder, not from this run's plan: a run of cohort B alone is still stopped
+        for record in collect_records(out, smoke=False, study=study).values():
+            if is_first_fit(record["settings"]):
+                seconds = float(record.get("run", {}).get("fit_seconds", 0.0))
+                check_first_fit(seconds, answer=first_fit_answer)
     counts = {"failed": 0, "reused": 0}
     for number, item in enumerate(todo, 1):
         cohort = cohorts[item["cohort"]]

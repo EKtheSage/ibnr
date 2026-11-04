@@ -136,6 +136,11 @@ NOT_PROMISED = {
         "Schedule P mart for the benchmarks, and imports tlrn_study2_eval.py and "
         "tlrn_study_colab.py, whose own entries are listed above."
     ),
+    "tlrn_study4_eval.py": (
+        "the fourth study's evaluator, a Colab result reader: it reads the fits the study's "
+        "runner wrote and the third study's, which the image never has, and it imports "
+        "tlrn_study3_eval.py and tlrn_study_colab.py, whose own entries are listed here."
+    ),
     "conventional_examples.py": (
         "a loader with no command line, imported by the conventional benchmark "
         "driver rather than run on its own. Running it by itself computes "

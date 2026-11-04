@@ -30,6 +30,7 @@ from .test_tlrn_study3 import BUDGET, cohort_from, synthetic_cells  # noqa: E402
 
 NAME = "companion_revised"
 PREDICTED = ("predicted", "predicted_selected", "predicted_net", "predicted_net_selected")
+NON_FINITE_COLUMN = "non_finite_loss_epochs"
 
 
 def rows(members=20, smoke=False):
@@ -854,3 +855,182 @@ def test_main_refuses_an_answer_that_is_not_one(tmp_path, capsys, argv, message)
     with pytest.raises(SystemExit):
         study.main(["--out", str(tmp_path), *argv])
     assert message in capsys.readouterr().err
+
+
+# -- what the third round of review found -----------------------------------------------------
+
+
+def no_finite_check(times, seconds=7.0):
+    """A fit whose loss was never finite at a check, as ``TLRN._refit`` raises it."""
+    from ibnr.gallery.nn.tlrn.model import NoFiniteValidation
+
+    calls = []
+
+    def fit(cohort, row, roles, config, seed):
+        calls.append(seed)
+        if len(calls) <= times:
+            raise NoFiniteValidation("member(s) [3] of protocol 0 never produced a finite score")
+        return stub_fit(seconds=seconds)(cohort, row, roles, config, seed)
+
+    return fit, calls
+
+
+def test_a_main_row_fit_with_no_finite_check_is_rerun_once_and_kept_if_it_recovers(
+    tmp_path, stubbed
+):
+    fit, calls = no_finite_check(times=1)
+    assert run_stub(tmp_path, fit)["fitted"] == 1
+    assert len(calls) == 2 and len(set(calls)) == 1  # the same seed
+    record = json.loads(next(tmp_path.glob("C_tlrn_cr_refit_d00-*.json")).read_text())
+    assert "failed_attempt_seconds" in record["run"]
+
+
+def test_a_main_row_fit_with_no_finite_check_twice_is_reported_and_the_run_goes_on(
+    tmp_path, stubbed
+):
+    fit, calls = no_finite_check(times=2)
+    got = run_stub(tmp_path, fit, draws=2)
+    assert got["failed"] == 1 and got["fitted"] == 1 and len(calls) == 3
+    (note,) = list(tmp_path.glob("FAILED_*.txt"))
+    assert "never produced a finite score" in note.read_text() and "seconds:" in note.read_text()
+
+
+def test_any_other_exception_from_a_row_with_a_verdict_is_still_a_defect(tmp_path, stubbed):
+    def fit(cohort, row, roles, config, seed):
+        raise ValueError("a defect")
+
+    with pytest.raises(ValueError, match="a defect"):
+        run_stub(tmp_path, fit)
+    assert not list(tmp_path.glob("FAILED_*.txt"))
+
+
+def test_the_refit_raises_the_named_error_when_a_member_has_no_finite_check():
+    pytest.importorskip("torch")
+    from ibnr.gallery.nn.tlrn.model import TLRN, NoFiniteValidation
+
+    run = {"selection": pd.DataFrame({"best_epoch": [5.0, np.nan]})}
+    with pytest.raises(NoFiniteValidation, match=r"member\(s\) \[1\]"):
+        TLRN()._refit([run], [{}], None, contract=None, features=None, dev=None, processes=1,
+                      torch=None)  # fmt: skip
+    assert issubclass(NoFiniteValidation, ValueError)  # what it was before it had a name
+
+
+def test_a_member_whose_loss_went_non_finite_is_named_though_the_forecasts_are_finite():
+    frame = pd.DataFrame({"reserve": [1.0]})
+    members = pd.DataFrame({"alpha": [0.5, 0.5], NON_FINITE_COLUMN: [0, 2]})
+    assert study.non_finite(frame, {"members": members}) == [f"members.{NON_FINITE_COLUMN}"]
+    members[NON_FINITE_COLUMN] = 0
+    assert study.non_finite(frame, {"members": members}) == []
+    # a fit taken from the third study has no such column, and that is no failure
+    assert study.non_finite(frame, {"members": members.drop(columns=NON_FINITE_COLUMN)}) == []
+
+
+def test_a_nan_loss_after_the_stored_epoch_reaches_the_members_table(monkeypatch):
+    """The case the saved forecasts cannot show: the kept weights predate the bad step."""
+    pytest.importorskip("torch")
+    from ibnr.gallery.nn.tlrn import head as tlrn_head
+
+    cohort = cohort_from(synthetic_cells(spike=True))
+    config = tlrn_colab.companion_revised_config(
+        ensemble_size=1, **{**BUDGET, "max_epochs": 4, "check_every": 2, "min_epochs": 4}
+    )
+    triangle = study.triangle_from_cells(cohort.all_cells, study.valuation_pairs(cohort)[10])
+    real = tlrn_head.point_loss
+    steps = [0]
+    bad_step = [None]
+
+    def point_loss(*args, **kwargs):
+        steps[0] += 1
+        loss = real(*args, **kwargs)
+        return loss * float("nan") if steps[0] == bad_step[0] else loss
+
+    def fit():
+        steps[0] = 0
+        return study.fit_valuation(triangle, 10, config, 11, as_of=cohort.as_of, backend="torch")
+
+    monkeypatch.setattr(tlrn_head, "point_loss", point_loss)
+    fit()
+    # the clean run has four epochs, then a refit to the stored epoch (two or four more), so an
+    # eighth of its steps is at most one epoch: three of those fall in the third or fourth epoch
+    # of the first run, past the check at epoch two that stores the weights
+    bad_step[0] = 3 * max(steps[0] // 8, 1)
+    valuations, members = study.date_tables(fit())
+    forecast = valuations[list(PREDICTED)].to_numpy(dtype=float)
+    assert np.isfinite(forecast).all()  # nothing in the saved forecasts shows it
+    assert members[NON_FINITE_COLUMN].sum() > 0
+    assert study.non_finite(pd.DataFrame({"reserve": [1.0]}), {"members": members})
+
+
+@pytest.mark.parametrize("backend", ["torch", "jax"])
+def test_every_member_of_a_healthy_fit_counts_no_non_finite_loss(backend):
+    pytest.importorskip(backend)
+    pytest.importorskip("torch")
+    cohort = cohort_from(synthetic_cells(spike=True))
+    config = tlrn_colab.companion_revised_config(ensemble_size=2, **BUDGET)
+    fits = study.fit_valuations(
+        cohort, config, 7, valuations=(10,), backend=backend, log=lambda *_: None
+    )
+    assert fits.members[NON_FINITE_COLUMN].tolist() == [0, 0]
+
+
+def test_the_25_minute_stop_holds_for_a_run_that_does_not_plan_cohort_c(tmp_path, stubbed):
+    write_saved(tmp_path, "C", "tlrn_cr_refit", 0, 1501.0)
+    calls = []
+    with pytest.raises(SystemExit, match="STOP: draw 0 on C4"):
+        run_stub(tmp_path, stub_fit(record=calls), cohorts={"B": fake_cohort("B")})
+    assert calls == []
+    got = run_stub(
+        tmp_path, stub_fit(), cohorts={"B": fake_cohort("B")}, first_fit_answer="Ethan: go on"
+    )
+    assert got["fitted"] == 1
+
+
+def test_a_quick_first_fit_and_a_smoke_one_do_not_stop_a_run_on_the_other_cohort(tmp_path, stubbed):
+    write_saved(tmp_path, "C", "tlrn_cr_refit", 0, 1500.0)
+    write_saved(tmp_path, "C", "tlrn_cr_refit", 0, 9999.0, smoke=True)
+    assert run_stub(tmp_path, stub_fit(), cohorts={"B": fake_cohort("B")})["fitted"] == 1
+
+
+def rewrite_settings(out: Path, **changes) -> None:
+    (path,) = list(out.glob("C_tlrn_cr_refit_d00-*.json"))
+    record = json.loads(path.read_text())
+    record["settings"].update(changes)
+    path.write_text(json.dumps(record))
+
+
+def test_a_saved_fit_differing_only_in_the_data_hash_resumes_and_says_so(tmp_path, stubbed):
+    run_stub(tmp_path, stub_fit())
+    rewrite_settings(tmp_path, data_hash="from_another_session")
+    lines = []
+    got = study.run_study(
+        tmp_path,
+        {"C": fake_cohort("C")},
+        ("tlrn_cr_refit",),
+        1,
+        members=2,
+        smoke=False,
+        version="0.7.7",
+        fit_fn=stub_fit(),
+        study=NAME,
+        log=lines.append,
+    )
+    assert got["skipped"] == 1 and got["fitted"] == 0
+    assert any("from_another_session" in line for line in lines)
+
+
+def test_any_other_difference_in_a_saved_fit_is_still_refused(tmp_path, stubbed):
+    run_stub(tmp_path, stub_fit())
+    rewrite_settings(tmp_path, data_hash="from_another_session", cohort_hash="other_companies")
+    with pytest.raises(SystemExit, match="cohort_hash"):
+        run_stub(tmp_path, stub_fit())
+
+
+def test_the_earlier_studies_still_refuse_another_data_hash(tmp_path):
+    settings = {"data_hash": "a", "seed": 1}
+    record = tmp_path / "x.json"
+    record.write_text(json.dumps({"settings": {"data_hash": "b", "seed": 1}}))
+    reserves = tmp_path / "x_reserves.csv"
+    reserves.write_text("")
+    with pytest.raises(SystemExit, match="data_hash"):
+        study.saved_fit(tmp_path / "x.pkl", record, reserves, settings)
+    assert study.saved_fit(tmp_path / "x.pkl", record, reserves, settings, tolerate=("data_hash",))

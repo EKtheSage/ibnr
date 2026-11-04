@@ -285,6 +285,9 @@ class TLRNNetwork(nn.Module):
     the right one is a statement about the data.
     """
 
+    #: a network pickled by ibnr 0.7.6 or earlier has the table and no such instance attribute
+    maturity = True
+
     def __init__(
         self,
         cfg: Any,

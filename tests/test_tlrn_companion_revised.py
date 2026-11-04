@@ -20,6 +20,7 @@ Skips cleanly without torch (and the jax halves without jax).
 from __future__ import annotations
 
 import dataclasses
+import pickle
 
 import numpy as np
 import pytest
@@ -304,3 +305,29 @@ def test_paid_only_reaches_the_network_inputs_and_the_forecast(backend, monkeypa
     assert any((f[..., :8] != 0).any() for f in after)
     assert paid.models_[0].inp.weight.shape[1] == 13
     assert not np.allclose(full.member_company_reserves(), paid.member_company_reserves())
+
+
+# -- 6. a network saved by an earlier ibnr ---------------------------------------------------
+
+
+def test_a_network_pickled_before_the_field_existed_runs_with_its_table(monkeypatch):
+    # ibnr 0.7.6 and earlier always had the table and saved no ``maturity`` attribute on the
+    # network and no ``maturity_embedding`` on its config, which is what is taken out here
+    revised, feats, (n_l, n_d, n_w) = revised_net_and_features(monkeypatch)
+    cfg = TLRNConfig.companion_final_variant(
+        d_model=8, n_heads=2, dropout=0.0, member="network", alpha_on="all_validation"
+    )
+    torch.manual_seed(5)
+    net = TLRNNetwork(
+        cfg,
+        n_lines=n_l,
+        n_lag=n_d,
+        n_feat=feats["n_feat"],
+        n_origin=n_w,
+        head_init=revised.beta.detach().clone(),
+    ).eval()
+    expected = run_network(net, feats)["pred"]
+    old = pickle.loads(pickle.dumps(net))
+    del old.__dict__["maturity"]
+    del old.cfg.__dict__["maturity_embedding"]
+    assert torch.equal(run_network(old, feats)["pred"], expected)
