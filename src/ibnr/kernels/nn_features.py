@@ -119,7 +119,8 @@ FEATURE_NAMES: tuple[str, ...] = (
     "incurred loss ratio",
     "case reserve loss ratio",
 )
-#: how many of :data:`FEATURE_NAMES` each form uses
+#: how many of :data:`FEATURE_NAMES` each form uses; ``paid_only`` zeroes the channels from
+#: this index on (the five incurred and case reserve ones)
 N_FEATURES_PAID_ONLY = 8
 
 
@@ -457,6 +458,7 @@ def tlrn_features(
     clamp: float = CLAMP_Z,
     with_mcl: bool = False,
     max_lag: int | None = None,
+    paid_only: bool = False,
 ) -> dict[str, Any]:
     """Build one training example per (company, accident year) at ``cutoff``.
 
@@ -630,6 +632,14 @@ def tlrn_features(
         ]
     feat = np.stack([np.broadcast_to(c, shape) for c in channels], axis=-1)
     feat = _finite_or(feat, 0.0)
+    if paid_only:
+        if not has_incurred:
+            raise ValueError(
+                "paid_only zeroes the five incurred and case reserve input channels and keeps "
+                "all 13 inputs, so it needs incurred_field and case_field. Without them the "
+                f"network has only the {N_FEATURES_PAID_ONLY} paid inputs, a different network"
+            )
+        feat[..., N_FEATURES_PAID_ONLY:] = 0.0
 
     n_ex, n_tok = n_c * n_w, n_l * n_d
     scored_e = scored[None, :, None, :] & written_e

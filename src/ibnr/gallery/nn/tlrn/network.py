@@ -310,7 +310,13 @@ class TLRNNetwork(nn.Module):
         extra = 0 if self.compact else 1
         self.line_emb = nn.Embedding(n_lines + extra, d)
         self.lag_emb = nn.Embedding(n_lag + extra, d)
-        self.nobs_emb = nn.Embedding(n_lag + 2, d)
+        # maturity_embedding=False: the table is still drawn, so the random stream and
+        # every parameter built after it start where they do with the table, but it is not
+        # registered (not in parameters() or the state dict) and not read in forward
+        self.maturity = bool(cfg.maturity_embedding)
+        nobs_emb = nn.Embedding(n_lag + 2, d)
+        if self.maturity:
+            self.nobs_emb = nobs_emb
         axes = attention_axes(cfg)
         self.blocks = nn.ModuleList(
             [
@@ -412,9 +418,10 @@ class TLRNNetwork(nn.Module):
         if use_residual:
             shift = 1 if self.compact else 0
             h = self.inp(feat) + self.line_emb(line_ix - shift) + self.lag_emb(lag_ix - shift)
-            # one more position: how many lags of this accident year are already
-            # observed, which is the same for every token of the example
-            h = h + self.nobs_emb(lk + 1 - shift).unsqueeze(-2)
+            # one more position (maturity_embedding): how many lags of this accident year are
+            # already observed, which is the same for every token of the example
+            if self.maturity:
+                h = h + self.nobs_emb(lk + 1 - shift).unsqueeze(-2)
             for block in self.blocks:
                 h, w_line, w_lag, w_ay = block(
                     h, written, need_weights=need_weights, visible=visible

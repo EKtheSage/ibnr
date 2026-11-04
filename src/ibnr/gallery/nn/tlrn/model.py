@@ -443,6 +443,7 @@ class TLRN(GalleryEntry):
         show_progress: bool = False,
         processes: int = 1,
         backend: str = "torch",
+        paid_only: bool = False,
     ) -> TLRN:
         """Pooled fit across every company in the triangle.
 
@@ -451,6 +452,11 @@ class TLRN(GalleryEntry):
         two channels by ROLE, and a channel list cannot say which is the
         incurred emergence and which the outstanding balance. The case reserve
         is an evaluation-date level, so it is declared as one to the contract.
+
+        ``paid_only=True`` keeps the 13-input network but sets the five incurred and case
+        reserve input channels (``FEATURE_NAMES[8:]``) to zero in every feature set, the
+        companion's paid-only ablation. It needs ``incurred_field`` and ``case_field``;
+        leaving those out gives the 8-input network instead, which is a different model.
 
         ``processes`` trains the members in that many worker processes instead
         of one after another. It changes where they train, never what they
@@ -481,6 +487,14 @@ class TLRN(GalleryEntry):
         """
         import torch
 
+        if not isinstance(paid_only, bool):
+            raise ValueError(f"paid_only must be True or False, got {paid_only!r}")
+        if paid_only and not (incurred_field and case_field):
+            raise ValueError(
+                "paid_only zeroes the five incurred and case reserve input channels and keeps "
+                "all 13 inputs, so it needs incurred_field and case_field. Without them the "
+                "network has only the 8 paid inputs, a different network"
+            )
         if isinstance(processes, bool) or not isinstance(processes, int) or processes < 1:
             raise ValueError(f"processes must be a positive int, got {processes!r}")
         if backend not in BACKENDS:
@@ -534,6 +548,7 @@ class TLRN(GalleryEntry):
                 case_field=case_field,
                 with_mcl=cfg.member == "mcl_blend" if with_mcl is None else with_mcl,
                 max_lag=max_lag,
+                paid_only=paid_only,
             )
 
         bad_cutoffs = [k for k in cfg.calibration_cutoffs if not 1 <= k < c_max]

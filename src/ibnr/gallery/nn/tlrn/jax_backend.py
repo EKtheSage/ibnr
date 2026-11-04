@@ -177,6 +177,7 @@ class Spec(NamedTuple):
     alpha_first: bool = False  # alpha_on="first_diagonal": alpha from set 0, score on the last
     empty_bias: bool = False  # empty_query_bias: a query with no readable key gets the out bias
     compact: bool = False  # compact_embeddings: 0-based line and lag tables, no unused row
+    maturity: bool = True  # maturity_embedding: the per-count embedding is added
 
 
 def spec_of(cfg: Any, *, n_l: int, n_d: int, n_w: int) -> Spec:
@@ -206,6 +207,7 @@ def spec_of(cfg: Any, *, n_l: int, n_d: int, n_w: int) -> Spec:
         alpha_first=cfg.alpha_on == "first_diagonal",
         empty_bias=bool(cfg.empty_query_bias),
         compact=bool(cfg.compact_embeddings),
+        maturity=bool(cfg.maturity_embedding),
     )
 
 
@@ -414,7 +416,8 @@ def forward(p, s, spec: Spec, *, train: bool = False, key=None, support=None) ->
         shift = 1 if spec.compact else 0
         h = h + p["line_emb.weight"][s["line_ix"] - shift]
         h = h + p["lag_emb.weight"][s["lag_ix"] - shift]
-        h = h + p["nobs_emb.weight"][s["lk"] + 1 - shift][:, None, :]
+        if spec.maturity:
+            h = h + p["nobs_emb.weight"][s["lk"] + 1 - shift][:, None, :]
         for i in range(spec.n_layers):
             block_keys = keys[_KEYS_PER_BLOCK * i : _KEYS_PER_BLOCK * (i + 1)]
             h = _block(p, i, h, s["written"], s["visible"], spec=spec, train=train, keys=block_keys)
