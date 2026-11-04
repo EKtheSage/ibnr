@@ -215,7 +215,7 @@ def test_the_registry_names_the_third_study():
     assert third.rows == ("tlrn_cf_refit", "tlrn_cf_factors")
     assert third.tables == ("valuations", "members")
     assert third.version == 3
-    assert len({study.get_study(n).version for n in study.STUDIES}) == 3
+    assert len({study.get_study(n).version for n in study.STUDIES}) == len(study.STUDIES) == 4
     assert study.VALUATIONS == (6, 7, 8, 10)
     # the earlier studies are not per-valuation and keep their constants
     assert not study.get_study("accident_year").per_valuation

@@ -46,7 +46,13 @@ def test_the_pins_are_plain_release_numbers_and_not_ahead_of_the_package():
     for name in study.STUDIES:
         pin = study.get_study(name).pinned_ibnr
         assert re.fullmatch(r"\d+\.\d+\.\d+", pin), name
-        assert tuple(int(x) for x in pin.split(".")) <= here, name
+        ceiling = here
+        if name == "companion_revised":
+            # the fourth study waits for the 0.7.7 release: its pin may be that one patch ahead
+            # of the package until the release is cut, and no further
+            ceiling = max(here, (0, 7, 7))
+            assert pin == "0.7.7", name
+        assert tuple(int(x) for x in pin.split(".")) <= ceiling, name
     assert study.get_study("accident_year").pinned_ibnr == PIN
     assert study.get_study("companion_final").pinned_ibnr == study.PINNED_IBNR
     # moving the current pin must not move the earlier studies' records
