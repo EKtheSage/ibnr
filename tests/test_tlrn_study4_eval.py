@@ -497,6 +497,8 @@ def populate_third(folder, cohort, sets, *, error=0.1):
 
 def run_synthetic(monkeypatch, folder, cohort, **kwargs):
     monkeypatch.setattr(study, "load_cohort", lambda name, **kw: cohort)
+    # a synthetic cohort has no third-study values to equal; that stop has its own tests
+    monkeypatch.setattr(ev, "third_study_tie_out", lambda *a, **k: "not compared: synthetic")
     return ev.run_cohort("B", folder, cells=cohort.all_cells, log=lambda *_: None, **kwargs)
 
 
@@ -532,8 +534,8 @@ def test_the_whole_path_on_a_synthetic_cohort(tmp_path, monkeypatch, cohort, set
     # R1 misses here (the synthetic figure is nowhere near 3.37), with a reading printed
     assert result["replication"]["label"] in ev3.REPLICATION_WORDS
     assert result["replication"]["reading"]["lines"]
-    # the tie-out has nothing to read and says so; the docstring hash is recorded
-    assert "NOT TIED OUT" in result["extras"]["third study's valuation-10 benchmarks"]
+    # the tie-out's answer is carried to the report; the docstring hash is recorded
+    assert "synthetic" in result["extras"]["third study's valuation-10 benchmarks"]
     assert result["extras"]["docstring sha256"] == ev.docstring_sha256()
     text = ev.render(cohort_, result, result["extras"], "")
     for needle in (
@@ -625,8 +627,6 @@ def test_the_valuation_10_tie_out_reads_the_third_studys_saved_values_and_stops_
     bad = {"left_out": {}, "benchmark_pool_ape": {**pools, "mack": pools["mack"] + 0.001}}
     with pytest.raises(SystemExit, match="does not reproduce the third study"):
         ev.third_study_tie_out("B", bad, tmp_path)
-    assert "NOT TIED OUT" in ev.third_study_tie_out("C", good, tmp_path)
-    assert "not compared" in ev.third_study_tie_out("B", {**good, "left_out": {"x": 1}}, tmp_path)
 
 
 def test_the_third_studys_saved_benchmarks_are_what_the_tie_out_reads():
@@ -716,6 +716,7 @@ def test_main_prints_a_smoke_banner_and_writes_the_verdicts(
     populate(tmp_path / "fits", cohort, sets)
     monkeypatch.setattr(study, "load_cohort", lambda name, **kw: cohort)
     monkeypatch.setattr(study, "cells_from_mart", lambda years=None: cohort.all_cells)
+    monkeypatch.setattr(ev, "third_study_tie_out", lambda *a, **k: "not compared: synthetic")
     # the fits are registered, not smoke ones: with --smoke nothing is found and nothing is written
     out = tmp_path / "out"
     nothing = ["--tie-out", str(tmp_path / "no_tie_out")]
@@ -733,3 +734,77 @@ def test_main_prints_a_smoke_banner_and_writes_the_verdicts(
     verdicts = json.loads((out / "r" / "verdicts.json").read_text())
     assert verdicts["smoke"] is False and verdicts["verdicts"]["B"]["p1"]["verdict"] == "helps"
     assert (out / "r" / "report.txt").exists()
+
+
+# -- the rules the review held the evaluator to --------------------------------------------------
+
+
+def test_a_tie_out_that_cannot_be_made_stops_outside_a_smoke_run(tmp_path):
+    pools = {"mack": np.array([0.1, 0.1, 0.1, 0.05481]), "mcl": np.array([0.1, 0.1, 0.1, 0.0541])}
+    good = {"left_out": {}, "benchmark_pool_ape": pools}
+    with pytest.raises(SystemExit, match="must tie out and NOT TIED OUT: no B_metrics"):
+        ev.third_study_tie_out("B", good, tmp_path)
+    with pytest.raises(SystemExit, match="must tie out and NOT TIED OUT"):
+        ev.third_study_tie_out("B", good, None)
+    pd.DataFrame({"method": ["mack"], "valuation": ["10"], "pool_ape": [0.05481]}).to_csv(
+        tmp_path / "B_metrics_by_valuation.csv", index=False
+    )
+    with pytest.raises(SystemExit, match="has no mcl row at valuation 10"):
+        ev.third_study_tie_out("B", good, tmp_path)
+    with pytest.raises(SystemExit, match="some companies are left out"):
+        ev.third_study_tie_out("B", {**good, "left_out": {"x": 1}}, tmp_path)
+
+
+def test_a_smoke_run_only_notes_a_tie_out_it_cannot_make(tmp_path):
+    good = {"left_out": {}, "benchmark_pool_ape": {}}
+    got = ev.third_study_tie_out("B", good, tmp_path, smoke=True)
+    assert "NOT TIED OUT" in got
+
+
+def test_run_cohort_holds_a_full_run_to_the_tie_out(tmp_path, monkeypatch, cohort, sets):
+    populate(tmp_path, cohort, sets)
+    monkeypatch.setattr(study, "load_cohort", lambda name, **kw: cohort)
+    with pytest.raises(SystemExit, match="must tie out"):
+        ev.run_cohort("B", tmp_path, cells=cohort.all_cells, log=lambda *_: None)
+
+
+def evaluate_for_main(monkeypatch, cohort):
+    monkeypatch.setattr(study, "load_cohort", lambda name, **kw: cohort)
+    monkeypatch.setattr(study, "cells_from_mart", lambda years=None: cohort.all_cells)
+    monkeypatch.setattr(ev, "third_study_tie_out", lambda *a, **k: "not compared: synthetic")
+
+
+def test_a_stop_and_ask_reading_writes_no_result_until_ethan_has_answered(
+    tmp_path, monkeypatch, cohort, sets, capsys
+):
+    # 20 points from the target with no refit effect: the third reading
+    populate(tmp_path / "fits", cohort, sets, refit_error=0.2, norefit_error=0.2)
+    evaluate_for_main(monkeypatch, cohort)
+    out = tmp_path / "out"
+    base = ["--fits", str(tmp_path / "fits"), "--cohort", "B", "--out", str(out)]
+    assert ev.main(base) == ev.STOP_EXIT_CODE
+    text = capsys.readouterr().out
+    assert ev.STOP_AND_ASK in text and "NO RESULT WRITTEN" in text
+    written = {p.name for p in out.glob("*")} if out.exists() else set()
+    assert not {n for n in written if not n.startswith("benchmarks")}  # only the benchmark cache
+
+    assert ev.main([*base, "--stop-answered", "Ethan, 2026-11-05: write them up"]) == 0
+    verdicts = json.loads((out / "verdicts.json").read_text())
+    assert verdicts["stop_answered"] == "Ethan, 2026-11-05: write them up"
+    assert verdicts["verdicts"]["B"]["replication"]["stop_and_ask"] is True
+    assert (out / "report.txt").exists() and (out / "B_metrics_by_valuation.csv").exists()
+
+
+def test_a_result_that_needs_no_answer_records_none(tmp_path, monkeypatch, cohort, sets):
+    populate(tmp_path / "fits", cohort, sets)
+    evaluate_for_main(monkeypatch, cohort)
+    out = tmp_path / "out"
+    assert ev.main(["--fits", str(tmp_path / "fits"), "--cohort", "B", "--out", str(out)]) == 0
+    assert "stop_answered" not in json.loads((out / "verdicts.json").read_text())
+
+
+def test_a_draw_average_in_the_unread_band_takes_the_label_rule_and_does_not_stop():
+    for m in (2.4, 2.86):
+        got = reading(m)
+        assert got["stop"] is False
+        assert any("without falling in a band" in line for line in got["lines"])

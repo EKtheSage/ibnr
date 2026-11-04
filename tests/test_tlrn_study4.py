@@ -678,3 +678,179 @@ def test_prefit_checks_pass_on_the_two_real_cohorts_counts_or_refuse_by_name(mon
         SystemExit, match="pairs by valuation date.*differ from the pre-registration"
     ):
         study.prefit_checks({"B": cohort}, log=lambda *_: None)
+
+
+# -- the pre-registered order, a failure stays reported, and the answers to the stops ------------
+
+
+def test_the_default_plan_follows_the_preregistered_order(tmp_path):
+    spec = study.get_study(NAME)
+    assert spec.cohorts == ("B", "C")  # what main() hands plan_study when no cohort is named
+    todo, done = study.plan_study(
+        tmp_path,
+        {name: fake_cohort(name) for name in spec.cohorts},
+        spec.rows,
+        10,
+        members=2,
+        smoke=False,
+        version="0.7.7",
+        study=NAME,
+    )
+    assert done == []
+    got = [(i["cohort"], i["row"], i["draw"]) for i in todo]
+    assert got == (
+        [("C", "tlrn_cr_refit", d) for d in range(10)]
+        + [("B", "tlrn_cr_refit", d) for d in range(10)]
+        + [("C", "tlrn_cr_factors", d) for d in range(10)]
+        + [("B", "tlrn_cr_factors", d) for d in range(10)]
+        + [("B", row, 0) for row in study.SINGLE_DRAW_ROWS]
+    )
+
+
+def test_the_earlier_studies_keep_their_draw_major_order(tmp_path):
+    spec = study.get_study("companion_final")
+    todo, _ = study.plan_study(
+        tmp_path,
+        {name: fake_cohort(name) for name in spec.cohorts},
+        spec.rows,
+        2,
+        members=2,
+        smoke=False,
+        version="0.7.6",
+        study="companion_final",
+    )
+    assert [i["draw"] for i in todo] == [0, 0, 0, 0, 1, 1, 1, 1]
+    assert [i["cohort"] for i in todo[:2]] == ["B", "B"]
+
+
+def test_a_reported_failure_is_not_fitted_again_on_later_passes(tmp_path, stubbed):
+    calls = []
+    fit = stub_fit(reserve=np.nan, record=calls)
+    for _ in range(3):
+        got = run_stub(tmp_path, fit)
+        assert got == {"fitted": 0, "skipped": 0, "failed": 1, "reused": 0}
+    assert len(calls) == 2  # the fit and its one rerun, however many passes follow
+
+
+def test_later_draws_go_on_past_a_reported_failure(tmp_path, stubbed):
+    """The notebook asks for draws 1, 2, ... n in turn, so a failed draw is planned every pass."""
+    calls = []
+
+    def fit(cohort, row, roles, config, seed):
+        calls.append(seed)
+        bad = seed == study.draw_seed(0)
+        return stub_fit(reserve=np.nan if bad else 100.0)(cohort, row, roles, config, seed)
+
+    for draws in (1, 2, 3):
+        got = run_stub(tmp_path, fit, draws=draws)
+    assert calls == [study.draw_seed(0)] * 2 + [study.draw_seed(1), study.draw_seed(2)]
+    assert got == {"fitted": 1, "skipped": 1, "failed": 1, "reused": 0}
+
+
+def test_deleting_the_failure_file_asks_for_a_new_try_and_leaves_nothing_stale(tmp_path, stubbed):
+    run_stub(tmp_path, stub_fit(reserve=np.nan))
+    (note,) = list(tmp_path.glob("FAILED_*.txt"))
+    note.unlink()
+    assert run_stub(tmp_path, stub_fit())["fitted"] == 1
+    assert not list(tmp_path.glob("FAILED_*.txt"))
+
+
+def test_seconds_of_a_failed_fit_count_toward_the_budget(tmp_path, stubbed):
+    run_stub(tmp_path, stub_fit(seconds=4.1 * 3600, reserve=np.nan))
+    assert study.fit_seconds_used(tmp_path, study=NAME) == pytest.approx(8.2 * 3600)
+    calls = []
+    with pytest.raises(SystemExit, match="STOP: the saved fits add up to 8.20"):
+        run_stub(tmp_path, stub_fit(record=calls), draws=2)
+    assert calls == []
+
+
+def test_seconds_of_the_attempt_before_a_good_rerun_count_toward_the_budget(tmp_path, stubbed):
+    state = {"n": 0}
+
+    def flaky(cohort, row, roles, config, seed):
+        state["n"] += 1
+        reserve = np.nan if state["n"] == 1 else 100.0
+        return stub_fit(seconds=30.0, reserve=reserve)(cohort, row, roles, config, seed)
+
+    run_stub(tmp_path, flaky)
+    record = json.loads(next(tmp_path.glob("C_tlrn_cr_refit_d00-ibnr0.7.7.json")).read_text())
+    assert record["run"]["fit_seconds"] == 30.0  # the 25-minute rule reads the fit, not the pair
+    assert record["run"]["failed_attempt_seconds"] == 30.0
+    assert study.fit_seconds_used(tmp_path, study=NAME) == 60.0
+
+
+def test_a_smoke_failure_does_not_count_toward_the_full_budget(tmp_path, stubbed):
+    run_stub(tmp_path, stub_fit(seconds=100.0, reserve=np.nan), smoke=True)
+    assert list(tmp_path.glob("FAILED_*_smoke*.txt"))
+    assert study.fit_seconds_used(tmp_path, study=NAME) == 0.0
+
+
+def test_ethans_answer_takes_the_run_past_the_first_fit_stop_and_is_recorded(tmp_path, stubbed):
+    with pytest.raises(SystemExit, match="--answered-first-fit"):
+        run_stub(tmp_path, stub_fit(seconds=1501.0))
+    answer = "Ethan, 2026-11-05: go on"
+    got = run_stub(tmp_path, stub_fit(), draws=2, first_fit_answer=answer)
+    assert got["fitted"] == 1 and got["skipped"] == 1
+    later = json.loads(next(tmp_path.glob("C_tlrn_cr_refit_d01-ibnr0.7.7.json")).read_text())
+    assert later["run"]["stop_answers"] == {"first_fit": answer}
+
+
+def test_an_answer_also_covers_a_slow_first_fit_in_the_same_run(tmp_path, stubbed):
+    answer = "Ethan: go on"
+    got = run_stub(tmp_path, stub_fit(seconds=1501.0), first_fit_answer=answer)
+    assert got["fitted"] == 1
+
+
+def test_a_larger_budget_is_a_new_limit_and_is_recorded(tmp_path, stubbed):
+    write_saved(tmp_path, "B", "tlrn_cr_refit", 0, 8 * 3600.0)
+    with pytest.raises(SystemExit, match="--answered-budget-hours"):
+        run_stub(tmp_path, stub_fit())
+    assert run_stub(tmp_path, stub_fit(), budget_hours=9.0)["fitted"] == 1
+    record = json.loads(next(tmp_path.glob("C_tlrn_cr_refit_d00-ibnr0.7.7.json")).read_text())
+    assert record["run"]["stop_answers"] == {"budget_hours": 9.0}
+    write_saved(tmp_path, "B", "tlrn_cr_refit", 1, 3600.0)
+    with pytest.raises(SystemExit, match="at or over the pre-registered 9 hours"):
+        run_stub(tmp_path, stub_fit(), draws=2, budget_hours=9.0)
+
+
+def test_no_answer_leaves_the_record_as_it_was(tmp_path, stubbed):
+    run_stub(tmp_path, stub_fit())
+    record = json.loads(next(tmp_path.glob("C_tlrn_cr_refit_d00-ibnr0.7.7.json")).read_text())
+    assert "stop_answers" not in record["run"]
+
+
+def test_main_delivers_the_answers_to_the_run(tmp_path, monkeypatch):
+    pytest.importorskip("jax")
+    pytest.importorskip("torch")
+    seen = {}
+
+    def spy(out, cohorts, rows_, draws, **kw):
+        seen.update(kw)
+        return {"fitted": 0, "skipped": 0, "failed": 0, "reused": 0}
+
+    monkeypatch.setattr(study, "run_study", spy)
+    monkeypatch.setattr(study, "write_manifest", lambda *a, **k: None)
+    monkeypatch.setattr(study, "cells_from_mart", lambda years=None: None)
+    monkeypatch.setattr(
+        study, "build_cohort", lambda name, **kw: SimpleNamespace(description="stub")
+    )
+    monkeypatch.setattr(study, "prefit_checks", lambda cohorts, **k: None)
+    base = ["--out", str(tmp_path), "--study", NAME, "--cohort", "C", "--draws", "1"]
+    study.main(base + ["--answered-first-fit", "go on", "--answered-budget-hours", "9.5"])
+    assert seen["first_fit_answer"] == "go on" and seen["budget_hours"] == 9.5
+    study.main(base)
+    assert seen["first_fit_answer"] is None and seen["budget_hours"] == study.BUDGET_HOURS
+
+
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (["--study", NAME, "--answered-budget-hours", "8"], "must be above the registered 8"),
+        (["--study", NAME, "--answered-first-fit", " "], "needs Ethan's answer"),
+        (["--study", "companion_final", "--answered-first-fit", "yes"], "a study with stops"),
+    ],
+)
+def test_main_refuses_an_answer_that_is_not_one(tmp_path, capsys, argv, message):
+    with pytest.raises(SystemExit):
+        study.main(["--out", str(tmp_path), *argv])
+    assert message in capsys.readouterr().err

@@ -104,6 +104,7 @@ import json
 import os
 import pickle
 import platform
+import re
 import sys
 import time
 from contextlib import contextmanager, nullcontext
@@ -155,6 +156,8 @@ COMPANION_REVISED_TABLES = COMPANION_FINAL_TABLES
 #: the main row and the network-off row of the fourth study
 REVISED_MAIN_ROW = "tlrn_cr_refit"
 REVISED_FACTORS_ROW = "tlrn_cr_factors"
+#: the pre-registered order of the cohorts: C4's draw 0 is the pipeline check, so C comes first
+COMPANION_REVISED_FIT_ORDER = ("C", "B")
 #: rows that are fitted once, on cohort B, at draw 0 (descriptive, no verdict rule uses them)
 SINGLE_DRAW_ROWS = ("tlrn_cr_noline", "tlrn_cr_noay", "tlrn_cr_paid", "tlrn_cf_rerun")
 SINGLE_DRAW_COHORTS = ("B",)
@@ -1344,8 +1347,9 @@ def plan_study(
 
     Returns ``(todo, done)``. Both are lists of dicts in draw-major order (all rows and
     cohorts of draw 0, then of draw 1, ...), so a run stopped at any point holds an
-    even set of fits. A saved fit with other settings raises ``SystemExit`` here. Rows that
-    apply only at draw 0 on some cohorts (the fourth study's) are left out elsewhere. With
+    even set of fits. The fourth study's ``todo`` is in its pre-registered order instead
+    (:func:`registered_order`). A saved fit with other settings raises ``SystemExit`` here. Rows
+    that apply only at draw 0 on some cohorts (the fourth study's) are left out elsewhere. With
     ``reuse_dir``, an item of the fourth study's network-off row has ``reuse`` set: it is taken
     from the third study's fits in that folder instead of being trained.
     """
@@ -1381,39 +1385,80 @@ def plan_study(
                     "reuse": reuse_dir is not None and row == REVISED_FACTORS_ROW and not smoke,
                 }
                 (done if saved is not None else todo).append(item)
+    if spec.stop_rules:
+        todo.sort(key=lambda item: registered_order(spec, item))
     return todo, done
+
+
+def registered_order(spec: Study, item: dict) -> tuple:
+    """Where a fit of the fourth study comes in the pre-registered order.
+
+    The main row on C4 (its draw 0 is the pipeline check, and the 25-minute stop reads it), the
+    main row on B4, the network-off row, then the single-draw rows.
+    """
+    return (
+        spec.rows.index(item["row"]),
+        COMPANION_REVISED_FIT_ORDER.index(item["cohort"]),
+        item["draw"],
+    )
 
 
 # -- the fourth study: the stops, the retry, and the reuse of the third study's factors fits ----
 
 
+def failed_seconds(out: Path, *, smoke: bool = False) -> float:
+    """Seconds spent on the fits reported as failed, read from their ``FAILED_*.txt`` files."""
+    total = 0.0
+    for path in out.glob("FAILED_*.txt"):
+        if ("_smoke" in path.name) == smoke:
+            found = re.search(r"^seconds: ([0-9.]+)$", path.read_text("utf-8"), re.MULTILINE)
+            total += float(found.group(1)) if found else 0.0
+    return total
+
+
 def fit_seconds_used(out: Path, *, study: str) -> float:
-    """Seconds the study's saved full fits took, not counting fits taken from another study."""
+    """Seconds the study's full fits took, not counting fits taken from another study.
+
+    The budget is GPU time, so an attempt that gave no usable fit counts too: the first attempt
+    of a fit that was rerun (``failed_attempt_seconds``) and every attempt of a reported failure.
+    """
     records = collect_records(out, smoke=False, study=study)
-    return sum(
+    saved = sum(
         float(r.get("run", {}).get("fit_seconds", 0.0))
+        + float(r.get("run", {}).get("failed_attempt_seconds", 0.0))
         for r in records.values()
         if not r.get("run", {}).get("reused_from")
     )
+    return saved + failed_seconds(out)
 
 
 def check_budget(used_seconds: float, limit_hours: float = BUDGET_HOURS) -> float:
-    """Stop (pre-registered) when the saved fits already add up to the budget; hours used."""
+    """Stop (pre-registered) when the fits already add up to the budget; hours used.
+
+    ``limit_hours`` is larger than the registered 8 only when Ethan has answered this stop.
+    """
     used = used_seconds / 3600.0
     if used >= limit_hours:
         raise SystemExit(
             f"STOP: the saved fits add up to {used:.2f} GPU hours, at or over the pre-registered "
-            f"{limit_hours:g} hours. Ask Ethan before running more."
+            f"{limit_hours:g} hours. Ask Ethan before running more. If he agrees to more, pass "
+            "the new total with --answered-budget-hours (BUDGET_ANSWER_HOURS in the notebook)."
         )
     return used
 
 
-def check_first_fit(seconds: float, limit: float = STOP_FIRST_FIT_SECONDS) -> float:
-    """Stop (pre-registered) when draw 0 of the main row on cohort C took over 25 minutes."""
-    if seconds > limit:
+def check_first_fit(
+    seconds: float, limit: float = STOP_FIRST_FIT_SECONDS, *, answer: str | None = None
+) -> float:
+    """Stop (pre-registered) when draw 0 of the main row on cohort C took over 25 minutes.
+
+    ``answer`` is Ethan's answer to this stop; with it the run goes on.
+    """
+    if seconds > limit and not answer:
         raise SystemExit(
             f"STOP: draw 0 on C4 took {seconds / 60:.1f} minutes, over the pre-registered "
-            f"{limit / 60:.0f}. Ask Ethan before running more."
+            f"{limit / 60:.0f}. Ask Ethan before running more. If he says go on, pass his answer "
+            "with --answered-first-fit (FIRST_FIT_ANSWER in the notebook)."
         )
     return seconds
 
@@ -1459,31 +1504,39 @@ def fit_or_report(item: dict, fit_fn, cohort, spec: Study, *, log=print):
     that recurs, it is reported as failed and left out (its cohort's verdict is then provisional,
     which the evaluator prints). A single-draw row that raises is reported as failed too and
     delays nothing. Any other exception from a row that carries a verdict is a defect and
-    propagates.
+    propagates. The seconds of the attempts that gave no usable fit go into the failure file, or
+    into the run record as ``failed_attempt_seconds``, because they are GPU time like any other.
     """
     seed = item["settings"]["seed"]
     single = item["row"] in spec.single_draw_rows
     reason = ""
+    lost = 0.0
     for attempt in (1, 2):
+        started = time.perf_counter()
         try:
             entry, run, *rest = fit_fn(cohort, item["row"], item["roles"], item["config"], seed)
         except Exception as error:
             if not single:
                 raise
+            lost += time.perf_counter() - started
             reason = f"{type(error).__name__}: {error}"
             log(f"    {item['row']} failed ({reason}); reported, nothing waits for it")
             break
         tables = rest[0] if rest else {}
         bad = non_finite(reserves_frame(entry), tables)
         if not bad:
+            if lost:
+                run = {**run, "failed_attempt_seconds": round(lost, 1)}
             return entry, run, tables
+        lost += float(run.get("fit_seconds", time.perf_counter() - started))
         reason = f"non-finite {', '.join(bad)}"
         if attempt == 1:
             log(f"    {reason}; rerunning once with the same seed {seed}")
         else:
             log(f"    {reason} again; reported as failed and left out")
     failure_path(item["record"].parent, item).write_text(
-        f"{item['cohort']} {item['row']} draw {item['draw']} (seed {seed}) failed: {reason}\n",
+        f"{item['cohort']} {item['row']} draw {item['draw']} (seed {seed}) failed: {reason}\n"
+        f"seconds: {lost:.1f}\n",
         encoding="utf-8",
     )
     return None
@@ -1585,6 +1638,8 @@ def run_study(
     log=print,
     study: str = "accident_year",
     reuse_dir: Path | None = None,
+    first_fit_answer: str | None = None,
+    budget_hours: float = BUDGET_HOURS,
 ) -> dict:
     """Fit what is missing, saving each fit the moment it finishes.
 
@@ -1598,7 +1653,11 @@ def run_study(
     checked against 25 minutes the moment it is saved (and again at the start of a later run),
     a fit with a non-finite forecast is rerun once and then reported (:func:`fit_or_report`),
     and with ``reuse_dir`` the network-off row is taken from the third study's fits
-    (:func:`reuse_factors_fit`).
+    (:func:`reuse_factors_fit`). A fit with a ``FAILED_*.txt`` file has had its one rerun, so a
+    later pass counts it as failed and does not fit it; deleting that file asks for a new try.
+    Both stops ask Ethan, so both can take his answer: ``first_fit_answer`` (his words) lets the
+    run go past the 25 minutes and ``budget_hours`` is the larger total he agreed to. Each is
+    written into the record of every fit saved under it, as ``run["stop_answers"]``.
     """
     spec = get_study(study)
     todo, done = plan_study(
@@ -1614,13 +1673,32 @@ def run_study(
     )
     for item in done:
         log(f"cohort {item['cohort']} {item['row']} draw {item['draw']}: already saved, skipped")
+    earlier_failures = 0
+    if spec.stop_rules:
+        to_fit = []
+        for item in todo:
+            path = failure_path(out, item)
+            if path.exists():
+                earlier_failures += 1
+                log(
+                    f"cohort {item['cohort']} {item['row']} draw {item['draw']}: reported as "
+                    f"failed already, not fitted again (delete {path.name} to try again)"
+                )
+            else:
+                to_fit.append(item)
+        todo = to_fit
     log(f"{len(todo)} fit(s) to run, {len(done)} already saved")
     stops = spec.stop_rules and not smoke
+    answers = {}
+    if stops and first_fit_answer:
+        answers["first_fit"] = first_fit_answer
+    if stops and budget_hours != BUDGET_HOURS:
+        answers["budget_hours"] = budget_hours
     if stops:
         for item in done:
             if is_first_fit(item):
                 seconds = json.loads(item["record"].read_text("utf-8")).get("run", {})
-                check_first_fit(float(seconds.get("fit_seconds", 0.0)))
+                check_first_fit(float(seconds.get("fit_seconds", 0.0)), answer=first_fit_answer)
     counts = {"failed": 0, "reused": 0}
     for number, item in enumerate(todo, 1):
         cohort = cohorts[item["cohort"]]
@@ -1635,8 +1713,8 @@ def run_study(
             counts["reused"] += 1
         else:
             if stops:
-                used = check_budget(fit_seconds_used(out, study=study))
-                log(f"    GPU hours already used: {used:.2f} of {BUDGET_HOURS:g}")
+                used = check_budget(fit_seconds_used(out, study=study), budget_hours)
+                log(f"    GPU hours already used: {used:.2f} of {budget_hours:g}")
             log(
                 f"[{number}/{len(todo)}] cohort {item['cohort']} {item['row']} draw "
                 f"{item['draw']} (seed {seed}): {item['config'].ensemble_size} members, "
@@ -1657,6 +1735,8 @@ def run_study(
                 f"the {spec.name} study saves the tables {list(spec.tables)} with each fit but "
                 f"fit_fn returned {sorted(tables)}"
             )
+        if answers:
+            run = {**run, "stop_answers": answers}
         if save_entries and entry is not None:
             save_entry(entry, item["pkl"])
         save_reserves(frame, item["reserves"])
@@ -1670,8 +1750,9 @@ def run_study(
         pool = float(np.abs(board["reserve"] - actual).sum() / actual.sum())
         log(f"    this draw's Pool_APE on the {len(board)} scored companies: {pool:.4f}")
         if stops and is_first_fit(item):
-            check_first_fit(float(run.get("fit_seconds", 0.0)))
+            check_first_fit(float(run.get("fit_seconds", 0.0)), answer=first_fit_answer)
     summary = {"fitted": len(todo) - counts["failed"] - counts["reused"], "skipped": len(done)}
+    counts["failed"] += earlier_failures
     # the earlier studies' summary keeps exactly its two keys
     return {**summary, **counts} if spec.stop_rules else summary
 
@@ -1785,6 +1866,21 @@ def main(argv=None) -> int:
         "this folder instead of training it (allowed by the identity check in the "
         "pre-registration's amendment); ignored by --smoke, which trains every row",
     )
+    parser.add_argument(
+        "--answered-first-fit",
+        default=None,
+        metavar="ANSWER",
+        help="the fourth study only: Ethan's answer to the 25-minute stop, in his words; the run "
+        "goes past that stop and the answer is written into every fit record saved after it",
+    )
+    parser.add_argument(
+        "--answered-budget-hours",
+        type=float,
+        default=None,
+        metavar="HOURS",
+        help="the fourth study only: the total GPU hours Ethan agreed to after the budget stop; "
+        "the run stops there instead, and the number goes into every fit record saved after it",
+    )
     args = parser.parse_args(argv)
 
     spec = get_study(args.study)
@@ -1797,6 +1893,13 @@ def main(argv=None) -> int:
         parser.error("--draws must be at least 1")
     if args.reuse_factors_from is not None and spec.version != COMPANION_REVISED_VERSION:
         parser.error("--reuse-factors-from is for --study companion_revised")
+    answered = args.answered_first_fit is not None or args.answered_budget_hours is not None
+    if answered and not spec.stop_rules:
+        parser.error("--answered-first-fit and --answered-budget-hours are for a study with stops")
+    if args.answered_first_fit is not None and not args.answered_first_fit.strip():
+        parser.error("--answered-first-fit needs Ethan's answer as its text")
+    if args.answered_budget_hours is not None and args.answered_budget_hours <= BUDGET_HOURS:
+        parser.error(f"--answered-budget-hours must be above the registered {BUDGET_HOURS:g}")
     members = args.members or (SMOKE_MEMBERS if args.smoke else DEFAULT_MEMBERS)
     choice = args.cohort or "all"
     names = {"both": ["A", "B"], "all": list(spec.cohorts)}.get(choice, [choice])
@@ -1905,6 +2008,8 @@ def main(argv=None) -> int:
         save_entries=not args.no_entries,
         study=args.study,
         reuse_dir=None if args.smoke else args.reuse_factors_from,
+        first_fit_answer=args.answered_first_fit,
+        budget_hours=args.answered_budget_hours or BUDGET_HOURS,
     )
     write_manifest(args.out, smoke=args.smoke, study=args.study)
     extra = ""

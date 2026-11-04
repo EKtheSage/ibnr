@@ -129,7 +129,13 @@ def test_the_scripts_cell_checks_the_studys_pin_not_the_third_studys():
 
 
 def test_the_install_cell_is_the_third_studys_and_names_no_literal_version():
-    assert source("install") == source("install", THIRD)
+    # the third study's cell, but for one line it lacked: its "git" route with a token had no
+    # EXTRAS. It ran on "pypi", so the repair is here alone and its notebook stays as it ran
+    repair = (
+        '    EXTRAS = "ibnr[jax]"  # already installed above: this adds only its dependencies\n'
+    )
+    assert source("install").replace(repair, "", 1).count(repair) == 1
+    assert source("install").replace(repair, "", 1) == source("install", THIRD)
     assert not re.search(
         r"\d+\.\d+\.\d+", source("install").replace("cas-schedule-p==2026.6.13", "")
     )
@@ -289,3 +295,112 @@ def test_the_notebooks_row_names_are_the_evaluators_and_the_runners(settings):
     assert tuple(settings["SINGLE_ROWS"]) == tuple(
         study.get_study("companion_revised").single_draw_rows
     )
+
+
+# -- the install routes and the answers to the stops ---------------------------------------------
+
+
+def install_namespace(settings, *, source_kind, token, expected):
+    import sys as system
+
+    calls = []
+    namespace = {
+        **settings,
+        "SOURCE": source_kind,
+        "EXPECTED_VERSION": expected,
+        "_TOKEN": token,
+        "sys": system,
+        "pip_install": lambda *args, token=None: calls.append(args),
+    }
+    return namespace, calls
+
+
+@pytest.mark.parametrize("token", [None, "a-token"])
+def test_the_git_route_installs_with_and_without_a_token(settings, token):
+    import ibnr
+
+    namespace, calls = install_namespace(
+        settings, source_kind="git", token=token, expected=ibnr.__version__
+    )
+    run_cell("install", namespace)
+    assert "ibnr[jax]" in calls[1]
+    assert (f"x-access-token:{token}@" in calls[0][-1]) is bool(token)
+
+
+def test_every_route_still_stops_on_a_version_that_is_not_the_pinned_one(settings):
+    namespace, calls = install_namespace(settings, source_kind="git", token=None, expected="9.9.9")
+    with pytest.raises(AssertionError, match="is installed, not 9.9.9"):
+        run_cell("install", namespace)
+    assert len(calls) == 2
+
+
+def test_the_notebook_does_not_offer_git_as_a_way_round_the_release():
+    """The fits wait for the release; only a branch that says 0.7.7 passes the check."""
+    assert "not released yet" not in source("setup")
+    assert "`pyproject.toml` already says" in source("h3")
+
+
+def test_the_notebook_says_what_to_do_with_a_save_cut_short():
+    assert "Delete the files it names" in source("h4")
+
+
+def test_the_budget_counts_the_seconds_of_failed_fits_and_of_failed_attempts(tmp_path, helpers):
+    stem = write_record(tmp_path, "C", "tlrn_cr_refit", 0, 3600.0)
+    record = tmp_path / f"{stem}.json"
+    saved = json.loads(record.read_text())
+    saved["run"]["failed_attempt_seconds"] = 1800.0
+    record.write_text(json.dumps(saved))
+    (tmp_path / f"FAILED_C_tlrn_cr_refit_d01-ibnr{PIN}.txt").write_text(
+        "C tlrn_cr_refit draw 1 (seed 100014) failed: non-finite\nseconds: 5400.0\n"
+    )
+    (tmp_path / f"FAILED_C_tlrn_cr_refit_d02_smoke-ibnr{PIN}.txt").write_text(
+        "x\nseconds: 7200.0\n"
+    )
+    assert helpers["gpu_hours"](tmp_path) == pytest.approx(3.0)
+
+
+def test_the_notebooks_budget_equals_the_runners_on_the_same_folder(tmp_path, helpers):
+    stem = write_record(tmp_path, "C", "tlrn_cr_refit", 0, 3600.0)
+    (tmp_path / f"FAILED_{stem}.txt").write_text("failed\nseconds: 1800.0\n")
+    used = study.fit_seconds_used(tmp_path, study="companion_revised") / 3600.0
+    assert helpers["gpu_hours"](tmp_path) == pytest.approx(used) == pytest.approx(1.5)
+
+
+def answered_helpers(**answers):
+    namespace = dict(run_cell("settings", {}), **answers)
+    return run_cell("helpers", run_cell("fetch", namespace))
+
+
+def test_no_answer_means_no_argument_and_the_stops_stand(helpers):
+    assert helpers["stop_answers"]() == []
+
+
+def test_the_first_fit_answer_reaches_the_helpers_and_the_runner(tmp_path):
+    answered = answered_helpers(FIRST_FIT_ANSWER="Ethan: go on")
+    write_record(tmp_path, "C", "tlrn_cr_refit", 0, 1600.0)
+    assert answered["check_draw0"](tmp_path) == 1600.0
+    calls = []
+    answered["run_piece"](calls.append, tmp_path, "C", "tlrn_cr_refit", first=1, last=1)
+    assert calls[0][calls[0].index("--answered-first-fit") + 1] == "Ethan: go on"
+    assert "stop_answers()" in source("draw0")
+
+
+def test_the_budget_answer_reaches_the_helpers_and_the_runner(tmp_path):
+    answered = answered_helpers(BUDGET_ANSWER_HOURS=9.0)
+    write_record(tmp_path, "C", "tlrn_cr_refit", 0, 8.5 * 3600)
+    assert answered["check_budget"](tmp_path) == pytest.approx(8.5)
+    calls = []
+    answered["run_piece"](calls.append, tmp_path, "C", "tlrn_cr_refit", first=1, last=1)
+    assert calls[0][calls[0].index("--answered-budget-hours") + 1] == "9.0"
+    write_record(tmp_path, "C", "tlrn_cr_refit", 1, 3600.0)
+    with pytest.raises(SystemExit, match="STOP"):
+        answered["check_budget"](tmp_path)
+
+
+def test_the_runner_understands_the_arguments_the_notebook_sends(tmp_path, capsys):
+    answered = answered_helpers(FIRST_FIT_ANSWER="yes", BUDGET_ANSWER_HOURS=9.0)
+    argv = ["--study", "companion_revised", "--out", str(tmp_path), "--rows", "not_a_row"]
+    with pytest.raises(SystemExit):
+        study.main(argv + answered["stop_answers"]())
+    # the parser got as far as the rows, so it knew both of the notebook's arguments
+    assert "--rows must be a comma list" in capsys.readouterr().err

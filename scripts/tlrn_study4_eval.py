@@ -354,6 +354,9 @@ STOP_AND_ASK = (
     "the refit effect is not shown. The pre-registration says to ask before writing any result."
 )
 
+#: what the evaluator exits with when it held the results back for Ethan's answer
+STOP_EXIT_CODE = 3
+
 #: the decision rules are the third study's, unchanged
 decide_refit = ev3.decide_refit
 decide_secondary = ev3.decide_secondary
@@ -665,24 +668,34 @@ def rerun_control(main_fit4, control_fit, fit3_draw0, companies, actual, mask) -
 # -- the benchmark tie-out against the third study's saved values ---------------------------
 
 
-def third_study_tie_out(cohort_name: str, result: dict, folder: Path | None) -> dict | str:
+def third_study_tie_out(
+    cohort_name: str, result: dict, folder: Path | None, *, smoke: bool = False
+) -> dict | str:
     """The valuation-10 Pool_APE of ``mack`` and ``mcl`` against the third study's saved ones.
 
-    Read from its ``<cohort>_metrics_by_valuation.csv``. Only meaningful when every company of
-    the date's set was scored; otherwise a note says so. A difference beyond rounding stops the
-    evaluator: the benchmarks are the same programs on the same data as the third study's.
+    Read from its ``<cohort>_metrics_by_valuation.csv``. A difference beyond rounding stops the
+    evaluator: the benchmarks are the same programs on the same data as the third study's. So
+    does a tie-out that cannot be made (no file, no row, or a company left out, which the third
+    study's benchmarks never did), because the rule is that they must equal, not that they
+    must equal when they can be read. A smoke run only notes these, since nothing in it is read.
     """
+
+    def not_tied_out(why: str) -> str:
+        if smoke:
+            return why
+        raise SystemExit(f"cohort {cohort_name}: the benchmarks must tie out and {why}")
+
     path = None if folder is None else Path(folder) / f"{cohort_name}_metrics_by_valuation.csv"
     if path is None or not path.exists():
-        return f"NOT TIED OUT: no {cohort_name}_metrics_by_valuation.csv in {folder}"
+        return not_tied_out(f"NOT TIED OUT: no {cohort_name}_metrics_by_valuation.csv in {folder}")
     if result["left_out"]:
-        return "not compared: some companies are left out because a benchmark failed"
+        return not_tied_out("not compared: some companies are left out as a benchmark failed")
     table = pd.read_csv(path)
     out = {}
     for b in BENCHMARKS:
         row = table[(table["method"] == b) & (table["valuation"].astype(str) == str(LAST))]
         if row.empty:
-            return f"NOT TIED OUT: {path.name} has no {b} row at valuation {LAST}"
+            return not_tied_out(f"NOT TIED OUT: {path.name} has no {b} row at valuation {LAST}")
         theirs = float(row["pool_ape"].iloc[0])
         mine = float(result["benchmark_pool_ape"][b][LAST_I])
         out[b] = {"ours": mine, "third_study": theirs, "relative": abs(mine / theirs - 1.0)}
@@ -1454,7 +1467,9 @@ def run_cohort(
             f"cohort {name}: mack differs from the independent chain ladder by {worst:.3g} "
             f"(relative), more than {RECOMPUTE_TOL}; the benchmarks are not read"
         )
-    extras["third study's valuation-10 benchmarks"] = third_study_tie_out(name, result, tie_out)
+    extras["third study's valuation-10 benchmarks"] = third_study_tie_out(
+        name, result, tie_out, smoke=smoke
+    )
     extras["docstring sha256"] = docstring_sha256()
     result["extras"] = extras
     result["sets"] = {v: len(sets[v]) for v in VALUATIONS}
@@ -1571,6 +1586,13 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--strict-data-hash", action="store_true")
     parser.add_argument("--smoke", action="store_true", help="score a smoke folder")
+    parser.add_argument(
+        "--stop-answered",
+        default=None,
+        metavar="ANSWER",
+        help="Ethan's answer to a stop-and-ask reading, in his words: the results are written "
+        "after all and carry the answer; without it a stop writes nothing to --out",
+    )
     args = parser.parse_args(argv)
 
     names = ["B", "C"] if args.cohort == "all" else [args.cohort]
@@ -1581,7 +1603,7 @@ def main(argv=None) -> int:
     )
     if banner:
         print(banner)
-    reports, verdicts = [], {}
+    reports, verdicts, finished = [], {}, []
     for name in names:
         t0 = time.perf_counter()
         cells = study.cells_from_mart(years=study.YEARS[name])
@@ -1604,8 +1626,7 @@ def main(argv=None) -> int:
         reports.append(report)
         verdicts[name] = verdict_record(result)
         print(f"(cohort {name} evaluated in {time.perf_counter() - t0:.0f}s)")
-        if args.out is not None:
-            save_tables(args.out, cohort, result)
+        finished.append((cohort, result))
     overall = None
     if args.cohort == "all":
         words = {
@@ -1630,12 +1651,23 @@ def main(argv=None) -> int:
                 {k: f["p2"] for k, f in flags.items()},
             ),
         }
-    if args.out is not None:
+    # the pre-registration's third reading: ask Ethan before writing the results. A smoke run
+    # has no stops: its numbers are not results and its level says nothing
+    must_ask = [
+        name
+        for name, value in verdicts.items()
+        if not args.smoke and (value.get("replication") or {}).get("stop_and_ask")
+    ]
+    held = bool(must_ask) and not args.stop_answered
+    if args.out is not None and not held:
+        for cohort, result in finished:
+            save_tables(args.out, cohort, result)
         args.out.mkdir(parents=True, exist_ok=True)
         (args.out / "report.txt").write_text("\n\n".join(reports), encoding="utf-8")
+        answered = {"stop_answered": args.stop_answered} if must_ask else {}
         (args.out / "verdicts.json").write_text(
             json.dumps(
-                {"smoke": args.smoke, "verdicts": verdicts, "overall": overall},
+                {"smoke": args.smoke, "verdicts": verdicts, "overall": overall, **answered},
                 indent=2,
                 default=str,
             ),
@@ -1657,6 +1689,12 @@ def main(argv=None) -> int:
     if overall is not None:
         print(f"OVERALL P1: {overall['p1']}")
         print(f"OVERALL P2: {overall['p2']}")
+    if held:
+        print(
+            f"\nNO RESULT WRITTEN: cohort {', '.join(must_ask)} needs Ethan's answer first. "
+            'When he has given it, run this again with --stop-answered "<his answer>".'
+        )
+        return STOP_EXIT_CODE
     return 0
 
 

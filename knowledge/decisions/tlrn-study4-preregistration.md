@@ -714,3 +714,67 @@ a verdict are called "variant rows" (the note uses the banned word family).
   of pandas, numpy and duckdb, which the third study's records did not.
 * *Environment on a reused fit.* The evaluator prints the source fit's own environment and
   marks the row as taken from the third study.
+
+# Second amendment before any fit (2026-11-03): what two reviews of the code found
+
+Written after two independent reviews of the code and before any real fit. The text above is
+unchanged. No decision rule, threshold, target or width above was changed, and the evaluator's
+docstring and its sha256 are unchanged. Items 1 to 3 bring the code to what the note already says;
+items 4 to 6 settle what the note left to the runner; item 7 fills two gaps in the wording.
+
+**1. The order.** The runner's plan was draw by draw, with B before C, so a direct run with no
+`--cohort` fitted B4's rows before the C4 draw 0 that the 25-minute stop reads. For this study the
+plan now follows "Order" above whatever the cohorts asked for: the main row on C4, the main row on
+B4, the network-off row, then the single-draw rows. The notebook already ran this order.
+
+**2. The benchmark tie-out.** The note says the date-10 benchmarks must equal the third study's
+saved values. The evaluator stopped on a difference but only printed a note when the third study's
+file or a row was missing or a company was left out. Outside a smoke run each of these now stops
+it too: a tie-out that cannot be made is not a tie-out. (Both of the third study's cohorts left no
+company out.)
+
+**3. Reading (3), "stop and ask Ethan before writing the results".** This is read strictly: the
+evaluator's own files are results as well as the results note. When the reading applies, the
+evaluator prints the report and writes no report, verdicts or tables to `--out` (a benchmark cache
+may be there), and exits with code 3. After Ethan has answered, `--stop-answered "<his answer>"`
+writes them, and `verdicts.json` carries the answer. A smoke run has no stops, as above.
+
+**4. "Rerun once" holds across passes.** A `FAILED_<fit>.txt` file says that fit has had its one
+rerun, so a later pass counts it as failed and does not fit it again. Before this the notebook's
+one-draw-at-a-time passes would have fitted a failed draw twice more on every pass. Deleting the
+file asks for a new try, and that is for a repair of a defect only. A failure file cannot go stale
+beside a good record, because a fit with a failure file is not fitted.
+
+**5. The budget counts every attempt.** "Cumulative GPU time" includes attempts that gave no usable
+fit. A failure file now records the seconds of its attempts, and the record of a fit that recovered
+on its rerun records the first attempt's as `failed_attempt_seconds`, and both count toward the 8
+hours, in the runner and in the notebook. The 25-minute stop still reads the fit's own
+`fit_seconds`. Time lost to a disconnect in the middle of a fit leaves no file and is not counted.
+
+**6. How a stop is answered.** Both stops say "stop and ask", and there was no way to apply the
+answer without editing the script. The runner now takes `--answered-first-fit "<his words>"`, which
+goes past the 25-minute stop, and `--answered-budget-hours H`, which must be above 8 and is a new
+limit that stops at `H`. They are separate, so answering one leaves the other in force, and each
+is written into `run["stop_answers"]` of every fit saved under it, so the results note can name
+those fits. The notebook takes them as `FIRST_FIT_ANSWER` and `BUDGET_ANSWER_HOURS`. Nobody but
+Ethan fills these in.
+
+**7. Wording.**
+
+* *The band from 2.37 to 2.87.* Readings (2) and (3) do not name a draw average from 2.37 to 2.87,
+  and they do not name one within 0.5 of the target with the target outside the range of the draws.
+  Each misses R1 and is within 1.0 of the target, so the label rule gives *partially replicates*.
+  The evaluator prints that it fell in no band, and it does not stop.
+* *"A new preset `companion_revised`".* The code spells it `TLRNConfig.companion_revised_variant()`,
+  beside `companion_final_variant()`, with `companion_revised` as the study's and the config's name.
+
+**Two notebook corrections, neither a rule.** The text offered `SOURCE = "git"` as the way to run
+before the release. That route cannot pass the version check until a branch says 0.7.7, and the
+note says the fits wait for the release, so the text now calls it a way to test the release commit.
+Its token path also lacked `EXTRAS`, which is repaired here and left as it ran in notebook 05. A
+disconnect during the seconds a fit is being saved can leave files with no record, which stops the
+run until they are deleted: this refusal is deliberate and stays, and the notebook now says so.
+
+**Looked at and left.** Saved fits under another ibnr version would be planned again, but the
+notebook stops on any version but 0.7.7 before any fit and the evaluator refuses one draw under two
+versions by name, so no such run can reach a result.
