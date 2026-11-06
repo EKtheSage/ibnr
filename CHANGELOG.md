@@ -19,7 +19,7 @@ corrected decision 8 - and, from 0.7.2,
 From 0.7.2 the minor number is kept for milestones: additions and fixes ship as
 patch releases, and 0.8 comes when the roadmap's goals are done.
 
-## 0.7.7 - 2026-11-04
+## 0.7.7 - 2026-11-06
 
 A patch release over the fourth tlrn study: the preset for the companion's revised model,
 the `paid_only` switch on `tlrn.fit`, and the study's runner, evaluator and Colab notebook.
