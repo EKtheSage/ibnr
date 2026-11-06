@@ -39,13 +39,6 @@ def versions_in(text: str) -> list[str]:
     return [next(g for g in m.groups() if g) for m in VERSIONS.finditer(text)]
 
 
-def pin_ceiling(name: str, here: tuple) -> tuple:
-    """The newest version a study may pin, for a package at ``here``."""
-    # the fourth study waits for the 0.7.7 release: its pin may be one patch ahead of the
-    # package until the release is cut, and no further
-    return (*here[:2], here[2] + 1) if name == "companion_revised" else here
-
-
 def test_the_pins_are_plain_release_numbers_and_not_ahead_of_the_package():
     import ibnr
 
@@ -53,20 +46,12 @@ def test_the_pins_are_plain_release_numbers_and_not_ahead_of_the_package():
     for name in study.STUDIES:
         pin = study.get_study(name).pinned_ibnr
         assert re.fullmatch(r"\d+\.\d+\.\d+", pin), name
-        assert tuple(int(x) for x in pin.split(".")) <= pin_ceiling(name, here), name
+        assert tuple(int(x) for x in pin.split(".")) <= here, name
     assert study.get_study("companion_revised").pinned_ibnr == "0.7.7"
     assert study.get_study("accident_year").pinned_ibnr == PIN
     assert study.get_study("companion_final").pinned_ibnr == study.PINNED_IBNR
     # moving the current pin must not move the earlier studies' records
     assert PIN == study.EARLIER_PINNED_IBNR != study.PINNED_IBNR
-
-
-def test_the_fourth_studys_pin_may_be_one_patch_ahead_of_the_package_and_no_more():
-    pin = tuple(int(x) for x in study.get_study("companion_revised").pinned_ibnr.split("."))
-    assert pin <= pin_ceiling("companion_revised", (0, 7, 6))  # the package before the release
-    assert pin <= pin_ceiling("companion_revised", (0, 7, 7))  # and after it
-    assert pin > pin_ceiling("companion_revised", (0, 7, 5))  # two patches ahead is refused
-    assert pin > pin_ceiling("companion_final", (0, 7, 6))  # and no other study gets the patch
 
 
 @pytest.mark.parametrize("path", DOCS)
