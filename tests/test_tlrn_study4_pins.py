@@ -82,6 +82,13 @@ def test_the_pin_is_the_fourth_studys_alone_and_the_third_keeps_its_own():
     assert study.get_study("companion_final").pinned_ibnr == study.PINNED_IBNR == "0.7.6"
 
 
+def test_the_pin_is_not_ahead_of_the_package_this_checkout_builds():
+    import ibnr
+
+    here = tuple(int(x) for x in ibnr.__version__.split(".")[:3])
+    assert tuple(int(x) for x in PIN.split(".")) <= here
+
+
 def test_the_notebooks_settings_agree_with_the_runner_and_the_study_entry(settings):
     spec = study.get_study("companion_revised")
     assert settings["EXPECTED_VERSION"] == spec.pinned_ibnr

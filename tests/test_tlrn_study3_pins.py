@@ -66,10 +66,11 @@ def test_the_current_pin_is_the_third_studys_and_the_earlier_ones_keep_theirs():
         assert study.get_study(name).pinned_ibnr == "0.7.4" == study.EARLIER_PINNED_IBNR
 
 
-def test_the_pin_matches_the_package_this_checkout_builds():
+def test_the_pin_is_not_ahead_of_the_package_this_checkout_builds():
     import ibnr
 
-    assert ibnr.__version__ == PIN
+    here = tuple(int(x) for x in ibnr.__version__.split(".")[:3])
+    assert tuple(int(x) for x in PIN.split(".")) <= here
 
 
 def test_the_notebooks_settings_agree_with_the_runner_and_the_study_entry(settings):
