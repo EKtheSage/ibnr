@@ -1,5 +1,8 @@
 # Knowledge Update Log
 
+## 2026-11-08
+* **Update**: [Cut a release](/playbooks/cut-a-release.md) gained the 0.7.7 row and a pre-flight step: run the whole fast suite on the version bump, because a study pin test that held the pin equal to the package version failed all 11 pytest jobs of release PR #188. Study pin tests now check only that a pin is not ahead of the package.
+
 ## 2026-11-03
 * **Update**: [The fourth tlrn study's pre-registration](/decisions/tlrn-study4-preregistration.md) gained a third dated amendment before any fit, after two more reviews of the code: a member with a non-finite training loss now causes the one rerun even when its kept weights are finite or it had no finite check; P0's spread is over all the third study's draws; the selection table carries C4's expected counts; a saved fit differing only in the data hash is kept on a resume; the 25-minute stop is read by every run in the folder; and networks pickled by ibnr 0.7.6 still run. No rule, threshold, target or width changed.
 * **Update**: [The fourth tlrn study's pre-registration](/decisions/tlrn-study4-preregistration.md) gained a second dated amendment before any fit, after two reviews of the code: the runner's default order now follows the note; a benchmark tie-out that cannot be made stops the evaluator; a stop-and-ask reading writes no result until Ethan has answered; a reported failure is not fitted again and its seconds count toward the budget; and both stops take his answer, which each later fit's record carries. No rule, threshold, target or width changed.
