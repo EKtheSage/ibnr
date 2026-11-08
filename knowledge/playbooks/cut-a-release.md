@@ -1,7 +1,7 @@
 ---
 type: Playbook
 title: Cut a release
-description: The pre-flight checks run before tagging an ibnr release, the traps hit while publishing to PyPI, and the release history from 0.2.0 to 0.7.6 as the agent's status note recorded it.
+description: The pre-flight checks run before tagging an ibnr release, the traps hit while publishing to PyPI, and the release history from 0.2.0 to 0.7.7 as the agent's status note recorded it.
 tags: [release, pypi, ci, process]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-05T23:00:00Z }
@@ -41,6 +41,13 @@ for how that went wrong on 0.7.3.
 The check needs the Tests and Lint runs on the release (merge) commit to have finished and
 be green before the tag is pushed. Pushing the tag first makes the release workflow's "Tests
 green on this commit" job fail or wait on runs that are not done (0.7.4 lesson, 2026-10-13).
+
+Run the whole fast suite on the version bump before opening the release PR, not only
+`tests/test_version.py`. A test that holds a study's pinned version equal to the package
+version passes on every branch until the bump, and then fails every pytest job of the
+release PR: on 0.7.7 the third study's pin test asserted `'0.7.7' == '0.7.6'` in all 11
+legs. A study's pin stays where the study ran while the package moves on, so such a test
+checks that the pin is not ahead of the package, never that the two are equal.
 
 Cut the release with the CHANGELOG's `## Unreleased` heading renamed to the version and
 date, as 0.7.3 did. A later pull request that adds an entry then needs a fresh
@@ -113,6 +120,7 @@ As recorded in the note up to 0.7.1; the rows from 0.7.2 come from the git tags,
 | 0.7.4 | 2026-10-13 | tag `v0.7.4` at `b24fce7` (PR #175); the optional JAX training backend for tlrn (`ibnr[jax]`); on PyPI as wheel and sdist, and `ibnr[jax]==0.7.4` installed on a clean Python 3.13 environment |
 | 0.7.5 | 2026-10-18 | tag `v0.7.5` at `2e5891b` (PR #180); `methods.one_year_cdr`, `methods.odp_bootstrap`, `methods.ml_development` and the two tlrn studies; Tests and Lint were green on the merge commit before the tag, and `ibnr==0.7.5` imports from PyPI |
 | 0.7.6 | 2026-10-25 | tag `v0.7.6` (lightweight) at `7784f70` (release PR #183, content PR #182); the tlrn `refit` switch, `alpha_on="first_diagonal"`, `empty_query_bias`, `compact_embeddings`, the preset `TLRNConfig.companion_final_variant()` (18,537 parameters), the pre-registered Study 3 runner and evaluator, and the Colab notebook `analysis/05_tlrn_study3_on_colab.ipynb`; release workflow run 40268364791 succeeded and PyPI lists `ibnr` 0.7.6 as sdist and wheel. The first Tests run on the merge commit had "pytest (all)" cancelled at its 30-minute job timeout (`timeout-minutes: 30` in `test.yml`) with no failed test; one `gh run rerun --failed` passed, and only then was the tag pushed. That leg took about 19 minutes on 2026-10-19, so it is near the limit and may need a higher timeout (a decision for Ethan, not made) |
+| 0.7.7 | 2026-11-08 | tag `v0.7.7` (lightweight) at `47f54c7` (release PR #188, content PR #187); `TLRNConfig.maturity_embedding`, the preset `TLRNConfig.companion_revised_variant()` (18,153 parameters), `paid_only` on `TLRN.fit` and `tlrn_features`, `NoFiniteValidation`, the fourth study's runner and evaluator (`scripts/tlrn_study4_eval.py`) and the Colab notebook `analysis/06_tlrn_study4_on_colab.ipynb`; release workflow run 42510554697 succeeded, PyPI lists 0.7.7 as wheel and sdist, and `ibnr[jax]==0.7.7` installs and imports on a clean Python 3.12 environment. The release PR's first CI run failed every pytest job on one pin test (see the pre-flight note above); the CHANGELOG heading says 2026-11-06, two days before the tag, because the date was set when the fix was pushed and not moved again |
 
 [^note]: Project status log, release entries from 2026-07-23 to 2026-09-23 (lines 82-98, 176-180, 262-308, 821-873, 1336-1345, 1411-1455, 1533-1541, 1562-1602)
 [^publishing]: Why the first release is 0.2.0
