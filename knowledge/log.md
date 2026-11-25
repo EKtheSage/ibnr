@@ -1,5 +1,8 @@
 # Knowledge Update Log
 
+## 2026-11-24
+* **Creation**: Recorded [the draft pre-registration of the fifth tlrn study](/decisions/tlrn-study5-preregistration.md), before any code or fit exists: descriptive rows and tables around the fourth study's fits (four single-draw rows, Munich and floored benchmark rows, an interval comparison), no verdicts, the checks before any fit, the budget and stops. It records that the fourth study's saved fits hold no trained parameters, so the full model's read-outs come from one extra single-draw row. Status draft until the owner accepts it.
+
 ## 2026-11-03
 * **Update**: [The fourth tlrn study's pre-registration](/decisions/tlrn-study4-preregistration.md) gained a third dated amendment before any fit, after two more reviews of the code: a member with a non-finite training loss now causes the one rerun even when its kept weights are finite or it had no finite check; P0's spread is over all the third study's draws; the selection table carries C4's expected counts; a saved fit differing only in the data hash is kept on a resume; the 25-minute stop is read by every run in the folder; and networks pickled by ibnr 0.7.6 still run. No rule, threshold, target or width changed.
 * **Update**: [The fourth tlrn study's pre-registration](/decisions/tlrn-study4-preregistration.md) gained a second dated amendment before any fit, after two reviews of the code: the runner's default order now follows the note; a benchmark tie-out that cannot be made stops the evaluator; a stop-and-ask reading writes no result until Ethan has answered; a reported failure is not fitted again and its seconds count toward the budget; and both stops take his answer, which each later fit's record carries. No rule, threshold, target or width changed.
