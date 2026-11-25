@@ -10,9 +10,9 @@ sources:
   - id: fourth
     resource: /decisions/tlrn-study4-preregistration.md
     title: The fourth study's pre-registration, whose fits, rows, questions and verdict rules stand as accepted on 2026-11-03
-  - id: proposal
-    resource: docs/tlrn-study5-proposal.md in the main checkout (untracked when this note was written)
-    title: The background proposal for this study
+  - id: request
+    resource: Ethan's instruction in the 2026-11-24 working session
+    title: "propose what ibnr needs for a Colab notebook on the companion's latest model, then accept the six recommendations of that proposal"
   - id: companion
     resource: /references/companion-study-repository.md
     title: Where the companion study's files live
@@ -118,7 +118,13 @@ model's read-outs come from `tlrn_cr_saved`, one draw on cohort B. They carry no
   company set.
 * **The multivariate chain ladder floored at zero.**
 * **The blend against the floored forecast**, with the same blend weights and the same member
-  forecasts as the main row.
+  forecasts as the main row. The companion floors cell by cell inside the blend. The fourth
+  study's fits save company totals and each member's blend weight, not cells, so the row is
+  computed by an identity: a member's blend is linear in the benchmark, so the floored blend of
+  a company equals its saved blend plus (1 minus the mean blend weight of the date's members)
+  times (the floored benchmark cells minus the benchmark cells, added over the company's scored
+  cells). The benchmark cells are recomputed on the laptop. The evaluator checks the identity
+  against a direct cell-level computation on `tlrn_cr_saved` before using it.
 
 The chain ladder (`mack`) and the multivariate chain ladder (`mcl`) stay as the fourth study
 defines them: `mack` is ibnr's `mack` entry fitted per company and line on the cells known at
@@ -127,7 +133,10 @@ the date (`sigma_rule="mack"`), its point forecast over the scored cells added o
 
 # Tables added
 
-1. Metrics by line.
+1. Metrics by line, for the four new rows only. The fourth study's fits save one forecast per
+   valuation date and company (the mean of the twenty members), with no line and no cell, so
+   the main row has no ten-draw table by line. The full model's table by line is one draw, from
+   `tlrn_cr_saved`. The benchmarks' tables by line are exact.
 2. Per-company errors.
 3. Every headline quantity without the largest company, defined in advance as the company with
    the largest actual reserve at valuation 10 on each cohort.
@@ -201,7 +210,10 @@ main fit. Stop and ask if the first fit takes more than 25 minutes or if the sav
    parameter saving (about 2.8 GPU hours by the third study's times, which passes the 2 hour
    stop, and the refit is not guaranteed to reproduce the fourth study's forecasts bit for bit
    on a GPU); add the same row on cohort C; or drop the full model's read-outs. Default: the
-   one extra row on cohort B.
+   one extra row on cohort B. The same limit applies to metrics by line: the fourth study's
+   fits save company totals only. A ten-draw table by line needs either that refit, or an
+   amendment of the fourth study, dated before its first fit, that moves its pin to 0.7.8 with
+   richer saving. Default: neither, the table by line is one draw.
 3. **The residual recipe against `kernels/residual_calibration.py`.** Differences found:
    * the kernel returns draws and the recipe states percentiles, so the interval is the
      quantile of 4,000 draws (numpy's default linear method) and not a direct quantile of the
