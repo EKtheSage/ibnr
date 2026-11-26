@@ -1,0 +1,119 @@
+{
+  "smoke": false,
+  "verdicts": {
+    "B": {
+      "status": "confirmatory of a fixed specification, not out-of-sample",
+      "scored_companies": 90,
+      "left_out": {},
+      "dominant_company": "1767",
+      "dominant_share": 0.6726052618078442,
+      "p1": {
+        "verdict": "not distinguishable",
+        "label": "not distinguishable",
+        "date_dependent": true,
+        "reason": "valuation 10 [-2.6067%, -0.2107%], pooled [-1.4402%, +0.4160%], 10 of 10 draws favour the refit (need 8), valuation 10 without the dominant company -1.7544%; conditions a_last_below yes, b_pooled_below no, c_draws_favour yes, d_excluding_at_or_below yes",
+        "provisional": false,
+        "conditions": {
+          "a_last_below": true,
+          "b_pooled_below": false,
+          "c_draws_favour": true,
+          "d_excluding_at_or_below": true
+        },
+        "sensitivity": "not distinguishable"
+      },
+      "p2": {
+        "verdict": "not distinguishable",
+        "label": "not distinguishable",
+        "reason": "vs mack: valuation 10 [-5.0128%, +1.7196%], pooled [-2.2230%, -0.2398%], valuation 10 without the dominant company -2.4373% [-5.6574%, +2.5591%]; vs mcl: valuation 10 [-5.4600%, -1.0079%], pooled [-3.1032%, -0.3517%], valuation 10 without the dominant company -2.9351% [-6.8815%, -1.0368%]; median-draw valuation-10 Pool_APE 3.7990% against mack 5.4810% and mcl 5.4098%; conditions i_last_below_both no, ii_pooled_below_both yes, iii_median_draw_below_both yes, iv_excluding_dominant_not_worse yes",
+        "provisional": false,
+        "conditions": {
+          "i_last_below_both": false,
+          "ii_pooled_below_both": true,
+          "iii_median_draw_below_both": true,
+          "iv_excluding_dominant_not_worse": true
+        },
+        "sensitivity": "effective",
+        "raw_network": "not distinguishable"
+      },
+      "blend": "not distinguishable",
+      "p0_reported": true,
+      "network": "network adds value",
+      "replication": {
+        "cohort": "B",
+        "target": 3.37,
+        "r1": false,
+        "r2": true,
+        "r3": false,
+        "label": "partially replicates",
+        "m": 3.773391048080172,
+        "lo": 3.377030991112255,
+        "hi": 4.1007383944127005,
+        "d10": -0.7180761690089583,
+        "reading": [
+          "R1 misses without falling in a band the pre-registration read in advance (draw average 3.77, target in the range of the draws: False); the label follows the rule",
+          "(4) P1 and P2 are decided by their own rules; a miss of R1 changes no verdict",
+          "(5) the P0 difference at valuation 10 is no larger than the third study's draw spread: removing the embedding did not detectably move ibnr's level (this says nothing about why the companion's moved)"
+        ],
+        "stop_and_ask": false
+      }
+    },
+    "C": {
+      "status": "out-of-sample in accident years only, and weaker than that (the third study's result on this cohort existed before these rules were written, the companion's holdout run is in the same commit as his embedding removal, and it shares 60 of its 83 companies and 155 of its 232 pairs with B4)",
+      "scored_companies": 84,
+      "left_out": {},
+      "dominant_company": "1767",
+      "dominant_share": 0.6673483509842529,
+      "p1": {
+        "verdict": "not distinguishable",
+        "label": "not distinguishable",
+        "date_dependent": false,
+        "reason": "valuation 10 [-0.8603%, +3.3486%], pooled [-0.8529%, +0.9915%], 2 of 10 draws favour the refit (need 8), valuation 10 without the dominant company +1.9265%; conditions a_last_below no, b_pooled_below no, c_draws_favour no, d_excluding_at_or_below no",
+        "provisional": false,
+        "conditions": {
+          "a_last_below": false,
+          "b_pooled_below": false,
+          "c_draws_favour": false,
+          "d_excluding_at_or_below": false
+        },
+        "sensitivity": "hurts"
+      },
+      "p2": {
+        "verdict": "not distinguishable",
+        "label": "not distinguishable",
+        "reason": "vs mack: valuation 10 [-7.6065%, +1.3543%], pooled [-4.5019%, -0.4401%], valuation 10 without the dominant company -2.6404% [-6.6398%, +2.4977%]; vs mcl: valuation 10 [-2.3931%, +3.0549%], pooled [-2.5291%, -0.8267%], valuation 10 without the dominant company +1.0329% [-3.1646%, +3.5909%]; median-draw valuation-10 Pool_APE 5.7306% against mack 11.9470% and mcl 4.9693%; conditions i_last_below_both no, ii_pooled_below_both yes, iii_median_draw_below_both no, iv_excluding_dominant_not_worse no",
+        "provisional": false,
+        "conditions": {
+          "i_last_below_both": false,
+          "ii_pooled_below_both": true,
+          "iii_median_draw_below_both": false,
+          "iv_excluding_dominant_not_worse": false
+        },
+        "sensitivity": "not distinguishable",
+        "raw_network": "not distinguishable"
+      },
+      "blend": "not distinguishable",
+      "p0_reported": true,
+      "network": "not distinguishable",
+      "replication": {
+        "cohort": "C",
+        "target": 5.75,
+        "r1": true,
+        "r2": false,
+        "r3": true,
+        "label": "partially replicates",
+        "m": 5.787517010239379,
+        "lo": 4.011931017922639,
+        "hi": 7.18509799710697,
+        "d10": 0.180533524163351,
+        "reading": [
+          "R2c is judged on the direction and size of the refit effect"
+        ],
+        "stop_and_ask": false
+      }
+    }
+  },
+  "overall": {
+    "p1": "not distinguishable; B4 is listed for information (C4 not distinguishable; B4 not distinguishable)",
+    "p2": "not distinguishable (C4 not distinguishable; B4 not distinguishable)"
+  }
+}

@@ -1,5 +1,8 @@
 # Knowledge Update Log
 
+## 2026-11-25
+* **Creation**: Recorded [the results of the fourth tlrn study](/findings/tlrn-study4-results.md): the companion's revised model, ten draws on two cohorts, 44 fits on Colab (one on an L4 that ran past the 25 minute stop, continued on an A100 on Ethan's answer). P1 and P2 are not distinguishable on B4 and on C4; the network adds value on B4 only; the replication is "partially replicates" on both cohorts. The evaluator output is kept in `analysis/results/tlrn_study4/`.
+
 ## 2026-11-03
 * **Update**: [The fourth tlrn study's pre-registration](/decisions/tlrn-study4-preregistration.md) gained a third dated amendment before any fit, after two more reviews of the code: a member with a non-finite training loss now causes the one rerun even when its kept weights are finite or it had no finite check; P0's spread is over all the third study's draws; the selection table carries C4's expected counts; a saved fit differing only in the data hash is kept on a resume; the 25-minute stop is read by every run in the folder; and networks pickled by ibnr 0.7.6 still run. No rule, threshold, target or width changed.
 * **Update**: [The fourth tlrn study's pre-registration](/decisions/tlrn-study4-preregistration.md) gained a second dated amendment before any fit, after two reviews of the code: the runner's default order now follows the note; a benchmark tie-out that cannot be made stops the evaluator; a stop-and-ask reading writes no result until Ethan has answered; a reported failure is not fitted again and its seconds count toward the budget; and both stops take his answer, which each later fit's record carries. No rule, threshold, target or width changed.

@@ -1,0 +1,10 @@
+quantity,companion,note,ibnr_mean,ibnr_min,ibnr_max,n_draws,draws_below,draws_above
+tlrn_cr_refit blended: Pool APE (%),3.37,,3.7745186258101113,3.377030991112255,4.1007383944127005,10,0,10
+raw network alone: Pool APE (%),4.31,,3.3737913211432953,3.0681558242925107,4.007220875948025,10,10,0
+blended without refit: Pool APE (%),4.37,,4.492040759261866,4.1548587694335675,4.619530737184801,10,2,8
+CL+MCL (his best classical): Pool APE (%),5.41,"ibnr's mcl, one fit",5.409810037300857,5.409810037300857,5.409810037300857,1,1,0
+median alpha at valuation 10 (per draw),0.4618,,0.46939993351697923,0.434651643037796,0.5008322447538376,10,5,5
+companies at valuation 6,90.0,,90.0,90.0,90.0,1,0,0
+companies at valuation 7,89.0,,89.0,89.0,89.0,1,0,0
+companies at valuation 8,87.0,,87.0,87.0,87.0,1,0,0
+companies at valuation 10,84.0,,84.0,84.0,84.0,1,0,0
