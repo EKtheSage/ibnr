@@ -171,9 +171,10 @@ under "Open for the owner to decide". The evaluator fixes how each is handled be
 
 # Budget and stops
 
-Four single fits at roughly 9 minutes each, from the third study's measured 521 seconds per
-main fit. Stop and ask if the first fit takes more than 25 minutes or if the saved fits pass
-2 GPU hours.
+Four single fits. The fourth study, run on 2026-11-25, measured about 17 minutes per main fit on
+cohort B on an A100 (970 to 1078 seconds) and 28.5 minutes on an L4; the third study measured
+521 seconds on a G4. So the four fits take about 70 minutes on an A100. Stop and ask if the
+first fit takes more than 25 minutes or if the saved fits pass 2 GPU hours.
 
 # What is not done
 
@@ -205,9 +206,9 @@ main fit. Stop and ask if the first fit takes more than 25 minutes or if the sav
    is reduced to a count of non-finite loss epochs. **No trained parameters and no validation
    histories are stored.** So neither read-out can be computed from the fourth study's fits
    without a new fit. This note registers one extra single-draw row, `tlrn_cr_saved` (the full
-   model on cohort B at draw 0, about 9 minutes), and computes the read-outs for the four new
-   rows. The alternatives are: refit the twenty fourth-study main fits under 0.7.8 with
-   parameter saving (about 2.8 GPU hours by the third study's times, which passes the 2 hour
+   model on cohort B at draw 0, about 17 minutes on an A100), and computes the read-outs for the
+   four new rows. The alternatives are: refit the twenty fourth-study main fits under 0.7.8 with
+   parameter saving (about 5.6 GPU hours by the fourth study's times, which passes the 2 hour
    stop, and the refit is not guaranteed to reproduce the fourth study's forecasts bit for bit
    on a GPU); add the same row on cohort C; or drop the full model's read-outs. Default: the
    one extra row on cohort B. The same limit applies to metrics by line: the fourth study's
